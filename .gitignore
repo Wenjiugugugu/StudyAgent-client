@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Toolchain / local environment
+.cargo/
+.rustup/
+.trae/
+.codex/
+
+# Build outputs
+dist/
+dist-ssr/
+.target/
+target/
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Rust
+Cargo.lock
+**/*.rs.bk
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Runtime data
+data/
+.cache/
+*.state

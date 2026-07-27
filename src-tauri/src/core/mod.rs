@@ -1,0 +1,23 @@
+//! Core Module — 业务逻辑层
+//!
+//! Core 层是 StudyAgent 的核心业务逻辑，包含：
+//! - Dashboard：数据聚合与汇总
+//! - Planner：调用 AI Service 生成周计划
+//! - Scheduler：从周计划生成日计划（无 AI）
+//! - Review Agent：调用 AI Service 生成复盘
+//! - Knowledge：知识对象读取与搜索
+//! - User Model：用户画像读取
+
+pub mod dashboard;
+pub mod knowledge;
+pub mod planner;
+pub mod review;
+pub mod scheduler;
+pub mod user_model;
+
+pub use dashboard::*;
+pub use knowledge::*;
+pub use planner::*;
+pub use review::*;
+pub use scheduler::*;
+pub use user_model::*;

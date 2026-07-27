@@ -1,0 +1,821 @@
+/**
+ * StudyAgent — Liquid Glass 视觉模式（材质优先 v3）
+ * 激活方式：根元素 data-visual-mode="liquid-glass"
+ *
+ * 材质原则：
+ *   · Liquid Glass 是材质，不是 UI 风格
+ *   · 不追求更多 blur / 更多透明 / 更多发光
+ *   · 追求自然空间层次、真实材质感、克制透明、精细高光、舒适阅读
+ *
+ * 区域划分：
+ *   · 强玻璃：侧边栏、顶部栏、浮动按钮、弹窗、下拉菜单、日期选择器
+ *   · 弱玻璃：工作台今日焦点、倒计时、首页统计卡片
+ *   · 纯色：学习计划/历史计划/教材/AI 调试日志/设置项列表
+ *
+ * 玻璃本色：几乎没有颜色，颜色来自环境
+ * 高光优先：上边缘、左边缘、圆角连续高光
+ * 阴影克制：仅少量漂浮感投影
+ */
+
+/* ════════════════════════════════════════════════
+   1. 环境背景 — 几乎不可察觉的冷/暖光晕
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] body,
+[data-visual-mode="liquid-glass"] .app-layout {
+  background-color: var(--bg-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 左上角：极淡冷色光晕（仅给玻璃一点可折射的色彩） */
+[data-visual-mode="liquid-glass"] .app-layout::before {
+  content: "";
+  position: fixed;
+  top: -30%;
+  left: -25%;
+  width: 70%;
+  height: 80%;
+  background: radial-gradient(ellipse at center, rgba(120, 170, 255, 0.13) 0%, rgba(120, 170, 255, 0.04) 40%, transparent 72%);
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(50px);
+}
+
+/* 右侧：极淡暖色光晕 */
+[data-visual-mode="liquid-glass"] .app-layout::after {
+  content: "";
+  position: fixed;
+  top: 15%;
+  right: -30%;
+  width: 65%;
+  height: 75%;
+  background: radial-gradient(ellipse at center, rgba(255, 160, 120, 0.09) 0%, rgba(255, 160, 120, 0.03) 40%, transparent 72%);
+  pointer-events: none;
+  z-index: 0;
+  filter: blur(50px);
+}
+
+[data-visual-mode="liquid-glass"] .app-body {
+  position: relative;
+  z-index: 1;
+}
+
+[data-visual-mode="liquid-glass"] .liquid-glass-svg {
+  position: fixed;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ════════════════════════════════════════════════
+   2. 强玻璃 — 侧边栏
+   blur 16px，高透明，边缘高光主导，几乎无色
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .sidebar {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 20%, transparent 50%, rgba(0,0,0,0.02) 100%),
+    rgba(255, 255, 255, 0.05);
+  backdrop-filter: url(#lg-refract) blur(16px) saturate(160%) brightness(1.02);
+  -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.02);
+  border-right: none;
+  box-shadow:
+    inset 0 2px 0.5px rgba(255, 255, 255, 0.9),
+    inset 1.5px 0 0.5px rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.04),
+    inset -1px 0 0 rgba(0, 0, 0, 0.04),
+    8px 0 32px rgba(0, 0, 0, 0.06);
+}
+
+[data-visual-mode="liquid-glass"] .nav-item {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+[data-visual-mode="liquid-glass"] .nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  transform: translateX(1px);
+}
+
+/* active nav：indicator 已提供背景，文字轻微浮起 */
+[data-visual-mode="liquid-glass"] .nav-item.active {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+[data-visual-mode="liquid-glass"] .nav-indicator {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 30%, transparent 60%, rgba(0,0,0,0.02) 100%),
+    rgba(91, 141, 239, 0.08);
+  box-shadow:
+    inset 0 1.5px 0.5px rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+/* ════════════════════════════════════════════════
+   3. 强玻璃 — 顶部栏
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .content-header {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.03) 30%, transparent 60%, rgba(0,0,0,0.01) 100%),
+    rgba(255, 255, 255, 0.04);
+  backdrop-filter: url(#lg-refract) blur(16px) saturate(160%) brightness(1.02);
+  -webkit-backdrop-filter: blur(16px) saturate(160%) brightness(1.02);
+  border-bottom: none;
+  box-shadow:
+    inset 0 2px 0.5px rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.03),
+    0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+[data-visual-mode="liquid-glass"] .assistant-toggle {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 30%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--border-color-strong);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.4),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+[data-visual-mode="liquid-glass"] .assistant-toggle:hover {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.42) 30%, rgba(255,255,255,0.3) 55%, rgba(0,0,0,0.03) 100%);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.05),
+    0 2px 6px rgba(0, 0, 0, 0.06);
+  transform: translateY(-0.5px);
+}
+
+[data-visual-mode="liquid-glass"] .assistant-toggle.active {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.28) 30%, rgba(255,255,255,0.2) 55%, rgba(0,0,0,0.03) 100%);
+  border-color: var(--border-color-strong);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+[data-visual-mode="liquid-glass"] .assistant-toggle:active {
+  transform: scale(0.96);
+}
+
+/* ════════════════════════════════════════════════
+   4. 弱玻璃 — 工作台焦点 / 倒计时 / 统计卡片
+   透明度更低，保持阅读；轻微高光，几乎无阴影
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .hero-countdown,
+[data-visual-mode="liquid-glass"] .focus-today,
+[data-visual-mode="liquid-glass"] .stat-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 20%, rgba(255,255,255,0.25) 45%, rgba(255,255,255,0.25) 80%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: blur(14px) saturate(150%) brightness(1.02);
+  -webkit-backdrop-filter: blur(14px) saturate(150%) brightness(1.02);
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.45),
+    0 2px 8px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+[data-visual-mode="liquid-glass"] .hero-countdown:hover,
+[data-visual-mode="liquid-glass"] .focus-today:hover,
+[data-visual-mode="liquid-glass"] .stat-card:hover {
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.55),
+    0 4px 14px rgba(0, 0, 0, 0.06);
+  border-color: var(--border-color-strong);
+  transform: translateY(-2px);
+}
+
+/* ════════════════════════════════════════════════
+   5. 普通 ui-card — 弱玻璃或接近纯色
+   这里统一用极轻玻璃，让大面积卡片不抢阅读
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .ui-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 18%, rgba(255,255,255,0.25) 40%, rgba(255,255,255,0.25) 82%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: blur(12px) saturate(150%) brightness(1.01);
+  -webkit-backdrop-filter: blur(12px) saturate(150%) brightness(1.01);
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.4),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+[data-visual-mode="liquid-glass"] .ui-card.hoverable:hover {
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.5),
+    0 4px 14px rgba(0, 0, 0, 0.06);
+  border-color: var(--border-color-strong);
+  transform: translateY(-2.5px);
+}
+
+[data-visual-mode="liquid-glass"] .surface-default {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 30%, rgba(0,0,0,0.01) 100%),
+    rgba(255, 255, 255, 0.03);
+}
+[data-visual-mode="liquid-glass"] .surface-1 {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 30%, rgba(0,0,0,0.01) 100%),
+    rgba(255, 255, 255, 0.02);
+}
+[data-visual-mode="liquid-glass"] .surface-2 {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 30%, rgba(0,0,0,0.01) 100%),
+    rgba(245, 245, 250, 0.02);
+}
+[data-visual-mode="liquid-glass"] .surface-3 {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 30%, rgba(0,0,0,0.01) 100%),
+    rgba(238, 242, 247, 0.03);
+}
+[data-visual-mode="liquid-glass"] .surface-accent {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05) 0%, transparent 30%, rgba(0,0,0,0.01) 100%),
+    rgba(234, 241, 251, 0.03);
+}
+
+/* ════════════════════════════════════════════════
+   6. 阅读/列表区域 — 纯色背景，不玻璃化
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .plan-list,
+[data-visual-mode="liquid-glass"] .history-list,
+[data-visual-mode="liquid-glass"] .textbook-list,
+[data-visual-mode="liquid-glass"] .debug-log,
+[data-visual-mode="liquid-glass"] .settings-list,
+[data-visual-mode="liquid-glass"] .task-list {
+  background: var(--bg-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--divider-color);
+  box-shadow: none;
+}
+
+/* 列表内部卡片：保持与容器的层次区分，极淡边框 + 轻微阴影 */
+[data-visual-mode="liquid-glass"] .plan-list > .ui-card,
+[data-visual-mode="liquid-glass"] .history-list > .ui-card,
+[data-visual-mode="liquid-glass"] .textbook-list > .ui-card,
+[data-visual-mode="liquid-glass"] .debug-log > .ui-card,
+[data-visual-mode="liquid-glass"] .settings-list > .ui-card,
+[data-visual-mode="liquid-glass"] .task-list > .ui-card,
+[data-visual-mode="liquid-glass"] .plan-list .ui-card,
+[data-visual-mode="liquid-glass"] .history-list .ui-card,
+[data-visual-mode="liquid-glass"] .textbook-list .ui-card,
+[data-visual-mode="liquid-glass"] .debug-log .ui-card,
+[data-visual-mode="liquid-glass"] .settings-list .ui-card,
+[data-visual-mode="liquid-glass"] .task-list .ui-card {
+  background: var(--bg-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--divider-color);
+  box-shadow: var(--shadow-xs);
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* 悬停时轻微抬升背景色和边框 */
+[data-visual-mode="liquid-glass"] .task-list > .ui-card:hover,
+[data-visual-mode="liquid-glass"] .task-list .ui-card:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 展开卡片保持强调态 */
+[data-visual-mode="liquid-glass"] .task-list .ui-card.expanded,
+[data-visual-mode="liquid-glass"] .task-list .ui-card.expanded:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ════════════════════════════════════════════════
+   7. 按钮 — 平整透明玻璃（保留玻璃折射感）
+   ════════════════════════════════════════════════ */
+
+[data-visual-mode="liquid-glass"] .ui-button.primary {
+  color: #ffffff;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.05) 100%),
+    rgba(91, 141, 239, 0.88);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 0.5px solid rgba(255, 255, 255, 0.3);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.5),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.06),
+    0 1px 3px rgba(0, 0, 0, 0.08);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.primary:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.06) 100%),
+    rgba(91, 141, 239, 0.95);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.6),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.06),
+    0 2px 6px rgba(0, 0, 0, 0.1);
+  transform: translateY(-0.5px);
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.primary:active:not(:disabled) {
+  transform: scale(0.96);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.08) 100%),
+    rgba(61, 107, 184, 0.9);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.35),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.secondary {
+  color: var(--text-primary);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.42) 50%, rgba(0,0,0,0.03) 100%);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border: 0.5px solid rgba(255, 255, 255, 0.3);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.5),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.secondary:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.52) 50%, rgba(0,0,0,0.03) 100%);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.6),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.04),
+    0 2px 5px rgba(0, 0, 0, 0.05);
+  transform: translateY(-0.5px);
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.secondary:active:not(:disabled) {
+  transform: scale(0.95);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.35) 50%, rgba(0,0,0,0.04) 100%);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.4),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.05),
+    0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: none;
+  box-shadow: none;
+}
+
+/* ════════════════════════════════════════════════
+   8. 标签 — 高透色块，无 blur
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .ui-badge {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.3),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.03);
+  transition: transform 0.15s ease;
+}
+
+[data-visual-mode="liquid-glass"] .ui-badge:hover {
+  transform: translateY(-0.5px);
+}
+
+[data-visual-mode="liquid-glass"] .ui-badge.math {
+  background: rgba(88, 86, 214, 0.08);
+  color: #5856d6;
+  border-color: rgba(88, 86, 214, 0.18);
+}
+[data-visual-mode="liquid-glass"] .ui-badge.english {
+  background: rgba(255, 149, 0, 0.08);
+  color: #ff9500;
+  border-color: rgba(255, 149, 0, 0.18);
+}
+[data-visual-mode="liquid-glass"] .ui-badge.politics {
+  background: rgba(255, 45, 85, 0.08);
+  color: #ff2d55;
+  border-color: rgba(255, 45, 85, 0.18);
+}
+[data-visual-mode="liquid-glass"] .ui-badge.professional {
+  background: rgba(91, 141, 239, 0.08);
+  color: #5b8def;
+  border-color: rgba(91, 141, 239, 0.18);
+}
+
+/* ════════════════════════════════════════════════
+   9. 设置分组卡片 — 强玻璃
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .settings-section {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 18%, rgba(255,255,255,0.25) 40%, rgba(255,255,255,0.25) 82%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: blur(14px) saturate(150%) brightness(1.01);
+  -webkit-backdrop-filter: blur(14px) saturate(150%) brightness(1.01);
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.4),
+    0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* 设置项列表内部保持纯色 */
+[data-visual-mode="liquid-glass"] .settings-section .settings-list {
+  background: transparent;
+  border: none;
+}
+
+/* ════════════════════════════════════════════════
+   10. 主题/视觉模式选择卡片 — 强玻璃
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .theme-card,
+[data-visual-mode="liquid-glass"] .visual-mode-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 25%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.4),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+[data-visual-mode="liquid-glass"] .theme-card:hover,
+[data-visual-mode="liquid-glass"] .visual-mode-card:hover {
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.5),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+  border-color: var(--border-color-strong);
+  transform: translateY(-1.5px);
+}
+
+[data-visual-mode="liquid-glass"] .theme-card.active,
+[data-visual-mode="liquid-glass"] .visual-mode-card.active {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.02) 25%, transparent 55%, rgba(0,0,0,0.03) 100%),
+    rgba(91, 141, 239, 0.08);
+  border-color: rgba(91, 141, 239, 0.35);
+  box-shadow:
+    inset 0 1.5px 0.5px rgba(255, 255, 255, 0.8),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.05),
+    0 1px 3px rgba(0, 0, 0, 0.05),
+    0 4px 12px rgba(91, 141, 239, 0.08);
+}
+
+/* ════════════════════════════════════════════════
+   11. 空状态区域 — 弱玻璃
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .focus-empty {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.28) 20%, rgba(255,255,255,0.2) 45%, rgba(255,255,255,0.2) 82%, rgba(0,0,0,0.01) 100%);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.02),
+    0 2px 6px rgba(0, 0, 0, 0.03);
+}
+
+/* ════════════════════════════════════════════════
+   12. 输入框 — 强玻璃
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .form-input {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 25%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.35),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.03);
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+[data-visual-mode="liquid-glass"] .form-input:focus {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.42) 25%, rgba(255,255,255,0.3) 55%, rgba(0,0,0,0.02) 100%);
+  border-color: rgba(91, 141, 239, 0.35);
+  box-shadow:
+    0 0 0 3px rgba(91, 141, 239, 0.08),
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.75);
+}
+
+/* ════════════════════════════════════════════════
+   13. 助手面板 — 强玻璃
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .assistant-panel,
+[data-visual-mode="liquid-glass"] .panel-header {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: url(#lg-refract) blur(18px) saturate(160%) brightness(1.02);
+  -webkit-backdrop-filter: blur(18px) saturate(160%) brightness(1.02);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.7),
+    inset 1px 0 0.5px rgba(255, 255, 255, 0.3),
+    inset -1px 0 0 rgba(0, 0, 0, 0.03),
+    -6px 0 32px rgba(0, 0, 0, 0.04);
+}
+
+[data-visual-mode="liquid-glass"] .header-icon {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 30%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.35),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-visual-mode="liquid-glass"] .icon-btn {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 30%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid var(--border-color);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: background-color 0.15s ease, transform 0.12s ease;
+}
+
+[data-visual-mode="liquid-glass"] .icon-btn:hover {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.42) 30%, rgba(255,255,255,0.3) 55%, rgba(0,0,0,0.03) 100%);
+}
+
+[data-visual-mode="liquid-glass"] .icon-btn:active {
+  transform: scale(0.94);
+}
+
+/* ════════════════════════════════════════════════
+   14. 弹窗 / 下拉 / 日期选择器 — 强玻璃 + 浮起动画
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .modal,
+[data-visual-mode="liquid-glass"] .dropdown-menu,
+[data-visual-mode="liquid-glass"] .date-picker-popup,
+[data-visual-mode="liquid-glass"] .popover {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: url(#lg-refract) blur(20px) saturate(160%) brightness(1.02);
+  -webkit-backdrop-filter: blur(20px) saturate(160%) brightness(1.02);
+  border: 0.5px solid var(--border-color-strong);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.45),
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.04);
+  animation: lg-float-up 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes lg-float-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ════════════════════════════════════════════════
+   15. 图标与细节
+   ════════════════════════════════════════════════ */
+[data-visual-mode="liquid-glass"] .lucide {
+  stroke-width: 1.5;
+}
+
+[data-visual-mode="liquid-glass"] .nav-item.active .nav-icon {
+  fill: currentColor;
+  fill-opacity: 0.12;
+}
+
+[data-visual-mode="liquid-glass"] .ui-button.primary .lucide {
+  filter: drop-shadow(0 0.5px 0 rgba(255, 255, 255, 0.25));
+}
+
+[data-visual-mode="liquid-glass"] .settings-section .lucide {
+  opacity: 0.9;
+}
+
+[data-visual-mode="liquid-glass"] .header-icon .lucide,
+[data-visual-mode="liquid-glass"] .icon-btn .lucide {
+  stroke-width: 1.5;
+}
+
+/* ════════════════════════════════════════════════
+   16. 暗色模式 — 玻璃材质适配
+   ════════════════════════════════════════════════ */
+[data-theme="dark"][data-visual-mode="liquid-glass"] .app-layout::before {
+  background: radial-gradient(ellipse at center, rgba(120, 170, 255, 0.08) 0%, transparent 72%);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .app-layout::after {
+  background: radial-gradient(ellipse at center, rgba(255, 160, 120, 0.05) 0%, transparent 68%);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .sidebar {
+  background: rgba(30, 30, 34, 0.14);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.12),
+    inset 1px 0 0.5px rgba(255, 255, 255, 0.05),
+    inset -1px 0 0 rgba(0, 0, 0, 0.15),
+    4px 0 24px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .nav-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .nav-item.active {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.01) 30%, transparent 60%, rgba(0,0,0,0.04) 100%),
+    rgba(255, 255, 255, 0.03);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .content-header {
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .assistant-toggle {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.01) 30%, transparent 55%, rgba(0,0,0,0.04) 100%),
+    rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .assistant-toggle.active {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.01) 30%, transparent 55%, rgba(0,0,0,0.05) 100%),
+    rgba(107, 160, 255, 0.06);
+  border-color: rgba(107, 160, 255, 0.25);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .hero-countdown,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .focus-today,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .stat-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.01) 20%, transparent 45%, transparent 80%, rgba(0,0,0,0.03) 100%),
+    rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.12),
+    inset 1px 0 0.5px rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.06),
+    0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 18%, transparent 40%, transparent 82%, rgba(0,0,0,0.03) 100%),
+    rgba(255, 255, 255, 0.015);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.1),
+    inset 1px 0 0.5px rgba(255, 255, 255, 0.04),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.05),
+    0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-card.hoverable:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .plan-list,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .history-list,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .textbook-list,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .debug-log,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .settings-list,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .task-list {
+  background: var(--bg-secondary);
+  border-color: var(--divider-color);
+}
+
+/* 暗色下任务卡片同样融入列表背景 */
+[data-theme="dark"][data-visual-mode="liquid-glass"] .task-list > .ui-card,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .task-list .ui-card {
+  background: var(--bg-secondary);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .task-list > .ui-card:hover,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .task-list .ui-card:hover,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .task-list .ui-card.expanded {
+  background: var(--bg-tertiary);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.primary {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.06) 100%),
+    rgba(107, 160, 255, 0.68);
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.4),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.1),
+    0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.primary:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.07) 100%),
+    rgba(107, 160, 255, 0.78);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.5),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.1),
+    0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.primary:active:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.08) 100%),
+    rgba(91, 141, 239, 0.72);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.secondary {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 50%, rgba(0,0,0,0.06) 100%);
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow:
+    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.25),
+    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.1),
+    0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.secondary:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 50%, rgba(0,0,0,0.07) 100%);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .settings-section {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 18%, transparent 40%, transparent 82%, rgba(0,0,0,0.03) 100%),
+    rgba(255, 255, 255, 0.015);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .theme-card,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .visual-mode-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 25%, transparent 55%, rgba(0,0,0,0.03) 100%),
+    rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .theme-card.active,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .visual-mode-card.active {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 25%, transparent 55%, rgba(0,0,0,0.04) 100%),
+    rgba(107, 160, 255, 0.06);
+  border-color: rgba(107, 160, 255, 0.25);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .form-input {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 25%, transparent 55%, rgba(0,0,0,0.03) 100%),
+    rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"][data-visual-mode="liquid-glass"] .assistant-panel,
+[data-theme="dark"][data-visual-mode="liquid-glass"] .panel-header {
+  background: rgba(30, 30, 34, 0.12);
+  box-shadow:
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.12),
+    inset 1px 0 0.5px rgba(255, 255, 255, 0.05),
+    inset -1px 0 0 rgba(0, 0, 0, 0.15),
+    -6px 0 32px rgba(0, 0, 0, 0.18);
+}

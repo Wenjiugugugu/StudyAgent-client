@@ -1,0 +1,224 @@
+/**
+ * StudyAgent Design System — Design Tokens
+ * Aligned with Apple Human Interface Guidelines & Apple Design Library
+ * Principles: 简洁 · 专业 · 现代 · 高级 · 安静
+ * Brand voice: Content first, whitespace is design, restraint is style.
+ */
+
+:root {
+  /* ── Color Palette: Light Theme ── */
+  /* Anchored on Apple HIG system colors (System Blue #007AFF, System Green #34C759,
+     System Red #FF3B30, system grays / label / background colors). */
+
+  /* Backgrounds — Silver Mist frame, layered surfaces for depth without borders */
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #efeff4;
+  --bg-elevated: #ffffff;
+  --bg-overlay: rgba(0, 0, 0, 0.04);
+
+  /* Layered surfaces — different modules use different tints, not all white */
+  --surface-1: #fbfbfd;   /* faintest tint, primary cards */
+  --surface-2: #f5f5f7;   /* neutral cool gray, secondary blocks */
+  --surface-3: #eef2f7;   /* faint blue-gray, accent blocks */
+  --surface-accent: #eaf1fb; /* faint blue, countdown/hero accent */
+
+  /* Header — translucent for backdrop blur (macOS material) */
+  --header-bg: rgba(245, 245, 247, 0.72);
+
+  /* Sidebar — deeper base than content area for clear separation;
+     translucency lets frosted-glass material read against lighter content */
+  --sidebar-bg: rgba(238, 238, 242, 0.78);
+  --sidebar-solid: #eeeff2;
+  --sidebar-item-hover: rgba(0, 0, 0, 0.06);
+  --sidebar-item-active: rgba(0, 0, 0, 0.09);
+
+  /* Text — Space Black / Ink Gray hierarchy */
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #a1a1a6;
+  --text-quaternary: #c7c7cc;
+  --text-on-accent: #ffffff;
+
+  /* Borders & Dividers — 1px structural edges, lighter for softness */
+  --border-color: rgba(0, 0, 0, 0.06);
+  --border-color-strong: rgba(0, 0, 0, 0.1);
+  --divider-color: rgba(0, 0, 0, 0.05);
+
+  /* Accent — softened brand blue, lower saturation than system blue */
+  --accent: #5b8def;
+  --accent-hover: #4a7fd6;
+  --accent-pressed: #3d6bb8;
+  --accent-subtle: rgba(91, 141, 239, 0.1);
+  --accent-soft: #eaf1fb;
+
+  /* Semantic Colors — Apple HIG system colors */
+  --color-success: #34c759;
+  --color-success-subtle: rgba(52, 199, 89, 0.1);
+  --color-warning: #ff9f0a;
+  --color-warning-subtle: rgba(255, 159, 10, 0.1);
+  --color-danger: #ff3b30;
+  --color-danger-subtle: rgba(255, 59, 48, 0.1);
+  --color-info: #5ac8fa;
+  --color-info-subtle: rgba(90, 200, 250, 0.1);
+
+  /* Subject Colors — Apple system color family */
+  --color-math: #5856d6;
+  --color-math-subtle: rgba(88, 86, 214, 0.1);
+  --color-english: #ff9500;
+  --color-english-subtle: rgba(255, 149, 0, 0.1);
+  --color-politics: #ff2d55;
+  --color-politics-subtle: rgba(255, 45, 85, 0.1);
+  --color-professional: #007aff;
+  --color-professional-subtle: rgba(0, 122, 255, 0.1);
+
+  /* ── Shadows — Whisper-light, diffuse, border-first philosophy ── */
+  /* Soft, low-opacity layers that imply depth without stamping. */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.03);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.03), 0 1px 8px rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.04), 0 16px 40px rgba(0, 0, 0, 0.07);
+  --shadow-xl: 0 8px 20px rgba(0, 0, 0, 0.05), 0 24px 56px rgba(0, 0, 0, 0.08);
+
+  /* ── Border Radius — Soft, premium contour (20–24px for cards) ── */
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-full: 9999px;
+
+  /* ── Spacing Scale ── */
+  /* 0.24rem base; whitespace over separators */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 96px;
+
+  /* ── Typography ── */
+  /* SF Pro first on Apple platforms (native fruit flavor); DM Sans as the
+     cross-platform fallback so Windows users still get a modern, rounded sans. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "DM Sans", "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei",
+    "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", "Cascadia Code",
+    "Consolas", monospace;
+
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --text-4xl: 36px;
+
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+
+  /* Typography role tokens — clear hierarchy, reduce bold overuse */
+  --font-display: var(--font-bold);      /* L1 titles, hero */
+  --font-heading: var(--font-semibold);  /* L2/L3 section titles */
+  --font-body: var(--font-normal);       /* body copy */
+  --font-label: var(--font-medium);      /* labels, captions */
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  /* ── Layout ── */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 60px;
+  --header-height: 48px;
+  --assistant-width: 380px;
+  --assistant-collapsed-width: 0px;
+  --content-max-width: 960px;
+  --page-padding: var(--space-8);
+
+  /* ── Transitions ── */
+  /* Apple motion curve: cubic-bezier(0.32, 0.72, 0, 1) */
+  --transition-fast: 0.15s cubic-bezier(0.32, 0.72, 0, 1);
+  --transition-normal: 0.25s cubic-bezier(0.32, 0.72, 0, 1);
+  --transition-slow: 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+  --transition-bounce: 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── Z-Index ── */
+  --z-sidebar: 100;
+  --z-header: 90;
+  --z-assistant: 80;
+  --z-dropdown: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}
+
+/* ── Dark Theme ── */
+/* Aligned with Apple design library .dark block */
+:root[data-theme="dark"] {
+  --bg-primary: #000000;
+  --bg-secondary: #1c1c1e;
+  --bg-tertiary: #242426;
+  --bg-elevated: #1c1c1e;
+  --bg-overlay: rgba(255, 255, 255, 0.04);
+
+  /* Layered surfaces — dark equivalents */
+  --surface-1: #1c1c1e;
+  --surface-2: #242426;
+  --surface-3: #2a2a2e;
+  --surface-accent: #1a2230;
+
+  --header-bg: rgba(0, 0, 0, 0.72);
+
+  --sidebar-bg: rgba(38, 38, 42, 0.82);
+  --sidebar-solid: #26262a;
+  --sidebar-item-hover: rgba(255, 255, 255, 0.07);
+  --sidebar-item-active: rgba(255, 255, 255, 0.11);
+
+  --text-primary: #f5f5f7;
+  --text-secondary: #8e8e93;
+  --text-tertiary: #6e6e73;
+  --text-quaternary: #48484a;
+  --text-on-accent: #ffffff;
+
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-color-strong: rgba(255, 255, 255, 0.12);
+  --divider-color: rgba(255, 255, 255, 0.06);
+
+  --accent: #6ba0ff;
+  --accent-hover: #85b3ff;
+  --accent-pressed: #5b8def;
+  --accent-subtle: rgba(107, 160, 255, 0.15);
+  --accent-soft: #1a2230;
+
+  --color-success: #30d158;
+  --color-success-subtle: rgba(48, 209, 88, 0.15);
+  --color-warning: #ffd60a;
+  --color-warning-subtle: rgba(255, 214, 10, 0.15);
+  --color-danger: #ff453a;
+  --color-danger-subtle: rgba(255, 69, 58, 0.15);
+  --color-info: #64d2ff;
+  --color-info-subtle: rgba(100, 210, 255, 0.15);
+
+  --color-math: #5e5ce6;
+  --color-math-subtle: rgba(94, 92, 230, 0.15);
+  --color-english: #ff9f0a;
+  --color-english-subtle: rgba(255, 159, 10, 0.15);
+  --color-politics: #ff375f;
+  --color-politics-subtle: rgba(255, 55, 95, 0.15);
+  --color-professional: #0a84ff;
+  --color-professional-subtle: rgba(10, 132, 255, 0.15);
+
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.36), 0 1px 3px -1px rgba(0, 0, 0, 0.36);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.44), 0 2px 4px -2px rgba(0, 0, 0, 0.36);
+  --shadow-lg: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
+  --shadow-xl: 0 16px 40px -10px rgba(0, 0, 0, 0.55), 0 8px 16px -8px rgba(0, 0, 0, 0.44);
+}
