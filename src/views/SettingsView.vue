@@ -8,6 +8,7 @@ import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
+import TimePicker from "@/components/ui/TimePicker.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import {
   Bot,
@@ -39,6 +40,10 @@ import {
   HardDriveDownload,
   Sparkles,
   Layers,
+  Power,
+  Minimize2,
+  HelpCircle,
+  PowerOff,
 } from "lucide-vue-next";
 import type {
   AIProviderConfig,
@@ -125,6 +130,7 @@ interface NavSection {
 
 const navSections: NavSection[] = [
   { id: "personal", label: "个人信息", icon: User },
+  { id: "general", label: "通用", icon: PowerOff },
   { id: "appearance", label: "外观", icon: Palette },
   { id: "goals", label: "学习目标", icon: Target },
   { id: "schedule", label: "学习时间", icon: Clock },
@@ -530,7 +536,7 @@ async function handleSave() {
 }
 
 // ── 检查更新 ──
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.2.1";
 const checking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 const updateError = ref<string | null>(null);
@@ -646,11 +652,116 @@ function resetUpdate() {
   selectedAsset.value = null;
 }
 
+// ── 通用设置：开机启动 + 关闭动作 ──
+const autostartEnabled = ref(false);
+const autostartLoading = ref(false);
+const closeAction = ref<api.CloseAction>("ask");
+const closeActionLoading = ref(false);
+const isTauriEnv = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+async function loadGeneralSettings() {
+  if (!isTauriEnv) return;
+  try {
+    const [enabled, action] = await Promise.all([
+      api.getAutostart().catch(() => false),
+      api.getCloseAction().catch((): api.CloseAction => "ask"),
+    ]);
+    autostartEnabled.value = enabled;
+    closeAction.value = action;
+  } catch (e) {
+    console.warn("[General] 加载通用设置失败:", e);
+  }
+}
+
+async function toggleAutostart(value: boolean) {
+  if (autostartLoading.value) return;
+  autostartLoading.value = true;
+  try {
+    await api.setAutostart(value);
+    autostartEnabled.value = value;
+  } catch (e) {
+    console.error("[General] 切换开机启动失败:", e);
+    // 回滚 UI
+    autostartEnabled.value = !value;
+  } finally {
+    autostartLoading.value = false;
+  }
+}
+
+async function handleChangeCloseAction(action: api.CloseAction) {
+  if (closeActionLoading.value) return;
+  closeActionLoading.value = true;
+  try {
+    await api.setCloseAction(action);
+    closeAction.value = action;
+  } catch (e) {
+    console.error("[General] 切换关闭动作失败:", e);
+  } finally {
+    closeActionLoading.value = false;
+  }
+}
+
+// ── MCP 配置示例（小贴士） ──
+const showMcpTips = ref(false);
+
+interface McpTip {
+  name: string;
+  desc: string;
+  type: MCPServerType;
+  transport: "stdio" | "sse" | "websocket";
+  command: string;
+  args: string;
+  url: string;
+}
+
+const MCP_TIPS: McpTip[] = [
+  {
+    name: "文件系统",
+    desc: "让 AI 读写本地目录文件（官方推荐起步）",
+    type: "filesystem",
+    transport: "stdio",
+    command: "npx",
+    args: "-y, @modelcontextprotocol/server-filesystem, .",
+    url: "",
+  },
+  {
+    name: "GitHub",
+    desc: "查询仓库、Issue、PR 等",
+    type: "custom",
+    transport: "stdio",
+    command: "npx",
+    args: "-y, @modelcontextprotocol/server-github",
+    url: "",
+  },
+  {
+    name: "Fetch 网页抓取",
+    desc: "抓取网页内容供 AI 阅读",
+    type: "custom",
+    transport: "stdio",
+    command: "uvx",
+    args: "mcp-server-fetch",
+    url: "",
+  },
+];
+
+function applyMcpTip(tip: McpTip) {
+  // 跳转到 MCP Server 区块并预填表单
+  scrollToSection("mcp-server");
+  startAddServer();
+  serverForm.value.name = tip.name;
+  serverForm.value.type = tip.type;
+  serverForm.value.transport = tip.transport;
+  serverForm.value.command = tip.command;
+  serverArgsText.value = tip.args;
+  serverForm.value.url = tip.url;
+}
+
 onMounted(async () => {
   await settingsStore.load();
   syncFormFromStore();
   await loadStudyState();
   initSectionObserver();
+  void loadGeneralSettings();
 
   // 订阅下载进度事件
   api.onDownloadProgress((p) => {
@@ -727,6 +838,85 @@ onBeforeUnmount(() => {
               </label>
             </div>
           </div>
+        </div>
+      </Card>
+
+      <!-- 通用配置区：开机启动 / 关闭动作 -->
+      <Card id="settings-general" padding="lg" class="settings-section">
+        <div class="section-head">
+          <div class="section-title">
+            <PowerOff :size="18" />
+            <span>通用</span>
+          </div>
+        </div>
+
+        <!-- 开机启动 -->
+        <div class="toggle-row">
+          <div class="toggle-text">
+            <span class="toggle-title">开机启动</span>
+            <span class="toggle-desc">登录 Windows 后自动启动 StudyAgent</span>
+          </div>
+          <label class="toggle-switch">
+            <input
+              type="checkbox"
+              :checked="autostartEnabled"
+              :disabled="autostartLoading || !isTauriEnv"
+              @change="toggleAutostart(($event.target as HTMLInputElement).checked)"
+            />
+            <span class="toggle-slider" />
+          </label>
+        </div>
+
+        <!-- 关闭动作 -->
+        <div class="form-field">
+          <label class="form-label">关闭窗口时</label>
+          <div class="close-action-options">
+            <button
+              type="button"
+              class="close-action-option"
+              :class="{ active: closeAction === 'ask' }"
+              :disabled="closeActionLoading || !isTauriEnv"
+              @click="handleChangeCloseAction('ask')"
+            >
+              <HelpCircle :size="18" class="close-action-icon" />
+              <div class="close-action-text">
+                <span class="close-action-label">每次询问</span>
+                <span class="close-action-desc">关闭时弹窗选择</span>
+              </div>
+              <Check v-if="closeAction === 'ask'" :size="14" class="close-action-check" />
+            </button>
+            <button
+              type="button"
+              class="close-action-option"
+              :class="{ active: closeAction === 'tray' }"
+              :disabled="closeActionLoading || !isTauriEnv"
+              @click="handleChangeCloseAction('tray')"
+            >
+              <Minimize2 :size="18" class="close-action-icon" />
+              <div class="close-action-text">
+                <span class="close-action-label">最小化到托盘</span>
+                <span class="close-action-desc">保持后台运行</span>
+              </div>
+              <Check v-if="closeAction === 'tray'" :size="14" class="close-action-check" />
+            </button>
+            <button
+              type="button"
+              class="close-action-option"
+              :class="{ active: closeAction === 'quit' }"
+              :disabled="closeActionLoading || !isTauriEnv"
+              @click="handleChangeCloseAction('quit')"
+            >
+              <Power :size="18" class="close-action-icon" />
+              <div class="close-action-text">
+                <span class="close-action-label">直接退出</span>
+                <span class="close-action-desc">完全关闭应用</span>
+              </div>
+              <Check v-if="closeAction === 'quit'" :size="14" class="close-action-check" />
+            </button>
+          </div>
+          <p v-if="!isTauriEnv" class="field-hint">
+            当前环境不支持系统设置（仅在桌面应用中可用）
+          </p>
         </div>
       </Card>
 
@@ -819,11 +1009,11 @@ onBeforeUnmount(() => {
         <div class="form-grid">
           <div class="form-field">
             <label class="form-label">每日开始时间</label>
-            <input v-model="form.start_time" type="time" class="form-input" />
+            <TimePicker v-model="form.start_time" :minute-step="15" />
           </div>
           <div class="form-field">
             <label class="form-label">每日结束时间</label>
-            <input v-model="form.end_time" type="time" class="form-input" />
+            <TimePicker v-model="form.end_time" :minute-step="15" />
           </div>
           <div class="form-field">
             <label class="form-label">每日目标学时</label>
@@ -831,7 +1021,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="form-field">
             <label class="form-label">复盘提醒时间</label>
-            <input v-model="form.review_reminder_time" type="time" class="form-input" />
+            <TimePicker v-model="form.review_reminder_time" :minute-step="15" />
           </div>
           <div class="form-field form-field-full">
             <label class="form-label">每周休息日（可多选）</label>
@@ -1298,6 +1488,43 @@ onBeforeUnmount(() => {
               <span>保存</span>
             </Button>
           </div>
+        </div>
+
+        <!-- MCP 配置小贴士 -->
+        <div class="mcp-tips-block">
+          <button
+            type="button"
+            class="mcp-tips-toggle"
+            :class="{ expanded: showMcpTips }"
+            @click="showMcpTips = !showMcpTips"
+          >
+            <HelpCircle :size="14" />
+            <span>不知道填什么？查看常用 MCP Server 配置示例</span>
+          </button>
+          <transition name="mcp-tips-fade">
+            <div v-if="showMcpTips" class="mcp-tips-list">
+              <div
+                v-for="(tip, idx) in MCP_TIPS"
+                :key="idx"
+                class="mcp-tip-card"
+              >
+                <div class="mcp-tip-info">
+                  <div class="mcp-tip-name">{{ tip.name }}</div>
+                  <div class="mcp-tip-desc">{{ tip.desc }}</div>
+                  <div class="mcp-tip-cmd">
+                    <code>{{ tip.command }} {{ tip.args }}</code>
+                  </div>
+                </div>
+                <Button variant="secondary" size="sm" @click="applyMcpTip(tip)">
+                  <Plus :size="12" />
+                  <span>使用</span>
+                </Button>
+              </div>
+              <p class="mcp-tips-note">
+                以上配置需先安装 Node.js（npx）或 Python + uvx。命令执行需要联网下载对应 MCP Server。
+              </p>
+            </div>
+          </transition>
         </div>
       </Card>
 
@@ -2573,5 +2800,181 @@ onBeforeUnmount(() => {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ── 通用：关闭动作选择 ── */
+.close-action-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.close-action-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: all var(--transition-fast);
+  color: var(--text-primary);
+}
+
+.close-action-option:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.close-action-option.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.close-action-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.close-action-option .close-action-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.close-action-option .close-action-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.close-action-option .close-action-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.close-action-option .close-action-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.close-action-option .close-action-check {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ── MCP 配置小贴士 ── */
+.mcp-tips-block {
+  margin-top: var(--space-4);
+  border-top: 1px dashed var(--border-color, var(--border));
+  padding-top: var(--space-3);
+}
+
+.mcp-tips-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: 1px solid var(--border-color, var(--border));
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.mcp-tips-toggle:hover,
+.mcp-tips-toggle.expanded {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.mcp-tips-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.mcp-tip-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.mcp-tip-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mcp-tip-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.mcp-tip-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.mcp-tip-cmd {
+  margin-top: 2px;
+}
+
+.mcp-tip-cmd code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-elevated, rgba(0, 0, 0, 0.04));
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+}
+
+.mcp-tips-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: var(--leading-relaxed);
+}
+
+.mcp-tips-fade-enter-active,
+.mcp-tips-fade-leave-active {
+  transition: opacity var(--transition-fast), max-height var(--transition-fast);
+  overflow: hidden;
+}
+
+.mcp-tips-fade-enter-from,
+.mcp-tips-fade-leave-to {
+  opacity: 0;
+  max-height: 0;
+}
+
+.mcp-tips-fade-enter-to,
+.mcp-tips-fade-leave-from {
+  max-height: 600px;
 }
 </style>

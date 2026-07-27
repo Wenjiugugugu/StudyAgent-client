@@ -1,7 +1,7 @@
 {
   "name": "studyagent-desktop",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "StudyAgent Learning Workspace - 考研 AI 学习工作台",
   "scripts": {

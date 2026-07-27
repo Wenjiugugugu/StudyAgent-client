@@ -268,7 +268,7 @@ onMounted(() => {
                 <div
                   v-else
                   class="date-cell-empty"
-                  :class="{ padding: day.isPadding, today: day.date === today }"
+                  :class="{ padding: day.isPadding, today: day.date === today && !day.isPadding }"
                 >
                   <span class="empty-day">{{ dayNum(day.date) }}</span>
                 </div>

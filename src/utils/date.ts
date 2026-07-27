@@ -134,3 +134,30 @@ export function currentHourShanghai(): number {
   const hour = parts.find((p) => p.type === "hour")?.value ?? "0";
   return parseInt(hour, 10);
 }
+
+/**
+ * 获取当前时间在一天中的分钟数（0-1439，上海时区），用于与 HH:mm 字符串比较
+ */
+export function currentMinutesShanghai(): number {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const hour = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
+  const minute = parseInt(parts.find((p) => p.type === "minute")?.value ?? "0", 10);
+  return hour * 60 + minute;
+}
+
+/**
+ * 将 HH:mm 字符串转换为分钟数（0-1439），无效格式返回 -1
+ */
+export function timeStringToMinutes(timeStr: string): number {
+  const m = /^\s*(\d{1,2}):(\d{2})\s*$/.exec(timeStr);
+  if (!m) return -1;
+  const h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return -1;
+  return h * 60 + min;
+}

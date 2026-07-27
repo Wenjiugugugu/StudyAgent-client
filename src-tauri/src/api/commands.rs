@@ -1924,3 +1924,90 @@ fn parse_task_status(status: &str) -> Result<TaskStatus, String> {
         )),
     }
 }
+
+// ============================================================================
+// 通用命令（关闭行为 / 开机启动 / 应用版本）
+// ============================================================================
+
+/// 获取关闭窗口时的动作设置
+///
+/// 返回值: "ask" | "tray" | "quit"
+/// 前端调用: `invoke('get_close_action')`
+#[tauri::command]
+pub async fn get_close_action(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let settings = load_settings(&data_dir);
+    Ok(settings.close_action)
+}
+
+/// 设置关闭窗口时的动作
+///
+/// action: "ask" | "tray" | "quit"
+/// 前端调用: `invoke('set_close_action', { action: 'tray' })`
+#[tauri::command]
+pub async fn set_close_action(
+    action: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let normalized = match action.as_str() {
+        "ask" | "tray" | "quit" => action,
+        _ => return Err(format!("无效的关闭动作: {}（支持: ask, tray, quit）", action)),
+    };
+    let data_dir = get_data_dir(state.inner())?;
+    let mut settings = load_settings(&data_dir);
+    settings.close_action = normalized.clone();
+    save_settings_file(&data_dir, &settings)?;
+    log::info!("关闭动作已更新为: {}", normalized);
+    Ok(())
+}
+
+/// 查询开机启动是否启用
+///
+/// 前端调用: `invoke('get_autostart')`
+#[tauri::command]
+pub async fn get_autostart(
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    match manager.is_enabled() {
+        Ok(enabled) => Ok(enabled),
+        Err(e) => {
+            log::warn!("查询开机启动状态失败: {}", e);
+            Ok(false)
+        }
+    }
+}
+
+/// 启用或禁用开机启动
+///
+/// 前端调用: `invoke('set_autostart', { enabled: true })`
+#[tauri::command]
+pub async fn set_autostart(
+    enabled: bool,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager
+            .enable()
+            .map_err(|e| format!("启用开机启动失败: {}", e))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|e| format!("禁用开机启动失败: {}", e))?;
+    }
+    log::info!("开机启动已{}", if enabled { "启用" } else { "禁用" });
+    Ok(())
+}
+
+/// 获取应用版本号（来自 tauri.conf.json）
+///
+/// 前端调用: `invoke('get_app_version')`
+#[tauri::command]
+pub async fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(app.package_info().version.to_string())
+}

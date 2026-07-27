@@ -139,6 +139,13 @@ pub struct AppSettings {
     /// 目标分数
     #[serde(default)]
     pub target_score: i32,
+    /// 关闭窗口时的动作："ask" | "tray" | "quit"，默认 "ask"
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
+}
+
+fn default_close_action() -> String {
+    "ask".to_string()
 }
 
 impl AppSettings {
@@ -237,6 +244,7 @@ impl Default for AppSettings {
             target_major: String::new(),
             exam_date: String::new(),
             target_score: 0,
+            close_action: default_close_action(),
         }
     }
 }

@@ -5,10 +5,12 @@
 //!
 //! 流程：
 //! 1. 读取今日计划和 State
-//! 2. 将当日未完成任务标记为 abandoned
-//! 3. 构建复盘 prompt，要求 AI 输出 JSON
-//! 4. 解析、兜底填充、保存 JSON
-//! 5. 返回 ReviewData
+//! 2. 构建复盘 prompt，要求 AI 输出 JSON
+//! 3. 解析、兜底填充、保存 JSON
+//! 4. 返回 ReviewData
+//!
+//! 注意：不再自动将未完成任务标记为 abandoned。
+//! 任务状态的更新完全由 `submit_review` 根据用户在结构化复盘表单中的勾选决定。
 
 use std::path::Path;
 
@@ -34,10 +36,9 @@ impl<'a> ReviewAgent<'a> {
     /// 流程：
     /// 1. 校验只能生成今天的复盘
     /// 2. 读取今日计划和 State
-    /// 3. 标记当日未完成任务为 abandoned
-    /// 4. 调用 AI 生成复盘 JSON
-    /// 5. 保存 JSON
-    /// 6. 返回 ReviewFile
+    /// 3. 调用 AI 生成复盘 JSON
+    /// 4. 保存 JSON
+    /// 5. 返回 ReviewFile
     pub async fn generate_review(
         &self,
         data_dir: &Path,
@@ -54,12 +55,10 @@ impl<'a> ReviewAgent<'a> {
 
         // 1. 读取今日计划与状态
         let plan = crate::data::plan::read_daily_plan_with_merged_status(data_dir, date).ok();
-        let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
 
-        // 2. 将当天未完成任务标记为 abandoned
-        Self::mark_uncompleted_tasks_abandoned(data_dir, date, &mut state)?;
-
-        // 3. 构建复盘 prompt
+        // 2. 构建复盘 prompt
+        // 注意：不在此处修改任务状态。任务状态由 `submit_review` 根据用户输入更新。
         let prompt = self.build_review_prompt(plan.as_ref(), &state, date);
 
         // 4. 调用 AI Service
@@ -97,31 +96,6 @@ impl<'a> ReviewAgent<'a> {
         crate::data::records::save_review(data_dir, &review_file)?;
 
         Ok(review_file)
-    }
-
-    /// 将当天未完成的任务标记为 abandoned
-    fn mark_uncompleted_tasks_abandoned(
-        data_dir: &Path,
-        date: &str,
-        state: &mut crate::data::state::StudyState,
-    ) -> DataResult<()> {
-        if state.current_task.date != date {
-            return Ok(());
-        }
-
-        let mut changed = false;
-        for task in &mut state.current_task.tasks {
-            if task.status != TaskStatus::Done {
-                task.status = TaskStatus::Abandoned;
-                changed = true;
-            }
-        }
-
-        if changed {
-            crate::data::state::save_state(data_dir, state)?;
-        }
-
-        Ok(())
     }
 
     /// 构建复盘 prompt

@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
-import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString, nextDateString } from "@/utils/date";
+import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString, nextDateString, currentMinutesShanghai, timeStringToMinutes } from "@/utils/date";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -141,6 +141,31 @@ async function loadPlan() {
   await todayStore.loadByDate(currentDate.value);
 }
 
+// ── 每日开始时间前不展示今日计划 ──
+// 仅当查看今天且当前时间早于设置中的 start_time 时，隐藏计划并提示
+const nowMinutes = ref(currentMinutesShanghai());
+let nowTimer: number | undefined;
+
+const dailyStartMinutes = computed(() => {
+  const t = settingsStore.settings?.study_schedule?.start_time;
+  if (!t) return -1;
+  return timeStringToMinutes(t);
+});
+
+const isBeforeDailyStart = computed(() => {
+  if (!isToday.value) return false;
+  if (dailyStartMinutes.value < 0) return false;
+  return nowMinutes.value < dailyStartMinutes.value;
+});
+
+const dailyStartTimeLabel = computed(() => {
+  return settingsStore.settings?.study_schedule?.start_time ?? "09:00";
+});
+
+function refreshNow() {
+  nowMinutes.value = currentMinutesShanghai();
+}
+
 watch(currentDate, () => {
   loadPlan();
 });
@@ -189,10 +214,13 @@ function handleKeydown(e: KeyboardEvent) {
 onMounted(() => {
   loadPlan();
   window.addEventListener("keydown", handleKeydown);
+  // 每分钟刷新一次当前时间，确保到点后自动展示计划
+  nowTimer = window.setInterval(refreshNow, 60_000);
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", handleKeydown);
+  if (nowTimer) window.clearInterval(nowTimer);
 });
 </script>
 
@@ -204,6 +232,20 @@ onUnmounted(() => {
       :size="32"
       label="加载计划…"
     />
+
+    <!-- 今日计划尚未到开始时间 -->
+    <EmptyState
+      v-else-if="isBeforeDailyStart"
+      :title="`今天的学习时间还没开始`"
+      :description="`每日开始时间为 ${dailyStartTimeLabel}，到点后这里会展示今日学习计划。`"
+    >
+      <template #actions>
+        <Button variant="secondary" @click="refreshNow">
+          <RefreshCw :size="15" />
+          刷新时间
+        </Button>
+      </template>
+    </EmptyState>
 
     <!-- Empty / Error -->
     <EmptyState

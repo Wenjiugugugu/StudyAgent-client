@@ -455,3 +455,46 @@ export async function onDownloadProgress(
   });
   return unlisten;
 }
+
+// ── 通用：关闭动作 / 开机启动 / 应用版本 ──
+
+export type CloseAction = "ask" | "tray" | "quit";
+
+/**
+ * 获取关闭窗口时的动作设置
+ *
+ * 后端返回值: "ask" | "tray" | "quit"
+ */
+export async function getCloseAction(): Promise<CloseAction> {
+  return invokeDirect<CloseAction>("get_close_action");
+}
+
+/**
+ * 设置关闭窗口时的动作（并持久化）
+ *
+ * action: "ask" | "tray" | "quit"
+ */
+export async function setCloseAction(action: CloseAction): Promise<void> {
+  return invokeDirect<void>("set_close_action", { action });
+}
+
+/**
+ * 查询开机启动是否启用
+ */
+export async function getAutostart(): Promise<boolean> {
+  return invokeDirect<boolean>("get_autostart");
+}
+
+/**
+ * 启用或禁用开机启动
+ */
+export async function setAutostart(enabled: boolean): Promise<void> {
+  return invokeDirect<void>("set_autostart", { enabled });
+}
+
+/**
+ * 获取应用版本号（来自 tauri.conf.json）
+ */
+export async function getAppVersion(): Promise<string> {
+  return invokeDirect<string>("get_app_version");
+}

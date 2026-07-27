@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from "vue";
+import { computed, ref, onMounted, watch, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { useAssistantStore } from "@/stores/assistant";
 import SideBar from "./SideBar.vue";
@@ -10,9 +10,22 @@ const route = useRoute();
 const assistantStore = useAssistantStore();
 const titleBarRef = ref<InstanceType<typeof TitleBar> | null>(null);
 const isMaximized = ref(false);
+const contentBodyRef = ref<HTMLElement | null>(null);
 
 const pageTitle = computed(() => (route.meta.title as string) || "StudyAgent");
 const isReserved = computed(() => route.meta.reserved === true);
+
+// 切换路由时重置内容区滚动位置，避免调试/设置页共享滚动条位置
+watch(
+  () => route.path,
+  () => {
+    nextTick(() => {
+      if (contentBodyRef.value) {
+        contentBodyRef.value.scrollTop = 0;
+      }
+    });
+  },
+);
 
 /**
  * 生成液态玻璃边缘折射位移图（SDF）
@@ -183,7 +196,7 @@ onMounted(() => {
           </div>
         </header>
 
-        <div class="content-body">
+        <div ref="contentBodyRef" class="content-body">
           <router-view v-slot="{ Component }">
             <transition name="view-fade" mode="out-in">
               <component :is="Component" />

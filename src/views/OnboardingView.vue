@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
+import TimePicker from "@/components/ui/TimePicker.vue";
 import {
   Sparkles,
   ArrowLeft,
@@ -29,6 +30,30 @@ import * as api from "@/api";
 
 const router = useRouter();
 const settingsStore = useSettingsStore();
+
+// ── 回车键进入下一步 ──
+// 在 onboarding 任意步骤按 Enter（非输入框中 Shift+Enter / 表单内 textarea）即可前进
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key !== "Enter") return;
+  // 在 textarea 中或按 Shift 时不触发，允许换行
+  if (e.shiftKey) return;
+  const target = e.target as HTMLElement | null;
+  if (target) {
+    const tag = target.tagName.toLowerCase();
+    if (tag === "textarea") return;
+    // select / button 默认会通过 Enter 触发 click，避免重复
+    if (tag === "select" || tag === "button") return;
+  }
+  e.preventDefault();
+  if (finishing.value) return;
+  if (isFirstStep.value) {
+    next();
+  } else if (isLastStep.value) {
+    finish();
+  } else {
+    next();
+  }
+}
 
 // ── 步骤定义 ──
 interface OnboardingStep {
@@ -310,6 +335,11 @@ function toggleRestDay(day: string) {
 onMounted(async () => {
   if (!settingsStore.settings) await settingsStore.load();
   initFormFromSettings();
+  window.addEventListener("keydown", handleKeydown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleKeydown);
 });
 </script>
 
@@ -602,11 +632,11 @@ onMounted(async () => {
                 <div class="field-row">
                   <div class="field">
                     <label class="field-label">每日开始时间</label>
-                    <input v-model="startTime" type="time" class="field-input" />
+                    <TimePicker v-model="startTime" :minute-step="15" />
                   </div>
                   <div class="field">
                     <label class="field-label">每日结束时间</label>
-                    <input v-model="endTime" type="time" class="field-input" />
+                    <TimePicker v-model="endTime" :minute-step="15" />
                   </div>
                 </div>
                 <div class="field">
