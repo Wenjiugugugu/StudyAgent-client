@@ -14,6 +14,9 @@ dist/
 dist-ssr/
 .target/
 target/
+release/
+out/
+bundle/
 
 # Local env files
 .env
@@ -50,6 +53,17 @@ Cargo.lock
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+
+# Installer / package outputs
+*.exe
+*.msi
+*.msix
+*.dmg
+*.deb
+*.rpm
+*.AppImage
+*.nsis
+*.zip
 
 # Runtime data
 data/
