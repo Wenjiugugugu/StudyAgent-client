@@ -120,6 +120,9 @@ const subjectStartDates = ref<{ math: string; english: string; politics: string;
 const dailyTaskCount = ref(3);
 // 是否允许 AI 安排总结/复习任务（默认 true，关闭时只推进新知识点）
 const enableReviewTasks = ref(true);
+// 开机自启动（首次引导询问，可在设置中更改）
+const autostartEnabled = ref(false);
+const autostartLoading = ref(false);
 // AI
 const providerForm = ref<AIProviderConfig>({
   id: "", name: "我的 Provider", type: "openai", base_url: "", api_key: "", model: "",
@@ -332,9 +335,29 @@ function toggleRestDay(day: string) {
   else restDays.value = [...restDays.value, day];
 }
 
+async function setAutostart(enabled: boolean) {
+  if (autostartLoading.value) return;
+  autostartLoading.value = true;
+  try {
+    await api.setAutostart(enabled);
+    autostartEnabled.value = enabled;
+  } catch (e) {
+    console.warn("[Onboarding] 设置开机启动失败:", e);
+    // 即使失败也不阻塞引导流程，用户可在设置中再开启
+  } finally {
+    autostartLoading.value = false;
+  }
+}
+
 onMounted(async () => {
   if (!settingsStore.settings) await settingsStore.load();
   initFormFromSettings();
+  // 加载当前开机启动状态（用于引导时回显）
+  try {
+    autostartEnabled.value = await api.getAutostart().catch(() => false);
+  } catch {
+    // 非 Tauri 环境忽略
+  }
   window.addEventListener("keydown", handleKeydown);
 });
 
@@ -685,6 +708,14 @@ onUnmounted(() => {
                     </div>
                   </div>
                   <p class="field-hint">例如政治计划 8 月中旬开始，可将政治开始日期设为 2026-08-15，此前不会安排政治任务。</p>
+                </div>
+                <div class="field">
+                  <label class="field-label">开机启动</label>
+                  <div class="option-grid cols-2">
+                    <button type="button" class="option-chip" :class="{ active: autostartEnabled }" @click="setAutostart(true)">开机自启</button>
+                    <button type="button" class="option-chip" :class="{ active: !autostartEnabled }" @click="setAutostart(false)">不自启</button>
+                  </div>
+                  <p class="field-hint">开启后开机时自动启动 StudyAgent，可在「设置 → 通用」中修改。</p>
                 </div>
               </div>
             </template>

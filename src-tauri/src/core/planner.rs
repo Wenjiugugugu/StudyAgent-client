@@ -490,6 +490,8 @@ impl<'a> Planner<'a> {
                     .collect();
 
             prompt.push_str("### 上一周每日明细\n");
+            // 同时收集所有未完成任务（incomplete / partial），用于后续「未完成任务重排」段
+            let mut uncompleted_tasks: Vec<(String, String, String, String)> = Vec::new();
             for plan in prev_week_daily_plans.iter() {
                 let date = &plan.meta.date;
                 let weekday = crate::data::weekday_name(date).unwrap_or_default();
@@ -546,9 +548,52 @@ impl<'a> Planner<'a> {
                     if !review.data.next_steps.is_empty() {
                         prompt.push_str(&format!("  - 后续: {}\n", review.data.next_steps.join("；")));
                     }
+                    // 收集未完成任务（incomplete / partial），格式: (date, subject, title, status)
+                    for tr in &review.task_reviews {
+                        let st = tr.status.as_str();
+                        if st == "incomplete" || st == "partial" {
+                            let subj_label = match tr.subject.as_str() {
+                                "math" => "数学",
+                                "english" => "英语",
+                                "politics" => "政治",
+                                "professional" => "专业课",
+                                _ => "其他",
+                            };
+                            uncompleted_tasks.push((
+                                date.clone(),
+                                subj_label.to_string(),
+                                if tr.title.is_empty() { "(未命名任务)".to_string() } else { tr.title.clone() },
+                                st.to_string(),
+                            ));
+                        }
+                    }
                 }
             }
             prompt.push_str("\n");
+
+            // 上周未完成任务清单 — 要求 AI 在本周重新安排
+            if !uncompleted_tasks.is_empty() {
+                prompt.push_str("## 上周未完成任务（必须在本周重新安排，重要）\n");
+                prompt.push_str("以下是上一周复盘中标记为「未完成」或「部分完成」的任务。");
+                prompt.push_str("这些任务**不得跳过**，必须在本周计划中重新安排，优先放在周一至周三：\n\n");
+                prompt.push_str("| 日期 | 科目 | 任务 | 状态 |\n");
+                prompt.push_str("|------|------|------|------|\n");
+                for (date, subj, title, status) in &uncompleted_tasks {
+                    let status_label = if status == "partial" {
+                        "部分完成（继续推进剩余部分）"
+                    } else {
+                        "未完成（需重新安排）"
+                    };
+                    prompt.push_str(&format!("| {} | {} | {} | {} |\n", date, subj, title, status_label));
+                }
+                prompt.push_str("\n");
+                prompt.push_str("重新安排规则：\n");
+                prompt.push_str("1. 将上述未完成任务作为本周该科目的重点，优先安排在周一至周三；\n");
+                prompt.push_str("2. 若未完成任务涉及某个章节，本周该科目应继续推进该章节，而非跳到后续章节；\n");
+                prompt.push_str("3. 「部分完成」的任务应继续推进剩余部分，避免重复已完成内容；\n");
+                prompt.push_str("4. 在 task_templates 中可适度合并未完成任务与新任务，但确保未完成任务的核心知识点被覆盖；\n");
+                prompt.push_str("5. 不要因为「上周未完成」就降低本周任务量，应在保持总量的基础上重新排程。\n\n");
+            }
         }
 
         // 输出要求
@@ -633,6 +678,7 @@ impl<'a> Planner<'a> {
 11. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
 12. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
 13. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"等字样，每个任务必须推进新的知识点、章节或习题；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
+14. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾解决定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
 "#,
             week_start, week_end, week_end, daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }

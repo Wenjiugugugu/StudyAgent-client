@@ -6,6 +6,7 @@ import { useAssistantStore } from "@/stores/assistant";
 import { useTheme } from "@/composables/useTheme";
 import * as api from "@/api";
 import { isTauri } from "@/api/tauri";
+import { currentMinutesShanghai, timeStringToMinutes, todayString } from "@/utils/date";
 import type { UpdateCheckResult } from "@/types";
 import AppLayout from "@/layouts/AppLayout.vue";
 import Modal from "@/components/ui/Modal.vue";
@@ -162,6 +163,95 @@ function closeChangelog() {
   changelogVisible.value = false;
 }
 
+// ── 每日学习提醒（开始/结束/复盘时间到点通知） ──
+let reminderInterval: number | undefined;
+
+function startReminderChecker() {
+  if (!isTauri()) return;
+  // 每 60 秒检查一次是否到达提醒时间点
+  reminderInterval = window.setInterval(async () => {
+    try {
+      const settings = settingsStore.settings;
+      if (!settings?.study_schedule) return;
+
+      const now = currentMinutesShanghai();
+      const today = todayString();
+      const firedKey = "studyagent.reminders_fired";
+      const firedRaw = localStorage.getItem(firedKey) || "{}";
+      let firedToday: Record<string, string> = {};
+      try {
+        const parsed = JSON.parse(firedRaw);
+        if (parsed && parsed.date === today) firedToday = parsed.times || {};
+      } catch {
+        // 解析失败忽略
+      }
+
+      const reminders = [
+        {
+          key: "start",
+          time: settings.study_schedule.start_time,
+          title: "学习时间开始",
+          body: "查看今日计划并开始今天的学习吧",
+        },
+        {
+          key: "end",
+          time: settings.study_schedule.end_time,
+          title: "学习时间结束",
+          body: "今天辛苦了，记得完成今日复盘",
+        },
+        {
+          key: "review",
+          time: settings.study_schedule.review_reminder_time,
+          title: "复盘提醒",
+          body: "该做今日复盘了，回顾一下今天的学习",
+        },
+      ];
+
+      let changed = false;
+      for (const r of reminders) {
+        if (!r.time || firedToday[r.key]) continue;
+        const target = timeStringToMinutes(r.time);
+        if (target < 0) continue;
+        // 在目标时间前后 2 分钟内触发
+        if (Math.abs(now - target) <= 2) {
+          await showNotification(r.title, r.body);
+          firedToday[r.key] = r.time;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        localStorage.setItem(
+          firedKey,
+          JSON.stringify({ date: today, times: firedToday }),
+        );
+      }
+
+      // 跨天重置已触发记录
+      // 上面读取时已校验 date === today，若 date 不匹配则 firedToday 为空，
+      // 写入时会自动覆盖为新日期的记录
+    } catch (e) {
+      console.warn("[Reminder] 检查提醒失败:", e);
+    }
+  }, 60_000);
+}
+
+async function showNotification(title: string, body: string) {
+  try {
+    const { sendNotification, isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const permission = await requestPermission();
+      granted = permission === "granted";
+    }
+    if (granted) {
+      sendNotification({ title, body });
+    }
+  } catch (e) {
+    console.warn("[Reminder] 发送通知失败:", e);
+  }
+}
+
 onMounted(async () => {
   await settingsStore.load();
 
@@ -176,6 +266,8 @@ onMounted(async () => {
   // 监听关闭事件、检查更新日志、检查更新（仅在 Tauri 环境下）
   await listenCloseEvents();
   await checkChangelog();
+  // 启动每日提醒检查器
+  startReminderChecker();
   // 引导完成后再做启动更新检查，避免引导页被打断
   if (settingsStore.onboardingCompleted) {
     void checkStartupUpdate();
@@ -185,6 +277,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   closeUnlisten?.();
   trayMinimizeUnlisten?.();
+  if (reminderInterval !== undefined) {
+    clearInterval(reminderInterval);
+    reminderInterval = undefined;
+  }
 });
 </script>
 

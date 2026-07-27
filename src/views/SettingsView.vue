@@ -10,6 +10,7 @@ import Button from "@/components/ui/Button.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import TimePicker from "@/components/ui/TimePicker.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
+import MarkdownText from "@/components/MarkdownText.vue";
 import {
   Bot,
   Plus,
@@ -1643,7 +1644,7 @@ onBeforeUnmount(() => {
           <!-- Release notes -->
           <div v-if="updateResult.release_notes" class="release-notes-block">
             <div class="release-notes-head">更新说明</div>
-            <pre class="release-notes-content">{{ updateResult.release_notes }}</pre>
+            <div class="release-notes-content"><MarkdownText :content="updateResult.release_notes" /></div>
           </div>
 
           <!-- 安装包选择 -->
@@ -2651,13 +2652,11 @@ onBeforeUnmount(() => {
 .release-notes-content {
   margin: 0;
   padding: var(--space-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
   color: var(--text-secondary);
-  white-space: pre-wrap;
   word-break: break-word;
-  max-height: 240px;
+  max-height: 320px;
   overflow: auto;
 }
 
