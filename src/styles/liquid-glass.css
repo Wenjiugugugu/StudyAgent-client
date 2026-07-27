@@ -534,7 +534,8 @@
     -6px 0 32px rgba(0, 0, 0, 0.04);
 }
 
-[data-visual-mode="liquid-glass"] .header-icon {
+/* 限定到助手面板范围内，避免误伤其他页面（如历史计划页的 .header-icon 直接套在 SVG 上） */
+[data-visual-mode="liquid-glass"] .assistant-panel .header-icon {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 30%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
   backdrop-filter: none;
@@ -545,7 +546,7 @@
     0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-[data-visual-mode="liquid-glass"] .icon-btn {
+[data-visual-mode="liquid-glass"] .assistant-panel .icon-btn {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 30%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
   backdrop-filter: none;
@@ -557,12 +558,12 @@
   transition: background-color 0.15s ease, transform 0.12s ease;
 }
 
-[data-visual-mode="liquid-glass"] .icon-btn:hover {
+[data-visual-mode="liquid-glass"] .assistant-panel .icon-btn:hover {
   background:
     linear-gradient(180deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.42) 30%, rgba(255,255,255,0.3) 55%, rgba(0,0,0,0.03) 100%);
 }
 
-[data-visual-mode="liquid-glass"] .icon-btn:active {
+[data-visual-mode="liquid-glass"] .assistant-panel .icon-btn:active {
   transform: scale(0.94);
 }
 
@@ -615,8 +616,8 @@
   opacity: 0.9;
 }
 
-[data-visual-mode="liquid-glass"] .header-icon .lucide,
-[data-visual-mode="liquid-glass"] .icon-btn .lucide {
+[data-visual-mode="liquid-glass"] .assistant-panel .header-icon .lucide,
+[data-visual-mode="liquid-glass"] .assistant-panel .icon-btn .lucide {
   stroke-width: 1.5;
 }
 

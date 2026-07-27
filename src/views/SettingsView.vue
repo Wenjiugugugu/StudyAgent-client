@@ -537,7 +537,7 @@ async function handleSave() {
 }
 
 // ── 检查更新 ──
-const APP_VERSION = "0.2.1";
+const APP_VERSION = "0.2.2";
 const checking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 const updateError = ref<string | null>(null);

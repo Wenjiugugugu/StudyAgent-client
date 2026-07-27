@@ -49,11 +49,15 @@ async function performCloseAction(action: "tray" | "quit") {
   }
 
   try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
     if (action === "tray") {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().hide();
     } else {
-      await getCurrentWindow().close();
+      // 注意：不能调用 window.close()，否则会再次触发 CloseRequested 事件，
+      // 后端 close_action 仍为 "ask" 时会 prevent_close 并再次弹窗，形成死循环。
+      // 也不能用 window.destroy()：存在 tray icon 时，销毁窗口后进程仍会驻留。
+      // 改用后端 quit_app 命令，调用 app.exit(0) 真正退出整个应用进程。
+      await api.quitApp();
     }
   } catch (e) {
     console.error("[CloseAction] 执行窗口动作失败:", e);
@@ -119,6 +123,17 @@ const changelogContent = ref("");
 
 /** 内置的版本更新日志（按版本号映射） */
 const VERSION_CHANGELOGS: Record<string, string> = {
+  "0.2.2": [
+    "## 0.2.2 更新内容",
+    "",
+    "### 修复",
+    "- 修复关闭窗口选择「退出应用」时反复弹出询问弹窗的问题",
+    "- 修复首页在学习开始时间前仍展示今日计划的问题",
+    "- 修复历史计划完成率计算错误：只完成一项却显示 100% 绿勾",
+    "- 修复历史日期计划无法读取复盘中的任务完成状态",
+    "- 完成率现在优先从结构化复盘（task_reviews）聚合计算",
+    "- 历史日期计划合并状态时优先读取新版 task_reviews",
+  ].join("\n"),
   "0.2.1": [
     "## 0.2.1 更新内容",
     "",

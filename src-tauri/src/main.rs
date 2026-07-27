@@ -210,6 +210,7 @@ fn main() {
             // 通用：关闭动作 / 开机启动 / 应用版本
             get_close_action,
             set_close_action,
+            quit_app,
             get_autostart,
             set_autostart,
             get_app_version,

@@ -273,24 +273,66 @@ pub async fn list_plan_summaries(
     Ok(summaries)
 }
 
-/// 计算 Priority A 完成率
+/// 计算完成率
+///
+/// 优先从新版 `task_reviews` 聚合（结构化复盘），回退到旧版 `data.completion`。
 ///
 /// 规则：
-/// - 仅统计 A 级任务（核心任务）
-/// - completion_rate = priority_a_done / priority_a_total * 100
-/// - 若无 A 级任务且有 review，视为 100%（无必做项即视为完成）
-/// - completed_tasks 返回 A 级完成数
+/// - 优先统计 A 级任务完成率；若无 A 级任务，则统计全部任务完成率
+/// - completion_rate = done / total * 100
+/// - completed_tasks 返回已完成任务数（所有级别）
 fn compute_priority_a_completion(
     review: &Option<crate::data::records::ReviewFile>,
 ) -> (i32, f64) {
     match review {
         Some(r) => {
+            // 新版：优先从 task_reviews 聚合
+            if !r.task_reviews.is_empty() {
+                let mut a_total = 0i32;
+                let mut a_done = 0i32;
+                let mut all_total = 0i32;
+                let mut all_done = 0i32;
+
+                for tr in &r.task_reviews {
+                    all_total += 1;
+                    let is_done = tr.status == "completed";
+                    if is_done {
+                        all_done += 1;
+                    }
+                    // 优先用 task_reviews 自带的 priority 字段，回退到空字符串（视为非 A）
+                    if tr.priority == "A" {
+                        a_total += 1;
+                        if is_done {
+                            a_done += 1;
+                        }
+                    }
+                }
+
+                let completed = all_done;
+                let rate = if a_total > 0 {
+                    (a_done as f64 / a_total as f64) * 100.0
+                } else if all_total > 0 {
+                    // 无 A 级任务时，用全部任务完成率
+                    (all_done as f64 / all_total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                return (completed, rate);
+            }
+
+            // 旧版：从 data.completion 读取
             let a_total = r.data.completion.priority_a_total;
             let a_done = r.data.completion.priority_a_done;
             let rate = if a_total > 0 {
                 (a_done as f64 / a_total as f64) * 100.0
+            } else if r.data.completion.priority_b_total > 0 {
+                // 无 A 级任务，用 B 级完成率
+                let b_total = r.data.completion.priority_b_total;
+                let b_done = r.data.completion.priority_b_done;
+                (b_done as f64 / b_total as f64) * 100.0
             } else {
-                100.0 // 无 A 级任务，视为完成
+                // 无任何任务且有 review（旧版 AI 生成），视为完成
+                100.0
             };
             (a_done, rate)
         }
@@ -1960,6 +2002,19 @@ pub async fn set_close_action(
     settings.close_action = normalized.clone();
     save_settings_file(&data_dir, &settings)?;
     log::info!("关闭动作已更新为: {}", normalized);
+    Ok(())
+}
+
+/// 立即退出整个应用进程（包括销毁托盘图标）
+///
+/// 用于前端「关闭窗口询问弹窗」中选择"退出应用"时调用。
+/// 不能仅调用 `window.destroy()`：存在 tray icon 时，销毁窗口后进程仍会驻留。
+///
+/// 前端调用: `invoke('quit_app')`
+#[tauri::command]
+pub async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("收到 quit_app 命令，退出整个应用进程");
+    app.exit(0);
     Ok(())
 }
 

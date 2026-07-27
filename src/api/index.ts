@@ -479,6 +479,16 @@ export async function setCloseAction(action: CloseAction): Promise<void> {
 }
 
 /**
+ * 立即退出整个应用进程（包括托盘图标）
+ *
+ * 用于「关闭窗口询问弹窗」中选择"退出应用"时调用。
+ * 不能仅调用 `window.destroy()`：存在 tray icon 时，销毁窗口后进程仍会驻留。
+ */
+export async function quitApp(): Promise<void> {
+  return invokeDirect<void>("quit_app");
+}
+
+/**
  * 查询开机启动是否启用
  */
 export async function getAutostart(): Promise<boolean> {

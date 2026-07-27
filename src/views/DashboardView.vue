@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useSettingsStore } from "@/stores/settings";
 import { useTodayStore } from "@/stores/today";
-import { todayString, currentHourShanghai, daysBetween } from "@/utils/date";
+import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -78,6 +78,25 @@ const focusTask = computed<PlanTask | null>(() => {
   return active ?? tasks.find((t) => t.status !== "done") ?? tasks[0];
 });
 
+// ── 每日开始时间前不展示今日计划（与 TodayView 口径一致） ──
+const nowMinutes = ref(currentMinutesShanghai());
+let nowTimer: number | undefined;
+
+const dailyStartMinutes = computed(() => {
+  const t = settingsStore.settings?.study_schedule?.start_time;
+  if (!t) return -1;
+  return timeStringToMinutes(t);
+});
+
+const isBeforeDailyStart = computed(() => {
+  if (dailyStartMinutes.value < 0) return false;
+  return nowMinutes.value < dailyStartMinutes.value;
+});
+
+const dailyStartTimeLabel = computed(
+  () => settingsStore.settings?.study_schedule?.start_time ?? "09:00",
+);
+
 async function generateTodayPlan() {
   await todayStore.generate();
 }
@@ -110,6 +129,13 @@ const weekPercent = computed(() => {
   return Math.round(sum / reviewed.length);
 });
 
+// 整周计划完成进度：已学习天数 / 计划学习天数（推进度）
+const weekPlanProgress = computed(() => {
+  const planned = plannedDaysPerWeek.value;
+  if (planned <= 0) return 0;
+  return Math.min(100, Math.round((studiedDays.value / planned) * 100));
+});
+
 const remainingHours = computed(() => {
   const wp = summary.value?.week_progress;
   if (!wp) return 0;
@@ -129,7 +155,8 @@ const expectedRate = computed(() =>
   Math.round(((daysElapsed.value + 1) / 7) * 100)
 );
 
-const isOnTrack = computed(() => weekPercent.value >= expectedRate.value * 0.9);
+// 进度状态基于整周计划完成进度（推进度）与时间进度比较
+const isOnTrack = computed(() => weekPlanProgress.value >= expectedRate.value * 0.9);
 const onTrackLabel = computed(() => (isOnTrack.value ? "按计划" : "需加快"));
 
 // 跳转到周计划页
@@ -211,6 +238,17 @@ function refresh() {
 onMounted(() => {
   dashboardStore.loadSummary().then(loadWeekSummaries);
   todayStore.loadToday();
+  // 每分钟刷新当前时间，确保到点后自动展示今日计划
+  nowTimer = window.setInterval(() => {
+    nowMinutes.value = currentMinutesShanghai();
+  }, 60_000);
+});
+
+onBeforeUnmount(() => {
+  if (nowTimer !== undefined) {
+    clearInterval(nowTimer);
+    nowTimer = undefined;
+  }
 });
 </script>
 
@@ -265,13 +303,26 @@ onMounted(() => {
             <Sparkles :size="18" class="focus-icon" />
             <h2 class="focus-heading">今日焦点</h2>
           </div>
-          <Button v-if="focusTask" variant="ghost" size="sm" @click="goToday">
+          <Button v-if="focusTask && !isBeforeDailyStart" variant="ghost" size="sm" @click="goToday">
             查看详情
             <ChevronRight :size="14" />
           </Button>
         </div>
 
-        <div v-if="focusTask" class="focus-body" @click="goToday">
+        <!-- 每日开始时间前：展示提示，不展示计划 -->
+        <div v-if="isBeforeDailyStart" class="focus-before-start">
+          <div class="focus-empty-icon">
+            <Clock :size="22" />
+          </div>
+          <div class="focus-empty-text">
+            <span class="focus-empty-title">今天的学习时间还没开始</span>
+            <span class="focus-empty-desc">
+              每日开始时间为 {{ dailyStartTimeLabel }}，到点后这里会展示今日学习计划。
+            </span>
+          </div>
+        </div>
+
+        <div v-else-if="focusTask" class="focus-body" @click="goToday">
           <div class="focus-meta">
             <div class="focus-badges">
               <Badge :variant="subjectBadgeVariant(focusTask.subject)" size="sm">
@@ -331,9 +382,16 @@ onMounted(() => {
         </div>
 
         <div class="week-stats">
-          <div class="week-rate">
-            <span class="rate-number">{{ weekPercent }}%</span>
-            <span class="rate-label">完成率</span>
+          <div class="week-rates">
+            <div class="week-rate">
+              <span class="rate-number">{{ weekPlanProgress }}%</span>
+              <span class="rate-label">整周进度</span>
+            </div>
+            <div class="rate-divider" />
+            <div class="week-rate">
+              <span class="rate-number">{{ weekPercent }}%</span>
+              <span class="rate-label">平均完成率</span>
+            </div>
           </div>
           <div class="week-details">
             <div class="detail-item">
@@ -354,9 +412,9 @@ onMounted(() => {
         </div>
 
         <ProgressBar
-          :value="weekPercent"
+          :value="weekPlanProgress"
           :max="100"
-          :variant="weekPercent >= 100 ? 'success' : 'default'"
+          :variant="weekPlanProgress >= 100 ? 'success' : 'default'"
           size="md"
         />
 
@@ -636,6 +694,19 @@ onMounted(() => {
   width: 100%;
 }
 
+/* 每日开始时间前的提示块（非交互） */
+.focus-before-start {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  text-align: left;
+  width: 100%;
+}
+
 .focus-empty:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-subtle);
@@ -700,10 +771,23 @@ onMounted(() => {
   gap: var(--space-6);
 }
 
+.week-rates {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
 .week-rate {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+
+.rate-divider {
+  width: 1px;
+  height: 32px;
+  background: var(--divider-color);
   flex-shrink: 0;
 }
 
