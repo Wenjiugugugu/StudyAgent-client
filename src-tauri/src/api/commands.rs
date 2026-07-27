@@ -1484,7 +1484,7 @@ pub struct DownloadProgress {
 
 /// GitHub API 端点：获取最新 release
 const GITHUB_RELEASES_LATEST_URL: &str =
-    "https://api.github.com/repos/Wenjiugugugu/StudyAgent/releases/latest";
+    "https://api.github.com/repos/Wenjiugugugu/StudyAgent-client/releases/latest";
 
 /// 推测资源类型
 fn detect_asset_kind(name: &str) -> String {
