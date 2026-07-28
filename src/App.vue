@@ -97,6 +97,17 @@ const changelogContent = ref("");
 
 /** 内置的版本更新日志（按版本号映射） */
 const VERSION_CHANGELOGS: Record<string, string> = {
+  "0.2.4": [
+    "## 0.2.4 更新内容",
+    "",
+    "### 修复",
+    "- 修复今日计划一打开就出现任务已完成的问题",
+    "- DailyScheduler 生成日计划时无条件重置 current_task，所有任务状态初始为 Pending",
+    "- 防止旧版本遗留的错位 task_id / done 状态被带到新一天计划",
+    "",
+    "### 优化",
+    "- 首页发现新版本提示从工作台 inline 卡片改为 Modal 弹窗",
+  ].join("\n"),
   "0.2.2": [
     "## 0.2.2 更新内容",
     "",

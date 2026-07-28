@@ -43,7 +43,7 @@ import type {
 } from "@/types";
 
 // ── 系统信息 ──
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.2.4";
 const TAURI_VERSION = "2.x";
 const sysInfo = computed(() => ({
   appVersion: APP_VERSION,
