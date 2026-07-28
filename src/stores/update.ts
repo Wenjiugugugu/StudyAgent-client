@@ -23,6 +23,9 @@ export const useUpdateStore = defineStore("update", () => {
   let startupChecked = false;
   let progressUnlisten: (() => void) | null = null;
 
+  // ── 首页更新弹窗 ──
+  const showUpdateModal = ref(false);
+
   const hasUpdate = computed(() => updateResult.value?.has_update ?? false);
 
   // 当前选中的安装包（默认 nsis）
@@ -88,13 +91,16 @@ export const useUpdateStore = defineStore("update", () => {
     }
   }
 
-  /** 启动时检查更新（仅一次） */
+  /** 启动时检查更新（仅一次），发现新版本时弹出首页弹窗 */
   async function checkOnStartup() {
     if (startupChecked) return;
     startupChecked = true;
     try {
       await ensureProgressListener();
       await checkUpdate();
+      if (hasUpdate.value) {
+        showUpdateModal.value = true;
+      }
     } catch (e) {
       console.warn("[Update] 启动检查更新失败:", e);
     }
@@ -143,9 +149,9 @@ export const useUpdateStore = defineStore("update", () => {
     selectedAsset.value = null;
   }
 
-  /** 关闭首页 inline 更新卡片（不重置下载状态） */
+  /** 关闭首页更新弹窗（不重置下载状态） */
   function dismissUpdate() {
-    updateResult.value = null;
+    showUpdateModal.value = false;
   }
 
   return {
@@ -159,6 +165,7 @@ export const useUpdateStore = defineStore("update", () => {
     selectedAsset,
     installing,
     hasUpdate,
+    showUpdateModal,
     preferredAsset,
     checkUpdate,
     checkOnStartup,

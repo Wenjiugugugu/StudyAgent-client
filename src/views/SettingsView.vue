@@ -537,8 +537,8 @@ async function handleSave() {
   }
 }
 
-// ── 检查更新（使用共享 update store，与首页 inline 卡片状态同步） ──
-const APP_VERSION = "0.2.3";
+// ── 检查更新（使用共享 update store，与首页更新弹窗状态同步） ──
+const APP_VERSION = "0.2.4";
 
 // 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
 const checking = computed(() => updateStore.checking);

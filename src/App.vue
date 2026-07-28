@@ -84,7 +84,7 @@ async function listenCloseEvents() {
   }
 }
 
-// ── 启动更新检查（结果存入 updateStore，由首页 inline 展示） ──
+// ── 启动更新检查（结果存入 updateStore，由首页弹窗展示） ──
 async function checkStartupUpdate() {
   if (!isTauri()) return;
   await updateStore.checkOnStartup();

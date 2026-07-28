@@ -13,6 +13,7 @@ import Button from "@/components/ui/Button.vue";
 import ProgressBar from "@/components/ui/ProgressBar.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import Modal from "@/components/ui/Modal.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import {
   Calendar,
@@ -28,7 +29,6 @@ import {
   Download,
   HardDriveDownload,
   Package,
-  X,
 } from "lucide-vue-next";
 import type { DashboardSummary, PlanTask, PlanSummary, SubjectKey } from "@/types";
 
@@ -284,50 +284,43 @@ onBeforeUnmount(() => {
 
     <!-- Content -->
     <template v-else>
-      <!-- 发现新版本 inline 卡片 -->
-      <Card
-        v-if="updateStore.hasUpdate && updateStore.updateResult"
-        padding="md"
-        class="card update-banner-card"
-        surface="1"
+      <!-- 发现新版本弹窗 -->
+      <Modal
+        :open="updateStore.showUpdateModal"
+        title="发现新版本"
+        :close-on-overlay="false"
+        :width="520"
+        @close="updateStore.dismissUpdate()"
       >
-        <div class="update-banner-header">
-          <div class="update-banner-title">
-            <Download :size="16" class="update-banner-icon" />
-            <span>发现新版本</span>
-            <span class="update-banner-version">v{{ updateStore.updateResult.latest_version }}</span>
-          </div>
-          <button class="update-banner-close" @click="updateStore.dismissUpdate()">
-            <X :size="14" />
-          </button>
-        </div>
+        <div v-if="updateStore.updateResult" class="update-modal-body">
+          <p class="update-modal-version">
+            新版本：<strong>v{{ updateStore.updateResult.latest_version }}</strong>
+            <span v-if="updateStore.updateResult.release_name" class="update-modal-name">
+              — {{ updateStore.updateResult.release_name }}
+            </span>
+          </p>
 
-        <p v-if="updateStore.updateResult.release_name" class="update-banner-sub">
-          {{ updateStore.updateResult.release_name }}
-        </p>
-
-        <!-- Release notes -->
-        <div v-if="updateStore.updateResult.release_notes" class="update-banner-notes">
-          <MarkdownText :content="updateStore.updateResult.release_notes" />
-        </div>
-
-        <!-- 安装包选择 + 下载 -->
-        <div class="update-banner-actions">
-          <div v-if="updateStore.updateResult.assets.length > 1" class="update-banner-assets">
-            <button
-              v-for="asset in updateStore.updateResult.assets"
-              :key="asset.download_url"
-              class="update-asset-btn"
-              :class="{ active: updateStore.selectedAsset?.download_url === asset.download_url }"
-              @click="updateStore.selectedAsset = asset"
-            >
-              <Package :size="13" />
-              <span>{{ updateStore.assetLabel(asset.kind) }}</span>
-              <span class="update-asset-size">{{ updateStore.formatSize(asset.size) }}</span>
-            </button>
+          <!-- Release notes -->
+          <div v-if="updateStore.updateResult.release_notes" class="update-modal-notes">
+            <MarkdownText :content="updateStore.updateResult.release_notes" />
           </div>
 
-          <div class="update-banner-buttons">
+          <!-- 安装包选择 + 下载 -->
+          <div class="update-modal-actions">
+            <div v-if="updateStore.updateResult.assets.length > 1" class="update-modal-assets">
+              <button
+                v-for="asset in updateStore.updateResult.assets"
+                :key="asset.download_url"
+                class="update-asset-btn"
+                :class="{ active: updateStore.selectedAsset?.download_url === asset.download_url }"
+                @click="updateStore.selectedAsset = asset"
+              >
+                <Package :size="13" />
+                <span>{{ updateStore.assetLabel(asset.kind) }}</span>
+                <span class="update-asset-size">{{ updateStore.formatSize(asset.size) }}</span>
+              </button>
+            </div>
+
             <!-- 下载进度条 -->
             <div
               v-if="updateStore.downloadState === 'downloading' && updateStore.downloadProgress"
@@ -342,56 +335,58 @@ onBeforeUnmount(() => {
               </span>
             </div>
 
-            <Button
-              v-if="updateStore.downloadState === 'idle' || updateStore.downloadState === 'error'"
-              variant="primary"
-              size="sm"
-              :disabled="!updateStore.selectedAsset"
-              @click="updateStore.handleDownload()"
-            >
-              <Download :size="13" />
-              <span>下载安装包</span>
-            </Button>
-
-            <Button
-              v-if="updateStore.downloadState === 'downloaded'"
-              variant="primary"
-              size="sm"
-              :loading="updateStore.installing"
-              @click="updateStore.handleInstall()"
-            >
-              <HardDriveDownload :size="13" />
-              <span>立即安装</span>
-            </Button>
-
-            <Button
-              v-if="updateStore.downloadState === 'downloading'"
-              variant="secondary"
-              size="sm"
-              disabled
-            >
-              <span>下载中…</span>
-            </Button>
-
-            <Button
-              v-if="updateStore.downloadState === 'installing'"
-              variant="secondary"
-              size="sm"
-              disabled
-            >
-              <span>安装中…</span>
-            </Button>
-
-            <Button variant="ghost" size="sm" @click="router.push('/settings#settings-update')">
-              查看详情
-            </Button>
+            <p v-if="updateStore.downloadError" class="update-download-error">
+              {{ updateStore.downloadError }}
+            </p>
           </div>
-
-          <p v-if="updateStore.downloadError" class="update-download-error">
-            {{ updateStore.downloadError }}
-          </p>
         </div>
-      </Card>
+
+        <template #footer>
+          <Button variant="ghost" size="sm" @click="router.push('/settings#settings-update')">
+            查看详情
+          </Button>
+
+          <Button
+            v-if="updateStore.downloadState === 'idle' || updateStore.downloadState === 'error'"
+            variant="primary"
+            size="sm"
+            :disabled="!updateStore.selectedAsset"
+            @click="updateStore.handleDownload()"
+          >
+            <Download :size="13" />
+            <span>下载安装包</span>
+          </Button>
+
+          <Button
+            v-if="updateStore.downloadState === 'downloaded'"
+            variant="primary"
+            size="sm"
+            :loading="updateStore.installing"
+            @click="updateStore.handleInstall()"
+          >
+            <HardDriveDownload :size="13" />
+            <span>立即安装</span>
+          </Button>
+
+          <Button
+            v-if="updateStore.downloadState === 'downloading'"
+            variant="secondary"
+            size="sm"
+            disabled
+          >
+            <span>下载中…</span>
+          </Button>
+
+          <Button
+            v-if="updateStore.downloadState === 'installing'"
+            variant="secondary"
+            size="sm"
+            disabled
+          >
+            <span>安装中…</span>
+          </Button>
+        </template>
+      </Modal>
 
       <!-- Hero -->
       <header class="hero">
@@ -613,82 +608,45 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-/* ── 发现新版本 inline 卡片 ── */
-.update-banner-card {
-  border: 1px solid var(--accent);
-  background: var(--accent-subtle);
-}
-
-.update-banner-header {
+/* ── 发现新版本弹窗 ── */
+.update-modal-body {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
-.update-banner-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-
-.update-banner-icon {
-  color: var(--accent);
-}
-
-.update-banner-version {
-  font-family: var(--font-mono);
-  color: var(--accent);
-  font-weight: var(--font-semibold);
-}
-
-.update-banner-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  border-radius: var(--radius-xs);
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.update-banner-close:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.update-banner-sub {
-  margin: var(--space-1) 0 0;
+.update-modal-version {
+  margin: 0;
   font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
-.update-banner-notes {
-  margin-top: var(--space-3);
+.update-modal-version strong {
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+
+.update-modal-name {
+  color: var(--text-secondary);
+}
+
+.update-modal-notes {
   padding: var(--space-3);
   background: var(--bg-elevated);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
   font-size: var(--text-sm);
-  max-height: 200px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
-.update-banner-actions {
-  margin-top: var(--space-3);
+.update-modal-actions {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-.update-banner-assets {
+.update-modal-assets {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -722,13 +680,6 @@ onBeforeUnmount(() => {
 .update-asset-size {
   color: var(--text-tertiary);
   font-size: 10px;
-}
-
-.update-banner-buttons {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
 }
 
 .update-download-progress {
