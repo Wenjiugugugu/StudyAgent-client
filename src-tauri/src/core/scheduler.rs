@@ -149,7 +149,16 @@ impl DailyScheduler {
         // 同步初始化 State.current_task
         // 仅当 state 中日期不匹配，或任务列表为空时，才用新 plan 覆盖
         // 已存在的任务状态（如用户已开始/完成的任务）不会被清空
-        let need_init = state.current_task.date != date || state.current_task.tasks.is_empty();
+        // 额外校验：若 state 中 task_id 日期前缀与 date 不一致（state 被污染），强制重置
+        let state_polluted = state.current_task.tasks.iter().any(|t| {
+            t.task_id
+                .as_ref()
+                .map(|id| id.len() >= 10 && &id[..10] != date)
+                .unwrap_or(false)
+        });
+        let need_init = state.current_task.date != date
+            || state.current_task.tasks.is_empty()
+            || state_polluted;
         if need_init && !tasks.is_empty() {
             state.current_task = CurrentTask {
                 date: date.to_string(),

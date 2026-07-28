@@ -85,9 +85,23 @@ pub async fn update_task_status(
     let mut study_state = crate::data::state::read_state(&data_dir)?;
 
     // 确认日期匹配
+    // 若 state.current_task.date 与 task_id 解析出的 date 不一致，说明 state 可能被污染或跨日未重置
+    // 此时不能仅改 date（会保留错位的 task_id 与任务内容），需整体清空 current_task
     if study_state.current_task.date != date {
-        log::warn!("任务日期不匹配...");
+        log::warn!(
+            "任务日期不匹配: state.date={}, task_id.date={}。重置 current_task 以避免状态污染",
+            study_state.current_task.date,
+            date
+        );
         study_state.current_task.date = date.clone();
+        // 清空错位任务：只保留 task_id 日期前缀与 date 一致的任务，其余丢弃
+        study_state
+            .current_task
+            .tasks
+            .retain(|t| match &t.task_id {
+                Some(id) => id.len() >= 10 && &id[..10] == date,
+                None => false, // 旧任务无 task_id 且日期不匹配，丢弃
+            });
     }
 
     // 找到对应任务的 subject（用于更新科目进度）

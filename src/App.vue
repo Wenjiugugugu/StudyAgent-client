@@ -3,18 +3,17 @@ import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import { useAssistantStore } from "@/stores/assistant";
+import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
 import * as api from "@/api";
 import { isTauri } from "@/api/tauri";
 import { currentMinutesShanghai, timeStringToMinutes, todayString } from "@/utils/date";
-import type { UpdateCheckResult } from "@/types";
 import AppLayout from "@/layouts/AppLayout.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import {
   Bell,
-  Download,
   Sparkles,
   Power,
   Minimize2,
@@ -24,6 +23,7 @@ const route = useRoute();
 const router = useRouter();
 const settingsStore = useSettingsStore();
 const assistantStore = useAssistantStore();
+const updateStore = useUpdateStore();
 useTheme();
 
 // 独立路由（如引导页）不套用 AppLayout，全屏渲染
@@ -84,36 +84,10 @@ async function listenCloseEvents() {
   }
 }
 
-// ── 启动更新检查（dashboard popup） ──
-const updatePopupVisible = ref(false);
-const updateInfo = ref<UpdateCheckResult | null>(null);
-const updateLoading = ref(false);
-let startupUpdateChecked = false;
-
+// ── 启动更新检查（结果存入 updateStore，由首页 inline 展示） ──
 async function checkStartupUpdate() {
-  if (startupUpdateChecked || !isTauri()) return;
-  startupUpdateChecked = true;
-  updateLoading.value = true;
-  try {
-    const result = await api.checkForUpdates();
-    if (result.has_update) {
-      updateInfo.value = result;
-      updatePopupVisible.value = true;
-    }
-  } catch (e) {
-    console.warn("[Update] 启动检查更新失败:", e);
-  } finally {
-    updateLoading.value = false;
-  }
-}
-
-function closeUpdatePopup() {
-  updatePopupVisible.value = false;
-}
-
-function goToSettingsUpdate() {
-  updatePopupVisible.value = false;
-  router.push("/settings#settings-update");
+  if (!isTauri()) return;
+  await updateStore.checkOnStartup();
 }
 
 // ── 更新日志弹窗（首次启动新版本时显示） ──
@@ -369,36 +343,7 @@ onBeforeUnmount(() => {
     </template>
   </Modal>
 
-  <!-- 启动时发现新版本弹窗 -->
-  <Modal
-    :open="updatePopupVisible"
-    :title="'发现新版本'"
-    :close-on-overlay="true"
-    :close-on-esc="true"
-    :show-close="true"
-    :width="460"
-    @close="closeUpdatePopup"
-  >
-    <div v-if="updateInfo" class="update-popup-body">
-      <div class="update-banner">
-        <Bell :size="20" />
-      </div>
-      <p class="update-headline">
-        <span class="update-version">v{{ updateInfo.latest_version }}</span>
-        已发布，你正在使用
-        <span class="update-current">v{{ updateInfo.current_version }}</span>
-      </p>
-      <p v-if="updateInfo.release_name" class="update-sub">{{ updateInfo.release_name }}</p>
-      <p class="update-tip">可在设置页面查看完整更新说明并下载安装包。</p>
-    </div>
-    <template #footer>
-      <Button variant="ghost" size="sm" @click="closeUpdatePopup">稍后再说</Button>
-      <Button variant="primary" size="sm" @click="goToSettingsUpdate">
-        <Download :size="14" />
-        <span>前往更新</span>
-      </Button>
-    </template>
-  </Modal>
+  <!-- 启动时发现新版本：已改为首页 inline 展示，不再弹窗 -->
 </template>
 
 <style scoped>
@@ -527,54 +472,4 @@ onBeforeUnmount(() => {
   margin: 0 auto var(--space-1);
 }
 
-/* ── 启动更新检查弹窗 ── */
-.update-popup-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: center;
-  text-align: center;
-}
-
-.update-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--accent-subtle);
-  color: var(--accent);
-  margin-bottom: var(--space-1);
-}
-
-.update-headline {
-  margin: 0;
-  font-size: var(--text-base);
-  color: var(--text-primary);
-  line-height: var(--leading-relaxed);
-}
-
-.update-version {
-  font-family: var(--font-mono);
-  font-weight: var(--font-semibold);
-  color: var(--accent);
-}
-
-.update-current {
-  font-family: var(--font-mono);
-  color: var(--text-tertiary);
-}
-
-.update-sub {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-
-.update-tip {
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-}
 </style>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed, watch } from "vue";
+import { useRoute } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
+import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
 import * as api from "@/api";
 import type { StudyState, SubjectState } from "@/types/state";
@@ -53,12 +55,11 @@ import type {
   MCPServerType,
   ThemeMode,
   VisualMode,
-  UpdateCheckResult,
-  UpdateAsset,
-  DownloadProgress,
 } from "@/types";
 
 const settingsStore = useSettingsStore();
+const updateStore = useUpdateStore();
+const route = useRoute();
 
 const weekdayOptions = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -536,122 +537,31 @@ async function handleSave() {
   }
 }
 
-// ── 检查更新 ──
-const APP_VERSION = "0.2.2";
-const checking = ref(false);
-const updateResult = ref<UpdateCheckResult | null>(null);
-const updateError = ref<string | null>(null);
+// ── 检查更新（使用共享 update store，与首页 inline 卡片状态同步） ──
+const APP_VERSION = "0.2.3";
 
-// 下载状态
-type DownloadState = "idle" | "downloading" | "downloaded" | "installing" | "error";
-const downloadState = ref<DownloadState>("idle");
-const downloadProgress = ref<DownloadProgress | null>(null);
-const downloadedFilePath = ref<string | null>(null);
-const downloadError = ref<string | null>(null);
-const selectedAsset = ref<UpdateAsset | null>(null);
-const installing = ref(false);
-const unlistenProgress = ref<(() => void) | null>(null);
-
-// 当前选中的安装包（默认 nsis）
-const preferredAsset = computed(() => {
-  const assets = updateResult.value?.assets ?? [];
-  if (assets.length === 0) return null;
-  // 优先级：nsis > exe > msi > unknown
-  return (
-    assets.find((a) => a.kind === "nsis") ??
-    assets.find((a) => a.kind === "exe") ??
-    assets.find((a) => a.kind === "msi") ??
-    assets[0]
-  );
+// 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
+const checking = computed(() => updateStore.checking);
+const updateResult = computed(() => updateStore.updateResult);
+const updateError = computed(() => updateStore.updateError);
+const downloadState = computed(() => updateStore.downloadState);
+const downloadProgress = computed(() => updateStore.downloadProgress);
+const downloadedFilePath = computed(() => updateStore.downloadedFilePath);
+const downloadError = computed(() => updateStore.downloadError);
+const selectedAsset = computed({
+  get: () => updateStore.selectedAsset,
+  set: (v) => { updateStore.selectedAsset = v; },
 });
+const installing = computed(() => updateStore.installing);
+const preferredAsset = computed(() => updateStore.preferredAsset);
 
-// 安装包类型展示名
-function assetLabel(kind: string): string {
-  switch (kind) {
-    case "nsis":
-      return "NSIS 安装包（推荐）";
-    case "msi":
-      return "MSI 安装包";
-    case "exe":
-      return "可执行文件";
-    default:
-      return "安装包";
-  }
-}
-
-// 文件大小格式化
-function formatSize(bytes: number): string {
-  if (!bytes) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-async function handleCheckUpdate() {
-  if (checking.value) return;
-  checking.value = true;
-  updateError.value = null;
-  updateResult.value = null;
-  // 重置下载状态
-  downloadState.value = "idle";
-  downloadProgress.value = null;
-  downloadedFilePath.value = null;
-  downloadError.value = null;
-  selectedAsset.value = null;
-
-  try {
-    const result = await api.checkForUpdates();
-    updateResult.value = result;
-    selectedAsset.value = preferredAsset.value;
-  } catch (e) {
-    updateError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    checking.value = false;
-  }
-}
-
-async function handleDownload() {
-  const asset = selectedAsset.value;
-  if (!asset) return;
-
-  downloadState.value = "downloading";
-  downloadProgress.value = null;
-  downloadError.value = null;
-  downloadedFilePath.value = null;
-
-  try {
-    const path = await api.downloadUpdate(asset.download_url, asset.name);
-    downloadedFilePath.value = path;
-    downloadState.value = "downloaded";
-  } catch (e) {
-    downloadError.value = e instanceof Error ? e.message : String(e);
-    downloadState.value = "error";
-  }
-}
-
-async function handleInstall() {
-  if (!downloadedFilePath.value) return;
-  installing.value = true;
-  downloadState.value = "installing";
-  try {
-    await api.installUpdate(downloadedFilePath.value);
-    // 应用将退出，下方代码不会执行
-  } catch (e) {
-    downloadError.value = e instanceof Error ? e.message : String(e);
-    downloadState.value = "error";
-    installing.value = false;
-  }
-}
-
-function resetUpdate() {
-  updateResult.value = null;
-  updateError.value = null;
-  downloadState.value = "idle";
-  downloadProgress.value = null;
-  downloadedFilePath.value = null;
-  downloadError.value = null;
-  selectedAsset.value = null;
-}
+// 代理方法
+const assetLabel = (kind: string) => updateStore.assetLabel(kind);
+const formatSize = (bytes: number) => updateStore.formatSize(bytes);
+const handleCheckUpdate = () => updateStore.checkUpdate();
+const handleDownload = () => updateStore.handleDownload();
+const handleInstall = () => updateStore.handleInstall();
+const resetUpdate = () => updateStore.resetUpdate();
 
 // ── 通用设置：开机启动 + 关闭动作 ──
 const autostartEnabled = ref(false);
@@ -764,24 +674,20 @@ onMounted(async () => {
   initSectionObserver();
   void loadGeneralSettings();
 
-  // 订阅下载进度事件
-  api.onDownloadProgress((p) => {
-    downloadProgress.value = p;
-  }).then((unlisten) => {
-    unlistenProgress.value = unlisten;
-  });
-
-  // 如果 URL hash 指向 update 区块，自动触发检查
+  // 如果 URL hash 指向 update 区块，自动滚动到"检查更新"区域并触发检查
   if (window.location.hash === "#settings-update") {
     setTimeout(() => {
+      scrollToSection("update");
       handleCheckUpdate();
     }, 200);
   }
 });
 
-onBeforeUnmount(() => {
-  if (unlistenProgress.value) {
-    unlistenProgress.value();
+// 监听 hash 变化（已在 SettingsView 内时再次点击侧边栏版本号）
+watch(() => route.hash, (newHash) => {
+  if (newHash === "#settings-update") {
+    scrollToSection("update");
+    handleCheckUpdate();
   }
 });</script>
 

@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useSettingsStore } from "@/stores/settings";
 import { useTodayStore } from "@/stores/today";
+import { useUpdateStore } from "@/stores/update";
 import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
@@ -12,6 +13,7 @@ import Button from "@/components/ui/Button.vue";
 import ProgressBar from "@/components/ui/ProgressBar.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import MarkdownText from "@/components/MarkdownText.vue";
 import {
   Calendar,
   Sparkles,
@@ -23,11 +25,16 @@ import {
   Flag,
   Zap,
   Award,
+  Download,
+  HardDriveDownload,
+  Package,
+  X,
 } from "lucide-vue-next";
 import type { DashboardSummary, PlanTask, PlanSummary, SubjectKey } from "@/types";
 
 const router = useRouter();
 const dashboardStore = useDashboardStore();
+const updateStore = useUpdateStore();
 const settingsStore = useSettingsStore();
 const todayStore = useTodayStore();
 
@@ -277,6 +284,115 @@ onBeforeUnmount(() => {
 
     <!-- Content -->
     <template v-else>
+      <!-- 发现新版本 inline 卡片 -->
+      <Card
+        v-if="updateStore.hasUpdate && updateStore.updateResult"
+        padding="md"
+        class="card update-banner-card"
+        surface="1"
+      >
+        <div class="update-banner-header">
+          <div class="update-banner-title">
+            <Download :size="16" class="update-banner-icon" />
+            <span>发现新版本</span>
+            <span class="update-banner-version">v{{ updateStore.updateResult.latest_version }}</span>
+          </div>
+          <button class="update-banner-close" @click="updateStore.dismissUpdate()">
+            <X :size="14" />
+          </button>
+        </div>
+
+        <p v-if="updateStore.updateResult.release_name" class="update-banner-sub">
+          {{ updateStore.updateResult.release_name }}
+        </p>
+
+        <!-- Release notes -->
+        <div v-if="updateStore.updateResult.release_notes" class="update-banner-notes">
+          <MarkdownText :content="updateStore.updateResult.release_notes" />
+        </div>
+
+        <!-- 安装包选择 + 下载 -->
+        <div class="update-banner-actions">
+          <div v-if="updateStore.updateResult.assets.length > 1" class="update-banner-assets">
+            <button
+              v-for="asset in updateStore.updateResult.assets"
+              :key="asset.download_url"
+              class="update-asset-btn"
+              :class="{ active: updateStore.selectedAsset?.download_url === asset.download_url }"
+              @click="updateStore.selectedAsset = asset"
+            >
+              <Package :size="13" />
+              <span>{{ updateStore.assetLabel(asset.kind) }}</span>
+              <span class="update-asset-size">{{ updateStore.formatSize(asset.size) }}</span>
+            </button>
+          </div>
+
+          <div class="update-banner-buttons">
+            <!-- 下载进度条 -->
+            <div
+              v-if="updateStore.downloadState === 'downloading' && updateStore.downloadProgress"
+              class="update-download-progress"
+            >
+              <ProgressBar
+                :value="updateStore.downloadProgress.percent || 0"
+                :max="100"
+              />
+              <span class="update-progress-text">
+                {{ updateStore.downloadProgress.percent?.toFixed(0) ?? 0 }}%
+              </span>
+            </div>
+
+            <Button
+              v-if="updateStore.downloadState === 'idle' || updateStore.downloadState === 'error'"
+              variant="primary"
+              size="sm"
+              :disabled="!updateStore.selectedAsset"
+              @click="updateStore.handleDownload()"
+            >
+              <Download :size="13" />
+              <span>下载安装包</span>
+            </Button>
+
+            <Button
+              v-if="updateStore.downloadState === 'downloaded'"
+              variant="primary"
+              size="sm"
+              :loading="updateStore.installing"
+              @click="updateStore.handleInstall()"
+            >
+              <HardDriveDownload :size="13" />
+              <span>立即安装</span>
+            </Button>
+
+            <Button
+              v-if="updateStore.downloadState === 'downloading'"
+              variant="secondary"
+              size="sm"
+              disabled
+            >
+              <span>下载中…</span>
+            </Button>
+
+            <Button
+              v-if="updateStore.downloadState === 'installing'"
+              variant="secondary"
+              size="sm"
+              disabled
+            >
+              <span>安装中…</span>
+            </Button>
+
+            <Button variant="ghost" size="sm" @click="router.push('/settings#settings-update')">
+              查看详情
+            </Button>
+          </div>
+
+          <p v-if="updateStore.downloadError" class="update-download-error">
+            {{ updateStore.downloadError }}
+          </p>
+        </div>
+      </Card>
+
       <!-- Hero -->
       <header class="hero">
         <div class="hero-text">
@@ -495,6 +611,145 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-6);
   overflow: hidden;
+}
+
+/* ── 发现新版本 inline 卡片 ── */
+.update-banner-card {
+  border: 1px solid var(--accent);
+  background: var(--accent-subtle);
+}
+
+.update-banner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.update-banner-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.update-banner-icon {
+  color: var(--accent);
+}
+
+.update-banner-version {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+
+.update-banner-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.update-banner-close:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.update-banner-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.update-banner-notes {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  font-size: var(--text-sm);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.update-banner-actions {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.update-banner-assets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.update-asset-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-color);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--transition-fast);
+}
+
+.update-asset-btn:hover {
+  border-color: var(--border-color-strong);
+}
+
+.update-asset-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.update-asset-size {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.update-banner-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.update-download-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 150px;
+}
+
+.update-progress-text {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.update-download-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger, #ef4444);
 }
 
 /* Hero */
