@@ -147,19 +147,25 @@ impl DailyScheduler {
         };
 
         // 同步初始化 State.current_task
-        // 仅当 state 中日期不匹配，或任务列表为空时，才用新 plan 覆盖
-        // 已存在的任务状态（如用户已开始/完成的任务）不会被清空
-        // 额外校验：若 state 中 task_id 日期前缀与 date 不一致（state 被污染），强制重置
-        let state_polluted = state.current_task.tasks.iter().any(|t| {
-            t.task_id
-                .as_ref()
-                .map(|id| id.len() >= 10 && &id[..10] != date)
-                .unwrap_or(false)
-        });
-        let need_init = state.current_task.date != date
-            || state.current_task.tasks.is_empty()
-            || state_polluted;
-        if need_init && !tasks.is_empty() {
+        // 原则：每次生成新的日计划，都强制重置 current_task 为该日全新任务，状态全部 Pending。
+        // 这能避免旧版本遗留的污染状态（错位 task_id、错误 done 状态）被带到新计划。
+        // 用户在生成计划之后点击的完成状态，会在 update_task_status 中正常写入 state。
+        if !tasks.is_empty() {
+            let state_clean = !state.current_task.tasks.iter().any(|t| {
+                t.task_id
+                    .as_ref()
+                    .map(|id| id.len() >= 10 && &id[..10] != date)
+                    .unwrap_or(false)
+            });
+
+            // 如果 state 已被污染（日期/内容不一致），先记录日志，再强制重置
+            if !state_clean {
+                log::warn!(
+                    "生成 {} 日计划时发现 current_task 被污染（task_id 日期前缀不一致），强制重置",
+                    date
+                );
+            }
+
             state.current_task = CurrentTask {
                 date: date.to_string(),
                 focus: strategy.clone(),
