@@ -2,6 +2,7 @@
 import { ref, watch, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
+import { useSettingsStore } from "@/stores/settings";
 import Logo from "@/components/Logo.vue";
 import {
   LayoutDashboard,
@@ -19,6 +20,7 @@ import {
 } from "lucide-vue-next";
 
 const { theme, toggleTheme } = useTheme();
+const settingsStore = useSettingsStore();
 const route = useRoute();
 
 const navRef = ref<HTMLElement | null>(null);
@@ -61,22 +63,22 @@ const navItems: NavItem[] = [
   { name: "history-plans", label: "历史计划", icon: History, path: "/history-plans" },
   { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" },
   { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" },
+  { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" },
   { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true },
-  { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics", reserved: true },
 ];
 
 // 当前版本号（用于侧边栏底部展示）
-const APP_VERSION = "0.2.5";
+const APP_VERSION = "0.3.0";
 </script>
 
 <template>
   <aside class="sidebar">
     <!-- App Brand / Drag Region -->
     <div class="brand" data-tauri-drag-region>
-      <div class="brand-icon">
+      <div v-if="settingsStore.showLogo" class="brand-icon">
         <Logo />
       </div>
-      <div class="brand-text">
+      <div class="brand-text" :class="{ 'no-logo': !settingsStore.showLogo }">
         <span class="brand-name">StudyAgent</span>
         <span class="brand-tagline">考研学习智能体</span>
       </div>
@@ -179,6 +181,10 @@ const APP_VERSION = "0.2.5";
   flex-direction: column;
   line-height: 1.25;
   min-width: 0;
+}
+
+.brand-text.no-logo {
+  margin-left: 0;
 }
 
 .brand-name {

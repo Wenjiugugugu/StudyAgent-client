@@ -33,11 +33,11 @@ export const useReviewStore = defineStore("review", () => {
         throw new Error("只能生成今天的学习复盘，不支持生成过去或未来的复盘");
       }
 
-      // 增加 60 秒 UI 层超时保护，避免 AI 请求挂起时一直转圈
+      // 后端复盘 AI 超时为 300 秒，前端对齐，避免提前中断
       current.value = await withTimeout(
         api.generateReview(date),
-        60000,
-        `生成复盘超时（超过 60 秒）。请检查 AI Provider 配置或网络连接。`
+        300000,
+        `生成复盘超时（超过 300 秒）。请检查 AI Provider 配置或网络连接。`
       );
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);

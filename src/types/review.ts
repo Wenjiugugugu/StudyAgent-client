@@ -70,7 +70,8 @@ export interface ReviewData {
   energy_level: number;
   external_interference: string;
   key_achievements: string[];
-  risks_resolved: string[];
+  /** @deprecated 已废弃，仅为兼容旧 review JSON 保留 */
+  risks_resolved?: string[];
   next_steps: string[];
 }
 

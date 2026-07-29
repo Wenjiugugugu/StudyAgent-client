@@ -64,7 +64,11 @@ pub struct WeekPlanData {
     pub goals: Vec<String>,
     pub subjects: Vec<WeekSubjectPlan>,
     pub days: Vec<WeekDayPlan>,
+    /// 风险项（已废弃，仅为兼容旧 plan JSON 保留反序列化；新数据不再写入）
+    #[serde(default, skip_serializing)]
     pub risks: Vec<PlanRisk>,
+    /// 今日提醒（已废弃，仅为兼容旧 plan JSON 保留反序列化；新数据不再写入）
+    #[serde(default, skip_serializing)]
     pub reminders: Vec<String>,
 }
 
@@ -87,23 +91,30 @@ pub struct WeekDayPlan {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DaySubjectAllocation {
     pub subject: SubjectKey,
+    #[serde(default)]
     pub hours: f64,
+    #[serde(default)]
     pub focus: String,
+    #[serde(default)]
     pub task_templates: Vec<TaskTemplate>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskTemplate {
     pub title: String,
+    #[serde(default)]
     pub priority: TaskPriority,
+    #[serde(default)]
     pub estimated_hours: f64,
+    #[serde(default)]
     pub goal: String,
+    #[serde(default)]
     pub completion_criteria: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub textbook: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_tips: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback_plan: Option<String>,
 }
 
@@ -135,9 +146,13 @@ pub struct DailyPlanData {
     pub target: String,
     pub strategy: String,
     pub tasks: Vec<PlanTask>,
+    /// 风险项（已废弃，仅为兼容旧 plan JSON 保留反序列化；新数据不再写入）
+    #[serde(default, skip_serializing)]
     pub risks: Vec<PlanRisk>,
     pub style_tips: Vec<String>,
     pub after_today: String,
+    /// 今日提醒（已废弃，仅为兼容旧 plan JSON 保留反序列化；新数据不再写入）
+    #[serde(default, skip_serializing)]
     pub reminders: Vec<String>,
     pub total_hours: f64,
     pub total_tasks: i32,
@@ -456,6 +471,8 @@ fn sync_plan_tasks_to_state(
                 task: task.title.clone(),
                 priority: task.priority.clone(),
                 status,
+                started_at: None,
+                accumulated_minutes: 0,
             }
         })
         .collect();
@@ -769,15 +786,8 @@ mod tests {
                         status: TaskStatus::Pending,
                     },
                 ],
-                risks: vec![PlanRisk {
-                    subject: RiskSubject::Math,
-                    item: "线代启动".to_string(),
-                    level: RiskLevel::High,
-                    suggestion: "安排在上午".to_string(),
-                }],
                 style_tips: vec!["例子驱动型学习者".to_string()],
                 after_today: "若数学任务完成，明日继续推进".to_string(),
-                reminders: vec!["数学二范围明确".to_string()],
                 total_hours: 3.0,
                 total_tasks: 2,
             },
@@ -863,8 +873,6 @@ mod tests {
                         }],
                     }],
                 }],
-                risks: vec![],
-                reminders: vec![],
             },
             view: None,
         };

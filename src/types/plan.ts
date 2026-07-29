@@ -7,7 +7,7 @@
  * - view: 仅供人类阅读的 Markdown，程序不得解析
  */
 
-import type { SubjectKey, TaskPriority, TaskStatus, RiskLevel, RiskSubject } from "./state";
+import type { SubjectKey, TaskPriority, TaskStatus } from "./state";
 
 /** 计划依赖的数据源 */
 export interface BasedOn {
@@ -18,11 +18,14 @@ export interface BasedOn {
   week_plan?: string;
 }
 
-/** 风险提示项 */
+/**
+ * 风险提示项（已废弃，仅为兼容旧版 plan JSON 文件保留反序列化能力）
+ * @deprecated 0.3.0 风险项功能已移除，不再生成也不再展示
+ */
 export interface PlanRisk {
-  subject: RiskSubject;
+  subject: import("./state").RiskSubject;
   item: string;
-  level: RiskLevel;
+  level: import("./state").RiskLevel;
   suggestion: string;
 }
 
@@ -76,10 +79,12 @@ export interface DailyPlanData {
   target: string;
   strategy: string;
   tasks: PlanTask[];
-  risks: PlanRisk[];
+  /** @deprecated 0.3.0 风险项已移除，仅为兼容旧数据保留 */
+  risks?: PlanRisk[];
   style_tips: string[];
   after_today: string;
-  reminders: string[];
+  /** @deprecated 0.3.0 今日提醒已移除，仅为兼容旧数据保留 */
+  reminders?: string[];
   total_hours: number;
   total_tasks: number;
 }
@@ -106,8 +111,10 @@ export interface WeekPlanData {
   goals: string[];
   subjects: WeekSubjectPlan[];
   days: WeekDayPlan[];
-  risks: PlanRisk[];
-  reminders: string[];
+  /** @deprecated 0.3.0 风险项已移除，仅为兼容旧数据保留 */
+  risks?: PlanRisk[];
+  /** @deprecated 0.3.0 今日提醒已移除，仅为兼容旧数据保留 */
+  reminders?: string[];
 }
 
 /** 周计划文件（完整 JSON） */

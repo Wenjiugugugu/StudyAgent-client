@@ -120,6 +120,8 @@ const subjectStartDates = ref<{ math: string; english: string; politics: string;
 const dailyTaskCount = ref(3);
 // 是否允许 AI 安排总结/复习任务（默认 true，关闭时只推进新知识点）
 const enableReviewTasks = ref(true);
+// 是否启用任务计时（默认 false，开启后任务卡显示开始/暂停按钮，记录专注时长）
+const enableTimeTracking = ref(false);
 // 开机自启动（首次引导询问，可在设置中更改）
 const autostartEnabled = ref(false);
 const autostartLoading = ref(false);
@@ -204,6 +206,7 @@ function persistCurrentStep() {
         subject_start_dates: { ...subjectStartDates.value },
         daily_task_count: dailyTaskCount.value,
         enable_review_tasks: enableReviewTasks.value,
+        enable_time_tracking: enableTimeTracking.value,
       };
       break;
     case "ai":
@@ -238,6 +241,7 @@ async function finish() {
       subject_start_dates: { ...subjectStartDates.value },
       daily_task_count: dailyTaskCount.value,
       enable_review_tasks: enableReviewTasks.value,
+      enable_time_tracking: enableTimeTracking.value,
     };
     // 设置 exam_type 用于记录
     const examTypeParts: string[] = [];
@@ -322,6 +326,9 @@ function initFormFromSettings() {
     }
     if (typeof ssSchedule.enable_review_tasks === "boolean") {
       enableReviewTasks.value = ssSchedule.enable_review_tasks;
+    }
+    if (typeof ssSchedule.enable_time_tracking === "boolean") {
+      enableTimeTracking.value = ssSchedule.enable_time_tracking;
     }
   }
   if (s.ai_providers.length > 0) {
@@ -683,6 +690,14 @@ onUnmounted(() => {
                     <button type="button" class="option-chip" :class="{ active: !enableReviewTasks }" @click="enableReviewTasks = false">只推进新知识点</button>
                   </div>
                   <p class="field-hint">关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。</p>
+                </div>
+                <div class="field">
+                  <label class="field-label">记录学习时长</label>
+                  <div class="option-grid cols-2">
+                    <button type="button" class="option-chip" :class="{ active: enableTimeTracking }" @click="enableTimeTracking = true">开启</button>
+                    <button type="button" class="option-chip" :class="{ active: !enableTimeTracking }" @click="enableTimeTracking = false">不开启（默认）</button>
+                  </div>
+                  <p class="field-hint">开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。</p>
                 </div>
                 <div class="field">
                   <label class="field-label">

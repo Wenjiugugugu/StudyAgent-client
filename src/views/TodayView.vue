@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
+import * as api from "@/api";
 import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString, nextDateString, currentMinutesShanghai, timeStringToMinutes } from "@/utils/date";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -13,7 +14,6 @@ import EmptyState from "@/components/ui/EmptyState.vue";
 import {
   CheckCircle2,
   Circle,
-  AlertTriangle,
   Target,
   BookOpen,
   ChevronDown,
@@ -27,8 +27,11 @@ import {
   ShieldAlert,
   ArrowRight,
   Sparkles,
+  Timer,
+  Pause,
+  Play,
 } from "lucide-vue-next";
-import type { PlanTask, PlanRisk, SubjectKey } from "@/types";
+import type { PlanTask, SubjectKey } from "@/types";
 
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
@@ -108,29 +111,109 @@ function priorityBadgeVariant(priority: string): "danger" | "warning" | "default
   return "default";
 }
 
-function riskBadgeVariant(level: PlanRisk["level"]): "info" | "warning" | "danger" {
-  if (level === "high") return "danger";
-  if (level === "medium") return "warning";
-  return "info";
-}
-
-function riskLabel(level: PlanRisk["level"]): string {
-  const map: Record<PlanRisk["level"], string> = {
-    critical: "危急",
-    high: "高风险",
-    medium: "中风险",
-    low: "低风险",
-  };
-  return map[level];
-}
-
 async function completeTask(task: PlanTask) {
+  // 完成任务前自动暂停计时（若正在计时中）
+  if (timeTrackingEnabled.value && taskTimers.value[task.id]?.startedAt) {
+    await pauseTimer(task.id).catch(() => {});
+  }
   await todayStore.updateTaskStatus(task.id, "done");
   if (expandedTaskId.value === task.id) expandedTaskId.value = null;
 }
 
 async function reopenTask(task: PlanTask) {
   await todayStore.updateTaskStatus(task.id, "pending");
+}
+
+// ── 任务计时（仅当设置启用 enable_time_tracking 且查看今天时启用）──
+const timeTrackingEnabled = computed(
+  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking && isToday.value && canModifyTasks.value
+);
+
+/** 每个任务的计时状态：accumulated 已累计分钟，startedAt 为正在计时的开始时间戳 */
+interface TaskTimerState {
+  accumulated: number;
+  startedAt: string | null;
+}
+const taskTimers = ref<Record<string, TaskTimerState>>({});
+/** 用于触发正在计时的任务实时分钟数刷新的 tick（每秒 +1） */
+const timerTick = ref(0);
+let timerInterval: number | undefined;
+
+/** 正在计时的任务实时显示的分钟数（含正在进行的时段） */
+function taskLiveMinutes(taskId: string): number {
+  const t = taskTimers.value[taskId];
+  if (!t) return 0;
+  let total = t.accumulated;
+  if (t.startedAt) {
+    // 用 timerTick 触发响应式重算
+    void timerTick.value;
+    const start = new Date(t.startedAt).getTime();
+    const now = Date.now();
+    if (!isNaN(start) && now > start) {
+      total += Math.floor((now - start) / 60000);
+    }
+  }
+  return total;
+}
+
+/** 格式化分钟为 "Xh Ym" 或 "Ym" */
+function formatMinutes(min: number): string {
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+async function loadTaskTimers() {
+  if (!timeTrackingEnabled.value) {
+    taskTimers.value = {};
+    return;
+  }
+  try {
+    const state = await api.getState();
+    const map: Record<string, TaskTimerState> = {};
+    for (const st of state.current_task?.tasks ?? []) {
+      if (!st.task_id) continue;
+      map[st.task_id] = {
+        accumulated: st.accumulated_minutes ?? 0,
+        startedAt: st.started_at ?? null,
+      };
+    }
+    taskTimers.value = map;
+  } catch (e) {
+    // 读取失败不影响主流程
+    console.warn("加载任务计时状态失败", e);
+  }
+}
+
+async function startTimer(taskId: string) {
+  try {
+    await api.startTaskTimer(taskId);
+    if (!taskTimers.value[taskId]) {
+      taskTimers.value[taskId] = { accumulated: 0, startedAt: null };
+    }
+    // startedAt 用本地时间近似（用于 UI 实时计算，后端存的权威值以 +0800 为准）
+    taskTimers.value[taskId].startedAt = new Date().toISOString();
+  } catch (e) {
+    console.error("开始计时失败", e);
+  }
+}
+
+async function pauseTimer(taskId: string): Promise<void> {
+  try {
+    const added = await api.pauseTaskTimer(taskId);
+    if (!taskTimers.value[taskId]) {
+      taskTimers.value[taskId] = { accumulated: 0, startedAt: null };
+    }
+    taskTimers.value[taskId].accumulated += added;
+    taskTimers.value[taskId].startedAt = null;
+  } catch (e) {
+    console.error("暂停计时失败", e);
+  }
+}
+
+function isTaskRunning(taskId: string): boolean {
+  return !!taskTimers.value[taskId]?.startedAt;
 }
 
 async function generatePlan() {
@@ -144,6 +227,8 @@ function goToReview() {
 
 async function loadPlan() {
   await todayStore.loadByDate(currentDate.value);
+  // 计时状态需要在 plan 加载后加载（依赖 task_id）
+  await loadTaskTimers();
 }
 
 // ── 每日开始时间前不展示今日计划 ──
@@ -158,9 +243,11 @@ const dailyStartMinutes = computed(() => {
 });
 
 const isBeforeDailyStart = computed(() => {
-  if (!isToday.value) return false;
   if (dailyStartMinutes.value < 0) return false;
-  return nowMinutes.value < dailyStartMinutes.value;
+  if (nowMinutes.value >= dailyStartMinutes.value) return false;
+  // 当前时间早于今日开始时间时，隐藏今天及未来日期的计划，
+  // 但允许查看过去日期的历史计划。
+  return currentDate.value >= todayString();
 });
 
 const dailyStartTimeLabel = computed(() => {
@@ -221,11 +308,16 @@ onMounted(() => {
   window.addEventListener("keydown", handleKeydown);
   // 每分钟刷新一次当前时间，确保到点后自动展示计划
   nowTimer = window.setInterval(refreshNow, 60_000);
+  // 每秒 tick 刷新正在计时的任务实时分钟数显示
+  timerInterval = window.setInterval(() => {
+    timerTick.value++;
+  }, 1000);
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", handleKeydown);
   if (nowTimer) window.clearInterval(nowTimer);
+  if (timerInterval) window.clearInterval(timerInterval);
 });
 </script>
 
@@ -419,6 +511,15 @@ onUnmounted(() => {
                 <Badge :variant="priorityBadgeVariant(task.priority)" size="sm">
                   P{{ task.priority }}
                 </Badge>
+                <Badge
+                  v-if="timeTrackingEnabled && (taskTimers[task.id]?.accumulated || isTaskRunning(task.id))"
+                  :variant="isTaskRunning(task.id) ? 'info' : 'default'"
+                  size="sm"
+                  class="timer-badge"
+                >
+                  <Timer :size="12" />
+                  {{ formatMinutes(taskLiveMinutes(task.id)) }}
+                </Badge>
               </div>
               <h3 class="task-title" :class="{ 'done-text': task.status === 'done' }">
                 {{ task.title }}
@@ -426,6 +527,27 @@ onUnmounted(() => {
             </div>
 
             <div v-if="canModifyTasks" class="task-actions" @click.stop>
+              <template v-if="timeTrackingEnabled && task.status !== 'done'">
+                <Button
+                  v-if="!isTaskRunning(task.id)"
+                  variant="ghost"
+                  size="sm"
+                  @click="startTimer(task.id)"
+                  title="开始计时"
+                >
+                  <Play :size="13" />
+                </Button>
+                <Button
+                  v-else
+                  variant="ghost"
+                  size="sm"
+                  class="timer-running-btn"
+                  @click="pauseTimer(task.id)"
+                  title="暂停计时"
+                >
+                  <Pause :size="13" />
+                </Button>
+              </template>
               <Button
                 v-if="task.status !== 'done'"
                 variant="primary"
@@ -536,6 +658,15 @@ onUnmounted(() => {
                   <Badge :variant="priorityBadgeVariant(task.priority)" size="sm">
                     P{{ task.priority }}
                   </Badge>
+                  <Badge
+                    v-if="timeTrackingEnabled && (taskTimers[task.id]?.accumulated || isTaskRunning(task.id))"
+                    :variant="isTaskRunning(task.id) ? 'info' : 'default'"
+                    size="sm"
+                    class="timer-badge"
+                  >
+                    <Timer :size="12" />
+                    {{ formatMinutes(taskLiveMinutes(task.id)) }}
+                  </Badge>
                 </div>
                 <h3 class="task-title" :class="{ 'done-text': task.status === 'done' }">
                   {{ task.title }}
@@ -543,6 +674,27 @@ onUnmounted(() => {
               </div>
 
               <div v-if="canModifyTasks" class="task-actions" @click.stop>
+                <template v-if="timeTrackingEnabled && task.status !== 'done'">
+                  <Button
+                    v-if="!isTaskRunning(task.id)"
+                    variant="ghost"
+                    size="sm"
+                    @click="startTimer(task.id)"
+                    title="开始计时"
+                  >
+                    <Play :size="13" />
+                  </Button>
+                  <Button
+                    v-else
+                    variant="ghost"
+                    size="sm"
+                    class="timer-running-btn"
+                    @click="pauseTimer(task.id)"
+                    title="暂停计时"
+                  >
+                    <Pause :size="13" />
+                  </Button>
+                </template>
                 <Button
                   v-if="task.status !== 'done'"
                   variant="primary"
@@ -619,52 +771,6 @@ onUnmounted(() => {
             </transition>
           </Card>
         </div>
-      </template>
-
-      <!-- Risks -->
-      <template v-if="planData?.risks?.length">
-        <div class="section-heading">
-          <h2 class="section-title">
-            <AlertTriangle :size="15" class="title-icon" />
-            风险提示
-          </h2>
-        </div>
-
-        <Card padding="md" class="risk-card">
-          <div
-            v-for="(risk, i) in planData.risks"
-            :key="i"
-            class="risk-item"
-            :class="risk.level"
-          >
-            <div class="risk-head">
-              <span class="risk-item-text">{{ risk.item }}</span>
-              <Badge :variant="riskBadgeVariant(risk.level)" size="sm">
-                {{ riskLabel(risk.level) }}
-              </Badge>
-            </div>
-            <p class="risk-suggestion">{{ risk.suggestion }}</p>
-          </div>
-        </Card>
-      </template>
-
-      <!-- Reminders -->
-      <template v-if="planData?.reminders?.length">
-        <div class="section-heading">
-          <h2 class="section-title">
-            <Lightbulb :size="15" class="title-icon" />
-            今日提醒
-          </h2>
-        </div>
-
-        <Card padding="md" class="reminder-card">
-          <ul class="reminder-list">
-            <li v-for="(r, i) in planData.reminders" :key="i" class="reminder-item">
-              <ArrowRight :size="14" class="reminder-bullet" />
-              <span>{{ r }}</span>
-            </li>
-          </ul>
-        </Card>
       </template>
 
       <!-- After today -->
@@ -1109,84 +1215,6 @@ onUnmounted(() => {
   color: var(--color-success);
   flex-shrink: 0;
   margin-top: 1px;
-}
-
-/* Risk */
-.risk-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.risk-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--bg-overlay);
-}
-
-.risk-item.high {
-  background: var(--color-danger-subtle);
-}
-
-.risk-item.medium {
-  background: var(--color-warning-subtle);
-}
-
-.risk-item.low {
-  background: var(--color-info-subtle);
-}
-
-.risk-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.risk-item-text {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--text-primary);
-}
-
-.risk-suggestion {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  line-height: var(--leading-normal);
-  margin: 0;
-}
-
-/* Reminders */
-.reminder-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.reminder-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.reminder-item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  line-height: var(--leading-normal);
-}
-
-.reminder-bullet {
-  color: var(--accent);
-  flex-shrink: 0;
-  margin-top: 2px;
 }
 
 /* After today */

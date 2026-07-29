@@ -60,6 +60,11 @@ impl<'a> ReviewAgent<'a> {
         // 2. 构建复盘 prompt
         // 注意：不在此处修改任务状态。任务状态由 `submit_review` 根据用户输入更新。
         let prompt = self.build_review_prompt(plan.as_ref(), &state, date);
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "review_prompt_ready",
+            &format!("复盘 prompt 已构建, date={}, 长度={} 字符", date, prompt.len()),
+        );
 
         // 4. 调用 AI Service
         let request = ChatRequest {
@@ -75,25 +80,52 @@ impl<'a> ReviewAgent<'a> {
             ..Default::default()
         };
 
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "review_ai_request",
+            &format!("即将发送复盘 AI 请求, date={}, timeout=300s", date),
+        );
         let response = self
             .ai_service
             .chat(request)
             .await
-            .map_err(|e| format!("AI 生成复盘失败: {}", e))?;
+            .map_err(|e| {
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    "review_ai_call_error",
+                    &format!("复盘 AI 调用失败: {}", e),
+                );
+                format!("AI 生成复盘失败: {}", e)
+            })?;
 
         // 调试日志：AI 返回的原始复盘 JSON（解析前）
+        let resp_preview: String = response.content.chars().take(500).collect();
         log::info!(
             "[AI-DEBUG] 复盘原始响应长度: {} 字符, 前 500 字符: {}",
             response.content.len(),
-            response.content.chars().take(500).collect::<String>()
+            resp_preview
         );
         log::debug!("[AI-DEBUG] 复盘原始响应全文:\n{}", response.content);
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "review_ai_response",
+            &format!(
+                "复盘 AI 响应已返回, 长度={} 字符, 前 500 字符:\n{}",
+                response.content.len(),
+                resp_preview
+            ),
+        );
 
         // 5. 解析并填充 ReviewFile
         let review_file = parse_review_json(&response.content, date, plan.as_ref())?;
 
         // 6. 保存 JSON
         crate::data::records::save_review(data_dir, &review_file)?;
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "review_saved",
+            &format!("复盘已保存, date={}", date),
+        );
 
         Ok(review_file)
     }
@@ -141,17 +173,6 @@ impl<'a> ReviewAgent<'a> {
                 }
                 prompt.push_str("\n");
             }
-
-            if !plan.data.risks.is_empty() {
-                prompt.push_str("### 计划风险提示\n");
-                for risk in &plan.data.risks {
-                    prompt.push_str(&format!(
-                        "- [{:?}] {}: {}\n",
-                        risk.level, risk.item, risk.suggestion
-                    ));
-                }
-                prompt.push_str("\n");
-            }
         } else {
             prompt.push_str("## 今日计划\n今日无计划文件。请根据 State 中的 current_task 生成复盘。\n\n");
             prompt.push_str(&format!(
@@ -164,18 +185,6 @@ impl<'a> ReviewAgent<'a> {
                 prompt.push_str(&format!(
                     "  - [{:?}] {} ({:?}) - {:?}\n",
                     task.priority, task.subject, task.task, task.status
-                ));
-            }
-            prompt.push_str("\n");
-        }
-
-        // 当前风险
-        if !state.risks.items.is_empty() {
-            prompt.push_str("## 当前风险\n");
-            for risk in &state.risks.items {
-                prompt.push_str(&format!(
-                    "- [{:?}] {}: {}\n  建议: {}\n",
-                    risk.level, risk.subject, risk.description, risk.suggested_action
                 ));
             }
             prompt.push_str("\n");
@@ -249,7 +258,6 @@ impl<'a> ReviewAgent<'a> {
     "energy_level": 4,
     "external_interference": "无",
     "key_achievements": ["关键成果1"],
-    "risks_resolved": ["已解除风险1"],
     "next_steps": ["下一步行动1"]
   },
   "view": "用于人类阅读的 Markdown 摘要（可选，可为空字符串）"
@@ -412,7 +420,7 @@ mod tests {
 
     #[test]
     fn test_parse_review_json() {
-        let raw = r#"{"version":"1.0.0","meta":{"date":"2026-07-25","type":"review","plan_ref":"plan/2026-07-25_day.json","generated_at":"2026-07-25T22:00"},"data":{"completed_tasks":[{"task_id":"2026-07-25-01","subject":"math","title":"行列式","priority":"A","completed":true,"completion_time":"10:30","note":null}],"unplanned_tasks":[],"difficulties":[],"time_spent":[{"subject":"math","hours":2.0,"planned_hours":2.0}],"total_hours":2.0,"completion":{"priority_a_total":1,"priority_a_done":1,"priority_b_total":0,"priority_b_done":0,"completion_rate":100.0},"energy_level":4,"external_interference":"无","key_achievements":[],"risks_resolved":[],"next_steps":[]},"view":""}"#;
+        let raw = r#"{"version":"1.0.0","meta":{"date":"2026-07-25","type":"review","plan_ref":"plan/2026-07-25_day.json","generated_at":"2026-07-25T22:00"},"data":{"completed_tasks":[{"task_id":"2026-07-25-01","subject":"math","title":"行列式","priority":"A","completed":true,"completion_time":"10:30","note":null}],"unplanned_tasks":[],"difficulties":[],"time_spent":[{"subject":"math","hours":2.0,"planned_hours":2.0}],"total_hours":2.0,"completion":{"priority_a_total":1,"priority_a_done":1,"priority_b_total":0,"priority_b_done":0,"completion_rate":100.0},"energy_level":4,"external_interference":"无","key_achievements":[],"next_steps":[]},"view":""}"#;
         let review = parse_review_json(raw, "2026-07-25", None).unwrap();
         assert_eq!(review.meta.date, "2026-07-25");
         assert_eq!(review.data.completed_tasks.len(), 1);

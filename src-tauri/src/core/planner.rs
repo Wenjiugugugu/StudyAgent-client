@@ -97,6 +97,15 @@ impl<'a> Planner<'a> {
         data_dir: &Path,
         review_date: &str,
     ) -> DataResult<(bool, Vec<String>)> {
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_start",
+            &format!(
+                "开始复盘后重排, review_date={}, data_dir={:?}",
+                review_date, data_dir
+            ),
+        );
+
         // 1. 读取复盘
         let review = crate::data::records::read_review(data_dir, review_date)?;
 
@@ -168,6 +177,15 @@ impl<'a> Planner<'a> {
             daily_task_count,
             enable_review_tasks,
         );
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_prompt_ready",
+            &format!(
+                "prompt 已构建, 长度={} 字符, regen_dates={:?}",
+                prompt.len(),
+                regen_dates
+            ),
+        );
 
         // 7. 调用 AI
         let request = ChatRequest {
@@ -178,6 +196,7 @@ impl<'a> Planner<'a> {
             }],
             agent: Some(AgentType::Planner),
             temperature: Some(0.6),
+            // 重排剩余天数的工作量与生成周计划相当，给足 300s
             timeout_override: Some(300),
             ..Default::default()
         };
@@ -186,26 +205,52 @@ impl<'a> Planner<'a> {
             "[AI-DEBUG] 复盘后重排请求开始, review_date={}, regen范围={}-{}",
             review_date, regen_start, week_end
         );
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_ai_request",
+            &format!(
+                "即将发送 AI 请求, review_date={}, regen范围={}-{}, timeout=300s",
+                review_date, regen_start, week_end
+            ),
+        );
         let response = self
             .ai_service
             .chat(request)
             .await
-            .map_err(|e| format!("AI 重排剩余天数失败: {}", e))?;
+            .map_err(|e| {
+                crate::data::write_ai_debug_log(data_dir, "regenerate_ai_call_error", &format!("AI 调用失败: {}", e));
+                format!("AI 重排剩余天数失败: {}", e)
+            })?;
 
+        let resp_preview: String = response.content.chars().take(500).collect();
         log::info!(
             "[AI-DEBUG] 重排响应长度: {} 字符, 前 500 字符: {}",
             response.content.len(),
-            response.content.chars().take(500).collect::<String>()
+            resp_preview
         );
         log::debug!("[AI-DEBUG] 重排响应全文:\n{}", response.content);
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_ai_response",
+            &format!(
+                "AI 响应已返回, 长度={} 字符, 前 500 字符:\n{}",
+                response.content.len(),
+                resp_preview
+            ),
+        );
 
         // 8. 解析 AI 返回的剩余天数安排
-        let updated_days = parse_regenerate_response(&response.content)?;
+        let updated_days = parse_regenerate_response(&response.content, data_dir)?;
 
         // 9. 更新周计划
         update_week_plan_remaining_days(&mut week_plan, &updated_days);
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
         log::info!("周计划剩余天数已更新, 影响日期: {:?}", regen_dates);
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_week_plan_saved",
+            &format!("周计划已保存, 影响日期: {:?}", regen_dates),
+        );
 
         // 10. 如果今天在重排范围内，且今天的日计划已存在，重新生成今天的日计划
         let today = today_string();
@@ -213,10 +258,21 @@ impl<'a> Planner<'a> {
             log::info!("今天 {} 在重排范围内，重新生成今日日计划", today);
             let plan = DailyScheduler::generate_daily_plan(data_dir, &today)?;
             crate::data::plan::save_daily_plan(data_dir, &plan)?;
+            crate::data::write_ai_debug_log(
+                data_dir,
+                "regenerate_today_plan_saved",
+                &format!("今日日计划已重新生成并保存, date={}", today),
+            );
             if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
                 log::warn!("同步 current_task 失败: {}", e);
             }
         }
+
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_complete",
+            &format!("复盘后重排完成, review_date={}, 影响日期: {:?}", review_date, regen_dates),
+        );
 
         Ok((true, regen_dates))
     }
@@ -241,6 +297,8 @@ impl<'a> Planner<'a> {
                 task: task.title.clone(),
                 priority: task.priority.clone(),
                 status: task.status.clone(),
+                started_at: None,
+                accumulated_minutes: 0,
             })
             .collect();
 
@@ -547,14 +605,30 @@ impl<'a> Planner<'a> {
         }
 
 
-        // 当前风险
-        if !state.risks.items.is_empty() {
-            prompt.push_str("## 当前风险\n");
-            for risk in &state.risks.items {
-                prompt.push_str(&format!(
-                    "- [{:?}] {}: {}\n  建议: {}\n",
-                    risk.level, risk.subject, risk.description, risk.suggested_action
-                ));
+        // 当前各科薄弱章节与关注点（替代原 risks 段，AI 据此感知滞后科目）
+        let has_weak = !state.subjects.math.weak_chapters.is_empty()
+            || !state.subjects.english.weak_chapters.is_empty()
+            || !state.subjects.professional.weak_chapters.is_empty();
+        let has_focus = !state.subjects.math.current_focus.is_empty()
+            || !state.subjects.english.current_focus.is_empty()
+            || !state.subjects.professional.current_focus.is_empty();
+        if has_weak || has_focus {
+            prompt.push_str("## 当前需关注科目（薄弱章节与当前重点）\n");
+            for (subj_name, subj) in [
+                ("数学", &state.subjects.math),
+                ("英语", &state.subjects.english),
+                ("专业课", &state.subjects.professional),
+            ] {
+                if !subj.weak_chapters.is_empty() || !subj.current_focus.is_empty() {
+                    prompt.push_str(&format!("- {}", subj_name));
+                    if !subj.weak_chapters.is_empty() {
+                        prompt.push_str(&format!("｜薄弱: {}", subj.weak_chapters.join("、")));
+                    }
+                    if !subj.current_focus.is_empty() {
+                        prompt.push_str(&format!("｜当前重点: {}", subj.current_focus));
+                    }
+                    prompt.push('\n');
+                }
             }
             prompt.push_str("\n");
         }
@@ -779,16 +853,7 @@ impl<'a> Planner<'a> {
           }}
         ]
       }}
-    ],
-    "risks": [
-      {{
-        "subject": "math",
-        "item": "风险项",
-        "level": "high",
-        "suggestion": "建议"
-      }}
-    ],
-    "reminders": ["提醒1"]
+    ]
   }},
   "view": "用于人类阅读的 Markdown 摘要（可选，可为空字符串）"
 }}
@@ -798,16 +863,15 @@ impl<'a> Planner<'a> {
 2. 只给 active=true 的科目安排任务；政治未启动则安排为 rest_day 或空 allocations。
 3. 数学任务必须严格遵循「数学二」考纲，排除伯努利方程、全微分方程相关内容。
 4. 优先级使用 "A"（必须完成）或 "B"（建议完成）。
-5. 风险 level 只能是 "low" / "medium" / "high" / "critical"。
-6. subject 字段只能是 "math" / "english" / "politics" / "professional" 之一，严禁使用 "general" 或其他值。出现在 data.subjects[].subject、data.days[].subject_allocations[].subject、data.risks[].subject 中的所有取值都必须严格属于这四个枚举值之一。
-7. 休息日 is_rest_day=true，且 subject_allocations 为空数组。
-8. 任务 estimated_hours 总和应大致等于当天预期学习时长。
-9. 必须严格遵守「学习日程」节中声明的休息日配置。weekday 字段（如"周日"）与用户休息日列表匹配的，is_rest_day 必须为 true，且不分配任何任务；weekday 不在休息日列表的，必须有 subject_allocations。
-10. 必须严格遵守「各科开始学习日期」节中的约束：若某科目开始日期晚于本周日（{}），该科目不得出现在 subjects、subject_allocations、risks 中，本周完全不为其安排任务。
-11. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
-12. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
-13. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"等字样，每个任务必须推进新的知识点、章节或习题；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
-14. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾解决定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
+5. subject 字段只能是 "math" / "english" / "politics" / "professional" 之一，严禁使用 "general" 或其他值。出现在 data.subjects[].subject、data.days[].subject_allocations[].subject 中的所有取值都必须严格属于这四个枚举值之一。
+6. 休息日 is_rest_day=true，且 subject_allocations 为空数组。
+7. 任务 estimated_hours 总和应大致等于当天预期学习时长。
+8. 必须严格遵守「学习日程」节中声明的休息日配置。weekday 字段（如"周日"）与用户休息日列表匹配的，is_rest_day 必须为 true，且不分配任何任务；weekday 不在休息日列表的，必须有 subject_allocations。
+9. 必须严格遵守「各科开始学习日期」节中的约束：若某科目开始日期晚于本周日（{}），该科目不得出现在 subjects、subject_allocations 中，本周完全不为其安排任务。
+10. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
+11. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
+12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"等字样，每个任务必须推进新的知识点、章节或习题；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
+13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
 "#,
             week_start, week_end, week_end, daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
@@ -1436,7 +1500,7 @@ struct RegenDayPlan {
 /// ```json
 /// { "days": [ { "date": "...", "subject_allocations": [...] } ] }
 /// ```
-fn parse_regenerate_response(content: &str) -> DataResult<Vec<RegenDayPlan>> {
+fn parse_regenerate_response(content: &str, data_dir: &Path) -> DataResult<Vec<RegenDayPlan>> {
     let cleaned = clean_ai_json(content);
 
     // 尝试解析为 { days: [...] }
@@ -1446,15 +1510,22 @@ fn parse_regenerate_response(content: &str) -> DataResult<Vec<RegenDayPlan>> {
         days: Vec<RegenDayPlan>,
     }
 
-    let parsed: RegenResponse = serde_json::from_str(&cleaned).map_err(|e| {
-        format!(
-            "解析 AI 重排响应失败: {}\n内容片段: {}",
-            e,
-            &cleaned[..cleaned.len().min(200)]
-        )
-    })?;
-
-    Ok(parsed.days)
+    match serde_json::from_str::<RegenResponse>(&cleaned) {
+        Ok(parsed) => Ok(parsed.days),
+        Err(e) => {
+            // 解析失败时将原始响应写入调试文件，便于排查
+            crate::data::write_ai_debug_log(data_dir, "regenerate_parse_error", &format!(
+                "解析 AI 重排响应失败: {}\n\n cleaned 内容前 500 字符:\n{}\n\n 原始响应前 1000 字符:\n{}",
+                e,
+                &cleaned[..cleaned.len().min(500)],
+                &content[..content.len().min(1000)],
+            ));
+            Err(format!(
+                "解析 AI 重排响应失败: {}。详细日志已写入 logs/ai-debug.log",
+                e
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1474,7 +1545,7 @@ mod tests {
 
     #[test]
     fn test_parse_week_plan_json() {
-        let raw = r#"{"version":"1.0.0","meta":{"week_start":"2026-07-20","week_end":"2026-07-26","week_number":30,"generated_at":"2026-07-20T04:00","based_on":{"state":"state/current.state","user_model":"assets/user_model/_index.md","exam_config":"assets/config/exam-config.md"}},"data":{"goals":[],"subjects":[],"days":[],"risks":[],"reminders":[]},"view":""}"#;
+        let raw = r#"{"version":"1.0.0","meta":{"week_start":"2026-07-20","week_end":"2026-07-26","week_number":30,"generated_at":"2026-07-20T04:00","based_on":{"state":"state/current.state","user_model":"assets/user_model/_index.md","exam_config":"assets/config/exam-config.md"}},"data":{"goals":[],"subjects":[],"days":[]},"view":""}"#;
         let plan = parse_week_plan_json(raw, "2026-07-20", "2026-07-26").unwrap();
         assert_eq!(plan.meta.week_start, "2026-07-20");
         assert_eq!(plan.meta.week_number, 30);
@@ -1483,7 +1554,7 @@ mod tests {
     #[test]
     fn test_enforce_rest_days_corrects_ai_mistakes() {
         // 模拟 AI 错误地把周六标记为休息日，但用户设置只有周日休息
-        let raw = r#"{"version":"1.0.0","meta":{"week_start":"2026-07-20","week_end":"2026-07-26","week_number":30,"generated_at":"2026-07-20T04:00","based_on":{"state":"","user_model":"","exam_config":""}},"data":{"goals":[],"subjects":[],"days":[{"date":"2026-07-25","weekday":"周六","is_rest_day":true,"subject_allocations":[]},{"date":"2026-07-26","weekday":"周日","is_rest_day":false,"subject_allocations":[{"subject":"math","hours":2.0,"focus":"测试","task_templates":[]}]}],"risks":[],"reminders":[]},"view":""}"#;
+        let raw = r#"{"version":"1.0.0","meta":{"week_start":"2026-07-20","week_end":"2026-07-26","week_number":30,"generated_at":"2026-07-20T04:00","based_on":{"state":"","user_model":"","exam_config":""}},"data":{"goals":[],"subjects":[],"days":[{"date":"2026-07-25","weekday":"周六","is_rest_day":true,"subject_allocations":[]},{"date":"2026-07-26","weekday":"周日","is_rest_day":false,"subject_allocations":[{"subject":"math","hours":2.0,"focus":"测试","task_templates":[]}]}]},"view":""}"#;
         let mut plan = parse_week_plan_json(raw, "2026-07-20", "2026-07-26").unwrap();
 
         // 用户设置：仅周日休息

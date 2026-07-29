@@ -46,6 +46,8 @@ const defaultSettings: AppSettings = {
     height: 820,
     maximized: false,
   },
+  accent_color: "",
+  show_logo: true,
 };
 
 export const useSettingsStore = defineStore("settings", () => {
@@ -55,6 +57,8 @@ export const useSettingsStore = defineStore("settings", () => {
 
   const theme = computed<ThemeMode>(() => settings.value?.theme ?? "light");
   const visualMode = computed<VisualMode>(() => settings.value?.visual_mode ?? "standard");
+  const accentColor = computed<string>(() => settings.value?.accent_color ?? "");
+  const showLogo = computed<boolean>(() => settings.value?.show_logo ?? true);
   const aiProviders = computed<AIProviderConfig[]>(() => settings.value?.ai_providers ?? []);
   const mcpServers = computed<MCPServerConfig[]>(() => settings.value?.mcp_servers ?? []);
   const defaultProvider = computed(() =>
@@ -94,6 +98,8 @@ export const useSettingsStore = defineStore("settings", () => {
         enabled_mcp_ids: backendSettings.enabled_mcp_ids || [],
         ticktick: backendSettings.ticktick || defaultSettings.ticktick,
         window: backendSettings.window || defaultSettings.window,
+        accent_color: backendSettings.accent_color ?? defaultSettings.accent_color,
+        show_logo: backendSettings.show_logo ?? defaultSettings.show_logo,
       };
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
@@ -125,6 +131,18 @@ export const useSettingsStore = defineStore("settings", () => {
   function setVisualMode(mode: VisualMode) {
     if (settings.value) {
       settings.value.visual_mode = mode;
+    }
+  }
+
+  function setAccentColor(color: string) {
+    if (settings.value) {
+      settings.value.accent_color = color;
+    }
+  }
+
+  function setShowLogo(show: boolean) {
+    if (settings.value) {
+      settings.value.show_logo = show;
     }
   }
 
@@ -180,6 +198,8 @@ export const useSettingsStore = defineStore("settings", () => {
     error,
     theme,
     visualMode,
+    accentColor,
+    showLogo,
     aiProviders,
     mcpServers,
     defaultProvider,
@@ -191,6 +211,8 @@ export const useSettingsStore = defineStore("settings", () => {
     completeOnboarding,
     setTheme,
     setVisualMode,
+    setAccentColor,
+    setShowLogo,
     addProvider,
     updateProvider,
     removeProvider,

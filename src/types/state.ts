@@ -24,6 +24,12 @@ export interface StateTask {
   task: string;
   priority: TaskPriority;
   status: TaskStatus;
+  /** 计时开始时间戳（ISO 8601, +0800），仅当任务正在计时时存在
+   * 仅在启用 enable_time_tracking 时使用；旧 state 文件无此字段 */
+  started_at?: string;
+  /** 累计已计时分钟数（不含当前正在进行中的时段）
+   * 仅在启用 enable_time_tracking 时维护；旧 state 文件无此字段 */
+  accumulated_minutes?: number;
 }
 
 /** 风险项（State.risks.items 项） */
@@ -93,7 +99,8 @@ export interface StudyState {
     tasks: StateTask[];
     note: string;
   };
-  risks: {
+  /** @deprecated 0.3.0 风险项已移除，仅为兼容旧 state 文件保留 */
+  risks?: {
     items: StateRisk[];
   };
   user_model: UserModel;

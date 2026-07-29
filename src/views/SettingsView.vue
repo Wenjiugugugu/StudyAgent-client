@@ -47,6 +47,8 @@ import {
   Minimize2,
   HelpCircle,
   PowerOff,
+  Droplet,
+  RotateCcw,
 } from "lucide-vue-next";
 import type {
   AIProviderConfig,
@@ -77,6 +79,7 @@ const form = ref<{
   rest_days: string[];
   daily_task_count: number;
   enable_review_tasks: boolean;
+  enable_time_tracking: boolean;
   subject_start_dates: { math: string; english: string; politics: string; professional: string };
 } | null>(null);
 
@@ -177,7 +180,7 @@ function initSectionObserver() {
   });
 }
 
-const { setTheme, setVisualMode } = useTheme();
+const { setTheme, setVisualMode, setAccentColor } = useTheme();
 
 // ── 加载状态 ──
 const saving = ref(false);
@@ -417,6 +420,29 @@ function handleSetVisualMode(mode: VisualMode) {
   setVisualMode(mode);
 }
 
+// ── 主色调 ──
+const accentPresets: { value: string; label: string }[] = [
+  { value: "#5b8def", label: "默认蓝" },
+  { value: "#6366f1", label: "靛蓝" },
+  { value: "#8b5cf6", label: "紫色" },
+  { value: "#ec4899", label: "粉色" },
+  { value: "#ef4444", label: "红色" },
+  { value: "#f59e0b", label: "橙色" },
+  { value: "#10b981", label: "绿色" },
+  { value: "#14b8a6", label: "青色" },
+  { value: "#0ea5e9", label: "天蓝" },
+];
+
+function handleSetAccentColor(color: string) {
+  setAccentColor(color);
+}
+
+// ── Logo 显示开关 ──
+function handleSetShowLogo(show: boolean) {
+  settingsStore.setShowLogo(show);
+  settingsStore.save();
+}
+
 // ── 教材保存（独立保存，立即生效） ──
 const textbookSaving = ref<Record<string, boolean>>({
   math: false,
@@ -466,6 +492,7 @@ function syncFormFromStore() {
     rest_days: s.study_schedule?.rest_days?.length ? [...s.study_schedule.rest_days] : ["周日"],
     daily_task_count: s.study_schedule?.daily_task_count ?? 3,
     enable_review_tasks: s.study_schedule?.enable_review_tasks ?? true,
+    enable_time_tracking: s.study_schedule?.enable_time_tracking ?? false,
     subject_start_dates: {
       math: s.study_schedule?.subject_start_dates?.math ?? "",
       english: s.study_schedule?.subject_start_dates?.english ?? "",
@@ -523,6 +550,7 @@ async function handleSave() {
       study_days_per_week: 7 - form.value.rest_days.length,
       daily_task_count: form.value.daily_task_count,
       enable_review_tasks: form.value.enable_review_tasks,
+      enable_time_tracking: form.value.enable_time_tracking,
       subject_start_dates: { ...form.value.subject_start_dates },
     };
     await settingsStore.save();
@@ -538,7 +566,7 @@ async function handleSave() {
 }
 
 // ── 检查更新（使用共享 update store，与首页更新弹窗状态同步） ──
-const APP_VERSION = "0.2.5";
+const APP_VERSION = "0.3.0";
 
 // 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
 const checking = computed(() => updateStore.checking);
@@ -873,6 +901,63 @@ watch(() => route.hash, (newHash) => {
             </button>
           </div>
         </div>
+
+        <!-- 主色调色盘 -->
+        <div class="form-field">
+          <label class="form-label">主色调</label>
+          <div class="accent-picker">
+            <button
+              v-for="preset in accentPresets"
+              :key="preset.value"
+              class="accent-swatch"
+              :class="{ active: settingsStore.accentColor === preset.value }"
+              :style="{ background: preset.value }"
+              :title="preset.label"
+              @click="handleSetAccentColor(preset.value)"
+            >
+              <Check v-if="settingsStore.accentColor === preset.value" :size="14" class="accent-check" />
+            </button>
+            <!-- 自定义颜色选择器 -->
+            <label class="accent-custom" title="自定义颜色">
+              <input
+                type="color"
+                :value="settingsStore.accentColor || '#5b8def'"
+                class="accent-color-input"
+                @input="handleSetAccentColor(($event.target as HTMLInputElement).value)"
+              />
+              <Droplet :size="14" />
+            </label>
+            <!-- 重置为默认 -->
+            <button
+              v-if="settingsStore.accentColor"
+              class="accent-reset"
+              title="恢复默认"
+              @click="handleSetAccentColor('')"
+            >
+              <RotateCcw :size="13" />
+              默认
+            </button>
+          </div>
+        </div>
+
+        <!-- Logo 显示开关 -->
+        <div class="form-field">
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <label class="form-label">显示左上角 Logo</label>
+              <span class="toggle-desc">关闭后侧边栏左上角只显示文字</span>
+            </div>
+            <button
+              class="toggle-switch"
+              :class="{ on: settingsStore.showLogo }"
+              role="switch"
+              :aria-checked="settingsStore.showLogo"
+              @click="handleSetShowLogo(!settingsStore.showLogo)"
+            >
+              <span class="toggle-thumb" />
+            </button>
+          </div>
+        </div>
       </Card>
 
       <!-- 学习目标配置区 -->
@@ -1012,6 +1097,28 @@ watch(() => route.hash, (newHash) => {
               </button>
             </div>
             <p class="field-hint">关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。</p>
+          </div>
+          <div class="form-field form-field-full">
+            <label class="form-label">记录学习时长</label>
+            <div class="option-grid option-grid-2">
+              <button
+                type="button"
+                class="option-chip"
+                :class="{ active: form.enable_time_tracking }"
+                @click="form.enable_time_tracking = true"
+              >
+                开启
+              </button>
+              <button
+                type="button"
+                class="option-chip"
+                :class="{ active: !form.enable_time_tracking }"
+                @click="form.enable_time_tracking = false"
+              >
+                不开启（默认）
+              </button>
+            </div>
+            <p class="field-hint">开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。</p>
           </div>
           <div class="form-field form-field-full">
             <label class="form-label">
@@ -2190,6 +2297,146 @@ watch(() => route.hash, (newHash) => {
   top: var(--space-2);
   right: var(--space-2);
   color: var(--accent);
+}
+
+/* ── 主色调色盘 ── */
+.accent-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.accent-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border-primary);
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform var(--transition-fast), border-color var(--transition-fast);
+  padding: 0;
+}
+
+.accent-swatch:hover {
+  transform: scale(1.1);
+}
+
+.accent-swatch.active {
+  border-color: var(--text-primary);
+  transform: scale(1.1);
+}
+
+.accent-check {
+  color: #fff;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+.accent-custom {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px dashed var(--border-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  position: relative;
+  overflow: hidden;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.accent-custom:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.accent-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+
+.accent-reset {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--transition-fast);
+}
+
+.accent-reset:hover {
+  color: var(--text-primary);
+  border-color: var(--border-secondary);
+}
+
+/* ── Toggle 开关 ── */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.toggle-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.toggle-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform var(--transition-fast);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch.on .toggle-thumb {
+  transform: translateX(18px);
 }
 
 /* ── 数据目录 ── */

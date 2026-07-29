@@ -50,6 +50,10 @@ export interface AppSettings {
   ticktick: TickTickConfig;
   /** 窗口配置 */
   window: WindowConfig;
+  /** 自定义主色调（hex 格式如 "#5b8def"，空字符串表示使用默认蓝色） */
+  accent_color?: string;
+  /** 是否显示左上角 Logo */
+  show_logo?: boolean;
 }
 
 /** 学习时间配置 */
@@ -72,6 +76,8 @@ export interface StudySchedule {
   daily_task_count?: number;
   /** 是否允许 AI 安排总结/复习任务（默认 true，关闭时 AI 只推进新知识点） */
   enable_review_tasks?: boolean;
+  /** 是否启用任务计时（默认 false，关闭时不显示计时 UI，State 不写入计时字段） */
+  enable_time_tracking?: boolean;
 }
 
 /** 各科开始学习日期 */

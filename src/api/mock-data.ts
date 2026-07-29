@@ -312,7 +312,6 @@ export const mockReview: ReviewRecord = {
       "英语阅读第8篇完成，每日节奏维持",
       "多元微分连续6日中断后成功重启",
     ],
-    risks_resolved: ["微分方程 critical/阻塞性风险 → 解除"],
     next_steps: [
       "7/24启动线代第一章",
       "7/24推进计组4.3剩余内容或4.4",

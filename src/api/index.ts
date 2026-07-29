@@ -75,6 +75,13 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   return invokeWithFallback("get_dashboard_summary", undefined, async () => mockDashboardSummary);
 }
 
+// ── Analytics ──
+
+/** 获取学习数据分析数据 */
+export async function getAnalytics(range?: import("@/types").AnalyticsRange): Promise<import("@/types").AnalyticsSummary> {
+  return invokeDirect("get_analytics", { range });
+}
+
 // ── State ──
 
 export async function getState(): Promise<StudyState> {
@@ -199,6 +206,27 @@ export async function updateSubjectTextbook(
   });
 }
 
+/** 开始任务计时（设置 started_at 为当前时间） */
+export async function startTaskTimer(taskId: string): Promise<void> {
+  return invokeWithFallback("start_task_timer", { taskId }, async () => {
+    console.log(`[Mock] Started timer for task ${taskId}`);
+  });
+}
+
+/** 暂停任务计时（累加本次时长到 accumulated_minutes，清空 started_at）
+ * 返回本次新增的计时分钟数 */
+export async function pauseTaskTimer(taskId: string): Promise<number> {
+  return invokeWithFallback("pause_task_timer", { taskId }, async () => {
+    console.log(`[Mock] Paused timer for task ${taskId}`);
+    return 0;
+  });
+}
+
+/** 获取任务累计专注分钟数（含正在进行的时段） */
+export async function getTaskTotalMinutes(taskId: string): Promise<number> {
+  return invokeWithFallback("get_task_total_minutes", { taskId }, async () => 0);
+}
+
 // ── Review ──
 
 export async function getReview(date: string): Promise<ReviewRecord> {
@@ -230,7 +258,20 @@ export async function submitReview(payload: import("@/types").SubmitReviewPayloa
 
 /** 复盘后重新生成本周剩余天数计划（AI 驱动） */
 export async function regenerateRemainingDays(reviewDate: string): Promise<import("@/types").RegenerateResult> {
-  return invokeDirect("regenerate_remaining_days", { reviewDate });
+  // 前端超时保护：290 秒。后端 timeout 为 300s，让后端先返回明确错误。
+  const TIMEOUT_MS = 290_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("AI 调整超时（290 秒），可能网络较慢或模型响应过久")), TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      invokeDirect<import("@/types").RegenerateResult>("regenerate_remaining_days", { reviewDate }),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ── Knowledge ──

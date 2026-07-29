@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use crate::data::plan::{
-    BasedOn, DailyPlanData, DailyPlanFile, DailyPlanMeta, PlanRisk, PlanTask, TaskTemplate,
+    BasedOn, DailyPlanData, DailyPlanFile, DailyPlanMeta, PlanTask, TaskTemplate,
     WeekDayPlan, WeekPlanFile,
 };
 use crate::data::state::{CurrentTask, StateTask, SubjectKey, TaskStatus};
@@ -81,9 +81,6 @@ impl DailyScheduler {
         let total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let total_tasks = tasks.len() as i32;
 
-        // 将周计划风险按日期过滤（暂全部继承）
-        let risks: Vec<PlanRisk> = week_plan.data.risks.clone();
-
         // 构建策略：拼接当天各科 focus（仅包含未过滤的科目）
         let strategy = day_plan
             .subject_allocations
@@ -98,10 +95,10 @@ impl DailyScheduler {
             target,
             strategy: strategy.clone(),
             tasks: tasks.clone(),
-            risks,
+            risks: Vec::new(),
             style_tips,
             after_today: String::new(),
-            reminders: week_plan.data.reminders.clone(),
+            reminders: Vec::new(),
             total_hours,
             total_tasks,
         };
@@ -156,6 +153,8 @@ impl DailyScheduler {
                         task: t.title.clone(),
                         priority: t.priority.clone(),
                         status: TaskStatus::Pending,
+                        started_at: None,
+                        accumulated_minutes: 0,
                     })
                     .collect(),
                 note: String::new(),
@@ -244,7 +243,7 @@ mod tests {
     use crate::data::plan::{
         save_week_plan, WeekPlanData, WeekPlanFile, WeekPlanMeta, WeekSubjectPlan,
     };
-    use crate::data::state::{RiskLevel, RiskSubject, TaskPriority};
+    use crate::data::state::TaskPriority;
     use std::io::Write;
 
     fn sample_state_toml() -> String {
@@ -368,13 +367,6 @@ current_focus = "计组"
                         subject_allocations: vec![],
                     },
                 ],
-                risks: vec![PlanRisk {
-                    subject: RiskSubject::Math,
-                    item: "线代启动".to_string(),
-                    level: RiskLevel::High,
-                    suggestion: "安排在上午".to_string(),
-                }],
-                reminders: vec!["保持节奏".to_string()],
             },
             view: None,
         };

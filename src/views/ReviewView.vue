@@ -9,6 +9,7 @@ import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import {
   CheckCircle2,
   Circle,
@@ -84,8 +85,40 @@ const existingReview = ref<ReviewRecord | null>(null);
 const submitted = ref(false);
 
 // 重排状态：复盘提交后若需要 AI 重新生成剩余天数计划
-const regenerating = ref(false);
-const regenMessage = ref("");
+// 使用 sessionStorage 持久化，避免切页再回来时丢失提示
+const REGEN_SESSION_KEY = "studyagent.regen_status";
+interface RegenStatus {
+  date: string;
+  regenerating: boolean;
+  message: string;
+  timestamp: number;
+}
+function loadRegenStatus(): RegenStatus | null {
+  try {
+    const raw = sessionStorage.getItem(REGEN_SESSION_KEY);
+    if (!raw) return null;
+    const status = JSON.parse(raw) as RegenStatus;
+    // 仅保留 10 分钟内的状态，过期视为陈旧
+    if (Date.now() - status.timestamp > 10 * 60 * 1000) {
+      sessionStorage.removeItem(REGEN_SESSION_KEY);
+      return null;
+    }
+    return status;
+  } catch {
+    return null;
+  }
+}
+function saveRegenStatus(status: RegenStatus) {
+  sessionStorage.setItem(REGEN_SESSION_KEY, JSON.stringify(status));
+}
+function clearRegenStatus() {
+  sessionStorage.removeItem(REGEN_SESSION_KEY);
+}
+
+const initialRegen = loadRegenStatus();
+// 仅当日期匹配且仍在 regenerating 时恢复，避免错误显示历史状态
+const regenerating = ref(initialRegen?.regenerating ?? false);
+const regenMessage = ref(initialRegen?.message ?? "");
 
 // 超量完成：用户实际进度领先计划时填写
 const hasOvercompletion = ref(false);
@@ -373,6 +406,12 @@ async function doSubmit() {
     if (result.needs_regeneration) {
       regenerating.value = true;
       regenMessage.value = "正在调整后续计划，请勿关闭应用…";
+      saveRegenStatus({
+        date: selectedDate.value,
+        regenerating: true,
+        message: regenMessage.value,
+        timestamp: Date.now(),
+      });
       try {
         const regenResult = await api.regenerateRemainingDays(selectedDate.value);
         if (regenResult.regenerated) {
@@ -382,9 +421,21 @@ async function doSubmit() {
         }
       } catch (e) {
         console.error("调整后续计划失败:", e);
-        regenMessage.value = "调整失败，不影响复盘结果。";
+        const detail = e instanceof Error ? e.message : String(e);
+        regenMessage.value = `调整失败：${detail}（不影响复盘结果）`;
       } finally {
         regenerating.value = false;
+        // 保存最终结果（成功或失败消息），切页再回来仍可见
+        if (regenMessage.value) {
+          saveRegenStatus({
+            date: selectedDate.value,
+            regenerating: false,
+            message: regenMessage.value,
+            timestamp: Date.now(),
+          });
+        } else {
+          clearRegenStatus();
+        }
       }
     }
 
@@ -405,6 +456,14 @@ async function loadReviewData() {
   resetForm();
   existingReview.value = null;
   submitted.value = false;
+
+  // 若当前 regen 状态不属于该日期，清除提示（避免查看历史复盘时显示陈旧消息）
+  const persistedRegen = loadRegenStatus();
+  if (persistedRegen && persistedRegen.date !== selectedDate.value) {
+    clearRegenStatus();
+    regenerating.value = false;
+    regenMessage.value = "";
+  }
 
   try {
     // 加载选中日期的计划（用于显示任务列表）
@@ -591,6 +650,16 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         <h1 class="gate-title">无复盘记录</h1>
         <p class="gate-desc">{{ selectedDate }} 没有复盘记录。</p>
         <p class="gate-hint">仅可对昨天补复盘，更早的日期无法补录。</p>
+      </div>
+    </Card>
+
+    <!-- Submitting / AI regenerating -->
+    <Card v-else-if="submitting || regenerating" padding="lg" class="gate-card">
+      <div class="gate-hero">
+        <div class="gate-icon"><LoadingSpinner :size="40" /></div>
+        <h1 class="gate-title">正在保存复盘…</h1>
+        <p v-if="regenerating" class="gate-desc">正在调用 AI 调整后续计划，请勿关闭应用。</p>
+        <p v-else class="gate-desc">正在保存复盘数据…</p>
       </div>
     </Card>
 

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::data::plan::DailyPlanData;
 use crate::data::records::ReviewData;
-use crate::data::state::{RiskLevel, StudyState};
+use crate::data::state::StudyState;
 use crate::data::{
     add_days, days_between, get_week_end, get_week_start, today_string, DataResult,
 };
@@ -461,17 +461,7 @@ impl DashboardAggregator {
             }
         }
 
-        // 从风险项中提取
-        for risk in &state.risks.items {
-            if risk.level == RiskLevel::Critical || risk.level == RiskLevel::High {
-                deadlines.push(UpcomingDeadline {
-                    date: state.current_task.date.clone(),
-                    title: risk.description.chars().take(50).collect(),
-                    subject: risk.subject.clone(),
-                    priority: format!("{:?}", risk.level).to_lowercase(),
-                });
-            }
-        }
+        // 风险项已废弃，不再从中提取截止日期
 
         // 按日期排序
         deadlines.sort_by(|a, b| a.date.cmp(&b.date));

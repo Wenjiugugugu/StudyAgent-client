@@ -10,6 +10,7 @@ use tauri::{Emitter, State};
 
 use crate::ai::provider::{AIProviderConfig, ChatRequest, ChatResponse};
 use crate::ai::service::AiService;
+use crate::core::analytics::{AnalyticsRange, AnalyticsSummary, build_analytics};
 use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
 use crate::core::knowledge::KnowledgeService;
 use crate::core::planner::Planner;
@@ -170,6 +171,101 @@ pub async fn update_task_status(
 
     log::info!("任务状态已更新: {} -> {:?}", task_id, new_status);
     Ok(())
+}
+
+/// 开始任务计时
+///
+/// 为指定 task_id 的任务设置 started_at（当前时间）。
+/// 仅在启用 enable_time_tracking 设置时有效；否则返回错误提示用户开启设置。
+///
+/// 前端调用: `invoke('start_task_timer', { taskId })`
+#[tauri::command]
+pub async fn start_task_timer(
+    task_id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    // 检查是否启用计时功能
+    let settings = crate::load_settings(&data_dir);
+    if !settings.enable_time_tracking() {
+        return Err("计时功能未启用，请在设置中开启「记录学习时长」".to_string());
+    }
+
+    let mut study_state = crate::data::state::read_state(&data_dir)?;
+    crate::data::state::start_task_timer(&mut study_state, &task_id)?;
+    crate::data::state::save_state(&data_dir, &study_state)?;
+
+    log::info!("任务计时开始: {}", task_id);
+    Ok(())
+}
+
+/// 暂停任务计时
+///
+/// 计算 started_at 到现在的分钟差，累加到 accumulated_minutes，清空 started_at。
+/// 返回本次新增的计时分钟数。
+///
+/// 前端调用: `invoke('pause_task_timer', { taskId })`
+#[tauri::command]
+pub async fn pause_task_timer(
+    task_id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<i64, String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    // 检查是否启用计时功能
+    let settings = crate::load_settings(&data_dir);
+    if !settings.enable_time_tracking() {
+        return Err("计时功能未启用，请在设置中开启「记录学习时长」".to_string());
+    }
+
+    let mut study_state = crate::data::state::read_state(&data_dir)?;
+    let added_minutes = crate::data::state::pause_task_timer(&mut study_state, &task_id)?;
+    crate::data::state::save_state(&data_dir, &study_state)?;
+
+    log::info!("任务计时暂停: {}, 本次新增 {} 分钟", task_id, added_minutes);
+    Ok(added_minutes)
+}
+
+/// 获取任务累计专注分钟数（含正在进行的时段）
+///
+/// 前端调用: `invoke('get_task_total_minutes', { taskId })`
+#[tauri::command]
+pub async fn get_task_total_minutes(
+    task_id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<i64, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let study_state = crate::data::state::read_state(&data_dir)?;
+    crate::data::state::task_total_minutes(&study_state, &task_id)
+}
+
+// ============================================================================
+// Analytics 命令
+// ============================================================================
+
+/// 获取学习数据分析
+///
+/// 根据 range 参数返回指定时间范围的分析数据。
+/// - `last_7_days`：近7天
+/// - `last_30_days`：近30天（默认）
+/// - `all`：全部历史
+///
+/// 前端调用: `invoke('get_analytics', { range: 'last_30_days' })`
+#[tauri::command]
+pub async fn get_analytics(
+    range: Option<String>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AnalyticsSummary, String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    let range = match range.as_deref() {
+        Some("last_7_days") => AnalyticsRange::Last7Days,
+        Some("all") => AnalyticsRange::All,
+        _ => AnalyticsRange::Last30Days,
+    };
+
+    build_analytics(&data_dir, &range).map_err(|e| format!("生成分析数据失败: {}", e))
 }
 
 // ============================================================================

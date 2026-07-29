@@ -9,6 +9,7 @@ export * from "./knowledge";
 export * from "./ai";
 export * from "./mcp";
 export * from "./settings";
+export * from "./analytics";
 
 /** 统一 API 响应包装 */
 export interface ApiResponse<T = unknown> {

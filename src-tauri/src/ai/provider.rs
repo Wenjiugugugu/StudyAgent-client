@@ -347,7 +347,7 @@ pub fn get_system_prompt(agent: &AgentType) -> String {
 输出格式：严格输出合法 JSON，不包裹 ```json 代码块。结构为 { version, meta, data, view? }。
 - version: "1.0.0"
 - meta: { week_start, week_end, week_number, generated_at, based_on }
-- data: { goals, subjects, days, risks, reminders }
+- data: { goals, subjects, days }
 - view: 可选，用于人类阅读的 Markdown 摘要
 
 文件存储为 plan/YYYY-Www_week.json"#.to_string()
@@ -367,12 +367,12 @@ pub fn get_system_prompt(agent: &AgentType) -> String {
 2. 记录完成的任务、计划外内容、遇到的困难、实际用时
 3. 统计完成率（A 级/B 级分别统计）
 4. 评估精力评分、外部干扰
-5. 总结关键成果、风险解除情况、下一步行动
+5. 总结关键成果、下一步行动
 
 输出格式：严格输出合法 JSON，不包裹 ```json 代码块。结构为 { version, meta, data, view? }。
 - version: "1.0.0"
 - meta: { date, type: "review", plan_ref, generated_at }
-- data: { completed_tasks, unplanned_tasks, difficulties, time_spent, total_hours, completion, energy_level, external_interference, key_achievements, risks_resolved, next_steps }
+- data: { completed_tasks, unplanned_tasks, difficulties, time_spent, total_hours, completion, energy_level, external_interference, key_achievements, next_steps }
 - view: 可选，用于人类阅读的 Markdown 摘要
 
 subject 只能是 "math" / "english" / "politics" / "professional"；priority 只能是 "A" / "B"。

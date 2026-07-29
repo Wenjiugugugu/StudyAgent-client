@@ -142,10 +142,20 @@ pub struct AppSettings {
     /// 关闭窗口时的动作："ask" | "tray" | "quit"，默认 "ask"
     #[serde(default = "default_close_action")]
     pub close_action: String,
+    /// 自定义主色调（hex 格式如 "#5b8def"，空字符串表示使用默认蓝色）
+    #[serde(default)]
+    pub accent_color: String,
+    /// 是否显示左上角 Logo（默认 true）
+    #[serde(default = "default_show_logo")]
+    pub show_logo: bool,
 }
 
 fn default_close_action() -> String {
     "ask".to_string()
+}
+
+fn default_show_logo() -> bool {
+    true
 }
 
 impl AppSettings {
@@ -220,6 +230,17 @@ impl AppSettings {
             .and_then(|v| v.as_bool())
             .unwrap_or(true)
     }
+
+    /// 是否启用任务计时功能（默认 false）。
+    ///
+    /// 开启时：TodayView 任务卡显示开始/暂停按钮，State 中记录每个任务的累计专注分钟数。
+    /// 关闭时：不显示计时 UI，State 中不写入计时字段（旧 state 文件无此字段也能正常解析）。
+    pub fn enable_time_tracking(&self) -> bool {
+        self.study_schedule
+            .get("enable_time_tracking")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
 }
 
 impl Default for AppSettings {
@@ -245,6 +266,8 @@ impl Default for AppSettings {
             exam_date: String::new(),
             target_score: 0,
             close_action: default_close_action(),
+            accent_color: String::new(),
+            show_logo: default_show_logo(),
         }
     }
 }
@@ -454,6 +477,7 @@ pub fn init_app_state(data_dir: PathBuf) -> Mutex<AppState> {
 /// - state/
 /// - plan/
 /// - records/
+/// - logs/
 /// - assets/knowledge/objects/
 /// - assets/user_model/capabilities/
 /// - assets/user_model/observations/
@@ -466,6 +490,7 @@ pub fn ensure_data_directories(data_dir: &Path) {
         "state",
         "plan",
         "records",
+        "logs",
         "assets/knowledge/objects",
         "assets/user_model/capabilities",
         "assets/user_model/observations",

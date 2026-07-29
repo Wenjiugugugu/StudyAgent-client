@@ -157,6 +157,9 @@ fn main() {
             get_state,
             update_task_status,
             update_subject_textbook,
+            start_task_timer,
+            pause_task_timer,
+            get_task_total_minutes,
             // Plan
             get_today_plan,
             get_plan_by_date,
@@ -166,6 +169,8 @@ fn main() {
             get_week_summaries,
             generate_daily_plan,
             generate_week_plan,
+            // Analytics
+            get_analytics,
             // Review
             get_review,
             list_review_dates,

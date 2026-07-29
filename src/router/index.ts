@@ -59,7 +59,7 @@ const routes: RouteRecordRaw[] = [
     path: "/analytics",
     name: "analytics",
     component: () => import("@/views/AnalyticsView.vue"),
-    meta: { title: "分析", icon: "BarChart3", reserved: true },
+    meta: { title: "分析", icon: "BarChart3" },
   },
   {
     path: "/debug",
