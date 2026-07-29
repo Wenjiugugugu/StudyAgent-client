@@ -7,6 +7,7 @@
 //! - 任务 ID 格式：{date}-{sequence}
 //! - 跳过休息日
 //! - 读取昨日复盘，若用户压力大/精力低，按规则削减当日任务量（即时调整）
+//! - 读取昨日复盘，将未完成任务（incomplete/partial）顺延至今日（按科目替换）
 
 use std::path::Path;
 
@@ -76,9 +77,16 @@ impl DailyScheduler {
             }
         }
 
+        // 顺延昨日未完成任务：读取昨日复盘，将 incomplete/partial 的任务
+        // 按科目替换今日同科目第一个任务（保证章节连贯），今日无该科目则追加
+        let mut style_tips: Vec<String> = Vec::new();
+        let carryover_tips = Self::carryover_uncompleted_tasks(data_dir, date, &mut tasks);
+        if !carryover_tips.is_empty() {
+            style_tips.extend(carryover_tips);
+        }
+
         // 即时调整：读取昨日复盘，根据用户压力/精力削减当日任务量
         let adjustment = Self::compute_adjustment_from_prev_review(data_dir, date);
-        let mut style_tips: Vec<String> = Vec::new();
         if let Some(adj) = adjustment.as_ref() {
             let before_count = tasks.len();
             let before_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
@@ -189,6 +197,151 @@ impl DailyScheduler {
         }
 
         Ok(plan)
+    }
+
+    /// 顺延昨日未完成任务到今日
+    ///
+    /// 读取昨日复盘，将 status 为 incomplete/partial 的任务按科目替换今日同科目的
+    /// 第一个任务（保证章节连贯，如行列式没学完则今天继续行列式而非矩阵）。
+    /// 今日无该科目则追加到任务列表末尾。
+    ///
+    /// 返回顺延提示文本（用于 style_tips 展示）。
+    fn carryover_uncompleted_tasks(
+        data_dir: &Path,
+        date: &str,
+        tasks: &mut Vec<PlanTask>,
+    ) -> Vec<String> {
+        let mut tips = Vec::new();
+
+        let prev_date = match add_days(date, -1) {
+            Ok(d) => d,
+            Err(_) => return tips,
+        };
+
+        // 读取昨日复盘
+        let review = match crate::data::records::read_review(data_dir, &prev_date) {
+            Ok(r) => r,
+            Err(_) => return tips, // 无昨日复盘，无需顺延
+        };
+
+        // 筛选未完成任务（incomplete / partial）
+        let uncompleted: Vec<&crate::data::records::TaskReviewEntry> = review
+            .task_reviews
+            .iter()
+            .filter(|tr| tr.status == "incomplete" || tr.status == "partial")
+            .collect();
+
+        if uncompleted.is_empty() {
+            return tips;
+        }
+
+        // 读取昨日日计划，获取未完成任务的完整信息
+        let prev_plan = match crate::data::plan::read_daily_plan(data_dir, &prev_date) {
+            Ok(p) => p,
+            Err(_) => {
+                log::warn!(
+                    "顺延未完成任务：昨日 {} 日计划不存在，跳过",
+                    prev_date
+                );
+                return tips;
+            }
+        };
+
+        // 构建 task_id -> PlanTask 映射
+        let prev_task_map: std::collections::HashMap<&str, &PlanTask> = prev_plan
+            .data
+            .tasks
+            .iter()
+            .filter_map(|t| Some((t.id.as_str(), t)))
+            .collect();
+
+        for tr in uncompleted {
+            // 优先按 task_id 匹配，回退到 title 匹配
+            let prev_task = prev_task_map
+                .get(tr.task_id.as_str())
+                .copied()
+                .or_else(|| {
+                    prev_plan
+                        .data
+                        .tasks
+                        .iter()
+                        .find(|t| t.title == tr.title)
+                });
+
+            let prev_task = match prev_task {
+                Some(t) => t,
+                None => {
+                    log::warn!(
+                        "顺延未完成任务：task_id={} title={} 在昨日日计划中未找到，跳过",
+                        tr.task_id,
+                        tr.title
+                    );
+                    continue;
+                }
+            };
+
+            let subject_str = format!("{:?}", prev_task.subject).to_lowercase();
+            let carried_title = prev_task.title.clone();
+
+            // 在今日任务中找同科目的第一个任务
+            let replace_pos = tasks
+                .iter()
+                .position(|t| format!("{:?}", t.subject).to_lowercase() == subject_str);
+
+            if let Some(pos) = replace_pos {
+                // 替换今日同科目第一个任务的内容（保留 id 和 status）
+                let today_task = &mut tasks[pos];
+                today_task.title = prev_task.title.clone();
+                today_task.goal = prev_task.goal.clone();
+                today_task.completion_criteria = prev_task.completion_criteria.clone();
+                today_task.textbook = prev_task.textbook.clone();
+                today_task.style_tips = prev_task.style_tips.clone();
+                today_task.fallback_plan = prev_task.fallback_plan.clone();
+                today_task.estimated_hours = prev_task.estimated_hours;
+                today_task.priority = prev_task.priority.clone();
+            } else {
+                // 今日无该科目，追加到末尾
+                let new_task = PlanTask {
+                    id: format!("{}-{:02}", date, tasks.len() + 1),
+                    subject: prev_task.subject.clone(),
+                    title: prev_task.title.clone(),
+                    priority: prev_task.priority.clone(),
+                    estimated_hours: prev_task.estimated_hours,
+                    goal: prev_task.goal.clone(),
+                    completion_criteria: prev_task.completion_criteria.clone(),
+                    textbook: prev_task.textbook.clone(),
+                    style_tips: prev_task.style_tips.clone(),
+                    fallback_plan: prev_task.fallback_plan.clone(),
+                    status: TaskStatus::Pending,
+                };
+                tasks.push(new_task);
+            }
+
+            let status_label = if tr.status == "partial" {
+                "部分完成"
+            } else {
+                "未完成"
+            };
+            let subject_label = match prev_task.subject {
+                SubjectKey::Math => "数学",
+                SubjectKey::English => "英语",
+                SubjectKey::Politics => "政治",
+                SubjectKey::Professional => "专业课",
+            };
+            let tip = format!(
+                "昨日{}「{}」{}，已顺延至今日继续学习",
+                subject_label, carried_title, status_label
+            );
+            tips.push(tip.clone());
+            log::info!("顺延未完成任务: {}", tip);
+        }
+
+        // 重新编排任务 ID（保持连续）
+        for (idx, task) in tasks.iter_mut().enumerate() {
+            task.id = format!("{}-{:02}", date, idx + 1);
+        }
+
+        tips
     }
 
     /// 读取昨日复盘，计算当日任务量调整策略
