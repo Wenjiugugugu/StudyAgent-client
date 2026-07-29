@@ -289,7 +289,9 @@ impl DailyScheduler {
                 .position(|t| format!("{:?}", t.subject).to_lowercase() == subject_str);
 
             if let Some(pos) = replace_pos {
-                // 替换今日同科目第一个任务的内容（保留 id 和 status）
+                // 保留被覆盖的原任务内容，追加到今日末尾（学完顺延任务后可继续）
+                let displaced = tasks[pos].clone();
+                // 用昨日未完成任务替换今日同科目第一个任务
                 let today_task = &mut tasks[pos];
                 today_task.title = prev_task.title.clone();
                 today_task.goal = prev_task.goal.clone();
@@ -299,6 +301,12 @@ impl DailyScheduler {
                 today_task.fallback_plan = prev_task.fallback_plan.clone();
                 today_task.estimated_hours = prev_task.estimated_hours;
                 today_task.priority = prev_task.priority.clone();
+
+                // 被覆盖任务追加到末尾，标记为顺延产生
+                let mut displaced_task = displaced;
+                displaced_task.id = format!("{}-{:02}", date, tasks.len() + 1);
+                displaced_task.status = TaskStatus::Pending;
+                tasks.push(displaced_task);
             } else {
                 // 今日无该科目，追加到末尾
                 let new_task = PlanTask {
