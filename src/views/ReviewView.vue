@@ -83,6 +83,10 @@ const loading = ref(true);
 const existingReview = ref<ReviewRecord | null>(null);
 const submitted = ref(false);
 
+// 重排状态：复盘提交后若需要 AI 重新生成剩余天数计划
+const regenerating = ref(false);
+const regenMessage = ref("");
+
 // 超量完成：用户实际进度领先计划时填写
 const hasOvercompletion = ref(false);
 const overcompletions = ref<OvercompletionEntry[]>([]);
@@ -357,13 +361,33 @@ async function doSubmit() {
       ? overcompletions.value.filter(oc => oc.subject && oc.chapter_reached.trim())
       : [];
 
-    await api.submitReview({
+    const result = await api.submitReview({
       date: selectedDate.value,
       task_reviews: taskReviews,
       daily_review: dailyReview,
       overcompletion: validOvercompletions.length > 0 ? validOvercompletions : undefined,
     });
     submitted.value = true;
+
+    // 若需要 AI 重排剩余天数，提示用户并调用
+    if (result.needs_regeneration) {
+      regenerating.value = true;
+      regenMessage.value = "正在调整后续计划，请勿关闭应用…";
+      try {
+        const regenResult = await api.regenerateRemainingDays(selectedDate.value);
+        if (regenResult.regenerated) {
+          regenMessage.value = `已调整后续 ${regenResult.affected_dates.length} 天的计划安排`;
+        } else {
+          regenMessage.value = "";
+        }
+      } catch (e) {
+        console.error("调整后续计划失败:", e);
+        regenMessage.value = "调整失败，不影响复盘结果。";
+      } finally {
+        regenerating.value = false;
+      }
+    }
+
     // 重新加载复盘
     await loadReviewData();
     // 刷新复盘日期列表
@@ -579,6 +603,13 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             {{ isToday ? '今日复盘已完成' : `${selectedDate} 复盘记录` }}
           </h1>
           <p class="done-desc">{{ isToday ? '今天的结构化复盘已保存。' : '查看历史复盘记录。' }}</p>
+
+          <!-- 重排提示 -->
+          <div v-if="regenMessage" class="regen-banner" :class="{ 'regen-loading': regenerating }">
+            <AlertTriangle :size="18" v-if="regenerating" />
+            <CheckCircle2 :size="18" v-else />
+            <span>{{ regenMessage }}</span>
+          </div>
 
           <!-- Review summary -->
           <div v-if="existingReview.task_reviews?.length || existingReview.data?.completed_tasks?.length" class="review-summary">
@@ -1161,6 +1192,20 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .done-title { font-size: var(--text-2xl); font-weight: var(--font-bold); color: var(--text-primary); letter-spacing: -0.02em; }
 .done-desc { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
 .done-hint { font-size: var(--text-sm); color: var(--text-tertiary); margin: 0; }
+
+.regen-banner {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  margin-top: var(--space-3);
+  background: var(--color-info-subtle, var(--bg-tertiary));
+  color: var(--color-info, var(--text-secondary));
+}
+.regen-banner.regen-loading {
+  background: var(--color-warning-subtle, var(--bg-tertiary));
+  color: var(--color-warning, var(--text-primary));
+}
 
 .review-summary {
   display: flex; flex-direction: column; gap: var(--space-2);

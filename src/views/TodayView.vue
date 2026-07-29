@@ -137,6 +137,11 @@ async function generatePlan() {
   await todayStore.generate(currentDate.value);
 }
 
+function goToReview() {
+  const yesterday = yesterdayString();
+  router.push({ name: "review", query: { date: yesterday } });
+}
+
 async function loadPlan() {
   await todayStore.loadByDate(currentDate.value);
 }
@@ -333,6 +338,13 @@ onUnmounted(() => {
       <div v-if="todayStore.error" class="error-banner">
         <AlertTriangle :size="16" />
         <span>{{ todayStore.error }}</span>
+      </div>
+
+      <!-- 昨日复盘缺失提醒 -->
+      <div v-if="todayStore.missingYesterdayReview" class="review-reminder-banner">
+        <AlertTriangle :size="16" />
+        <span>昨日复盘尚未完成，建议先完成复盘再开始今日学习。</span>
+        <Button variant="ghost" size="sm" @click="goToReview">去复盘</Button>
       </div>
 
       <!-- Strategy area -->
@@ -736,6 +748,17 @@ onUnmounted(() => {
   padding: var(--space-3) var(--space-4);
   background: var(--color-danger-subtle);
   color: var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.review-reminder-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-warning-subtle, var(--bg-tertiary));
+  color: var(--color-warning, var(--text-secondary));
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
 }

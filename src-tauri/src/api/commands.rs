@@ -497,6 +497,7 @@ pub async fn generate_review(
 ///
 /// 前端用户完成步骤式问答后，将结构化数据提交到后端。
 /// 后端负责：保存 Review 文件 + 更新 State 中的任务状态。
+/// 返回 needs_regeneration 标志，指示是否需要调用 AI 重新生成本周剩余天数计划。
 /// 前端调用: `invoke('submit_review', { payload: { date, task_reviews, daily_review } })`
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct SubmitReviewPayload {
@@ -508,11 +509,20 @@ pub struct SubmitReviewPayload {
     pub overcompletion: Vec<crate::data::records::OvercompletionEntry>,
 }
 
+/// submit_review 的返回结构
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SubmitReviewResult {
+    /// 是否需要调用 AI 重新生成本周剩余天数计划
+    pub needs_regeneration: bool,
+    /// 触发重排的原因（用于前端展示）
+    pub regen_reasons: Vec<String>,
+}
+
 #[tauri::command]
 pub async fn submit_review(
     payload: SubmitReviewPayload,
     app_state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+) -> Result<SubmitReviewResult, String> {
     let data_dir = get_data_dir(app_state.inner())?;
 
     // 构建 ReviewFile
@@ -638,7 +648,85 @@ pub async fn submit_review(
     }
 
     log::info!("结构化复盘已保存: {}", payload.date);
-    Ok(())
+
+    // 3. 判断是否需要重新生成本周剩余天数计划
+    let needs_regeneration = crate::core::planner::check_review_needs_regeneration(&review);
+    let mut regen_reasons = Vec::new();
+
+    if needs_regeneration {
+        // 收集触发原因（用于前端展示）
+        let has_uncompleted = review
+            .task_reviews
+            .iter()
+            .any(|tr| tr.status == "incomplete" || tr.status == "partial");
+        let feels_hard = review
+            .daily_review
+            .as_ref()
+            .map(|d| d.overall_feeling == "hard")
+            .unwrap_or(false);
+        let has_overcompletion = !review.overcompletion.is_empty();
+
+        if has_uncompleted {
+            regen_reasons.push("存在未完成任务".to_string());
+        }
+        if feels_hard {
+            regen_reasons.push("今日学习感受困难".to_string());
+        }
+        if has_overcompletion {
+            regen_reasons.push("有额外进度需要调整后续计划".to_string());
+        }
+
+        log::info!(
+            "复盘 {} 触发重排: {}",
+            payload.date,
+            regen_reasons.join("；")
+        );
+    }
+
+    Ok(SubmitReviewResult {
+        needs_regeneration,
+        regen_reasons,
+    })
+}
+
+/// 复盘后重新生成本周剩余天数计划（AI 驱动）
+///
+/// 在 submit_review 返回 needs_regeneration=true 后由前端调用。
+/// AI 会根据复盘结果重新生成本周剩余天数的 subject_allocations，
+/// 并在今天是剩余天数之一时重新生成今日日计划。
+///
+/// 前端调用: `invoke('regenerate_remaining_days', { reviewDate: '2026-07-30' })`
+#[tauri::command]
+pub async fn regenerate_remaining_days(
+    review_date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<RegenerateResult, String> {
+    let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    if !ai_service.has_provider() {
+        return Err(
+            "未配置 AI Provider，无法重新生成计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
+        );
+    }
+
+    let planner = Planner::new(&ai_service);
+    let (regenerated, affected_dates) = planner
+        .regenerate_remaining_days_after_review(&data_dir, &review_date)
+        .await?;
+
+    Ok(RegenerateResult {
+        regenerated,
+        affected_dates,
+    })
+}
+
+/// regenerate_remaining_days 的返回结构
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RegenerateResult {
+    /// 是否实际执行了重排
+    pub regenerated: bool,
+    /// 受影响的日期列表
+    pub affected_dates: Vec<String>,
 }
 
 // ============================================================================

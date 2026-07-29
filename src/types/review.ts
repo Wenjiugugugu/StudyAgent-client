@@ -142,3 +142,19 @@ export interface SubmitReviewPayload {
   /** 超量完成记录（可选） */
   overcompletion?: OvercompletionEntry[];
 }
+
+/** 提交复盘的返回结果 */
+export interface SubmitReviewResult {
+  /** 是否需要调用 AI 重新生成本周剩余天数计划 */
+  needs_regeneration: boolean;
+  /** 触发重排的原因（用于前端展示） */
+  regen_reasons: string[];
+}
+
+/** 重排剩余天数的返回结果 */
+export interface RegenerateResult {
+  /** 是否实际执行了重排 */
+  regenerated: boolean;
+  /** 受影响的日期列表 */
+  affected_dates: string[];
+}

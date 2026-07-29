@@ -224,8 +224,13 @@ export async function generateReview(date: string): Promise<ReviewRecord> {
 }
 
 /** 提交结构化复盘（新版，无需 AI） */
-export async function submitReview(payload: import("@/types").SubmitReviewPayload): Promise<void> {
+export async function submitReview(payload: import("@/types").SubmitReviewPayload): Promise<import("@/types").SubmitReviewResult> {
   return invokeDirect("submit_review", { payload });
+}
+
+/** 复盘后重新生成本周剩余天数计划（AI 驱动） */
+export async function regenerateRemainingDays(reviewDate: string): Promise<import("@/types").RegenerateResult> {
+  return invokeDirect("regenerate_remaining_days", { reviewDate });
 }
 
 // ── Knowledge ──

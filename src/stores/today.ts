@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api";
-import { todayString, weekdayName } from "@/utils/date";
+import { todayString, yesterdayString, weekdayName } from "@/utils/date";
 import type { DailyPlan, PlanTask } from "@/types";
 
 export const useTodayStore = defineStore("today", () => {
@@ -9,6 +9,8 @@ export const useTodayStore = defineStore("today", () => {
   const loading = ref(false);
   const generating = ref(false);
   const error = ref<string | null>(null);
+  /** 昨日复盘是否缺失（仅今天加载时检查） */
+  const missingYesterdayReview = ref(false);
 
   const allTasks = computed<PlanTask[]>(() => {
     if (!plan.value?.data?.tasks) return [];
@@ -35,8 +37,20 @@ export const useTodayStore = defineStore("today", () => {
   async function loadByDate(date: string) {
     loading.value = true;
     error.value = null;
+    missingYesterdayReview.value = false;
     try {
       plan.value = await api.getPlanByDate(date);
+
+      // 仅今天加载时检查昨日复盘是否存在
+      if (date === todayString()) {
+        const yesterday = yesterdayString();
+        try {
+          await api.getReview(yesterday);
+        } catch {
+          // 昨日复盘不存在
+          missingYesterdayReview.value = true;
+        }
+      }
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
     } finally {
@@ -97,6 +111,7 @@ export const useTodayStore = defineStore("today", () => {
     loading,
     generating,
     error,
+    missingYesterdayReview,
     allTasks,
     priorityATasks,
     priorityBTasks,

@@ -171,6 +171,7 @@ fn main() {
             list_review_dates,
             generate_review,
             submit_review,
+            regenerate_remaining_days,
             // Knowledge
             list_knowledge,
             get_knowledge,

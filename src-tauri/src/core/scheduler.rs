@@ -6,8 +6,7 @@
 //!   映射为 PlanTask 实例
 //! - 任务 ID 格式：{date}-{sequence}
 //! - 跳过休息日
-//! - 读取昨日复盘，若用户压力大/精力低，按规则削减当日任务量（即时调整）
-//! - 读取昨日复盘，将未完成任务（incomplete/partial）顺延至今日（按科目替换）
+//! - 不再处理未完成任务顺延和即时调整：这些由 AI 在复盘后重排剩余天数时处理
 
 use std::path::Path;
 
@@ -16,7 +15,7 @@ use crate::data::plan::{
     WeekDayPlan, WeekPlanFile,
 };
 use crate::data::state::{CurrentTask, StateTask, SubjectKey, TaskStatus};
-use crate::data::{add_days, days_between, iso_week_string, now_string, DataResult};
+use crate::data::{days_between, iso_week_string, now_string, DataResult};
 
 /// 日计划调度器
 pub struct DailyScheduler;
@@ -77,36 +76,7 @@ impl DailyScheduler {
             }
         }
 
-        // 顺延昨日未完成任务：读取昨日复盘，将 incomplete/partial 的任务
-        // 按科目替换今日同科目第一个任务（保证章节连贯），今日无该科目则追加
-        let mut style_tips: Vec<String> = Vec::new();
-        let carryover_tips = Self::carryover_uncompleted_tasks(data_dir, date, &mut tasks);
-        if !carryover_tips.is_empty() {
-            style_tips.extend(carryover_tips);
-        }
-
-        // 即时调整：读取昨日复盘，根据用户压力/精力削减当日任务量
-        let adjustment = Self::compute_adjustment_from_prev_review(data_dir, date);
-        if let Some(adj) = adjustment.as_ref() {
-            let before_count = tasks.len();
-            let before_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
-            tasks = Self::apply_adjustment(tasks, adj);
-            // 重新编排任务 ID（保持连续）
-            for (idx, task) in tasks.iter_mut().enumerate() {
-                task.id = format!("{}-{:02}", date, idx + 1);
-            }
-            let after_count = tasks.len();
-            let after_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
-            let dropped_count = before_count.saturating_sub(after_count);
-            if dropped_count > 0 {
-                let tip = format!(
-                    "检测到昨日状态欠佳（{}），已自动削减 {} 个低优先级任务（{}→{} 个 / {:.1}h→{:.1}h）。",
-                    adj.reason, dropped_count, before_count, after_count, before_hours, after_hours
-                );
-                log::info!("日计划即时调整: {}", tip);
-                style_tips.push(tip);
-            }
-        }
+        let style_tips: Vec<String> = Vec::new();
 
         let total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let total_tasks = tasks.len() as i32;
@@ -198,238 +168,6 @@ impl DailyScheduler {
 
         Ok(plan)
     }
-
-    /// 顺延昨日未完成任务到今日
-    ///
-    /// 读取昨日复盘，将 status 为 incomplete/partial 的任务按科目替换今日同科目的
-    /// 第一个任务（保证章节连贯，如行列式没学完则今天继续行列式而非矩阵）。
-    /// 今日无该科目则追加到任务列表末尾。
-    ///
-    /// 返回顺延提示文本（用于 style_tips 展示）。
-    fn carryover_uncompleted_tasks(
-        data_dir: &Path,
-        date: &str,
-        tasks: &mut Vec<PlanTask>,
-    ) -> Vec<String> {
-        let mut tips = Vec::new();
-
-        let prev_date = match add_days(date, -1) {
-            Ok(d) => d,
-            Err(_) => return tips,
-        };
-
-        // 读取昨日复盘
-        let review = match crate::data::records::read_review(data_dir, &prev_date) {
-            Ok(r) => r,
-            Err(_) => return tips, // 无昨日复盘，无需顺延
-        };
-
-        // 筛选未完成任务（incomplete / partial）
-        let uncompleted: Vec<&crate::data::records::TaskReviewEntry> = review
-            .task_reviews
-            .iter()
-            .filter(|tr| tr.status == "incomplete" || tr.status == "partial")
-            .collect();
-
-        if uncompleted.is_empty() {
-            return tips;
-        }
-
-        // 读取昨日日计划，获取未完成任务的完整信息
-        let prev_plan = match crate::data::plan::read_daily_plan(data_dir, &prev_date) {
-            Ok(p) => p,
-            Err(_) => {
-                log::warn!(
-                    "顺延未完成任务：昨日 {} 日计划不存在，跳过",
-                    prev_date
-                );
-                return tips;
-            }
-        };
-
-        // 构建 task_id -> PlanTask 映射
-        let prev_task_map: std::collections::HashMap<&str, &PlanTask> = prev_plan
-            .data
-            .tasks
-            .iter()
-            .filter_map(|t| Some((t.id.as_str(), t)))
-            .collect();
-
-        for tr in uncompleted {
-            // 优先按 task_id 匹配，回退到 title 匹配
-            let prev_task = prev_task_map
-                .get(tr.task_id.as_str())
-                .copied()
-                .or_else(|| {
-                    prev_plan
-                        .data
-                        .tasks
-                        .iter()
-                        .find(|t| t.title == tr.title)
-                });
-
-            let prev_task = match prev_task {
-                Some(t) => t,
-                None => {
-                    log::warn!(
-                        "顺延未完成任务：task_id={} title={} 在昨日日计划中未找到，跳过",
-                        tr.task_id,
-                        tr.title
-                    );
-                    continue;
-                }
-            };
-
-            let subject_str = format!("{:?}", prev_task.subject).to_lowercase();
-            let carried_title = prev_task.title.clone();
-
-            // 在今日任务中找同科目的第一个任务
-            let replace_pos = tasks
-                .iter()
-                .position(|t| format!("{:?}", t.subject).to_lowercase() == subject_str);
-
-            if let Some(pos) = replace_pos {
-                // 保留被覆盖的原任务内容，追加到今日末尾（学完顺延任务后可继续）
-                let displaced = tasks[pos].clone();
-                // 用昨日未完成任务替换今日同科目第一个任务
-                let today_task = &mut tasks[pos];
-                today_task.title = prev_task.title.clone();
-                today_task.goal = prev_task.goal.clone();
-                today_task.completion_criteria = prev_task.completion_criteria.clone();
-                today_task.textbook = prev_task.textbook.clone();
-                today_task.style_tips = prev_task.style_tips.clone();
-                today_task.fallback_plan = prev_task.fallback_plan.clone();
-                today_task.estimated_hours = prev_task.estimated_hours;
-                today_task.priority = prev_task.priority.clone();
-
-                // 被覆盖任务追加到末尾，标记为顺延产生
-                let mut displaced_task = displaced;
-                displaced_task.id = format!("{}-{:02}", date, tasks.len() + 1);
-                displaced_task.status = TaskStatus::Pending;
-                tasks.push(displaced_task);
-            } else {
-                // 今日无该科目，追加到末尾
-                let new_task = PlanTask {
-                    id: format!("{}-{:02}", date, tasks.len() + 1),
-                    subject: prev_task.subject.clone(),
-                    title: prev_task.title.clone(),
-                    priority: prev_task.priority.clone(),
-                    estimated_hours: prev_task.estimated_hours,
-                    goal: prev_task.goal.clone(),
-                    completion_criteria: prev_task.completion_criteria.clone(),
-                    textbook: prev_task.textbook.clone(),
-                    style_tips: prev_task.style_tips.clone(),
-                    fallback_plan: prev_task.fallback_plan.clone(),
-                    status: TaskStatus::Pending,
-                };
-                tasks.push(new_task);
-            }
-
-            let status_label = if tr.status == "partial" {
-                "部分完成"
-            } else {
-                "未完成"
-            };
-            let subject_label = match prev_task.subject {
-                SubjectKey::Math => "数学",
-                SubjectKey::English => "英语",
-                SubjectKey::Politics => "政治",
-                SubjectKey::Professional => "专业课",
-            };
-            let tip = format!(
-                "昨日{}「{}」{}，已顺延至今日继续学习",
-                subject_label, carried_title, status_label
-            );
-            tips.push(tip.clone());
-            log::info!("顺延未完成任务: {}", tip);
-        }
-
-        // 重新编排任务 ID（保持连续）
-        for (idx, task) in tasks.iter_mut().enumerate() {
-            task.id = format!("{}-{:02}", date, idx + 1);
-        }
-
-        tips
-    }
-
-    /// 读取昨日复盘，计算当日任务量调整策略
-    ///
-    /// 规则（任一命中即触发削减）：
-    /// - `overall_feeling == "hard"`：削减当日所有 B 类任务
-    /// - `energy_level <= 2`（1-5 分制）：削减当日所有 B 类任务
-    /// - 同时命中两者：再额外削减最低优先级的 A 类任务中的最后一个（保留核心 A 类）
-    ///
-    /// 返回 None 表示无需调整（无昨日复盘 / 字段缺失 / 状态正常）。
-    fn compute_adjustment_from_prev_review(
-        data_dir: &Path,
-        date: &str,
-    ) -> Option<Adjustment> {
-        let prev_date = add_days(date, -1).ok()?;
-        let review = crate::data::records::read_review(data_dir, &prev_date).ok()?;
-
-        let feeling = review
-            .daily_review
-            .as_ref()
-            .map(|d| d.overall_feeling.as_str())
-            .unwrap_or("");
-        let energy = review.data.energy_level;
-
-        let hard_feeling = feeling == "hard";
-        let low_energy = energy > 0 && energy <= 2;
-
-        if !hard_feeling && !low_energy {
-            return None;
-        }
-
-        let reason = match (hard_feeling, low_energy) {
-            (true, true) => format!("昨日感受「比较困难」且精力仅 {} 分", energy),
-            (true, false) => "昨日感受「比较困难」".to_string(),
-            (false, true) => format!("昨日精力仅 {} 分", energy),
-            _ => unreachable!(),
-        };
-
-        // 削减强度：双触发 > 单触发
-        let drop_b_class = true; // 削减所有 B 类
-        let drop_lowest_a = hard_feeling && low_energy; // 双触发再砍最低 A 类
-
-        Some(Adjustment {
-            reason,
-            drop_b_class,
-            drop_lowest_a,
-        })
-    }
-
-    /// 应用调整策略：按优先级从低到高移除任务
-    ///
-    /// 保留顺序：
-    /// 1. 先保留所有 A 类任务（若 drop_lowest_a 则移除最后一个 A 类）
-    /// 2. 再保留 B 类任务（若 drop_b_class 则全部移除）
-    /// 3. 同优先级内按原顺序保留（不重排）
-    fn apply_adjustment(mut tasks: Vec<PlanTask>, adj: &Adjustment) -> Vec<PlanTask> {
-        use crate::data::state::TaskPriority::{A, B};
-        if adj.drop_lowest_a {
-            // 找到最后一个 A 类任务的索引并移除
-            if let Some(pos) = tasks.iter().rposition(|t| t.priority == A) {
-                tasks.remove(pos);
-            }
-        }
-
-        if adj.drop_b_class {
-            tasks.retain(|t| t.priority != B);
-        }
-
-        tasks
-    }
-}
-
-/// 任务量调整描述（由昨日复盘派生）
-struct Adjustment {
-    /// 调整原因（用于日志和 style_tips 展示）
-    reason: String,
-    /// 是否移除所有 B 类任务
-    drop_b_class: bool,
-    /// 是否移除最后一个 A 类任务（双触发时启用）
-    drop_lowest_a: bool,
 }
 
 fn find_day_plan<'a>(week_plan: &'a WeekPlanFile, date: &str) -> DataResult<&'a WeekDayPlan> {
