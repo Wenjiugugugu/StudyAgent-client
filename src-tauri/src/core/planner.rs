@@ -10,7 +10,7 @@ use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::core::scheduler::DailyScheduler;
 use crate::data::plan::{
-    BasedOn, DailyPlanFile, WeekDayPlan, WeekPlanData, WeekPlanFile,
+    BasedOn, DailyPlanFile, ExcludedDay, WeekDayPlan, WeekPlanData, WeekPlanFile, WorkloadAdjustment,
 };
 use crate::data::state::StudyState;
 use crate::data::{
@@ -176,6 +176,7 @@ impl<'a> Planner<'a> {
             &subject_start_dates,
             daily_task_count,
             enable_review_tasks,
+            &week_plan.data.excluded_days,
         );
         crate::data::write_ai_debug_log(
             data_dir,
@@ -277,6 +278,229 @@ impl<'a> Planner<'a> {
         Ok((true, regen_dates))
     }
 
+    /// 周中新增排除日后，重新生成本周剩余天数的周计划安排（AI 驱动）
+    ///
+    /// 在用户于周计划页点击"今天及之后"的日期标记为排除日时调用。
+    /// AI 会根据：
+    /// - 新增的排除日（该日不排任务）
+    /// - 当前 State 进度
+    /// - 周计划剩余天数的原安排
+    /// 重新生成重排范围（excluded_date 至 week_end）的 subject_allocations，
+    /// 把原本安排在排除日的任务量分摊到剩余学习日。
+    ///
+    /// 返回 (是否实际重排, 重排影响的日期列表)
+    pub async fn regenerate_after_exclusion(
+        &self,
+        data_dir: &Path,
+        week_start: &str,
+        excluded_day: ExcludedDay,
+    ) -> DataResult<(bool, Vec<String>)> {
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_start",
+            &format!(
+                "开始排除日重排, week_start={}, excluded_date={}, reason={}",
+                week_start, excluded_day.date, excluded_day.reason_type
+            ),
+        );
+
+        // 1. 读取本周周计划
+        let iso_week = iso_week_string(week_start)?;
+        let mut week_plan = crate::data::plan::read_week_plan(data_dir, &iso_week)
+            .map_err(|e| format!("读取周计划失败: {}。请先生成周计划。", e))?;
+
+        let week_end = week_plan.meta.week_end.clone();
+
+        // 2. 校验排除日不早于今天（不允许排除过去日期）
+        let today = today_string();
+        if excluded_day.date < today {
+            return Err(format!(
+                "不能排除过去的日期（{}），今天是 {}。只能排除今天及之后的日期。",
+                excluded_day.date, today
+            ));
+        }
+
+        // 3. 校验排除日在本周范围内
+        if excluded_day.date.as_str() < week_start || excluded_day.date.as_str() > week_end.as_str() {
+            return Err(format!(
+                "排除日 {} 不在本周（{} 至 {}）范围内",
+                excluded_day.date, week_start, week_end
+            ));
+        }
+
+        // 4. 若该日已是排除日，直接返回（幂等）
+        if week_plan
+            .data
+            .excluded_days
+            .iter()
+            .any(|d| d.date == excluded_day.date)
+        {
+            log::info!(
+                "排除日 {} 已存在，跳过重排",
+                excluded_day.date
+            );
+            return Ok((false, Vec::new()));
+        }
+
+        // 5. 加入排除日列表 + enforce
+        week_plan.data.excluded_days.push(excluded_day.clone());
+        let excluded_snapshot = week_plan.data.excluded_days.clone();
+        enforce_excluded_days(&mut week_plan, &excluded_snapshot)?;
+
+        // 6. 确定重排范围：excluded_date 至 week_end
+        let regen_start = excluded_day.date.clone();
+        let regen_dates: Vec<String> = {
+            let mut dates = Vec::new();
+            let mut current = regen_start.clone();
+            loop {
+                dates.push(current.clone());
+                if current == week_end {
+                    break;
+                }
+                current = add_days(&current, 1)?;
+            }
+            dates
+        };
+
+        // 收集这些日期在周计划中的原安排（作为参考给 AI）
+        let regen_days: Vec<&crate::data::plan::WeekDayPlan> = week_plan
+            .data
+            .days
+            .iter()
+            .filter(|d| regen_dates.contains(&d.date))
+            .collect();
+
+        // 7. 读取 State 和设置
+        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let settings = crate::load_settings(data_dir);
+        let rest_days = settings.rest_days();
+        let subject_start_dates = settings.subject_start_dates();
+        let daily_task_count = settings.daily_task_count();
+        let enable_review_tasks = settings.enable_review_tasks();
+
+        // 8. 构建 prompt
+        let prompt = self.build_exclusion_regenerate_prompt(
+            &state,
+            &excluded_day,
+            &regen_days,
+            &regen_start,
+            &week_end,
+            &week_plan.meta.week_start,
+            &rest_days,
+            &subject_start_dates,
+            daily_task_count,
+            enable_review_tasks,
+            &week_plan.data.excluded_days,
+        );
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_prompt_ready",
+            &format!(
+                "prompt 已构建, 长度={} 字符, regen_dates={:?}",
+                prompt.len(),
+                regen_dates
+            ),
+        );
+
+        // 9. 调用 AI
+        let request = ChatRequest {
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: prompt,
+                ..Default::default()
+            }],
+            agent: Some(AgentType::Planner),
+            temperature: Some(0.6),
+            timeout_override: Some(300),
+            ..Default::default()
+        };
+
+        log::info!(
+            "[AI-DEBUG] 排除日重排请求开始, excluded_date={}, regen范围={}-{}",
+            excluded_day.date, regen_start, week_end
+        );
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_ai_request",
+            &format!(
+                "即将发送 AI 请求, excluded_date={}, regen范围={}-{}, timeout=300s",
+                excluded_day.date, regen_start, week_end
+            ),
+        );
+        let response = self
+            .ai_service
+            .chat(request)
+            .await
+            .map_err(|e| {
+                crate::data::write_ai_debug_log(data_dir, "exclusion_regen_ai_call_error", &format!("AI 调用失败: {}", e));
+                format!("AI 排除日重排失败: {}", e)
+            })?;
+
+        let resp_preview: String = response.content.chars().take(500).collect();
+        log::info!(
+            "[AI-DEBUG] 排除日重排响应长度: {} 字符, 前 500 字符: {}",
+            response.content.len(),
+            resp_preview
+        );
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_ai_response",
+            &format!(
+                "AI 响应已返回, 长度={} 字符, 前 500 字符:\n{}",
+                response.content.len(),
+                resp_preview
+            ),
+        );
+
+        // 10. 解析 AI 返回的剩余天数安排
+        let updated_days = parse_regenerate_response(&response.content, data_dir)?;
+
+        // 11. 更新周计划
+        update_week_plan_remaining_days(&mut week_plan, &updated_days);
+        // enforce 确保排除日仍为休息日（AI 可能在重排时误塞任务）
+        let excluded_snapshot2 = week_plan.data.excluded_days.clone();
+        enforce_excluded_days(&mut week_plan, &excluded_snapshot2)?;
+        crate::data::plan::save_week_plan(data_dir, &week_plan)?;
+        log::info!("周计划已更新（排除日重排）, 影响日期: {:?}", regen_dates);
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_week_plan_saved",
+            &format!("周计划已保存, 影响日期: {:?}", regen_dates),
+        );
+
+        // 12. 如果今天在重排范围内且今天不是排除日，重新生成今日日计划
+        if regen_dates.contains(&today) {
+            let today_is_excluded = week_plan
+                .data
+                .excluded_days
+                .iter()
+                .any(|d| d.date == today);
+            if !today_is_excluded {
+                log::info!("今天 {} 在重排范围内且非排除日，重新生成今日日计划", today);
+                let plan = DailyScheduler::generate_daily_plan(data_dir, &today)?;
+                crate::data::plan::save_daily_plan(data_dir, &plan)?;
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    "exclusion_regen_today_plan_saved",
+                    &format!("今日日计划已重新生成并保存, date={}", today),
+                );
+                if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
+                    log::warn!("同步 current_task 失败: {}", e);
+                }
+            } else {
+                log::info!("今天 {} 是排除日，不生成日计划", today);
+            }
+        }
+
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_complete",
+            &format!("排除日重排完成, excluded_date={}, 影响日期: {:?}", excluded_day.date, regen_dates),
+        );
+
+        Ok((true, regen_dates))
+    }
+
     /// 将生成的日计划同步到 State.current_task
     /// 仅在 state 中当前日期任务为空或日期不匹配时才写入，避免覆盖已有的完成状态
     fn sync_current_task(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
@@ -329,6 +553,8 @@ impl<'a> Planner<'a> {
         &self,
         data_dir: &Path,
         week_start: &str,
+        excluded_days: &[ExcludedDay],
+        workload_adjustment: Option<&WorkloadAdjustment>,
     ) -> DataResult<WeekPlanFile> {
         let week_end = get_week_end(week_start)?;
 
@@ -377,6 +603,8 @@ impl<'a> Planner<'a> {
             enable_review_tasks,
             &prev_week_daily_plans,
             &prev_week_reviews,
+            excluded_days,
+            workload_adjustment,
         );
 
         // 3. 调用 AI 生成周计划 JSON
@@ -415,6 +643,12 @@ impl<'a> Planner<'a> {
 
         // 3.1 后置校验：强制周计划的 is_rest_day 与用户设置一致
         enforce_rest_days(&mut week_plan, &rest_days, week_start, &week_end)?;
+        // 3.2 后置校验：把排除日也标记为 is_rest_day=true 并清空 allocations
+        enforce_excluded_days(&mut week_plan, excluded_days)?;
+
+        // 3.3 持久化用户本周配置（排除日 + 任务量调整）
+        week_plan.data.excluded_days = excluded_days.to_vec();
+        week_plan.data.workload_adjustment = workload_adjustment.cloned();
 
         // 4. 保存周计划 JSON
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
@@ -443,6 +677,8 @@ impl<'a> Planner<'a> {
         enable_review_tasks: bool,
         prev_week_daily_plans: &[DailyPlanFile],
         prev_week_reviews: &[crate::data::records::ReviewFile],
+        excluded_days: &[ExcludedDay],
+        workload_adjustment: Option<&WorkloadAdjustment>,
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, week_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
@@ -493,9 +729,79 @@ impl<'a> Planner<'a> {
             if enable_review_tasks {
                 "可在 task_templates 中安排'回顾'/'总结'/'复习'类任务以巩固知识"
             } else {
-                "严禁安排'回顾'/'总结'/'复习'/'梳理'类任务，每日任务必须推进新知识点或新章节"
+                "严禁安排任何形式的复习/巩固类任务，包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'/'巩固练习'等；每日任务必须推进新知识点、新章节或新习题"
             }
         ));
+
+        // 本周任务量调整（相对上周）
+        if let Some(adj) = workload_adjustment {
+            if adj.direction != "unchanged" {
+                prompt.push_str("## 本周任务量调整（相对上周）\n");
+                let dir_label = match adj.direction.as_str() {
+                    "increase" => "增加",
+                    "decrease" => "减少",
+                    _ => "调整",
+                };
+                let level_label = match adj.level.as_deref() {
+                    Some("small") => "小幅",
+                    Some("large") => "大幅",
+                    _ => "适度",
+                };
+                prompt.push_str(&format!(
+                    "- 方向: {}（{}）\n",
+                    dir_label, level_label
+                ));
+                prompt.push_str(&format!(
+                    "- 要求: 相比上一周的任务总量，本周整体任务量应{}约 20%（小幅）或 40%（大幅）。通过调整每日任务数（在每日 {} 个基准上 ±1）或任务难度来实现，不得通过删减必要章节来减量。\n",
+                    dir_label, daily_task_count
+                ));
+                if let Some(note) = &adj.note {
+                    if !note.is_empty() {
+                        prompt.push_str(&format!("- 用户备注: {}\n", note));
+                    }
+                }
+                prompt.push_str("\n");
+            }
+        }
+
+        // 本周特殊情况排除日期
+        if !excluded_days.is_empty() {
+            prompt.push_str("## 本周特殊情况排除日期（重要）\n");
+            prompt.push_str("以下日期用户已声明不学习（外出/生病/考试等），本周计划中这些日期：\n");
+            prompt.push_str("- is_rest_day 必须为 true\n");
+            prompt.push_str("- subject_allocations 必须为空数组\n");
+            prompt.push_str("- 原本应安排在这些日期的任务量必须分摊到本周其他学习日\n\n");
+            let type_label = |t: &str| -> &'static str {
+                match t {
+                    "travel" => "外出旅行",
+                    "sick" => "生病",
+                    "exam" => "考试",
+                    _ => "其他",
+                }
+            };
+            for ex in excluded_days {
+                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_default();
+                prompt.push_str(&format!(
+                    "- {}（{}）: {}",
+                    ex.date,
+                    weekday,
+                    type_label(&ex.reason_type)
+                ));
+                if let Some(note) = &ex.note {
+                    if !note.is_empty() {
+                        prompt.push_str(&format!(" — {}", note));
+                    }
+                }
+                prompt.push('\n');
+            }
+            prompt.push_str(&format!(
+                "\n本周实际可学习天数 = 7 - {}（休息日）- {}（排除日）= {} 天。请确保这 {} 天的任务量合理覆盖本周目标。\n\n",
+                rest_days.len(),
+                excluded_days.len(),
+                7 - rest_days.len() - excluded_days.len(),
+                7 - rest_days.len() - excluded_days.len()
+            ));
+        }
 
         // 各科开始学习日期（未到开始日期的科目本周不得安排任务）
         if !subject_start_dates.is_empty() {
@@ -870,7 +1176,7 @@ impl<'a> Planner<'a> {
 9. 必须严格遵守「各科开始学习日期」节中的约束：若某科目开始日期晚于本周日（{}），该科目不得出现在 subjects、subject_allocations 中，本周完全不为其安排任务。
 10. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
 11. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
-12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"等字样，每个任务必须推进新的知识点、章节或习题；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
+12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
 13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
 "#,
             week_start, week_end, week_end, daily_task_count,
@@ -968,6 +1274,7 @@ impl<'a> Planner<'a> {
         subject_start_dates: &[(&'static str, String)],
         daily_task_count: i64,
         enable_review_tasks: bool,
+        excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
@@ -1140,9 +1447,38 @@ impl<'a> Planner<'a> {
             if enable_review_tasks {
                 "允许安排"
             } else {
-                "禁止安排（严禁「回顾」「总结」「复习」「梳理」类任务）"
+                "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）"
             }
         ));
+
+        // 本周特殊情况排除日期（重排时也必须遵守）
+        if !excluded_days.is_empty() {
+            prompt.push_str("\n### 本周特殊情况排除日期\n");
+            prompt.push_str("以下日期用户已声明不学习，重排时这些日期必须：is_rest_day=true、subject_allocations 为空数组。原本安排在这些日期的任务量分摊到剩余学习日。\n");
+            let type_label = |t: &str| -> &'static str {
+                match t {
+                    "travel" => "外出旅行",
+                    "sick" => "生病",
+                    "exam" => "考试",
+                    _ => "其他",
+                }
+            };
+            for ex in excluded_days {
+                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_default();
+                prompt.push_str(&format!(
+                    "- {}（{}）: {}",
+                    ex.date,
+                    weekday,
+                    type_label(&ex.reason_type)
+                ));
+                if let Some(note) = &ex.note {
+                    if !note.is_empty() {
+                        prompt.push_str(&format!(" — {}", note));
+                    }
+                }
+                prompt.push('\n');
+            }
+        }
 
         // 各科开始日期约束
         let has_unstarted = subject_start_dates.iter().any(|(k, d)| {
@@ -1246,10 +1582,258 @@ impl<'a> Planner<'a> {
 5. 未完成任务必须尽快安排在剩余天数的前几天。
 6. 额外进度已更新到 State，重排时必须从实际到达的章节继续，不得回退。
 7. 每天的 task_templates 数量约 {} 个，每科约一条。
-8. {}若用户禁止总结任务，task_templates 不得出现"回顾"/"总结"/"复习"/"梳理"等字样。
+8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
 9. 休息日的 subject_allocations 为空数组。
 "#,
             regen_start, week_end, daily_task_count,
+            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
+        ));
+
+        prompt
+    }
+
+    /// 构建排除日重排 prompt（周中新增排除日时使用，不依赖复盘）
+    #[allow(clippy::too_many_arguments)]
+    fn build_exclusion_regenerate_prompt(
+        &self,
+        state: &StudyState,
+        excluded_day: &ExcludedDay,
+        regen_days: &[&crate::data::plan::WeekDayPlan],
+        regen_start: &str,
+        week_end: &str,
+        week_start: &str,
+        rest_days: &[String],
+        subject_start_dates: &[(&'static str, String)],
+        daily_task_count: i64,
+        enable_review_tasks: bool,
+        all_excluded_days: &[ExcludedDay],
+    ) -> String {
+        let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
+        let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
+
+        let type_label = match excluded_day.reason_type.as_str() {
+            "travel" => "外出旅行",
+            "sick" => "生病",
+            "exam" => "考试",
+            _ => "其他",
+        };
+
+        let mut prompt = String::new();
+        prompt.push_str(&format!(
+            "用户在本周（{}）新增了一个特殊情况排除日：{}（{}，{}）。需要重新安排本周 {} 至 {} 的学习计划，把原本安排在排除日的任务量分摊到剩余学习日。\n\n",
+            iso_week, excluded_day.date, type_label,
+            excluded_day.note.as_deref().unwrap_or(""),
+            regen_start, week_end
+        ));
+
+        // 考试信息
+        prompt.push_str("## 考试信息\n");
+        prompt.push_str(&format!(
+            "- 考试日期: {}\n- 距今剩余: {} 天\n- 目标院校: {} {}\n\n",
+            state.meta.exam_date,
+            remaining,
+            state.meta.target_school,
+            state.meta.target_major
+        ));
+
+        // 重排原因
+        prompt.push_str("## 重排原因（新增排除日）\n");
+        prompt.push_str(&format!(
+            "- 排除日期: {}\n- 类型: {}\n",
+            excluded_day.date, type_label
+        ));
+        if let Some(note) = &excluded_day.note {
+            if !note.is_empty() {
+                prompt.push_str(&format!("- 备注: {}\n", note));
+            }
+        }
+        prompt.push_str("- 该日不安排任何任务，is_rest_day 必须为 true，subject_allocations 为空数组。\n");
+        prompt.push_str("- 原本安排在该日的任务量必须分摊到本周其他学习日。\n\n");
+
+        // 当前各科状态
+        prompt.push_str("## 当前各科状态\n");
+        prompt.push_str(&format!(
+            "### 数学\n- 阶段: {:?}\n- 当前重点: {}\n- 已完成: {:?}\n- 薄弱章节: {:?}\n\n",
+            state.subjects.math.phase,
+            state.subjects.math.current_focus,
+            state.subjects.math.completed,
+            state.subjects.math.weak_chapters
+        ));
+        prompt.push_str(&format!(
+            "### 英语\n- 阶段: {:?}\n- 当前重点: {}\n- 已完成: {:?}\n\n",
+            state.subjects.english.phase,
+            state.subjects.english.current_focus,
+            state.subjects.english.completed
+        ));
+        prompt.push_str(&format!(
+            "### 专业课\n- 阶段: {:?}\n- 当前重点: {}\n- 已完成: {:?}\n\n",
+            state.subjects.professional.phase,
+            state.subjects.professional.current_focus,
+            state.subjects.professional.completed
+        ));
+        if state.subjects.politics.active {
+            prompt.push_str(&format!(
+                "### 政治\n- 阶段: {:?}\n- 当前重点: {}\n\n",
+                state.subjects.politics.phase, state.subjects.politics.current_focus
+            ));
+        }
+
+        // 学习日程约束
+        prompt.push_str("## 学习日程约束\n");
+        prompt.push_str(&format!(
+            "- 休息日: {}（这些日子不安排任务）\n",
+            rest_days.join("、")
+        ));
+        prompt.push_str(&format!(
+            "- 每日任务数量: {} 个（每科约一条；未开始的科目不安排）\n",
+            daily_task_count
+        ));
+        prompt.push_str(&format!(
+            "- 总结/复习任务: {}\n",
+            if enable_review_tasks {
+                "允许安排"
+            } else {
+                "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）"
+            }
+        ));
+
+        // 本周所有排除日（重排时必须遵守）
+        if !all_excluded_days.is_empty() {
+            prompt.push_str("\n### 本周所有特殊情况排除日期\n");
+            prompt.push_str("以下日期用户已声明不学习，重排时这些日期必须：is_rest_day=true、subject_allocations 为空数组。原本安排在这些日期的任务量分摊到剩余学习日。\n");
+            let type_label_fn = |t: &str| -> &'static str {
+                match t {
+                    "travel" => "外出旅行",
+                    "sick" => "生病",
+                    "exam" => "考试",
+                    _ => "其他",
+                }
+            };
+            for ex in all_excluded_days {
+                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_default();
+                prompt.push_str(&format!(
+                    "- {}（{}）: {}",
+                    ex.date,
+                    weekday,
+                    type_label_fn(&ex.reason_type)
+                ));
+                if let Some(note) = &ex.note {
+                    if !note.is_empty() {
+                        prompt.push_str(&format!(" — {}", note));
+                    }
+                }
+                prompt.push('\n');
+            }
+        }
+
+        // 各科开始日期约束
+        let has_unstarted = subject_start_dates.iter().any(|(k, d)| {
+            !d.is_empty() && d.as_str() > week_end && (*k == "math" || *k == "english" || *k == "politics" || *k == "professional")
+        });
+        if has_unstarted {
+            prompt.push_str("\n## 各科开始日期约束\n");
+            let subject_cn = |key: &str| -> &'static str {
+                match key {
+                    "math" => "数学",
+                    "english" => "英语",
+                    "politics" => "政治",
+                    "professional" => "专业课",
+                    _ => "未知",
+                }
+            };
+            for (key, date) in subject_start_dates {
+                if !date.is_empty() && date.as_str() > week_end {
+                    prompt.push_str(&format!(
+                        "- {}（{}）: 开始日期 {}，本周剩余天数不得安排任务\n",
+                        subject_cn(key),
+                        key,
+                        date
+                    ));
+                }
+            }
+        }
+
+        // 原安排参考
+        prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
+        for day in regen_days {
+            let weekday = crate::data::weekday_name(&day.date).unwrap_or_default();
+            prompt.push_str(&format!(
+                "\n**{}（{}）**{}\n",
+                day.date,
+                weekday,
+                if day.is_rest_day { "【休息日/排除日】" } else { "" }
+            ));
+            if !day.is_rest_day && !day.subject_allocations.is_empty() {
+                for alloc in &day.subject_allocations {
+                    let subj_label = match alloc.subject {
+                        crate::data::state::SubjectKey::Math => "数学",
+                        crate::data::state::SubjectKey::English => "英语",
+                        crate::data::state::SubjectKey::Politics => "政治",
+                        crate::data::state::SubjectKey::Professional => "专业课",
+                    };
+                    prompt.push_str(&format!(
+                        "- {}（{}h）: {}",
+                        subj_label, alloc.hours, alloc.focus
+                    ));
+                    if !alloc.task_templates.is_empty() {
+                        let titles: Vec<&str> =
+                            alloc.task_templates.iter().map(|t| t.title.as_str()).collect();
+                        prompt.push_str(&format!(" → {}", titles.join("、")));
+                    }
+                    prompt.push('\n');
+                }
+            }
+        }
+
+        // 输出要求
+        prompt.push_str(&format!(
+            r#"
+
+## 输出要求
+
+请直接输出一个合法的 JSON 对象（不要包裹 ```json 代码块），严格符合以下结构：
+
+{{
+  "days": [
+    {{
+      "date": "YYYY-MM-DD",
+      "subject_allocations": [
+        {{
+          "subject": "math",
+          "hours": 2.0,
+          "focus": "当天该科重点",
+          "task_templates": [
+            {{
+              "title": "任务标题",
+              "priority": "A",
+              "estimated_hours": 1.5,
+              "goal": "任务目标",
+              "completion_criteria": ["完成标准1"],
+              "textbook": "教材（可选）",
+              "style_tips": "学习风格提示（可选）",
+              "fallback_plan": "失败回退方案（可选）"
+            }}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}
+
+重要约束：
+1. 必须覆盖 {} 至 {} 的所有学习日（休息日和排除日无需输出 subject_allocations，但 date 必须包含）。
+2. 排除日（{}）的 subject_allocations 必须为空数组。
+3. subject 只能是 "math" / "english" / "politics" / "professional" 之一。
+4. 优先级使用 "A"（必须完成）或 "B"（建议完成）。
+5. 数学任务必须严格遵循「数学二」考纲，排除伯努利方程、全微分方程。
+6. 每天的 task_templates 数量约 {} 个，每科约一条。
+7. 排除日原本的任务量必须分摊到剩余学习日，可通过适当增加每日任务数或难度来实现。
+8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
+9. 休息日的 subject_allocations 为空数组。
+"#,
+            regen_start, week_end,
+            all_excluded_days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>().join("、"),
+            daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
         ));
 
@@ -1387,6 +1971,45 @@ fn enforce_rest_days(
     Ok(())
 }
 
+/// 后置校验：把排除日标记为 is_rest_day=true 并清空 subject_allocations
+///
+/// 与 enforce_rest_days 不同，排除日是用户主动声明的"本周临时跳过"日期，
+/// 语义上区别于每周固定休息日。但为了复用 scheduler 的"休息日不生成日计划"逻辑，
+/// 排除日也设置 is_rest_day=true。前端通过 week_plan.data.excluded_days 区分展示。
+fn enforce_excluded_days(plan: &mut WeekPlanFile, excluded_days: &[ExcludedDay]) -> DataResult<()> {
+    if excluded_days.is_empty() {
+        return Ok(());
+    }
+    for ex in excluded_days {
+        if let Some(day) = plan.data.days.iter_mut().find(|d| d.date == ex.date) {
+            if !day.is_rest_day || !day.subject_allocations.is_empty() {
+                log::info!(
+                    "周计划校验: {} 标记为排除日（{}），清空 allocations",
+                    ex.date,
+                    ex.reason_type
+                );
+                day.is_rest_day = true;
+                day.subject_allocations.clear();
+            }
+        } else {
+            // 排除日缺失则补上
+            let weekday = weekday_name(&ex.date)?;
+            log::info!(
+                "周计划校验: 排除日 {} 缺失，补全为休息日",
+                ex.date
+            );
+            plan.data.days.push(WeekDayPlan {
+                date: ex.date.clone(),
+                weekday,
+                is_rest_day: true,
+                subject_allocations: Vec::new(),
+            });
+        }
+    }
+    plan.data.days.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(())
+}
+
 // ============================================================================
 // 复盘后重排相关：辅助函数
 // ============================================================================
@@ -1395,6 +2018,7 @@ fn enforce_rest_days(
 ///
 /// 触发条件（任一命中）：
 /// - 存在未完成任务（status 为 incomplete 或 partial）
+/// - 有任务掌握不足（mastery == "weak"，需要巩固）
 /// - 用户感受困难（daily_review.overall_feeling == "hard"）
 /// - 有额外进度记录（overcompletion 非空）
 pub fn check_review_needs_regeneration(review: &crate::data::records::ReviewFile) -> bool {
@@ -1403,6 +2027,12 @@ pub fn check_review_needs_regeneration(review: &crate::data::records::ReviewFile
         .task_reviews
         .iter()
         .any(|tr| tr.status == "incomplete" || tr.status == "partial");
+
+    // 掌握不足（需要巩固）：AI 应在后续计划中安排复习
+    let has_weak_mastery = review
+        .task_reviews
+        .iter()
+        .any(|tr| tr.mastery == "weak");
 
     // 感受困难
     let feels_hard = review
@@ -1414,7 +2044,7 @@ pub fn check_review_needs_regeneration(review: &crate::data::records::ReviewFile
     // 额外进度
     let has_overcompletion = !review.overcompletion.is_empty();
 
-    has_uncompleted || feels_hard || has_overcompletion
+    has_uncompleted || has_weak_mastery || feels_hard || has_overcompletion
 }
 
 /// 保存原始周计划副本（用于一周结束后对比原计划与现计划）

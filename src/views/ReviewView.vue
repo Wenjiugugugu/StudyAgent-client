@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
-import { todayString, yesterdayString, prevDateString, daysBetween } from "@/utils/date";
+import { todayString, yesterdayString, prevDateString, daysBetween, weekdayName, getWeekStart } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -23,6 +23,8 @@ import {
   ChevronLeft,
   ChevronRight,
   History,
+  Coffee,
+  Ban,
 } from "lucide-vue-next";
 import type { TaskReviewEntry, DailyReviewInput, ReviewRecord, OvercompletionEntry } from "@/types";
 
@@ -75,6 +77,30 @@ const isFuture = computed(() => selectedDate.value > todayDate);
 const isOlderThanYesterday = computed(() =>
   selectedDate.value < yesterdayDate.value && selectedDate.value < todayDate
 );
+
+// ── 休息日 / 排除日判断 ──
+const isCurrentDateRestDay = computed(() => {
+  const restDays = settingsStore.settings?.study_schedule?.rest_days ?? ["周日"];
+  return restDays.includes(weekdayName(selectedDate.value));
+});
+const selectedDateExcluded = ref(false);
+const selectedDateExcludedReason = ref<string | null>(null);
+
+async function checkSelectedDateExcluded() {
+  selectedDateExcluded.value = false;
+  selectedDateExcludedReason.value = null;
+  try {
+    const wp = await api.getWeekPlan(getWeekStart(selectedDate.value));
+    const ex = wp.data?.excluded_days?.find((d) => d.date === selectedDate.value);
+    if (ex) {
+      selectedDateExcluded.value = true;
+      const label = { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[ex.reason_type] ?? "特殊情况";
+      selectedDateExcludedReason.value = ex.note ? `${label}（${ex.note}）` : label;
+    }
+  } catch {
+    // 无周计划，忽略
+  }
+}
 
 // ── State ──
 const step = ref(0);
@@ -535,6 +561,8 @@ async function loadReviewData() {
     await todayStore.loadByDate(selectedDate.value);
     // 加载任务实际用时（仅启用计时且当前日匹配时有效）
     await loadTaskActualMinutes();
+    // 检查选中日期是否为排除日
+    await checkSelectedDateExcluded();
 
     // 检查是否已有复盘
     try {
@@ -683,6 +711,26 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         <h1 class="gate-title">今日尚未结束</h1>
         <p class="gate-desc">每日复盘需在 {{ endTime }} 之后进行。</p>
         <p class="gate-hint">请在学习结束后再来复盘。</p>
+      </div>
+    </Card>
+
+    <!-- 休息日：无需复盘 -->
+    <Card v-else-if="isCurrentDateRestDay && !existingReview" padding="lg" class="gate-card">
+      <div class="gate-hero">
+        <div class="gate-icon"><Coffee :size="40" /></div>
+        <h1 class="gate-title">{{ selectedDate }} 是休息日</h1>
+        <p class="gate-desc">休息日无需复盘，好好放松一下吧。</p>
+        <Button v-if="!isToday" variant="secondary" size="sm" @click="goToday">回到今天</Button>
+      </div>
+    </Card>
+
+    <!-- 排除日：无需复盘 -->
+    <Card v-else-if="selectedDateExcluded && !existingReview" padding="lg" class="gate-card">
+      <div class="gate-hero">
+        <div class="gate-icon"><Ban :size="40" /></div>
+        <h1 class="gate-title">{{ selectedDate }} 是排除日</h1>
+        <p class="gate-desc">{{ selectedDateExcludedReason || '特殊情况排除日，无需复盘。' }}</p>
+        <Button v-if="!isToday" variant="secondary" size="sm" @click="goToday">回到今天</Button>
       </div>
     </Card>
 

@@ -51,7 +51,7 @@ import type {
 } from "@/types";
 
 // ── 系统信息 ──
-const APP_VERSION = "0.3.0";
+const APP_VERSION = "0.3.2";
 const TAURI_VERSION = "2.x";
 const sysInfo = computed(() => ({
   appVersion: APP_VERSION,

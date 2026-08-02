@@ -5,7 +5,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 import { useSettingsStore } from "@/stores/settings";
 import { useTodayStore } from "@/stores/today";
 import { useUpdateStore } from "@/stores/update";
-import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween, weekdayName } from "@/utils/date";
+import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween, weekdayName, getWeekStart } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -31,8 +31,9 @@ import {
   Package,
   CheckCircle2,
   Coffee,
+  Ban,
 } from "lucide-vue-next";
-import type { DashboardSummary, PlanTask, PlanSummary, SubjectKey } from "@/types";
+import type { DashboardSummary, PlanTask, PlanSummary, SubjectKey, ExcludedReasonType } from "@/types";
 
 const router = useRouter();
 const dashboardStore = useDashboardStore();
@@ -122,6 +123,35 @@ const isTodayRestDay = computed(() => {
   const restDays = settingsStore.settings?.study_schedule?.rest_days ?? ["周日"];
   return restDays.includes(weekdayName(todayDateStr));
 });
+
+// ── 排除日判断：检查今天是否为周计划中的特殊情况排除日 ──
+const isTodayExcluded = ref(false);
+const todayExcludedReason = ref<ExcludedReasonType | null>(null);
+const todayExcludedNote = ref<string | null>(null);
+
+const todayExcludedReasonLabel = computed(() => {
+  if (!todayExcludedReason.value) return "今日为特殊情况排除日，不生成学习计划。";
+  const label = { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[todayExcludedReason.value];
+  return todayExcludedNote.value ? `${label}（${todayExcludedNote.value}）` : label;
+});
+
+async function checkTodayExcluded() {
+  isTodayExcluded.value = false;
+  todayExcludedReason.value = null;
+  todayExcludedNote.value = null;
+  try {
+    const ws = getWeekStart(todayDateStr);
+    const wp = await api.getWeekPlan(ws);
+    const ex = wp.data?.excluded_days?.find((d) => d.date === todayDateStr);
+    if (ex) {
+      isTodayExcluded.value = true;
+      todayExcludedReason.value = ex.reason_type;
+      todayExcludedNote.value = ex.note ?? null;
+    }
+  } catch {
+    // 无周计划或获取失败，忽略
+  }
+}
 
 async function generateTodayPlan() {
   await todayStore.generate();
@@ -259,11 +289,13 @@ function goToday() {
 function refresh() {
   dashboardStore.loadSummary().then(loadWeekSummaries);
   todayStore.loadToday();
+  checkTodayExcluded();
 }
 
 onMounted(() => {
   dashboardStore.loadSummary().then(loadWeekSummaries);
   todayStore.loadToday();
+  checkTodayExcluded();
   // 每分钟刷新当前时间，确保到点后自动展示今日计划
   nowTimer = window.setInterval(() => {
     nowMinutes.value = currentMinutesShanghai();
@@ -433,7 +465,7 @@ onBeforeUnmount(() => {
             <Sparkles :size="18" class="focus-icon" />
             <h2 class="focus-heading">今日焦点</h2>
           </div>
-          <Button v-if="(focusTask || allTasksCompleted) && !isBeforeDailyStart" variant="ghost" size="sm" @click="goToday">
+          <Button v-if="(focusTask || allTasksCompleted) && !isBeforeDailyStart && !isTodayRestDay && !isTodayExcluded" variant="ghost" size="sm" @click="goToday">
             查看详情
             <ChevronRight :size="14" />
           </Button>
@@ -449,6 +481,28 @@ onBeforeUnmount(() => {
             <span class="focus-empty-desc">
               每日开始时间为 {{ dailyStartTimeLabel }}，到点后这里会展示今日学习计划。
             </span>
+          </div>
+        </div>
+
+        <!-- 今日为休息日：不展示生成计划入口，仅提示休息日 -->
+        <div v-else-if="isTodayRestDay" class="focus-rest-day">
+          <div class="focus-empty-icon focus-rest-icon">
+            <Coffee :size="22" />
+          </div>
+          <div class="focus-empty-text">
+            <span class="focus-empty-title">今日是休息日</span>
+            <span class="focus-empty-desc">好好放松一下，明天继续加油。</span>
+          </div>
+        </div>
+
+        <!-- 今日为排除日：不展示生成计划入口，仅提示排除日 -->
+        <div v-else-if="isTodayExcluded" class="focus-rest-day">
+          <div class="focus-empty-icon focus-rest-icon">
+            <Ban :size="22" />
+          </div>
+          <div class="focus-empty-text">
+            <span class="focus-empty-title">今日是排除日</span>
+            <span class="focus-empty-desc">{{ todayExcludedReasonLabel }}</span>
           </div>
         </div>
 
@@ -488,17 +542,6 @@ onBeforeUnmount(() => {
               开始学习
               <ChevronRight :size="16" />
             </Button>
-          </div>
-        </div>
-
-        <!-- 今日为休息日：不展示生成计划入口，仅提示休息日 -->
-        <div v-else-if="isTodayRestDay" class="focus-rest-day">
-          <div class="focus-empty-icon focus-rest-icon">
-            <Coffee :size="22" />
-          </div>
-          <div class="focus-empty-text">
-            <span class="focus-empty-title">今日是休息日</span>
-            <span class="focus-empty-desc">好好放松一下，明天继续加油。</span>
           </div>
         </div>
 

@@ -50,6 +50,8 @@ import {
   Droplet,
   RotateCcw,
   ImagePlus,
+  ChevronDown,
+  Search,
 } from "lucide-vue-next";
 import type {
   AIProviderConfig,
@@ -58,6 +60,7 @@ import type {
   MCPServerType,
   ThemeMode,
   VisualMode,
+  ModelInfo,
 } from "@/types";
 
 const settingsStore = useSettingsStore();
@@ -143,7 +146,6 @@ const navSections: NavSection[] = [
   { id: "rhythm", label: "学习节奏", icon: Gauge },
   { id: "textbooks", label: "教材", icon: BookOpen },
   { id: "ai-provider", label: "AI Provider", icon: Bot },
-  { id: "mcp-server", label: "MCP Server", icon: Server },
   { id: "storage", label: "存储", icon: FolderOpen },
   { id: "update", label: "检查更新", icon: RefreshCw },
 ];
@@ -248,6 +250,76 @@ function emptyProvider(): AIProviderConfig {
 
 const providerForm = ref<AIProviderConfig>(emptyProvider());
 
+// ── 模型列表加载（基于当前 base_url + api_key 动态获取）──
+const modelList = ref<ModelInfo[]>([]);
+const modelListLoading = ref(false);
+const modelListError = ref<string | null>(null);
+const showModelDropdown = ref(false);
+const modelSearchKeyword = ref("");
+
+/** 过滤后的模型列表 */
+const filteredModels = computed(() => {
+  const kw = modelSearchKeyword.value.trim().toLowerCase();
+  if (!kw) return modelList.value;
+  return modelList.value.filter((m) => m.id.toLowerCase().includes(kw));
+});
+
+/** 从 ModelInfo.extra 中尝试提取上下文长度 */
+function modelContextLength(m: ModelInfo): number | null {
+  const extra = m.extra as Record<string, unknown>;
+  // 常见字段名：context_length / context_window / max_context_length / max_input_tokens
+  const candidates = ["context_length", "context_window", "max_context_length", "max_input_tokens", "context"];
+  for (const key of candidates) {
+    const v = extra[key];
+    if (typeof v === "number" && v > 0) return v;
+    if (typeof v === "string") {
+      const n = parseInt(v, 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+  }
+  return null;
+}
+
+function formatContextLength(n: number | null): string {
+  if (!n) return "";
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
+  return String(n);
+}
+
+/** 加载模型列表（使用当前表单中的 base_url + api_key） */
+async function loadModelList() {
+  const cfg = providerForm.value;
+  if (!cfg.base_url.trim()) {
+    modelListError.value = "请先填写 Base URL";
+    return;
+  }
+  if (!cfg.api_key.trim() && cfg.type !== "ollama") {
+    modelListError.value = "请先填写 API Key";
+    return;
+  }
+  modelListLoading.value = true;
+  modelListError.value = null;
+  try {
+    const list = await api.listAIModels(cfg);
+    modelList.value = list;
+    if (list.length === 0) {
+      modelListError.value = "未获取到模型，请检查配置或手动输入";
+    }
+    showModelDropdown.value = true;
+  } catch (e) {
+    modelListError.value = e instanceof Error ? e.message : String(e);
+    modelList.value = [];
+  } finally {
+    modelListLoading.value = false;
+  }
+}
+
+function selectModel(modelId: string) {
+  providerForm.value.model = modelId;
+  showModelDropdown.value = false;
+  modelSearchKeyword.value = "";
+}
+
 const providerTypeOptions: { value: ProviderType; label: string }[] = [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
@@ -264,6 +336,10 @@ function startAddProvider() {
   editingProviderId.value = null;
   providerForm.value = emptyProvider();
   testResult.value = null;
+  modelList.value = [];
+  modelListError.value = null;
+  showModelDropdown.value = false;
+  modelSearchKeyword.value = "";
   showProviderForm.value = true;
 }
 
@@ -271,6 +347,10 @@ function editProvider(p: AIProviderConfig) {
   editingProviderId.value = p.id;
   providerForm.value = { ...p };
   testResult.value = null;
+  modelList.value = [];
+  modelListError.value = null;
+  showModelDropdown.value = false;
+  modelSearchKeyword.value = "";
   showProviderForm.value = true;
 }
 
@@ -610,7 +690,7 @@ async function handleSave() {
 }
 
 // ── 检查更新（使用共享 update store，与首页更新弹窗状态同步） ──
-const APP_VERSION = "0.3.0";
+const APP_VERSION = "0.3.2";
 
 // 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
 const checking = computed(() => updateStore.checking);
@@ -1476,7 +1556,54 @@ watch(() => route.hash, (newHash) => {
             </div>
             <div class="form-field">
               <label class="form-label">Model</label>
-              <input v-model="providerForm.model" type="text" class="form-input" placeholder="gpt-4o" />
+              <div class="model-selector">
+                <div class="model-input-row">
+                  <input
+                    v-model="providerForm.model"
+                    type="text"
+                    class="form-input"
+                    placeholder="gpt-4o"
+                    @focus="showModelDropdown = modelList.length > 0"
+                  />
+                  <button
+                    type="button"
+                    class="model-fetch-btn"
+                    :disabled="modelListLoading"
+                    :title="modelListLoading ? '加载中…' : '获取模型列表'"
+                    @click="loadModelList"
+                  >
+                    <RefreshCw v-if="modelListLoading" :size="14" class="spin" />
+                    <Search v-else :size="14" />
+                  </button>
+                </div>
+                <p v-if="modelListError" class="model-error">{{ modelListError }}</p>
+                <div v-if="showModelDropdown && filteredModels.length > 0" class="model-dropdown">
+                  <div class="model-search">
+                    <Search :size="13" />
+                    <input
+                      v-model="modelSearchKeyword"
+                      type="text"
+                      placeholder="搜索模型…"
+                      class="model-search-input"
+                    />
+                  </div>
+                  <div class="model-list">
+                    <button
+                      v-for="m in filteredModels"
+                      :key="m.id"
+                      type="button"
+                      class="model-item"
+                      :class="{ active: m.id === providerForm.model }"
+                      @click="selectModel(m.id)"
+                    >
+                      <span class="model-id">{{ m.id }}</span>
+                      <span v-if="modelContextLength(m)" class="model-ctx">
+                        {{ formatContextLength(modelContextLength(m)) }} ctx
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="form-field">
               <label class="form-label">Temperature</label>
@@ -1515,8 +1642,8 @@ watch(() => route.hash, (newHash) => {
         </div>
       </Card>
 
-      <!-- MCP 配置区 -->
-      <Card id="settings-mcp-server" padding="lg" class="settings-section">
+      <!-- MCP 配置区（暂时下线：MCP 适配暂不稳定，后续版本恢复） -->
+      <Card v-if="false" id="settings-mcp-server" padding="lg" class="settings-section">
         <div class="section-head">
           <div class="section-title">
             <Server :size="18" />
@@ -2164,6 +2291,135 @@ watch(() => route.hash, (newHash) => {
 
 .input-suffix-btn:hover {
   color: var(--text-primary);
+}
+
+/* ── Model selector ── */
+.model-selector {
+  position: relative;
+}
+
+.model-input-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.model-input-row .form-input {
+  flex: 1;
+}
+
+.model-fetch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.model-fetch-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.model-fetch-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.model-error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+
+.model-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.model-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--divider-color);
+  color: var(--text-tertiary);
+}
+
+.model-search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  outline: none;
+}
+
+.model-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.model-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: left;
+}
+
+.model-item:hover {
+  background: var(--bg-overlay);
+}
+
+.model-item.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+
+.model-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-ctx {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  margin-left: var(--space-2);
+}
+
+.model-item.active .model-ctx {
+  background: var(--bg-elevated);
+  color: var(--accent);
 }
 
 .checkbox-label {

@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api";
-import { todayString, yesterdayString, weekdayName } from "@/utils/date";
+import { todayString, yesterdayString, weekdayName, getWeekStart } from "@/utils/date";
 import type { DailyPlan, PlanTask } from "@/types";
 
 export const useTodayStore = defineStore("today", () => {
@@ -44,11 +44,34 @@ export const useTodayStore = defineStore("today", () => {
       // 仅今天加载时检查昨日复盘是否存在
       if (date === todayString()) {
         const yesterday = yesterdayString();
+        // 检查昨日是否为休息日或排除日（这两种情况自动免复盘）
+        let yesterdayExempt = false;
+        // 1) 休息日判断（依据用户设置的 rest_days）
         try {
-          await api.getReview(yesterday);
+          const settings = await api.getSettings();
+          const restDays = settings.study_schedule?.rest_days ?? ["周日"];
+          if (restDays.includes(weekdayName(yesterday))) {
+            yesterdayExempt = true;
+          }
         } catch {
-          // 昨日复盘不存在
-          missingYesterdayReview.value = true;
+          // 设置读取失败，继续后续检查
+        }
+        // 2) 排除日判断（依据周计划中的 excluded_days）
+        if (!yesterdayExempt) {
+          try {
+            const wp = await api.getWeekPlan(getWeekStart(yesterday));
+            yesterdayExempt = !!wp.data?.excluded_days?.some((d) => d.date === yesterday);
+          } catch {
+            // 无周计划，按正常流程检查复盘
+          }
+        }
+        if (!yesterdayExempt) {
+          try {
+            await api.getReview(yesterday);
+          } catch {
+            // 昨日复盘不存在
+            missingYesterdayReview.value = true;
+          }
         }
       }
     } catch (e) {

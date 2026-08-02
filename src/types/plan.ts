@@ -115,6 +115,39 @@ export interface WeekPlanData {
   risks?: PlanRisk[];
   /** @deprecated 0.3.0 今日提醒已移除，仅为兼容旧数据保留 */
   reminders?: string[];
+  /** 本周特殊情况排除日期（不生成计划，自动免复盘） */
+  excluded_days?: ExcludedDay[];
+  /** 本周任务量调整（相对上周） */
+  workload_adjustment?: WorkloadAdjustment;
+}
+
+/** 特殊情况排除日类型 */
+export type ExcludedReasonType = "travel" | "sick" | "exam" | "other";
+
+/** 特殊情况排除日（用户主动声明本周某天不学习） */
+export interface ExcludedDay {
+  /** YYYY-MM-DD */
+  date: string;
+  /** 预设类型 */
+  reason_type: ExcludedReasonType;
+  /** 自由备注（可空） */
+  note?: string;
+}
+
+/** 任务量调整方向 */
+export type WorkloadDirection = "increase" | "decrease" | "unchanged";
+
+/** 任务量调整幅度档位 */
+export type WorkloadLevel = "small" | "large";
+
+/** 周任务量调整（相对上周） */
+export interface WorkloadAdjustment {
+  /** 方向 */
+  direction: WorkloadDirection;
+  /** 幅度档位（仅 direction != unchanged 时有意义） */
+  level?: WorkloadLevel;
+  /** 用户备注（可空） */
+  note?: string;
 }
 
 /** 周计划文件（完整 JSON） */

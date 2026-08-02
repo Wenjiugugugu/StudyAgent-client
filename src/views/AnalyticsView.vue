@@ -538,6 +538,17 @@ onMounted(() => {
           <div class="section-head">
             <TrendingUp :size="16" class="section-icon" />
             <h2 class="section-title">学习量趋势</h2>
+            <label
+              class="exclude-toggle"
+              title="开启后将从下方两个图表中排除休息日和特殊情况排除日（如出差/生病）"
+            >
+              <input
+                type="checkbox"
+                :checked="store.excludeExemptDates"
+                @change="store.setExcludeExemptDates(($event.target as HTMLInputElement).checked)"
+              />
+              <span class="exclude-toggle-label">排除休息日/特殊情况</span>
+            </label>
           </div>
 
           <!-- 统计卡片 -->
@@ -730,6 +741,35 @@ onMounted(() => {
   background: var(--bg-primary);
   color: var(--text-primary);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* 排除开关 */
+.exclude-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 10px;
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color, transparent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.exclude-toggle:hover {
+  background: var(--bg-tertiary);
+}
+.exclude-toggle input {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent, #6366f1);
+}
+.exclude-toggle-label {
+  font-weight: 500;
 }
 
 /* Section */

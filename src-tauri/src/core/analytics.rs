@@ -7,11 +7,11 @@
 //! 3. 周期对比与预测（本周 vs 上周、本月 vs 上月、目标达成预测）
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::data::records::{self, ReviewFile};
-use crate::data::{add_days, days_between, get_week_end, get_week_start, today_string, DataResult};
+use crate::data::{add_days, days_between, get_week_end, get_week_start, today_string, weekday_name, DataResult};
 
 // ============================================================================
 // 类型定义
@@ -219,10 +219,57 @@ fn feeling_score(feeling: &str) -> (i32, String) {
 // 聚合主函数
 // ============================================================================
 
+/// 收集所有应从分析中排除的日期（休息日 + 特殊情况排除日）
+///
+/// 休息日：根据用户设置的 `rest_days`（如"周日"）匹配日期范围内的日期
+/// 排除日：从所有周计划文件的 `excluded_days` 中收集
+fn collect_exempt_dates(data_dir: &Path, start: &str, end: &str) -> HashSet<String> {
+    let mut exempt: HashSet<String> = HashSet::new();
+
+    // 1. 休息日：读取设置并遍历日期范围
+    let settings = crate::load_settings(data_dir);
+    let rest_days = settings.rest_days();
+    if !rest_days.is_empty() {
+        let mut current = start.to_string();
+        loop {
+            if let Ok(wd) = weekday_name(&current) {
+                if rest_days.contains(&wd) {
+                    exempt.insert(current.clone());
+                }
+            }
+            if current == end {
+                break;
+            }
+            current = match add_days(&current, 1) {
+                Ok(d) => d,
+                Err(_) => break,
+            };
+        }
+    }
+
+    // 2. 排除日：从所有周计划中收集
+    if let Ok(week_dates) = crate::data::plan::list_week_plan_dates(data_dir) {
+        for iso_week in &week_dates {
+            if let Ok(wp) = crate::data::plan::read_week_plan(data_dir, iso_week) {
+                for ex in &wp.data.excluded_days {
+                    exempt.insert(ex.date.clone());
+                }
+            }
+        }
+    }
+
+    exempt
+}
+
 /// 获取指定时间范围的分析数据
+///
+/// `exclude_exempt`：是否在「学习量趋势」中排除休息日和特殊情况排除日（默认 true）。
+/// 仅影响 learning_trend（完成率与任务量、学习时长两个图表）；
+/// 复盘质量分析与周期对比基于 reviews，休息日/排除日本身无复盘，天然不受影响。
 pub fn build_analytics(
     data_dir: &Path,
     range: &AnalyticsRange,
+    exclude_exempt: bool,
 ) -> DataResult<AnalyticsSummary> {
     let today = today_string();
 
@@ -243,16 +290,24 @@ pub fn build_analytics(
         }
     };
 
-    // 2. 收集范围内的所有复盘
+    // 收集应排除的日期（休息日 + 排除日），仅用于学习量趋势
+    // 当 exclude_exempt=false 时（用户在分析页关闭开关），使用空集保留所有日期
+    let exempt_dates: HashSet<String> = if exclude_exempt {
+        collect_exempt_dates(data_dir, &start_date, &today)
+    } else {
+        HashSet::new()
+    };
+
+    // 2. 收集范围内的所有复盘（不过滤 —— 休息日/排除日本身无复盘，天然不含）
     let reviews = collect_reviews_in_range(data_dir, &start_date, &today)?;
 
-    // 3. 学习量趋势
-    let learning_trend = build_learning_trend(data_dir, &start_date, &today, &reviews)?;
+    // 3. 学习量趋势（受 exclude_exempt 控制，跳过豁免日）
+    let learning_trend = build_learning_trend(data_dir, &start_date, &today, &reviews, &exempt_dates)?;
 
-    // 4. 复盘质量分析
+    // 4. 复盘质量分析（基于 reviews，不受排除开关影响）
     let review_quality = build_review_quality(&reviews);
 
-    // 5. 周期对比与预测
+    // 5. 周期对比与预测（基于 reviews，不受排除开关影响）
     let comparison = build_comparison_and_prediction(data_dir, &today, &reviews)?;
 
     Ok(AnalyticsSummary {
@@ -272,6 +327,7 @@ fn build_learning_trend(
     start: &str,
     end: &str,
     reviews: &[ReviewFile],
+    exempt_dates: &HashSet<String>,
 ) -> DataResult<LearningTrend> {
     let mut points: Vec<DailyTrendPoint> = Vec::new();
 
@@ -283,6 +339,15 @@ fn build_learning_trend(
 
     let mut current = start.to_string();
     loop {
+        // 跳过豁免日期（休息日 + 特殊情况排除日），不计入趋势
+        if exempt_dates.contains(&current) {
+            if current == end {
+                break;
+            }
+            current = add_days(&current, 1)?;
+            continue;
+        }
+
         let plan = crate::data::plan::read_daily_plan(data_dir, &current).ok();
         let review = review_map.get(&current);
 
@@ -549,6 +614,7 @@ fn compute_period_metrics(
     end: &str,
 ) -> DataResult<PeriodMetrics> {
     let reviews = collect_reviews_in_range(data_dir, start, end)?;
+
     let mut total_hours = 0.0;
     let mut total_tasks = 0i32;
     let mut total_completed = 0i32;
@@ -604,7 +670,10 @@ fn compute_period_metrics(
     })
 }
 
-fn build_prediction(reviews: &[ReviewFile], today: &str) -> GoalPrediction {
+fn build_prediction(
+    reviews: &[ReviewFile],
+    today: &str,
+) -> GoalPrediction {
     // 近7天数据
     let seven_days_ago = add_days(today, -6).unwrap_or_else(|_| today.to_string());
     let recent: Vec<&ReviewFile> = reviews

@@ -19,7 +19,7 @@ use crate::core::user_model::UserModelService;
 use crate::data::assets::{
     KnowledgeGraph, KnowledgeObject, KnowledgeSubjectIndex, UserCapability, UserObservation,
 };
-use crate::data::plan::{DailyPlanFile, WeekPlanFile, iso_week_string};
+use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment, iso_week_string};
 use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, TaskStatus};
 use crate::tools::dispatcher::{is_builtin_tool, execute_builtin_tool};
@@ -251,10 +251,13 @@ pub async fn get_task_total_minutes(
 /// - `last_30_days`：近30天（默认）
 /// - `all`：全部历史
 ///
-/// 前端调用: `invoke('get_analytics', { range: 'last_30_days' })`
+/// `exclude_exempt_dates`：是否在分析中排除休息日和特殊情况排除日（默认 true）
+///
+/// 前端调用: `invoke('get_analytics', { range: 'last_30_days', excludeExemptDates: true })`
 #[tauri::command]
 pub async fn get_analytics(
     range: Option<String>,
+    exclude_exempt_dates: Option<bool>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<AnalyticsSummary, String> {
     let data_dir = get_data_dir(state.inner())?;
@@ -264,8 +267,11 @@ pub async fn get_analytics(
         Some("all") => AnalyticsRange::All,
         _ => AnalyticsRange::Last30Days,
     };
+    // 默认开启排除
+    let exclude_exempt = exclude_exempt_dates.unwrap_or(true);
 
-    build_analytics(&data_dir, &range).map_err(|e| format!("生成分析数据失败: {}", e))
+    build_analytics(&data_dir, &range, exclude_exempt)
+        .map_err(|e| format!("生成分析数据失败: {}", e))
 }
 
 // ============================================================================
@@ -339,6 +345,14 @@ pub struct PlanSummary {
     pub completion_rate: f64,
     pub actual_hours: f64,
     pub is_rest_day: bool,
+    /// 是否为周计划中手动添加的特殊情况排除日（出差/生病/考试等）
+    pub is_excluded: bool,
+    /// 排除日类型（travel/sick/exam/other），仅当 is_excluded=true 时有值
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded_type: Option<String>,
+    /// 排除日备注，仅当 is_excluded=true 时有值
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded_note: Option<String>,
 }
 
 /// 列出所有日计划的摘要（含 review 完成度）
@@ -353,17 +367,53 @@ pub async fn list_plan_summaries(
     let data_dir = get_data_dir(state.inner())?;
     let dates = crate::data::plan::list_daily_plan_dates(&data_dir)?;
 
+    // 收集所有周计划中标记为休息日的日期（持久化记录，不受后期设置调整影响）
+    let mut rest_days_from_week_plans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 收集所有周计划中手动添加的特殊情况排除日：date -> (type, note)
+    let mut excluded_days_from_week_plans: std::collections::HashMap<String, (String, Option<String>)> =
+        std::collections::HashMap::new();
+    if let Ok(week_dates) = crate::data::plan::list_week_plan_dates(&data_dir) {
+        for iso_week in &week_dates {
+            if let Ok(wp) = crate::data::plan::read_week_plan(&data_dir, iso_week) {
+                for day in &wp.data.days {
+                    if day.is_rest_day {
+                        rest_days_from_week_plans.insert(day.date.clone());
+                    }
+                }
+                for ex in &wp.data.excluded_days {
+                    excluded_days_from_week_plans.insert(
+                        ex.date.clone(),
+                        (ex.reason_type.clone(), ex.note.clone()),
+                    );
+                }
+            }
+        }
+    }
+
     let mut summaries = Vec::with_capacity(dates.len());
+    let mut covered_dates: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     for date in dates {
+        covered_dates.insert(date.clone());
         let plan = crate::data::plan::read_daily_plan(&data_dir, &date).ok();
         let review = crate::data::records::read_review(&data_dir, &date).ok();
 
         let planned_tasks = plan.as_ref().map(|p| p.data.total_tasks).unwrap_or(0);
         let planned_hours = plan.as_ref().map(|p| p.data.total_hours).unwrap_or(0.0);
-        let is_rest_day = plan
-            .as_ref()
-            .map(|p| p.data.tasks.is_empty() && p.data.total_tasks == 0)
-            .unwrap_or(false);
+        // 优先使用周计划中的休息日标记，回退到任务为空判断
+        let is_rest_day = rest_days_from_week_plans.contains(&date)
+            || plan
+                .as_ref()
+                .map(|p| p.data.tasks.is_empty() && p.data.total_tasks == 0)
+                .unwrap_or(false);
+
+        // 排除日信息（来自周计划手动添加的 excluded_days）
+        let (is_excluded, excluded_type, excluded_note) =
+            if let Some((t, n)) = excluded_days_from_week_plans.get(&date) {
+                (true, Some(t.clone()), n.clone())
+            } else {
+                (false, None, None)
+            };
 
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
         let actual_hours = review
@@ -381,8 +431,53 @@ pub async fn list_plan_summaries(
             completion_rate,
             actual_hours,
             is_rest_day,
+            is_excluded,
+            excluded_type,
+            excluded_note,
         });
     }
+
+    // 补充周计划中标记为休息日但无日计划文件的日期
+    for rest_date in &rest_days_from_week_plans {
+        if !covered_dates.contains(rest_date) {
+            summaries.push(PlanSummary {
+                date: rest_date.clone(),
+                has_plan: false,
+                has_review: false,
+                planned_tasks: 0,
+                planned_hours: 0.0,
+                completed_tasks: 0,
+                completion_rate: 0.0,
+                actual_hours: 0.0,
+                is_rest_day: true,
+                is_excluded: false,
+                excluded_type: None,
+                excluded_note: None,
+            });
+        }
+    }
+
+    // 补充周计划中标记为特殊情况排除日但无日计划文件的日期
+    for (ex_date, (ex_type, ex_note)) in &excluded_days_from_week_plans {
+        if !covered_dates.contains(ex_date) {
+            summaries.push(PlanSummary {
+                date: ex_date.clone(),
+                has_plan: false,
+                has_review: false,
+                planned_tasks: 0,
+                planned_hours: 0.0,
+                completed_tasks: 0,
+                completion_rate: 0.0,
+                actual_hours: 0.0,
+                is_rest_day: false,
+                is_excluded: true,
+                excluded_type: Some(ex_type.clone()),
+                excluded_note: ex_note.clone(),
+            });
+        }
+    }
+
+    summaries.sort_by(|a, b| a.date.cmp(&b.date));
     Ok(summaries)
 }
 
@@ -465,6 +560,23 @@ pub async fn get_week_summaries(
 ) -> Result<Vec<PlanSummary>, String> {
     let data_dir = get_data_dir(state.inner())?;
 
+    // 读取本周的周计划，获取休息日标记和特殊情况排除日
+    let iso_week = iso_week_string(&week_start)?;
+    let week_plan = crate::data::plan::read_week_plan(&data_dir, &iso_week).ok();
+    let mut rest_days_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut excluded_map: std::collections::HashMap<String, (String, Option<String>)> =
+        std::collections::HashMap::new();
+    if let Some(wp) = &week_plan {
+        for day in &wp.data.days {
+            if day.is_rest_day {
+                rest_days_set.insert(day.date.clone());
+            }
+        }
+        for ex in &wp.data.excluded_days {
+            excluded_map.insert(ex.date.clone(), (ex.reason_type.clone(), ex.note.clone()));
+        }
+    }
+
     let mut summaries = Vec::with_capacity(7);
     for i in 0..7 {
         let date_str = crate::data::add_days(&week_start, i)
@@ -475,10 +587,19 @@ pub async fn get_week_summaries(
 
         let planned_tasks = plan.as_ref().map(|p| p.data.total_tasks).unwrap_or(0);
         let planned_hours = plan.as_ref().map(|p| p.data.total_hours).unwrap_or(0.0);
-        let is_rest_day = plan
-            .as_ref()
-            .map(|p| p.data.tasks.is_empty() && p.data.total_tasks == 0)
-            .unwrap_or(false);
+        // 优先使用周计划中的休息日标记，回退到任务为空判断
+        let is_rest_day = rest_days_set.contains(&date_str)
+            || plan
+                .as_ref()
+                .map(|p| p.data.tasks.is_empty() && p.data.total_tasks == 0)
+                .unwrap_or(false);
+
+        let (is_excluded, excluded_type, excluded_note) =
+            if let Some((t, n)) = excluded_map.get(&date_str) {
+                (true, Some(t.clone()), n.clone())
+            } else {
+                (false, None, None)
+            };
 
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
         let actual_hours = review
@@ -496,6 +617,9 @@ pub async fn get_week_summaries(
             completion_rate,
             actual_hours,
             is_rest_day,
+            is_excluded,
+            excluded_type,
+            excluded_note,
         });
     }
     Ok(summaries)
@@ -526,10 +650,12 @@ pub async fn generate_daily_plan(
 /// AI 生成周计划
 ///
 /// 生成周计划概览并逐天生成日计划。
-/// 前端调用: `invoke('generate_week_plan', { weekStart: '2026-07-21' })`
+/// 前端调用: `invoke('generate_week_plan', { weekStart: '2026-07-21', excludedDays: [], workloadAdjustment: undefined })`
 #[tauri::command]
 pub async fn generate_week_plan(
     week_start: String,
+    #[allow(unused_variables)] excluded_days: Vec<ExcludedDay>,
+    #[allow(unused_variables)] workload_adjustment: Option<WorkloadAdjustment>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<WeekPlanFile, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
@@ -541,7 +667,41 @@ pub async fn generate_week_plan(
     }
 
     let planner = Planner::new(&ai_service);
-    planner.generate_week_plan(&data_dir, &week_start).await
+    planner
+        .generate_week_plan(&data_dir, &week_start, &excluded_days, workload_adjustment.as_ref())
+        .await
+}
+
+/// 周中新增排除日并重排剩余天数（AI 驱动）
+///
+/// 在用户于周计划页点击"今天及之后"的日期标记为排除日时调用。
+/// AI 会根据新增的排除日重新生成本周剩余天数的 subject_allocations，
+/// 把原本安排在排除日的任务量分摊到剩余学习日。
+///
+/// 前端调用: `invoke('add_excluded_day_and_regenerate', { weekStart: '2026-07-21', excludedDay: { date, reason_type, note } })`
+#[tauri::command]
+pub async fn add_excluded_day_and_regenerate(
+    week_start: String,
+    excluded_day: ExcludedDay,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<RegenerateResult, String> {
+    let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    if !ai_service.has_provider() {
+        return Err(
+            "未配置 AI Provider，无法重新生成计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
+        );
+    }
+
+    let planner = Planner::new(&ai_service);
+    let (regenerated, affected_dates) = planner
+        .regenerate_after_exclusion(&data_dir, &week_start, excluded_day)
+        .await?;
+
+    Ok(RegenerateResult {
+        regenerated,
+        affected_dates,
+    })
 }
 
 // ============================================================================

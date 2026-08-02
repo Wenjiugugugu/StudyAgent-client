@@ -70,6 +70,37 @@ pub struct WeekPlanData {
     /// 今日提醒（已废弃，仅为兼容旧 plan JSON 保留反序列化；新数据不再写入）
     #[serde(default, skip_serializing)]
     pub reminders: Vec<String>,
+    /// 本周特殊情况排除日期（不生成计划，自动免复盘）
+    #[serde(default)]
+    pub excluded_days: Vec<ExcludedDay>,
+    /// 本周任务量调整（相对上周）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_adjustment: Option<WorkloadAdjustment>,
+}
+
+/// 特殊情况排除日（用户主动声明本周某天不学习）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExcludedDay {
+    /// YYYY-MM-DD
+    pub date: String,
+    /// 预设类型：travel / sick / exam / other
+    pub reason_type: String,
+    /// 自由备注（可空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// 周任务量调整（相对上周）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkloadAdjustment {
+    /// 方向：increase / decrease / unchanged
+    pub direction: String,
+    /// 幅度档位：small / large（仅 direction != unchanged 时有意义）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    /// 用户备注（可空）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

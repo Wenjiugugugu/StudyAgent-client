@@ -149,6 +149,29 @@ function completionVariant(rate: number): string {
   return "danger";
 }
 
+/** 排除日类型 → 中文标签 */
+function excludedTypeLabel(type?: string): string {
+  switch (type) {
+    case "travel":
+      return "出差/出行";
+    case "sick":
+      return "生病";
+    case "exam":
+      return "考试";
+    case "other":
+      return "其它";
+    default:
+      return "特殊情况";
+  }
+}
+
+/** 排除日完整描述（类型 + 备注） */
+function excludedDescription(item: PlanSummary): string {
+  const typeLabel = excludedTypeLabel(item.excluded_type);
+  const note = item.excluded_note?.trim();
+  return note ? `${typeLabel}：${note}` : typeLabel;
+}
+
 /** 根据日期与复盘状态返回展示文本与样式类。
  *  - 已复盘：显示完成率
  *  - 未复盘且日期在今天及之前：显示「未复盘」（danger 样式）
@@ -239,15 +262,17 @@ onMounted(() => {
                   :class="{
                     today: day.date === today,
                     rest: day.item.is_rest_day,
-                    done: day.item.has_review && day.item.completion_rate >= 100,
-                    pending: day.item.has_review && day.item.completion_rate < 100,
+                    excluded: day.item.is_excluded && !day.item.is_rest_day,
+                    done: !day.item.is_rest_day && !day.item.is_excluded && day.item.has_review && day.item.completion_rate >= 100,
+                    pending: !day.item.is_rest_day && !day.item.is_excluded && day.item.has_review && day.item.completion_rate < 100,
                     padding: day.isPadding,
                   }"
+                  :title="day.item.is_excluded ? excludedDescription(day.item) : undefined"
                   @click="openPlan(day.date)"
                 >
                   <!-- 完成角标 -->
                   <span
-                    v-if="!day.item.is_rest_day && day.item.has_review && day.item.completion_rate >= 100"
+                    v-if="!day.item.is_rest_day && !day.item.is_excluded && day.item.has_review && day.item.completion_rate >= 100"
                     class="done-badge"
                   >
                     <CheckCircle2 :size="14" />
@@ -260,6 +285,10 @@ onMounted(() => {
 
                   <div class="date-stats">
                     <span v-if="day.item.is_rest_day" class="rest-badge">休息日</span>
+                    <template v-else-if="day.item.is_excluded">
+                      <span class="excluded-badge">{{ excludedTypeLabel(day.item.excluded_type) }}</span>
+                      <span v-if="day.item.excluded_note?.trim()" class="excluded-note">{{ day.item.excluded_note }}</span>
+                    </template>
                     <template v-else>
                       <div class="stat-row">
                         <span
@@ -449,6 +478,12 @@ onMounted(() => {
   background: var(--bg-secondary);
 }
 
+.date-card.excluded {
+  background: var(--bg-secondary);
+  border-color: var(--color-warning, #f59e0b);
+  border-style: dashed;
+}
+
 .date-card.done {
   border-color: var(--color-success, #10b981);
   background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(16, 185, 129, 0.02));
@@ -569,6 +604,29 @@ onMounted(() => {
   padding: 2px 6px;
   border-radius: var(--radius-full);
   align-self: center;
+}
+
+.excluded-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: #fff;
+  background: var(--color-warning, #f59e0b);
+  padding: 2px 6px;
+  border-radius: var(--radius-full);
+  align-self: center;
+}
+
+.excluded-note {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-tertiary);
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.2;
 }
 
 .date-meta {

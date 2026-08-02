@@ -54,6 +54,12 @@ export interface PlanSummary {
   completion_rate: number;
   actual_hours: number;
   is_rest_day: boolean;
+  /** 是否为周计划中手动添加的特殊情况排除日（出差/生病/考试等） */
+  is_excluded: boolean;
+  /** 排除日类型：travel / sick / exam / other（仅当 is_excluded=true 时有值） */
+  excluded_type?: string;
+  /** 排除日备注（仅当 is_excluded=true 时有值） */
+  excluded_note?: string;
 }
 
 /** 单个 Release 资源（一个安装包） */

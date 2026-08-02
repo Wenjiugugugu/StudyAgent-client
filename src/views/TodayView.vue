@@ -31,8 +31,10 @@ import {
   Pause,
   Play,
   Clock,
+  Coffee,
+  Ban,
 } from "lucide-vue-next";
-import type { PlanTask, SubjectKey } from "@/types";
+import type { PlanTask, SubjectKey, ExcludedReasonType } from "@/types";
 
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
@@ -237,6 +239,8 @@ async function loadPlan() {
   await todayStore.loadByDate(currentDate.value);
   // 计时状态需要在 plan 加载后加载（依赖 task_id）
   await loadTaskTimers();
+  // 检查当前日期是否为排除日
+  await checkExcludedDay();
 }
 
 // ── 每日开始时间前不展示今日计划 ──
@@ -267,6 +271,35 @@ const isCurrentDateRestDay = computed(() => {
   const restDays = settingsStore.settings?.study_schedule?.rest_days ?? ["周日"];
   return restDays.includes(weekdayName(currentDate.value));
 });
+
+// ── 排除日判断：检查当前查看日期是否为周计划中的特殊情况排除日 ──
+const currentDateExcluded = ref(false);
+const currentDateExcludedReason = ref<ExcludedReasonType | null>(null);
+const currentDateExcludedNote = ref<string | null>(null);
+
+/** 排除日类型 → 中文标签 */
+function reasonTypeLabel(t: ExcludedReasonType): string {
+  return { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[t];
+}
+
+/** 检查当前日期是否在周计划的排除日列表中 */
+async function checkExcludedDay() {
+  currentDateExcluded.value = false;
+  currentDateExcludedReason.value = null;
+  currentDateExcludedNote.value = null;
+  try {
+    const ws = getWeekStart(currentDate.value);
+    const wp = await api.getWeekPlan(ws);
+    const ex = wp.data?.excluded_days?.find((d) => d.date === currentDate.value);
+    if (ex) {
+      currentDateExcluded.value = true;
+      currentDateExcludedReason.value = ex.reason_type;
+      currentDateExcludedNote.value = ex.note ?? null;
+    }
+  } catch {
+    // 无周计划或获取失败，忽略
+  }
+}
 
 function refreshNow() {
   nowMinutes.value = currentMinutesShanghai();
@@ -360,10 +393,29 @@ onUnmounted(() => {
 
     <!-- 休息日：不展示生成计划入口，仅提示今日为休息日 -->
     <EmptyState
-      v-else-if="!plan && isCurrentDateRestDay"
+      v-else-if="isCurrentDateRestDay"
       :title="`${currentDate} 是休息日`"
       :description="`今日为设定的休息日（${weekdayName(currentDate)}），好好放松一下吧。`"
     >
+      <template #icon>
+        <Coffee :size="48" />
+      </template>
+      <template #actions>
+        <Button v-if="!isToday" variant="secondary" @click="goBack">
+          {{ backLabel }}
+        </Button>
+      </template>
+    </EmptyState>
+
+    <!-- 排除日：不展示生成计划入口，仅提示今日为排除日 -->
+    <EmptyState
+      v-else-if="currentDateExcluded"
+      :title="`${currentDate} 是排除日`"
+      :description="currentDateExcludedReason ? `${reasonTypeLabel(currentDateExcludedReason)}${currentDateExcludedNote ? `（${currentDateExcludedNote}）` : ''}，今日不生成学习计划。` : '今日为特殊情况排除日，不生成学习计划。'"
+    >
+      <template #icon>
+        <Ban :size="48" />
+      </template>
       <template #actions>
         <Button v-if="!isToday" variant="secondary" @click="goBack">
           {{ backLabel }}

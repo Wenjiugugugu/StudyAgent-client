@@ -169,6 +169,7 @@ fn main() {
             get_week_summaries,
             generate_daily_plan,
             generate_week_plan,
+            add_excluded_day_and_regenerate,
             // Analytics
             get_analytics,
             // Review

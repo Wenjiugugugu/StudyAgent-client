@@ -78,9 +78,17 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
 
 // ── Analytics ──
 
-/** 获取学习数据分析数据 */
-export async function getAnalytics(range?: import("@/types").AnalyticsRange): Promise<import("@/types").AnalyticsSummary> {
-  return invokeDirect("get_analytics", { range });
+/** 获取学习数据分析数据
+ *  `excludeExemptDates`：是否在分析中排除休息日和特殊情况排除日（默认 true）
+ */
+export async function getAnalytics(
+  range?: import("@/types").AnalyticsRange,
+  excludeExemptDates?: boolean,
+): Promise<import("@/types").AnalyticsSummary> {
+  return invokeDirect("get_analytics", {
+    range,
+    excludeExemptDates,
+  });
 }
 
 // ── State ──
@@ -135,6 +143,7 @@ export async function listPlanSummaries(): Promise<PlanSummary[]> {
         completion_rate: isRest ? 0 : (i > 0 ? 67 : 0),
         actual_hours: isRest ? 0 : (i > 0 ? 3.5 : 0),
         is_rest_day: isRest,
+        is_excluded: false,
       });
     }
     return summaries;
@@ -160,6 +169,7 @@ export async function getWeekSummaries(weekStart: string): Promise<PlanSummary[]
         completion_rate: 0,
         actual_hours: 0,
         is_rest_day: isRest,
+        is_excluded: false,
       });
     }
     return summaries;
@@ -183,11 +193,15 @@ export async function generateDailyPlan(date: string): Promise<DailyPlan> {
   );
 }
 
-export async function generateWeekPlan(weekStart: string): Promise<WeekPlan> {
+export async function generateWeekPlan(
+  weekStart: string,
+  excludedDays: import("@/types").ExcludedDay[] = [],
+  workloadAdjustment?: import("@/types").WorkloadAdjustment,
+): Promise<WeekPlan> {
   return invokeWithAiTrace<WeekPlan>(
     "generate_week_plan",
     `生成周计划 ${weekStart}`,
-    { weekStart },
+    { weekStart, excludedDays, workloadAdjustment },
   );
 }
 
@@ -268,6 +282,30 @@ export async function regenerateRemainingDays(reviewDate: string): Promise<impor
   try {
     return await Promise.race([
       invokeDirect<import("@/types").RegenerateResult>("regenerate_remaining_days", { reviewDate }),
+      timeoutPromise,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** 周中新增排除日并重排剩余天数（AI 驱动） */
+export async function addExcludedDayAndRegenerate(
+  weekStart: string,
+  excludedDay: import("@/types").ExcludedDay,
+): Promise<import("@/types").RegenerateResult> {
+  // 前端超时保护：290 秒，与复盘重排保持一致
+  const TIMEOUT_MS = 290_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("AI 调整超时（290 秒），可能网络较慢或模型响应过久")), TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      invokeDirect<import("@/types").RegenerateResult>(
+        "add_excluded_day_and_regenerate",
+        { weekStart, excludedDay },
+      ),
       timeoutPromise,
     ]);
   } finally {
