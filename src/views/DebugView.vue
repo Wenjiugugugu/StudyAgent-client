@@ -31,8 +31,15 @@ import {
   Radio,
   Send,
   AlertTriangle,
+  Coins,
 } from "lucide-vue-next";
 import { useAiDebugStore } from "@/stores/aiDebug";
+import {
+  estimateCost,
+  formatCost,
+  formatTokens,
+  fetchLatestPricingNote,
+} from "@/utils/aiPricing";
 import type {
   StudyState,
   DashboardSummary,
@@ -40,6 +47,7 @@ import type {
   AIProviderConfig,
   DailyPlan,
   ReviewRecord,
+  AiUsageEntry,
 } from "@/types";
 
 // ── 系统信息 ──
@@ -71,6 +79,7 @@ const debugSections: DebugSection[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "providers", label: "AI Provider", icon: Bot },
   { id: "ai-calls", label: "AI 调用", icon: Radio },
+  { id: "ai-usage", label: "AI 用量", icon: Coins },
   { id: "settings", label: "Settings", icon: Settings2 },
   { id: "logs", label: "日志", icon: ScrollText },
 ];
@@ -368,6 +377,178 @@ function aiCallStatusLabel(status: "pending" | "success" | "error"): string {
   return "进行中";
 }
 
+// ── AI 用量日志（持久化记录，含费用估算） ──
+const aiUsageLog = ref<AiUsageEntry[]>([]);
+const aiUsageLoading = ref(false);
+const aiUsageError = ref<string | null>(null);
+const expandedUsageIdx = ref<number | null>(null);
+const usageTimeFilter = ref<"all" | "today" | "7d" | "30d">("all");
+
+/** 定价表更新提示 */
+const pricingNote = fetchLatestPricingNote();
+
+/** 按时间筛选后的用量记录（倒序：最新在前） */
+const filteredUsageLog = computed<AiUsageEntry[]>(() => {
+  if (usageTimeFilter.value === "all") {
+    return [...aiUsageLog.value].reverse();
+  }
+  const now = Date.now();
+  const ranges: Record<string, number> = {
+    today: 24 * 60 * 60 * 1000,
+    "7d": 7 * 24 * 60 * 60 * 1000,
+    "30d": 30 * 24 * 60 * 60 * 1000,
+  };
+  const range = ranges[usageTimeFilter.value];
+  return aiUsageLog.value
+    .filter((e) => {
+      const t = new Date(e.timestamp).getTime();
+      return now - t <= range;
+    })
+    .reverse();
+});
+
+/** 单条记录的费用估算（缓存以避免重复计算） */
+const usageCostMap = computed<Map<string, ReturnType<typeof estimateCost>>>(() => {
+  const map = new Map<string, ReturnType<typeof estimateCost>>();
+  for (const entry of aiUsageLog.value) {
+    const key = usageEntryKey(entry);
+    if (!map.has(key)) {
+      map.set(
+        key,
+        estimateCost(entry.model, entry.prompt_tokens, entry.completion_tokens),
+      );
+    }
+  }
+  return map;
+});
+
+/** 用量汇总统计 */
+const usageSummary = computed(() => {
+  const log = filteredUsageLog.value;
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCalls = log.length;
+  let successCalls = 0;
+  let errorCalls = 0;
+  let totalCost = 0;
+  let totalDurationMs = 0;
+  const byModel = new Map<string, { calls: number; input: number; output: number; cost: number }>();
+  const byAgent = new Map<string, { calls: number; input: number; output: number; cost: number }>();
+
+  for (const entry of log) {
+    totalInput += entry.prompt_tokens;
+    totalOutput += entry.completion_tokens;
+    totalDurationMs += entry.duration_ms;
+    if (entry.status === "success") successCalls++;
+    if (entry.status === "error") errorCalls++;
+
+    const cost = usageCostMap.value.get(usageEntryKey(entry))?.costCny ?? 0;
+    totalCost += cost;
+
+    const modelKey = entry.model || "(unknown)";
+    const modelStat = byModel.get(modelKey) ?? { calls: 0, input: 0, output: 0, cost: 0 };
+    modelStat.calls++;
+    modelStat.input += entry.prompt_tokens;
+    modelStat.output += entry.completion_tokens;
+    modelStat.cost += cost;
+    byModel.set(modelKey, modelStat);
+
+    const agentKey = entry.agent || "unknown";
+    const agentStat = byAgent.get(agentKey) ?? { calls: 0, input: 0, output: 0, cost: 0 };
+    agentStat.calls++;
+    agentStat.input += entry.prompt_tokens;
+    agentStat.output += entry.completion_tokens;
+    agentStat.cost += cost;
+    byAgent.set(agentKey, agentStat);
+  }
+
+  return {
+    totalCalls,
+    successCalls,
+    errorCalls,
+    totalInput,
+    totalOutput,
+    totalCost,
+    totalDurationMs,
+    avgDurationMs: totalCalls > 0 ? Math.round(totalDurationMs / totalCalls) : 0,
+    byModel: Array.from(byModel.entries())
+      .map(([model, stat]) => ({ model, ...stat }))
+      .sort((a, b) => b.cost - a.cost),
+    byAgent: Array.from(byAgent.entries())
+      .map(([agent, stat]) => ({ agent, ...stat }))
+      .sort((a, b) => b.calls - a.calls),
+  };
+});
+
+function usageEntryKey(entry: AiUsageEntry): string {
+  return `${entry.timestamp}|${entry.model}|${entry.prompt_tokens}|${entry.completion_tokens}`;
+}
+
+function toggleUsageEntry(idx: number) {
+  expandedUsageIdx.value = expandedUsageIdx.value === idx ? null : idx;
+}
+
+function formatUsageDuration(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function formatUsageTimestamp(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString("zh-CN", { hour12: false });
+  } catch {
+    return iso;
+  }
+}
+
+function usageStatusBadge(status: string): "success" | "danger" | "info" {
+  if (status === "success") return "success";
+  if (status === "error") return "danger";
+  return "info";
+}
+
+function usageStatusLabel(status: string): string {
+  if (status === "success") return "成功";
+  if (status === "error") return "失败";
+  return "未知";
+}
+
+function agentLabel(agent: string): string {
+  const map: Record<string, string> = {
+    planner: "计划生成",
+    reviewer: "复盘",
+    assistant: "助手",
+    teacher: "教学",
+    unknown: "未知",
+  };
+  return map[agent] ?? agent;
+}
+
+async function loadAiUsageLog() {
+  aiUsageLoading.value = true;
+  aiUsageError.value = null;
+  try {
+    aiUsageLog.value = await api.getAiUsageLog();
+  } catch (e) {
+    aiUsageError.value = e instanceof Error ? e.message : String(e);
+    aiUsageLog.value = [];
+  } finally {
+    aiUsageLoading.value = false;
+  }
+}
+
+async function clearAiUsageLog() {
+  if (!confirm("确认清空全部 AI 用量日志？此操作不可恢复。")) return;
+  try {
+    await api.clearAiUsageLog();
+    aiUsageLog.value = [];
+    expandedUsageIdx.value = null;
+  } catch (e) {
+    aiUsageError.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
 // ── Settings 查看 ──
 const settingsView = ref<TestResult<AppSettings>>({ status: "idle", data: null, error: null });
 const configPath = computed(() => settingsView.value.data?.data_directory ?? "");
@@ -492,6 +673,7 @@ async function refreshAll() {
       runDashboardTest(),
       runPlanTest(),
       runReviewTest(),
+      loadAiUsageLog(),
     ]);
     await checkDataDirs();
   } finally {
@@ -964,7 +1146,232 @@ onUnmounted(() => {
       </div>
     </Card>
 
-    <!-- 9. Settings 查看 -->
+    <!-- 10. AI 用量日志（持久化，含费用估算） -->
+    <Card id="debug-ai-usage" padding="lg" class="debug-section">
+      <div class="section-head">
+        <div class="section-title">
+          <Coins :size="18" />
+          <span>AI 用量日志</span>
+        </div>
+        <div class="section-actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            :loading="aiUsageLoading"
+            @click="loadAiUsageLog"
+          >
+            <RefreshCw :size="14" />
+            <span>刷新</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            :disabled="aiUsageLog.length === 0"
+            @click="clearAiUsageLog"
+          >
+            <Trash2 :size="14" />
+            <span>清空</span>
+          </Button>
+        </div>
+      </div>
+
+      <p class="section-desc">
+        持久化记录每次 AI 调用的 token 消耗与耗时，重启后不丢失。
+        根据各厂商官方定价估算费用，仅供参考。{{ pricingNote }}
+      </p>
+
+      <!-- 时间筛选 -->
+      <div class="usage-filter">
+        <button
+          v-for="opt in [
+            { value: 'all', label: '全部' },
+            { value: 'today', label: '近 24h' },
+            { value: '7d', label: '近 7 天' },
+            { value: '30d', label: '近 30 天' },
+          ]"
+          :key="opt.value"
+          class="usage-filter-btn"
+          :class="{ active: usageTimeFilter === opt.value }"
+          @click="usageTimeFilter = opt.value as typeof usageTimeFilter"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
+
+      <div v-if="aiUsageError" class="error-text">{{ aiUsageError }}</div>
+      <LoadingSpinner v-if="aiUsageLoading" :size="20" label="加载 AI 用量日志..." />
+
+      <!-- 汇总卡片 -->
+      <div v-if="!aiUsageLoading && usageSummary.totalCalls > 0" class="usage-summary">
+        <div class="usage-summary-grid">
+          <div class="usage-stat-card">
+            <span class="usage-stat-label">总调用次数</span>
+            <span class="usage-stat-value text-mono">{{ usageSummary.totalCalls }}</span>
+            <span class="usage-stat-sub">
+              成功 {{ usageSummary.successCalls }} · 失败 {{ usageSummary.errorCalls }}
+            </span>
+          </div>
+          <div class="usage-stat-card">
+            <span class="usage-stat-label">输入 Token</span>
+            <span class="usage-stat-value text-mono">{{ formatTokens(usageSummary.totalInput) }}</span>
+            <span class="usage-stat-sub">{{ usageSummary.totalInput.toLocaleString() }} tokens</span>
+          </div>
+          <div class="usage-stat-card">
+            <span class="usage-stat-label">输出 Token</span>
+            <span class="usage-stat-value text-mono">{{ formatTokens(usageSummary.totalOutput) }}</span>
+            <span class="usage-stat-sub">{{ usageSummary.totalOutput.toLocaleString() }} tokens</span>
+          </div>
+          <div class="usage-stat-card usage-stat-cost">
+            <span class="usage-stat-label">估算总费用</span>
+            <span class="usage-stat-value text-mono">{{ formatCost(usageSummary.totalCost) }}</span>
+            <span class="usage-stat-sub">人民币（估算）</span>
+          </div>
+          <div class="usage-stat-card">
+            <span class="usage-stat-label">总耗时</span>
+            <span class="usage-stat-value text-mono">{{ formatUsageDuration(usageSummary.totalDurationMs) }}</span>
+            <span class="usage-stat-sub">平均 {{ formatUsageDuration(usageSummary.avgDurationMs) }}/次</span>
+          </div>
+        </div>
+
+        <!-- 按模型分组 -->
+        <div v-if="usageSummary.byModel.length > 0" class="usage-breakdown">
+          <div class="usage-breakdown-title">按模型分组</div>
+          <div class="usage-breakdown-table">
+            <div class="usage-row usage-row-head">
+              <span class="usage-col-model">模型</span>
+              <span class="usage-col-num">调用次数</span>
+              <span class="usage-col-num">输入</span>
+              <span class="usage-col-num">输出</span>
+              <span class="usage-col-cost">费用</span>
+            </div>
+            <div
+              v-for="row in usageSummary.byModel"
+              :key="row.model"
+              class="usage-row"
+            >
+              <span class="usage-col-model text-mono">{{ row.model }}</span>
+              <span class="usage-col-num text-mono">{{ row.calls }}</span>
+              <span class="usage-col-num text-mono">{{ formatTokens(row.input) }}</span>
+              <span class="usage-col-num text-mono">{{ formatTokens(row.output) }}</span>
+              <span class="usage-col-cost text-mono">{{ formatCost(row.cost) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 按 Agent 分组 -->
+        <div v-if="usageSummary.byAgent.length > 0" class="usage-breakdown">
+          <div class="usage-breakdown-title">按 Agent 类型分组</div>
+          <div class="usage-breakdown-table">
+            <div class="usage-row usage-row-head">
+              <span class="usage-col-model">Agent</span>
+              <span class="usage-col-num">调用次数</span>
+              <span class="usage-col-num">输入</span>
+              <span class="usage-col-num">输出</span>
+              <span class="usage-col-cost">费用</span>
+            </div>
+            <div
+              v-for="row in usageSummary.byAgent"
+              :key="row.agent"
+              class="usage-row"
+            >
+              <span class="usage-col-model">{{ agentLabel(row.agent) }}</span>
+              <span class="usage-col-num text-mono">{{ row.calls }}</span>
+              <span class="usage-col-num text-mono">{{ formatTokens(row.input) }}</span>
+              <span class="usage-col-num text-mono">{{ formatTokens(row.output) }}</span>
+              <span class="usage-col-cost text-mono">{{ formatCost(row.cost) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 用量记录列表 -->
+      <div v-if="!aiUsageLoading && filteredUsageLog.length > 0" class="usage-list">
+        <div class="usage-list-head">调用明细（{{ filteredUsageLog.length }} 条，最新在前）</div>
+        <div
+          v-for="(entry, idx) in filteredUsageLog"
+          :key="idx"
+          class="usage-item"
+          :class="{ expanded: expandedUsageIdx === idx }"
+        >
+          <button class="usage-item-header" @click="toggleUsageEntry(idx)">
+            <ChevronRight :size="14" class="ai-call-chevron" :class="{ open: expandedUsageIdx === idx }" />
+            <span class="usage-item-time text-mono">{{ formatUsageTimestamp(entry.timestamp) }}</span>
+            <Badge :variant="usageStatusBadge(entry.status)" size="sm">
+              {{ usageStatusLabel(entry.status) }}
+            </Badge>
+            <Badge variant="default" size="sm">{{ agentLabel(entry.agent) }}</Badge>
+            <span class="usage-item-model text-mono">{{ entry.model || "(unknown)" }}</span>
+            <span class="usage-item-tokens text-mono">
+              ↑{{ formatTokens(entry.prompt_tokens) }} · ↓{{ formatTokens(entry.completion_tokens) }}
+            </span>
+            <span class="usage-item-duration text-mono">{{ formatUsageDuration(entry.duration_ms) }}</span>
+            <span class="usage-item-cost text-mono">
+              {{ formatCost(usageCostMap.get(usageEntryKey(entry))?.costCny ?? 0) }}
+            </span>
+          </button>
+
+          <div v-if="expandedUsageIdx === idx" class="usage-item-detail">
+            <div class="info-row">
+              <span class="info-key">时间</span>
+              <span class="info-value text-mono">{{ formatUsageTimestamp(entry.timestamp) }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">模型</span>
+              <span class="info-value text-mono">{{ entry.model || "—" }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">Agent</span>
+              <span class="info-value">{{ agentLabel(entry.agent) }}（{{ entry.agent }}）</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">输入 Token</span>
+              <span class="info-value text-mono">{{ entry.prompt_tokens.toLocaleString() }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">输出 Token</span>
+              <span class="info-value text-mono">{{ entry.completion_tokens.toLocaleString() }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">总 Token</span>
+              <span class="info-value text-mono">{{ entry.total_tokens.toLocaleString() }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">耗时</span>
+              <span class="info-value text-mono">{{ formatUsageDuration(entry.duration_ms) }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">状态</span>
+              <span class="info-value">
+                <Badge :variant="usageStatusBadge(entry.status)" size="sm">
+                  {{ usageStatusLabel(entry.status) }}
+                </Badge>
+              </span>
+            </div>
+            <div class="info-row">
+              <span class="info-key">费用估算</span>
+              <span class="info-value">
+                <span class="usage-cost-value text-mono">
+                  {{ formatCost(usageCostMap.get(usageEntryKey(entry))?.costCny ?? 0) }}
+                </span>
+                <span class="usage-cost-note">
+                  {{ usageCostMap.get(usageEntryKey(entry))?.note ?? "—" }}
+                </span>
+              </span>
+            </div>
+            <div v-if="entry.error" class="info-row">
+              <span class="info-key">错误信息</span>
+              <span class="info-value error-inline">{{ entry.error }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="!aiUsageLoading && filteredUsageLog.length === 0 && !aiUsageError" class="empty-inline">
+        {{ aiUsageLog.length === 0 ? "暂无 AI 用量记录。生成计划、生成复盘或在助手页发送对话后会显示在此。" : "当前筛选条件下无记录。" }}
+      </div>
+    </Card>
+
+    <!-- 11. Settings 查看 -->
     <Card id="debug-settings" padding="lg" class="debug-section">
       <div class="section-head">
         <div class="section-title">
@@ -986,7 +1393,7 @@ onUnmounted(() => {
       <pre v-if="settingsView.data" class="code-block">{{ formatJson(settingsView.data) }}</pre>
     </Card>
 
-    <!-- 9. 日志查看 -->
+    <!-- 12. 日志查看 -->
     <Card id="debug-logs" padding="lg" class="debug-section">
       <div class="section-head">
         <div class="section-title">
@@ -1608,10 +2015,289 @@ onUnmounted(() => {
   white-space: pre-wrap;
 }
 
+/* ── AI 用量日志 ── */
+.section-desc {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  line-height: var(--leading-relaxed);
+  margin: 0;
+}
+
+.usage-filter {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.usage-filter-btn {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-color);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.usage-filter-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.usage-filter-btn.active {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: var(--font-medium);
+}
+
+/* 汇总卡片 */
+.usage-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.usage-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-3);
+}
+
+.usage-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.usage-stat-card.usage-stat-cost {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.usage-stat-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-medium);
+}
+
+.usage-stat-value {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.usage-stat-card.usage-stat-cost .usage-stat-value {
+  color: var(--accent);
+}
+
+.usage-stat-sub {
+  font-size: var(--text-xs);
+  color: var(--text-quaternary);
+}
+
+/* 分组明细 */
+.usage-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.usage-breakdown-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+}
+
+.usage-breakdown-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  align-items: center;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.usage-row:last-child {
+  border-bottom: none;
+}
+
+.usage-row-head {
+  background: var(--bg-tertiary);
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.usage-row:not(.usage-row-head):hover {
+  background: var(--sidebar-item-hover);
+}
+
+.usage-col-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.usage-col-num {
+  text-align: right;
+  color: var(--text-secondary);
+}
+
+.usage-col-cost {
+  text-align: right;
+  color: var(--accent);
+  font-weight: var(--font-medium);
+}
+
+/* 用量记录列表 */
+.usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.usage-list-head {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+}
+
+.usage-item {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-secondary);
+  transition: border-color var(--transition-fast);
+}
+
+.usage-item.expanded {
+  border-color: var(--accent);
+}
+
+.usage-item-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast);
+  flex-wrap: wrap;
+}
+
+.usage-item-header:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.usage-item-time {
+  flex-shrink: 0;
+  color: var(--text-quaternary);
+  min-width: 140px;
+}
+
+.usage-item-model {
+  flex: 1;
+  min-width: 100px;
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-item-tokens {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.usage-item-duration {
+  flex-shrink: 0;
+  color: var(--text-quaternary);
+  min-width: 56px;
+  text-align: right;
+}
+
+.usage-item-cost {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+  min-width: 72px;
+  text-align: right;
+}
+
+.usage-item-detail {
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.usage-item-detail .info-row {
+  align-items: center;
+}
+
+.usage-cost-value {
+  display: inline-block;
+  font-weight: var(--font-semibold);
+  color: var(--accent);
+  margin-right: var(--space-2);
+}
+
+.usage-cost-note {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.error-inline {
+  color: var(--color-danger);
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+
 /* ── 响应式 ── */
 @media (max-width: 720px) {
   .info-key {
     min-width: 80px;
+  }
+  .usage-row {
+    grid-template-columns: 1.5fr 1fr 1fr;
+  }
+  .usage-row .usage-col-num:nth-child(3),
+  .usage-row .usage-col-num:nth-child(4) {
+    display: none;
+  }
+  .usage-item-time {
+    min-width: 120px;
   }
 }
 </style>

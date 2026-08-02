@@ -273,7 +273,7 @@ impl DashboardAggregator {
             let tasks_done = review.data.completion.priority_a_done + review.data.completion.priority_b_done;
             return DailyBreakdown {
                 date: date.to_string(),
-                hours: review.data.total_hours,
+                hours: crate::data::records::review_actual_hours(&review),
                 tasks_done,
             };
         }

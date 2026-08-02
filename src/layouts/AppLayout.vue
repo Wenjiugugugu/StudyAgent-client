@@ -113,6 +113,8 @@ onMounted(() => {
 
 <template>
   <div class="app-layout" :class="{ 'is-maximized': isMaximized }">
+    <!-- 自定义背景图层（由设置中的 background_image 驱动） -->
+    <div class="app-background-layer" aria-hidden="true" />
     <!-- 液态玻璃 SVG 边缘折射 filter — 仅折射边缘，中间无变形 -->
     <svg class="liquid-glass-svg" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -221,7 +223,33 @@ onMounted(() => {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-primary);
+  /* 有自定义背景图时透明，否则使用默认纯色背景 */
+  background: transparent;
+  position: relative;
+}
+
+/* 自定义背景图层：fixed 铺满视口，位于所有内容之下（z-index: 0） */
+.app-background-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--bg-solid);
+  background-image: var(--app-background-image, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  filter: blur(var(--app-background-blur, 0px));
+  opacity: var(--app-background-opacity, 1);
+  /* 模糊时向外扩展避免边缘出现透明 */
+  transform: scale(1.05);
+  transition: opacity 0.3s ease, filter 0.3s ease;
+}
+
+/* 所有实际内容必须堆叠在背景层之上 */
+.app-layout > :not(.app-background-layer) {
+  position: relative;
+  z-index: 1;
 }
 
 /* SVG filter 始终固定为 0×0，避免标准模式下默认占位产生顶部空白 */

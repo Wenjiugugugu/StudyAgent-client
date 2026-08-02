@@ -366,7 +366,10 @@ pub async fn list_plan_summaries(
             .unwrap_or(false);
 
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
-        let actual_hours = review.as_ref().map(|r| r.data.total_hours).unwrap_or(0.0);
+        let actual_hours = review
+            .as_ref()
+            .map(|r| crate::data::records::review_actual_hours(r))
+            .unwrap_or(0.0);
 
         summaries.push(PlanSummary {
             date,
@@ -478,7 +481,10 @@ pub async fn get_week_summaries(
             .unwrap_or(false);
 
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
-        let actual_hours = review.as_ref().map(|r| r.data.total_hours).unwrap_or(0.0);
+        let actual_hours = review
+            .as_ref()
+            .map(|r| crate::data::records::review_actual_hours(r))
+            .unwrap_or(0.0);
 
         summaries.push(PlanSummary {
             date: date_str,
@@ -621,6 +627,15 @@ pub async fn submit_review(
 ) -> Result<SubmitReviewResult, String> {
     let data_dir = get_data_dir(app_state.inner())?;
 
+    // 聚合实际学习时长（分钟 → 小时），写入 data.total_hours
+    // 供分析页/历史计划/周期对比读取，避免 actual_hours 恒为 0
+    let total_actual_minutes: i64 = payload
+        .task_reviews
+        .iter()
+        .filter_map(|tr| tr.actual_minutes)
+        .sum();
+    let total_actual_hours = total_actual_minutes as f64 / 60.0;
+
     // 构建 ReviewFile
     let now = crate::data::now_string();
     let review = crate::data::records::ReviewFile {
@@ -631,7 +646,10 @@ pub async fn submit_review(
             plan_ref: format!("plan/{}{}", payload.date, crate::data::plan::DAILY_PLAN_FILE_SUFFIX),
             generated_at: now,
         },
-        data: Default::default(),
+        data: crate::data::records::ReviewData {
+            total_hours: total_actual_hours,
+            ..Default::default()
+        },
         view: None,
         task_reviews: payload.task_reviews.clone(),
         daily_review: Some(payload.daily_review.clone()),
@@ -1034,6 +1052,102 @@ pub async fn import_textbook(
     })
 }
 
+/// 保存用户选择的背景图到 data_dir/assets/backgrounds/
+///
+/// 将用户通过对话框选择的图片复制到应用数据目录，返回相对于 data_dir 的路径
+/// （如 "assets/backgrounds/xxx.png"），供前端通过 convertFileSrc 加载。
+/// 前端调用: `invoke('save_background_image', { filePath: 'C:/...' })`
+#[tauri::command]
+pub async fn save_background_image(
+    file_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let dir = get_data_dir(state.inner())?;
+    let backgrounds_dir = dir.join("assets").join("backgrounds");
+    std::fs::create_dir_all(&backgrounds_dir)
+        .map_err(|e| format!("创建背景图目录失败: {}", e))?;
+
+    let src_path = std::path::Path::new(&file_path);
+    let extension = src_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "png".to_string());
+
+    // 用时间戳生成唯一文件名，避免覆盖
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dest_filename = format!("bg_{}.{}", timestamp, extension);
+    let dest_path = backgrounds_dir.join(&dest_filename);
+
+    std::fs::copy(src_path, &dest_path)
+        .map_err(|e| format!("复制背景图失败: {}", e))?;
+
+    // 返回相对路径（使用 / 作为分隔符，便于跨平台拼接）
+    let relative = format!("assets/backgrounds/{}", dest_filename);
+    Ok(relative)
+}
+
+/// 删除已保存的背景图文件
+///
+/// 前端调用: `invoke('delete_background_image', { relativePath: 'assets/backgrounds/xxx.png' })`
+#[tauri::command]
+pub async fn delete_background_image(
+    relative_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let dir = get_data_dir(state.inner())?;
+    let full_path = dir.join(&relative_path);
+    if full_path.exists() {
+        std::fs::remove_file(&full_path)
+            .map_err(|e| format!("删除背景图失败: {}", e))?;
+    }
+    Ok(())
+}
+
+/// 读取背景图文件并返回 base64 data URL
+///
+/// 由于 Tauri v2 的 assetProtocol 需要 scope 配置，直接返回 data URL 更简单可靠。
+/// 前端调用: `invoke('read_background_as_data_url', { relativePath: 'assets/backgrounds/xxx.png' })`
+#[tauri::command]
+pub async fn read_background_as_data_url(
+    relative_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let dir = get_data_dir(state.inner())?;
+    let full_path = dir.join(&relative_path);
+    if !full_path.exists() {
+        return Err(format!("背景图文件不存在: {}", full_path.display()));
+    }
+
+    // 读取文件字节
+    let bytes = std::fs::read(&full_path)
+        .map_err(|e| format!("读取背景图失败: {}", e))?;
+
+    // 根据扩展名推断 MIME 类型
+    let extension = full_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|| "png".to_string());
+    let mime = match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    };
+
+    // 编码为 base64
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
 /// 删除教材
 ///
 /// 前端调用: `invoke('delete_textbook', { id: 'math-同济线代' })`
@@ -1391,6 +1505,28 @@ pub async fn list_ai_models(
             ai_service.list_models().await
         }
     }
+}
+
+// ============================================================================
+// AI 用量日志命令
+// ============================================================================
+
+/// 读取 AI 用量日志（持久化记录，重启后不丢失）
+///
+/// 返回所有历史 AI 调用的 token 消耗记录，按时间升序。
+/// 前端调用: `invoke('get_ai_usage_log')`
+#[tauri::command]
+pub async fn get_ai_usage_log() -> Result<Vec<crate::data::ai_usage::AiUsageEntry>, String> {
+    Ok(crate::data::ai_usage::read_all())
+}
+
+/// 清空 AI 用量日志
+///
+/// 前端调用: `invoke('clear_ai_usage_log')`
+#[tauri::command]
+pub async fn clear_ai_usage_log() -> Result<(), String> {
+    crate::data::ai_usage::clear();
+    Ok(())
 }
 
 // ============================================================================

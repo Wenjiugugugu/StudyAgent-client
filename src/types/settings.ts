@@ -54,6 +54,12 @@ export interface AppSettings {
   accent_color?: string;
   /** 是否显示左上角 Logo */
   show_logo?: boolean;
+  /** 自定义背景图相对路径（相对于 data_dir，如 "assets/backgrounds/xxx.png"，空字符串表示无背景图） */
+  background_image?: string;
+  /** 背景图模糊度（0-20 px，0 为不模糊） */
+  background_blur?: number;
+  /** 背景图不透明度（0-1，1 为完全不透明） */
+  background_opacity?: number;
 }
 
 /** 学习时间配置 */

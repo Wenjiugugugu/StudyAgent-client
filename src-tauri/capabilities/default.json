@@ -21,6 +21,7 @@
     "shell:allow-open",
     "notification:default",
     "autostart:default",
-    "core:tray:default"
+    "core:tray:default",
+    "fs:default"
   ]
 }

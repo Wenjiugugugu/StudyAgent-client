@@ -130,3 +130,25 @@ export interface ModelInfo {
   /** 从 API 返回的额外元数据（如 max_tokens 等） */
   extra: Record<string, unknown>;
 }
+
+/** 单条 AI 用量记录（对应后端 `data::ai_usage::AiUsageEntry`） */
+export interface AiUsageEntry {
+  /** 调用时间戳（ISO 字符串 YYYY-MM-DDTHH:mm） */
+  timestamp: string;
+  /** Agent 类型标签（planner / reviewer / assistant / teacher / unknown） */
+  agent: string;
+  /** 实际使用的模型名（来自 ChatResponse.model） */
+  model: string;
+  /** 输入 token 数 */
+  prompt_tokens: number;
+  /** 输出 token 数 */
+  completion_tokens: number;
+  /** 总 token 数 */
+  total_tokens: number;
+  /** 调用耗时（毫秒） */
+  duration_ms: number;
+  /** 状态：success / error */
+  status: string;
+  /** 错误信息（仅失败时） */
+  error?: string | null;
+}

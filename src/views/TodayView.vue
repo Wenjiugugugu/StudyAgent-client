@@ -4,7 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
 import * as api from "@/api";
-import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString, nextDateString, currentMinutesShanghai, timeStringToMinutes } from "@/utils/date";
+import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString, nextDateString, currentMinutesShanghai, timeStringToMinutes, weekdayName } from "@/utils/date";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -30,6 +30,7 @@ import {
   Timer,
   Pause,
   Play,
+  Clock,
 } from "lucide-vue-next";
 import type { PlanTask, SubjectKey } from "@/types";
 
@@ -164,6 +165,13 @@ function formatMinutes(min: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
+/** 格式化小时为 "Xh" 或 "Xh Ym" */
+function formatHours(hours: number): string {
+  if (hours <= 0) return "0h";
+  const totalMin = Math.round(hours * 60);
+  return formatMinutes(totalMin);
+}
+
 async function loadTaskTimers() {
   if (!timeTrackingEnabled.value) {
     taskTimers.value = {};
@@ -254,6 +262,12 @@ const dailyStartTimeLabel = computed(() => {
   return settingsStore.settings?.study_schedule?.start_time ?? "09:00";
 });
 
+// ── 休息日判断：根据用户设置的 rest_days 判断当前查看日期是否为休息日 ──
+const isCurrentDateRestDay = computed(() => {
+  const restDays = settingsStore.settings?.study_schedule?.rest_days ?? ["周日"];
+  return restDays.includes(weekdayName(currentDate.value));
+});
+
 function refreshNow() {
   nowMinutes.value = currentMinutesShanghai();
 }
@@ -340,6 +354,19 @@ onUnmounted(() => {
         <Button variant="secondary" @click="refreshNow">
           <RefreshCw :size="15" />
           刷新时间
+        </Button>
+      </template>
+    </EmptyState>
+
+    <!-- 休息日：不展示生成计划入口，仅提示今日为休息日 -->
+    <EmptyState
+      v-else-if="!plan && isCurrentDateRestDay"
+      :title="`${currentDate} 是休息日`"
+      :description="`今日为设定的休息日（${weekdayName(currentDate)}），好好放松一下吧。`"
+    >
+      <template #actions>
+        <Button v-if="!isToday" variant="secondary" @click="goBack">
+          {{ backLabel }}
         </Button>
       </template>
     </EmptyState>
@@ -512,6 +539,15 @@ onUnmounted(() => {
                   P{{ task.priority }}
                 </Badge>
                 <Badge
+                  v-if="timeTrackingEnabled && task.estimated_hours > 0"
+                  variant="default"
+                  size="sm"
+                  class="estimate-badge"
+                >
+                  <Clock :size="12" />
+                  ≈{{ formatHours(task.estimated_hours) }}
+                </Badge>
+                <Badge
                   v-if="timeTrackingEnabled && (taskTimers[task.id]?.accumulated || isTaskRunning(task.id))"
                   :variant="isTaskRunning(task.id) ? 'info' : 'default'"
                   size="sm"
@@ -657,6 +693,15 @@ onUnmounted(() => {
                   </Badge>
                   <Badge :variant="priorityBadgeVariant(task.priority)" size="sm">
                     P{{ task.priority }}
+                  </Badge>
+                  <Badge
+                    v-if="timeTrackingEnabled && task.estimated_hours > 0"
+                    variant="default"
+                    size="sm"
+                    class="estimate-badge"
+                  >
+                    <Clock :size="12" />
+                    ≈{{ formatHours(task.estimated_hours) }}
                   </Badge>
                   <Badge
                     v-if="timeTrackingEnabled && (taskTimers[task.id]?.accumulated || isTaskRunning(task.id))"

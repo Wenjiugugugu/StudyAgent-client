@@ -5,9 +5,15 @@
  *   - 调用时间、命令名、参数、响应或错误、耗时
  *   - 保留最近 50 条记录，避免内存占用过大
  *   - 同时通过 console.info 输出到「日志」面板
+ *   - 持久化到 localStorage，重启后不丢失
  */
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
+
+/** localStorage 存储键 */
+const STORAGE_KEY = "studyagent-ai-debug-records";
+/** 持久化记录上限（localStorage 容量有限，需要控制） */
+const MAX_PERSISTED_RECORDS = 30;
 
 /** 单条 AI 调用记录 */
 export interface AiCallRecord {
@@ -64,8 +70,41 @@ function safeClone(value: unknown): unknown {
   }
 }
 
+/** 从 localStorage 加载已保存的记录 */
+function loadPersistedRecords(): AiCallRecord[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // 仅恢复已完成的记录（pending 状态在重启后无意义）
+    const restored = parsed.filter(
+      (r: unknown): r is AiCallRecord =>
+        typeof r === "object" && r !== null && "id" in r && "status" in r,
+    );
+    // 更新 nextId 以避免 ID 冲突
+    const maxId = restored.reduce((max, r) => Math.max(max, r.id), 0);
+    nextId = maxId + 1;
+    return restored;
+  } catch {
+    return [];
+  }
+}
+
+/** 将记录持久化到 localStorage（仅保存已完成的，且限制数量） */
+function persistRecords(records: AiCallRecord[]) {
+  try {
+    const toSave = records
+      .filter((r) => r.status !== "pending")
+      .slice(0, MAX_PERSISTED_RECORDS);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+  } catch {
+    // localStorage 满或不可用时静默忽略
+  }
+}
+
 export const useAiDebugStore = defineStore("aiDebug", () => {
-  const records = ref<AiCallRecord[]>([]);
+  const records = ref<AiCallRecord[]>(loadPersistedRecords());
 
   /** 最近一次调用（用于顶层快速访问） */
   const latestRecord = computed<AiCallRecord | null>(() => records.value[0] ?? null);
@@ -114,10 +153,22 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
     };
   }
 
-  /** 清空所有记录 */
+  /** 清空所有记录（同时清除 localStorage） */
   function clearAll() {
     records.value = [];
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // 忽略
+    }
   }
+
+  // 监听 records 变化，自动持久化
+  watch(
+    records,
+    (newRecords) => persistRecords(newRecords),
+    { deep: true },
+  );
 
   return {
     records,

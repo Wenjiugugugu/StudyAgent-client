@@ -49,6 +49,11 @@ echarts.use([
 const store = useAnalyticsStore();
 const settingsStore = useSettingsStore();
 
+// 是否启用「记录学习时长」：关闭时隐藏所有学习时长相关的统计与图表
+const timeTrackingEnabled = computed(
+  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking
+);
+
 const rangeOptions: { value: AnalyticsRange; label: string }[] = [
   { value: "last_7_days", label: "近7天" },
   { value: "last_30_days", label: "近30天" },
@@ -335,6 +340,34 @@ const difficultyOption = computed(() => {
 // ── 周期对比图 ──
 function buildComparisonOption(cmp: PeriodComparison | undefined) {
   if (!cmp) return {};
+  // 关闭「记录学习时长」时，移除「学习时长」维度
+  const categories = timeTrackingEnabled.value
+    ? ["完成率(%)", "学习时长(h)", "任务总数", "学习天数"]
+    : ["完成率(%)", "任务总数", "学习天数"];
+  const currentData = timeTrackingEnabled.value
+    ? [
+        cmp.current.avg_completion_rate.toFixed(1),
+        cmp.current.total_hours.toFixed(1),
+        cmp.current.total_tasks,
+        cmp.current.study_days,
+      ]
+    : [
+        cmp.current.avg_completion_rate.toFixed(1),
+        cmp.current.total_tasks,
+        cmp.current.study_days,
+      ];
+  const previousData = timeTrackingEnabled.value
+    ? [
+        cmp.previous.avg_completion_rate.toFixed(1),
+        cmp.previous.total_hours.toFixed(1),
+        cmp.previous.total_tasks,
+        cmp.previous.study_days,
+      ]
+    : [
+        cmp.previous.avg_completion_rate.toFixed(1),
+        cmp.previous.total_tasks,
+        cmp.previous.study_days,
+      ];
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
     legend: {
@@ -344,7 +377,7 @@ function buildComparisonOption(cmp: PeriodComparison | undefined) {
     grid: { left: 50, right: 30, bottom: 30, top: 40 },
     xAxis: {
       type: "category",
-      data: ["完成率(%)", "学习时长(h)", "任务总数", "学习天数"],
+      data: categories,
       axisLine: { lineStyle: { color: axisLineColor.value } },
       axisLabel: { color: textColor.value },
     },
@@ -358,23 +391,13 @@ function buildComparisonOption(cmp: PeriodComparison | undefined) {
       {
         name: cmp.current_label,
         type: "bar",
-        data: [
-          cmp.current.avg_completion_rate.toFixed(1),
-          cmp.current.total_hours.toFixed(1),
-          cmp.current.total_tasks,
-          cmp.current.study_days,
-        ],
+        data: currentData,
         itemStyle: { color: palette.primary, borderRadius: [4, 4, 0, 0] },
       },
       {
         name: cmp.previous_label,
         type: "bar",
-        data: [
-          cmp.previous.avg_completion_rate.toFixed(1),
-          cmp.previous.total_hours.toFixed(1),
-          cmp.previous.total_tasks,
-          cmp.previous.study_days,
-        ],
+        data: previousData,
         itemStyle: { color: palette.cyan, borderRadius: [4, 4, 0, 0] },
       },
     ],
@@ -392,12 +415,17 @@ const monthCompareOption = computed(() =>
 const trendStats = computed(() => {
   const t = store.learningTrend;
   if (!t) return null;
-  return [
+  const stats = [
     { label: "平均完成率", value: `${t.avg_completion_rate.toFixed(1)}%`, icon: Target, color: palette.primary },
-    { label: "累计学习时长", value: `${t.total_actual_hours.toFixed(1)}h`, icon: Clock, color: palette.success },
+  ];
+  if (timeTrackingEnabled.value) {
+    stats.push({ label: "累计学习时长", value: `${t.total_actual_hours.toFixed(1)}h`, icon: Clock, color: palette.success });
+  }
+  stats.push(
     { label: "累计完成任务", value: `${t.total_completed_tasks}/${t.total_planned_tasks}`, icon: CheckCircle2, color: palette.info },
     { label: "学习天数", value: `${t.study_days}`, icon: Award, color: palette.warning },
-  ];
+  );
+  return stats;
 });
 
 // ── 预测状态 ──
@@ -533,8 +561,8 @@ onMounted(() => {
             <v-chart :option="completionOption" autoresize class="chart" />
           </Card>
 
-          <!-- 学习时长图表 -->
-          <Card padding="md" class="chart-card">
+          <!-- 学习时长图表（仅启用「记录学习时长」时展示） -->
+          <Card v-if="timeTrackingEnabled" padding="md" class="chart-card">
             <div class="chart-title">学习时长（计划 vs 实际）</div>
             <v-chart :option="hoursOption" autoresize class="chart" />
           </Card>
@@ -593,7 +621,7 @@ onMounted(() => {
                 <div class="pred-desc">{{ predictionStatus.description }}</div>
                 <div class="pred-stats">
                   <span>近7天平均完成率: {{ predictionStatus.recent_avg_completion_rate.toFixed(1) }}%</span>
-                  <span>近7天日均学习: {{ predictionStatus.recent_avg_daily_hours.toFixed(1) }}h</span>
+                  <span v-if="timeTrackingEnabled">近7天日均学习: {{ predictionStatus.recent_avg_daily_hours.toFixed(1) }}h</span>
                 </div>
               </div>
             </div>

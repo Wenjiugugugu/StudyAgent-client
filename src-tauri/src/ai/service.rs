@@ -153,15 +153,22 @@ impl AiService {
     /// 1. 根据 agent 类型注入 system prompt
     /// 2. 使用默认 provider 发送请求
     /// 3. 如果默认 provider 失败，尝试备用 provider
+    /// 4. 记录 token 用量到持久化日志
     pub async fn chat(&self, mut req: ChatRequest) -> Result<ChatResponse, String> {
         // 注入 system prompt
+        let agent_tag = req
+            .agent
+            .as_ref()
+            .map(|a| format!("{:?}", a).to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
         if let Some(agent) = req.agent.clone() {
             inject_system_prompt(&mut req, &agent);
         }
 
         let default_provider = self.get_default_provider()?;
+        let started = std::time::Instant::now();
 
-        match default_provider.chat(&req).await {
+        let result = match default_provider.chat(&req).await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 log::warn!("默认 Provider 调用失败: {}", e);
@@ -172,33 +179,43 @@ impl AiService {
                 }
                 fallback
             }
-        }
+        };
+
+        let duration_ms = started.elapsed().as_millis() as u64;
+        log_usage(&agent_tag, &result, duration_ms);
+
+        result
     }
 
     /// 聊天（流式）
     ///
     /// 通过回调函数返回每个 chunk
+    /// 完成后记录 token 用量到持久化日志
     pub async fn chat_stream(
         &self,
         mut req: ChatRequest,
         on_chunk: impl Fn(ChatStreamChunk) + Send + Sync + 'static,
     ) -> Result<ChatResponse, String> {
         // 注入 system prompt
+        let agent_tag = req
+            .agent
+            .as_ref()
+            .map(|a| format!("{:?}", a).to_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
         if let Some(agent) = req.agent.clone() {
             inject_system_prompt(&mut req, &agent);
         }
 
         let default_provider = self.get_default_provider()?;
-
         let on_chunk_ref: &(dyn Fn(ChatStreamChunk) + Send + Sync) = &on_chunk;
+        let started = std::time::Instant::now();
 
-        match default_provider.chat_stream(&req, on_chunk_ref).await {
-            Ok(resp) => Ok(resp),
-            Err(e) => {
-                log::warn!("默认 Provider 流式调用失败: {}", e);
-                Err(e)
-            }
-        }
+        let result = default_provider.chat_stream(&req, on_chunk_ref).await;
+
+        let duration_ms = started.elapsed().as_millis() as u64;
+        log_usage(&agent_tag, &result, duration_ms);
+
+        result
     }
 
     /// Fallback 聊天：尝试其他 provider
@@ -290,6 +307,42 @@ impl Default for AiService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ============================================================================
+// AI 用量日志辅助
+// ============================================================================
+
+/// 记录一次 AI 调用的 token 用量到持久化日志
+fn log_usage(agent_tag: &str, result: &Result<ChatResponse, String>, duration_ms: u64) {
+    let (status, model, usage, error) = match result {
+        Ok(resp) => (
+            "success",
+            resp.model.clone(),
+            resp.usage.clone(),
+            None,
+        ),
+        Err(e) => (
+            "error",
+            String::new(),
+            TokenUsage::default(),
+            Some(e.clone()),
+        ),
+    };
+
+    let entry = crate::data::ai_usage::AiUsageEntry {
+        timestamp: crate::data::now_string(),
+        agent: agent_tag.to_string(),
+        model,
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+        duration_ms,
+        status: status.to_string(),
+        error,
+    };
+
+    crate::data::ai_usage::append(entry);
 }
 
 // ============================================================================

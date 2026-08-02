@@ -48,6 +48,9 @@ const defaultSettings: AppSettings = {
   },
   accent_color: "",
   show_logo: true,
+  background_image: "",
+  background_blur: 0,
+  background_opacity: 1,
 };
 
 export const useSettingsStore = defineStore("settings", () => {
@@ -59,6 +62,9 @@ export const useSettingsStore = defineStore("settings", () => {
   const visualMode = computed<VisualMode>(() => settings.value?.visual_mode ?? "standard");
   const accentColor = computed<string>(() => settings.value?.accent_color ?? "");
   const showLogo = computed<boolean>(() => settings.value?.show_logo ?? true);
+  const backgroundImage = computed<string>(() => settings.value?.background_image ?? "");
+  const backgroundBlur = computed<number>(() => settings.value?.background_blur ?? 0);
+  const backgroundOpacity = computed<number>(() => settings.value?.background_opacity ?? 1);
   const aiProviders = computed<AIProviderConfig[]>(() => settings.value?.ai_providers ?? []);
   const mcpServers = computed<MCPServerConfig[]>(() => settings.value?.mcp_servers ?? []);
   const defaultProvider = computed(() =>
@@ -100,6 +106,9 @@ export const useSettingsStore = defineStore("settings", () => {
         window: backendSettings.window || defaultSettings.window,
         accent_color: backendSettings.accent_color ?? defaultSettings.accent_color,
         show_logo: backendSettings.show_logo ?? defaultSettings.show_logo,
+        background_image: backendSettings.background_image ?? defaultSettings.background_image,
+        background_blur: backendSettings.background_blur ?? defaultSettings.background_blur,
+        background_opacity: backendSettings.background_opacity ?? defaultSettings.background_opacity,
       };
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
@@ -143,6 +152,24 @@ export const useSettingsStore = defineStore("settings", () => {
   function setShowLogo(show: boolean) {
     if (settings.value) {
       settings.value.show_logo = show;
+    }
+  }
+
+  function setBackgroundImage(path: string) {
+    if (settings.value) {
+      settings.value.background_image = path;
+    }
+  }
+
+  function setBackgroundBlur(blur: number) {
+    if (settings.value) {
+      settings.value.background_blur = blur;
+    }
+  }
+
+  function setBackgroundOpacity(opacity: number) {
+    if (settings.value) {
+      settings.value.background_opacity = opacity;
     }
   }
 
@@ -200,6 +227,9 @@ export const useSettingsStore = defineStore("settings", () => {
     visualMode,
     accentColor,
     showLogo,
+    backgroundImage,
+    backgroundBlur,
+    backgroundOpacity,
     aiProviders,
     mcpServers,
     defaultProvider,
@@ -213,6 +243,9 @@ export const useSettingsStore = defineStore("settings", () => {
     setVisualMode,
     setAccentColor,
     setShowLogo,
+    setBackgroundImage,
+    setBackgroundBlur,
+    setBackgroundOpacity,
     addProvider,
     updateProvider,
     removeProvider,

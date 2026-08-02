@@ -65,6 +65,7 @@ import type {
   UpdateCheckResult,
   UpdateAsset,
   DownloadProgress,
+  AiUsageEntry,
 } from "@/types";
 
 export { isTauri } from "./tauri";
@@ -332,6 +333,23 @@ export async function listAIModels(config?: AIProviderConfig): Promise<ModelInfo
   );
 }
 
+// ── AI 用量日志 ──
+
+/**
+ * 读取 AI 用量日志（持久化记录，重启后不丢失）
+ *
+ * 返回所有历史 AI 调用的 token 消耗记录，按时间升序排列。
+ * 用于在「调试」视图中展示历史用量与估算费用。
+ */
+export async function getAiUsageLog(): Promise<AiUsageEntry[]> {
+  return invokeDirect<AiUsageEntry[]>("get_ai_usage_log");
+}
+
+/** 清空 AI 用量日志（不可恢复） */
+export async function clearAiUsageLog(): Promise<void> {
+  return invokeDirect<void>("clear_ai_usage_log");
+}
+
 // ── MCP / Tools ──
 
 export async function listMCPServers(): Promise<MCPServerStatus[]> {
@@ -404,6 +422,40 @@ export async function importTextbook(subject: string, title?: string): Promise<T
 /** 删除已导入的教材 */
 export async function deleteTextbook(id: string): Promise<void> {
   return invokeDirect<void>("delete_textbook", { id });
+}
+
+/**
+ * 选择并保存背景图到应用数据目录
+ *
+ * 调用 Tauri 文件对话框让用户选择图片，复制到 data_dir/assets/backgrounds/，
+ * 返回相对于 data_dir 的路径（如 "assets/backgrounds/bg_xxx.png"）。
+ */
+export async function saveBackgroundImage(): Promise<string> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const filePath = await open({
+    multiple: false,
+    filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
+  });
+  if (!filePath || typeof filePath !== "string") {
+    throw new Error("未选择文件");
+  }
+  return invokeDirect<string>("save_background_image", { filePath });
+}
+
+/** 删除已保存的背景图文件（传入相对路径） */
+export async function deleteBackgroundImage(relativePath: string): Promise<void> {
+  return invokeDirect<void>("delete_background_image", { relativePath });
+}
+
+/**
+ * 读取背景图文件并返回 base64 data URL
+ *
+ * 通过后端命令读取文件字节并编码为 data URL，避免 Tauri assetProtocol scope 配置问题。
+ * 返回的 URL 可直接用于 CSS `background-image: url(...)` 或 `<img src="...">`。
+ */
+export async function readBackgroundAsDataUrl(relativePath: string): Promise<string> {
+  if (!relativePath) return "";
+  return invokeDirect<string>("read_background_as_data_url", { relativePath });
 }
 
 /** 重命名已导入的教材 */

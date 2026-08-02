@@ -12,6 +12,7 @@
 
   /* Backgrounds — Silver Mist frame, layered surfaces for depth without borders */
   --bg-primary: #f5f5f7;
+  --bg-solid: #f5f5f7; /* 始终不透明的兜底背景色，用于 body 和背景图层 */
   --bg-secondary: #ffffff;
   --bg-tertiary: #efeff4;
   --bg-elevated: #ffffff;
@@ -164,6 +165,7 @@
 /* Aligned with Apple design library .dark block */
 :root[data-theme="dark"] {
   --bg-primary: #000000;
+  --bg-solid: #000000;
   --bg-secondary: #1c1c1e;
   --bg-tertiary: #242426;
   --bg-elevated: #1c1c1e;
@@ -221,4 +223,23 @@
   --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.44), 0 2px 4px -2px rgba(0, 0, 0, 0.36);
   --shadow-lg: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
   --shadow-xl: 0 16px 40px -10px rgba(0, 0, 0, 0.55), 0 8px 16px -8px rgba(0, 0, 0, 0.44);
+}
+
+/* ── 有自定义背景图时：内容区半透明，让背景图可见 ── */
+:root[data-has-background="true"] {
+  --bg-primary: rgba(245, 245, 247, 0.78);
+  --bg-secondary: rgba(255, 255, 255, 0.72);
+  --bg-tertiary: rgba(239, 239, 244, 0.72);
+  --bg-elevated: rgba(255, 255, 255, 0.85);
+  --sidebar-bg: rgba(238, 238, 242, 0.72);
+  --header-bg: rgba(245, 245, 247, 0.6);
+}
+
+:root[data-theme="dark"][data-has-background="true"] {
+  --bg-primary: rgba(0, 0, 0, 0.72);
+  --bg-secondary: rgba(28, 28, 30, 0.72);
+  --bg-tertiary: rgba(36, 36, 38, 0.72);
+  --bg-elevated: rgba(28, 28, 30, 0.85);
+  --sidebar-bg: rgba(38, 38, 42, 0.72);
+  --header-bg: rgba(0, 0, 0, 0.6);
 }

@@ -115,6 +115,10 @@ export interface TaskReviewEntry {
   subject?: string;
   /** 优先级：A / B */
   priority?: string;
+  /** AI 估时（小时），仅在启用「记录学习时长」时持久化 */
+  estimated_hours?: number;
+  /** 实际用时（分钟），仅在启用「记录学习时长」时持久化 */
+  actual_minutes?: number;
 }
 
 /** 每日整体回顾 */

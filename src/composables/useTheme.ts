@@ -1,11 +1,14 @@
 import { watch, onMounted } from "vue";
 import { useSettingsStore } from "@/stores/settings";
+import { isTauri } from "@/api/tauri";
+import { readBackgroundAsDataUrl } from "@/api";
 import type { ThemeMode, VisualMode } from "@/types";
 
 /**
  * 主题与视觉模式管理组合式函数
  * 主题：light / dark / system
  * 视觉模式：standard / liquid-glass
+ * 背景图：用户上传的自定义背景图，支持模糊度与不透明度调整
  */
 export function useTheme() {
   const settingsStore = useSettingsStore();
@@ -25,6 +28,46 @@ export function useTheme() {
     } else {
       // 标准模式：移除属性，确保无 backdrop-filter 开销
       document.documentElement.removeAttribute("data-visual-mode");
+    }
+  }
+
+  /**
+   * 应用自定义背景图。
+   * - relativePath 为空时，清除背景图相关 CSS 变量
+   * - 否则通过后端命令读取图片为 base64 data URL，注入到 --app-background-image
+   * - 同时应用模糊度（--app-background-blur）与不透明度（--app-background-opacity）
+   */
+  async function applyBackgroundImage(
+    relativePath: string,
+    blur: number,
+    opacity: number
+  ) {
+    const root = document.documentElement;
+    if (!relativePath) {
+      root.style.removeProperty("--app-background-image");
+      root.style.removeProperty("--app-background-blur");
+      root.style.removeProperty("--app-background-opacity");
+      root.removeAttribute("data-has-background");
+      return;
+    }
+
+    root.style.setProperty("--app-background-blur", `${blur}px`);
+    root.style.setProperty("--app-background-opacity", String(opacity));
+    // 标记有背景图，用于 CSS 选择器让内容区半透明
+    root.setAttribute("data-has-background", "true");
+
+    if (!isTauri()) {
+      // 浏览器开发模式下无法访问 data_dir，仅写入占位
+      root.style.setProperty("--app-background-image", "none");
+      return;
+    }
+
+    try {
+      const dataUrl = await readBackgroundAsDataUrl(relativePath);
+      root.style.setProperty("--app-background-image", `url("${dataUrl}")`);
+    } catch (e) {
+      console.warn("[Background] 加载背景图失败:", e);
+      root.style.setProperty("--app-background-image", "none");
     }
   }
 
@@ -114,6 +157,11 @@ export function useTheme() {
     applyTheme(settingsStore.theme);
     applyVisualMode(settingsStore.visualMode);
     applyAccentColor(settingsStore.accentColor);
+    void applyBackgroundImage(
+      settingsStore.backgroundImage,
+      settingsStore.backgroundBlur,
+      settingsStore.backgroundOpacity
+    );
 
     // 监听系统主题变化
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -142,10 +190,25 @@ export function useTheme() {
     (newColor) => applyAccentColor(newColor)
   );
 
+  // 监听背景图/模糊度/不透明度变化
+  watch(
+    [
+      () => settingsStore.backgroundImage,
+      () => settingsStore.backgroundBlur,
+      () => settingsStore.backgroundOpacity,
+    ],
+    ([path, blur, opacity]) => {
+      void applyBackgroundImage(path, blur, opacity);
+    }
+  );
+
   return {
     theme: settingsStore.theme,
     visualMode: settingsStore.visualMode,
     accentColor: settingsStore.accentColor,
+    backgroundImage: settingsStore.backgroundImage,
+    backgroundBlur: settingsStore.backgroundBlur,
+    backgroundOpacity: settingsStore.backgroundOpacity,
     toggleTheme,
     setVisualMode,
     setAccentColor: (color: string) => {
@@ -156,6 +219,33 @@ export function useTheme() {
     setTheme: (mode: ThemeMode) => {
       settingsStore.setTheme(mode);
       applyTheme(mode);
+      settingsStore.save();
+    },
+    setBackgroundImage: (path: string) => {
+      settingsStore.setBackgroundImage(path);
+      void applyBackgroundImage(
+        path,
+        settingsStore.backgroundBlur,
+        settingsStore.backgroundOpacity
+      );
+      settingsStore.save();
+    },
+    setBackgroundBlur: (blur: number) => {
+      settingsStore.setBackgroundBlur(blur);
+      void applyBackgroundImage(
+        settingsStore.backgroundImage,
+        blur,
+        settingsStore.backgroundOpacity
+      );
+      settingsStore.save();
+    },
+    setBackgroundOpacity: (opacity: number) => {
+      settingsStore.setBackgroundOpacity(opacity);
+      void applyBackgroundImage(
+        settingsStore.backgroundImage,
+        settingsStore.backgroundBlur,
+        opacity
+      );
       settingsStore.save();
     },
   };

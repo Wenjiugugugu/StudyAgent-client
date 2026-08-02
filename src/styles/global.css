@@ -25,7 +25,7 @@ body {
   font-weight: var(--font-body);
   line-height: var(--leading-normal);
   color: var(--text-primary);
-  background-color: var(--bg-primary);
+  background-color: var(--bg-solid);
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;

@@ -5,7 +5,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 import { useSettingsStore } from "@/stores/settings";
 import { useTodayStore } from "@/stores/today";
 import { useUpdateStore } from "@/stores/update";
-import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween } from "@/utils/date";
+import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween, weekdayName } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -29,6 +29,8 @@ import {
   Download,
   HardDriveDownload,
   Package,
+  CheckCircle2,
+  Coffee,
 } from "lucide-vue-next";
 import type { DashboardSummary, PlanTask, PlanSummary, SubjectKey } from "@/types";
 
@@ -82,8 +84,19 @@ const focusTask = computed<PlanTask | null>(() => {
   const tasks = todayStore.allTasks;
   if (tasks.length === 0) return null;
   const active = tasks.find((t) => t.priority === "A" && t.status !== "done");
-  return active ?? tasks.find((t) => t.status !== "done") ?? tasks[0];
+  return active ?? tasks.find((t) => t.status !== "done") ?? null;
 });
+
+// 今日计划是否已全部完成
+const allTasksCompleted = computed(() => {
+  const tasks = todayStore.allTasks;
+  return tasks.length > 0 && tasks.every((t) => t.status === "done");
+});
+
+// 是否启用「记录学习时长」：关闭时不展示估时
+const timeTrackingEnabled = computed(
+  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking
+);
 
 // ── 每日开始时间前不展示今日计划（与 TodayView 口径一致） ──
 const nowMinutes = ref(currentMinutesShanghai());
@@ -103,6 +116,12 @@ const isBeforeDailyStart = computed(() => {
 const dailyStartTimeLabel = computed(
   () => settingsStore.settings?.study_schedule?.start_time ?? "09:00",
 );
+
+// ── 休息日判断：根据用户设置的 rest_days 判断今天是否为休息日 ──
+const isTodayRestDay = computed(() => {
+  const restDays = settingsStore.settings?.study_schedule?.rest_days ?? ["周日"];
+  return restDays.includes(weekdayName(todayDateStr));
+});
 
 async function generateTodayPlan() {
   await todayStore.generate();
@@ -414,7 +433,7 @@ onBeforeUnmount(() => {
             <Sparkles :size="18" class="focus-icon" />
             <h2 class="focus-heading">今日焦点</h2>
           </div>
-          <Button v-if="focusTask && !isBeforeDailyStart" variant="ghost" size="sm" @click="goToday">
+          <Button v-if="(focusTask || allTasksCompleted) && !isBeforeDailyStart" variant="ghost" size="sm" @click="goToday">
             查看详情
             <ChevronRight :size="14" />
           </Button>
@@ -433,6 +452,17 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <!-- 今日计划已全部完成 -->
+        <div v-else-if="allTasksCompleted" class="focus-all-done" @click="goToday">
+          <div class="focus-empty-icon focus-done-icon">
+            <CheckCircle2 :size="22" />
+          </div>
+          <div class="focus-empty-text">
+            <span class="focus-empty-title">今日计划已全部完成</span>
+            <span class="focus-empty-desc">辛苦了！可前往复盘记录今日学习情况。</span>
+          </div>
+        </div>
+
         <div v-else-if="focusTask" class="focus-body" @click="goToday">
           <div class="focus-meta">
             <div class="focus-badges">
@@ -444,7 +474,7 @@ onBeforeUnmount(() => {
                 P{{ focusTask.priority }}
               </Badge>
             </div>
-            <span v-if="focusTask.estimated_hours" class="focus-time">
+            <span v-if="timeTrackingEnabled && focusTask.estimated_hours" class="focus-time">
               <Clock :size="12" />
               {{ focusTask.estimated_hours }} 小时
             </span>
@@ -458,6 +488,17 @@ onBeforeUnmount(() => {
               开始学习
               <ChevronRight :size="16" />
             </Button>
+          </div>
+        </div>
+
+        <!-- 今日为休息日：不展示生成计划入口，仅提示休息日 -->
+        <div v-else-if="isTodayRestDay" class="focus-rest-day">
+          <div class="focus-empty-icon focus-rest-icon">
+            <Coffee :size="22" />
+          </div>
+          <div class="focus-empty-text">
+            <span class="focus-empty-title">今日是休息日</span>
+            <span class="focus-empty-desc">好好放松一下，明天继续加油。</span>
           </div>
         </div>
 
@@ -911,6 +952,49 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-md);
   text-align: left;
   width: 100%;
+}
+
+/* 休息日提示块（非交互） */
+.focus-rest-day {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  text-align: left;
+  width: 100%;
+}
+
+.focus-rest-icon {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* 今日计划全部完成提示块（可点击跳转） */
+.focus-all-done {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--color-success-subtle, var(--bg-tertiary));
+  border: 1.5px solid var(--color-success, var(--border-color));
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  text-align: left;
+  width: 100%;
+}
+
+.focus-all-done:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.focus-done-icon {
+  background: var(--color-success-subtle, var(--accent-subtle));
+  color: var(--color-success, var(--accent));
 }
 
 .focus-empty:hover:not(:disabled) {

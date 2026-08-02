@@ -288,7 +288,9 @@ fn build_learning_trend(
 
         let planned_tasks = plan.as_ref().map(|p| p.data.total_tasks).unwrap_or(0);
         let planned_hours = plan.as_ref().map(|p| p.data.total_hours).unwrap_or(0.0);
-        let actual_hours = review.map(|r| r.data.total_hours).unwrap_or(0.0);
+        let actual_hours = review
+            .map(|r| crate::data::records::review_actual_hours(r))
+            .unwrap_or(0.0);
 
         // 完成率：优先从 task_reviews 计算
         let (completed_tasks, completion_rate) = compute_completion(review);
@@ -554,8 +556,9 @@ fn compute_period_metrics(
     let mut study_days = 0i32;
 
     for r in &reviews {
-        total_hours += r.data.total_hours;
-        if r.data.total_hours > 0.0 {
+        let hours = crate::data::records::review_actual_hours(r);
+        total_hours += hours;
+        if hours > 0.0 {
             study_days += 1;
         }
 
@@ -640,7 +643,7 @@ fn build_prediction(reviews: &[ReviewFile], today: &str) -> GoalPrediction {
             };
             rates.push(rate);
         }
-        total_hours += r.data.total_hours;
+        total_hours += crate::data::records::review_actual_hours(r);
     }
 
     let recent_avg_completion_rate = if rates.is_empty() {

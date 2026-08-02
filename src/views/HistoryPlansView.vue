@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import * as api from "@/api";
 import { todayString } from "@/utils/date";
+import { useSettingsStore } from "@/stores/settings";
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
@@ -10,12 +11,18 @@ import { CalendarClock, ChevronRight, CheckCircle2, Circle, Clock } from "lucide
 import type { PlanSummary } from "@/types";
 
 const router = useRouter();
+const settingsStore = useSettingsStore();
 
 const summaries = ref<PlanSummary[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
 const today = todayString();
+
+// 是否启用「记录学习时长」：关闭时隐藏实际学时展示
+const timeTrackingEnabled = computed(
+  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking
+);
 
 const weekdayLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -142,6 +149,20 @@ function completionVariant(rate: number): string {
   return "danger";
 }
 
+/** 根据日期与复盘状态返回展示文本与样式类。
+ *  - 已复盘：显示完成率
+ *  - 未复盘且日期在今天及之前：显示「未复盘」（danger 样式）
+ *  - 未复盘且日期在今天之后：显示「未开始」（neutral 样式） */
+function reviewStatus(dateStr: string, hasReview: boolean, rate: number): { text: string; cls: string } {
+  if (hasReview) {
+    return { text: `${Math.round(rate)}%`, cls: completionVariant(rate) };
+  }
+  if (dateStr > today) {
+    return { text: "未开始", cls: "neutral" };
+  }
+  return { text: "未复盘", cls: "danger" };
+}
+
 function openPlan(date: string) {
   router.push({ name: "plan", query: { date, from: "history" } });
 }
@@ -243,16 +264,16 @@ onMounted(() => {
                       <div class="stat-row">
                         <span
                           class="stat-value rate-text"
-                          :class="completionVariant(day.item.completion_rate)"
+                          :class="reviewStatus(day.date, day.item.has_review, day.item.completion_rate).cls"
                         >
-                          {{ day.item.has_review ? `${Math.round(day.item.completion_rate)}%` : '未复盘' }}
+                          {{ reviewStatus(day.date, day.item.has_review, day.item.completion_rate).text }}
                         </span>
                       </div>
                       <div class="stat-row">
                         <Circle :size="11" class="stat-icon" />
                         <span class="stat-value">{{ day.item.completed_tasks }}/{{ day.item.planned_tasks }}</span>
                       </div>
-                      <div class="stat-row">
+                      <div v-if="timeTrackingEnabled" class="stat-row">
                         <Clock :size="11" class="stat-icon" />
                         <span class="stat-value">{{ day.item.actual_hours.toFixed(1) }}h</span>
                       </div>
@@ -470,6 +491,10 @@ onMounted(() => {
 
 .rate-text.danger {
   color: var(--color-danger, #ef4444);
+}
+
+.rate-text.neutral {
+  color: var(--text-tertiary);
 }
 
 .date-card {

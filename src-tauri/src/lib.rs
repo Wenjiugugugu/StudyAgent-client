@@ -148,6 +148,24 @@ pub struct AppSettings {
     /// 是否显示左上角 Logo（默认 true）
     #[serde(default = "default_show_logo")]
     pub show_logo: bool,
+    /// 自定义背景图相对路径（相对于 data_dir，如 "assets/backgrounds/xxx.png"）
+    /// 空字符串表示使用默认纯色背景
+    #[serde(default)]
+    pub background_image: String,
+    /// 背景图模糊度（0-20 px，0 为不模糊）
+    #[serde(default = "default_background_blur")]
+    pub background_blur: f64,
+    /// 背景图不透明度（0-1，1 为完全不透明）
+    #[serde(default = "default_background_opacity")]
+    pub background_opacity: f64,
+}
+
+fn default_background_blur() -> f64 {
+    0.0
+}
+
+fn default_background_opacity() -> f64 {
+    1.0
 }
 
 fn default_close_action() -> String {
@@ -268,6 +286,9 @@ impl Default for AppSettings {
             close_action: default_close_action(),
             accent_color: String::new(),
             show_logo: default_show_logo(),
+            background_image: String::new(),
+            background_blur: default_background_blur(),
+            background_opacity: default_background_opacity(),
         }
     }
 }
@@ -466,7 +487,10 @@ pub fn init_app_state(data_dir: PathBuf) -> Mutex<AppState> {
         ToolDispatcher::from_configs(settings.mcp_servers.clone()).await
     }));
 
-    let state = AppState::new(effective_data_dir, ai_service, tool_dispatcher);
+    let state = AppState::new(effective_data_dir.clone(), ai_service, tool_dispatcher);
+
+    // 设置 AI 用量日志目录（全局 OnceLock，仅设置一次）
+    crate::data::ai_usage::set_log_dir(effective_data_dir);
 
     Mutex::new(state)
 }

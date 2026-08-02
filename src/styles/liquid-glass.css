@@ -13,9 +13,19 @@
  *   · 纯色：学习计划/历史计划/教材/AI 调试日志/设置项列表
  *
  * 玻璃本色：几乎没有颜色，颜色来自环境
- * 高光优先：上边缘、左边缘、圆角连续高光
+ * 高光优先：双边边缘高光，随鼠标位置动态偏移
  * 阴影克制：仅少量漂浮感投影
  */
+
+/* ════════════════════════════════════════════════
+   0. 鼠标驱动变量（由 main.ts 更新）
+   ════════════════════════════════════════════════ */
+:root {
+  --lg-mouse-x: 0.5;
+  --lg-mouse-y: 0.5;
+  --lg-mx: calc((var(--lg-mouse-x) - 0.5) * 2);
+  --lg-my: calc((var(--lg-mouse-y) - 0.5) * 2);
+}
 
 /* ════════════════════════════════════════════════
    1. 环境背景 — 几乎不可察觉的冷/暖光晕
@@ -187,13 +197,22 @@
 [data-visual-mode="liquid-glass"] .focus-today,
 [data-visual-mode="liquid-glass"] .stat-card {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 20%, rgba(255,255,255,0.25) 45%, rgba(255,255,255,0.25) 80%, rgba(0,0,0,0.02) 100%);
-  backdrop-filter: blur(14px) saturate(150%) brightness(1.02);
-  -webkit-backdrop-filter: blur(14px) saturate(150%) brightness(1.02);
-  border: 0.5px solid var(--border-color);
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(110% - (var(--lg-mx) * 20%)) calc(-14% + (var(--lg-my) * 18%)), rgba(255,255,255,0.7) 0%, rgba(255,255,255,0.16) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-14% + (var(--lg-mx) * 20%)) calc(110% - (var(--lg-my) * 18%)), rgba(255,255,255,0.32) 0%, transparent 68%),
+    /* 底部厚度阴影 */
+    radial-gradient(ellipse 120% 40% at calc(50% - (var(--lg-mx) * 10%)) calc(100% - (var(--lg-my) * 6%)), rgba(0,0,0,0.06) 0%, transparent 70%),
+    /* 主体玻璃底色 */
+    linear-gradient(180deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.28) 45%, rgba(255,255,255,0.22) 80%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: blur(18px) saturate(170%) brightness(1.02);
+  -webkit-backdrop-filter: blur(18px) saturate(170%) brightness(1.02);
+  border: 0.5px solid rgba(255, 255, 255, 0.5);
   box-shadow:
-    inset 0 1px 0.5px rgba(255, 255, 255, 0.45),
-    0 2px 8px rgba(0, 0, 0, 0.04);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.04),
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    0 6px 18px rgba(120, 150, 200, 0.04);
   transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
 
@@ -201,9 +220,11 @@
 [data-visual-mode="liquid-glass"] .focus-today:hover,
 [data-visual-mode="liquid-glass"] .stat-card:hover {
   box-shadow:
-    inset 0 1px 0.5px rgba(255, 255, 255, 0.55),
-    0 4px 14px rgba(0, 0, 0, 0.06);
-  border-color: var(--border-color-strong);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.75),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.05),
+    0 4px 14px rgba(0, 0, 0, 0.06),
+    0 10px 28px rgba(120, 150, 200, 0.06);
+  border-color: rgba(255, 255, 255, 0.65);
   transform: translateY(-2px);
 }
 
@@ -213,21 +234,32 @@
    ════════════════════════════════════════════════ */
 [data-visual-mode="liquid-glass"] .ui-card {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 18%, rgba(255,255,255,0.25) 40%, rgba(255,255,255,0.25) 82%, rgba(0,0,0,0.02) 100%);
-  backdrop-filter: blur(12px) saturate(150%) brightness(1.01);
-  -webkit-backdrop-filter: blur(12px) saturate(150%) brightness(1.01);
-  border: 0.5px solid var(--border-color);
+    /* 右上边缘高光 — 光源从右上方外部照入，沿边框扫动 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.14) 45%, transparent 72%),
+    /* 左下边缘高光 — 光源从左下方外部照入，反向扫动 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.32) 0%, rgba(255,255,255,0.06) 50%, transparent 72%),
+    /* 底部厚度阴影 */
+    radial-gradient(ellipse 120% 40% at calc(50% - (var(--lg-mx) * 12%)) calc(100% - (var(--lg-my) * 8%)), rgba(0,0,0,0.06) 0%, transparent 70%),
+    /* 主体玻璃底色 */
+    linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.22) 40%, rgba(255,255,255,0.18) 82%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: blur(18px) saturate(170%) brightness(1.02);
+  -webkit-backdrop-filter: blur(18px) saturate(170%) brightness(1.02);
+  border: 0.5px solid rgba(255, 255, 255, 0.45);
   box-shadow:
-    inset 0 1px 0.5px rgba(255, 255, 255, 0.4),
-    0 1px 3px rgba(0, 0, 0, 0.04);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.04),
+    0 1px 3px rgba(0, 0, 0, 0.04),
+    0 4px 12px rgba(0, 0, 0, 0.03);
   transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
 
 [data-visual-mode="liquid-glass"] .ui-card.hoverable:hover {
   box-shadow:
-    inset 0 1px 0.5px rgba(255, 255, 255, 0.5),
-    0 4px 14px rgba(0, 0, 0, 0.06);
-  border-color: var(--border-color-strong);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.05),
+    0 4px 14px rgba(0, 0, 0, 0.06),
+    0 8px 24px rgba(120, 150, 200, 0.05);
+  border-color: rgba(255, 255, 255, 0.6);
   transform: translateY(-2.5px);
 }
 
@@ -317,72 +349,100 @@
 [data-visual-mode="liquid-glass"] .ui-button.primary {
   color: #ffffff;
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.05) 100%),
-    rgba(91, 141, 239, 0.88);
-  backdrop-filter: blur(12px) saturate(160%);
-  -webkit-backdrop-filter: blur(12px) saturate(160%);
-  border: 0.5px solid rgba(255, 255, 255, 0.3);
+    /* 上边缘高光 — 光源从上方边缘扫过，位置随鼠标水平移动 */
+    radial-gradient(ellipse 120% 55% at calc(50% + (var(--lg-mx) * 45%)) -35%, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.22) 35%, transparent 68%),
+    /* 下边缘厚度阴影 — 对向生成，反向偏移 */
+    radial-gradient(ellipse 120% 55% at calc(50% - (var(--lg-mx) * 45%)) 135%, rgba(0,0,0,0.22) 0%, transparent 62%),
+    /* 中间体积渐变 */
+    linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.07) 100%),
+    rgba(91, 141, 239, 0.82);
+  backdrop-filter: blur(16px) saturate(170%);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  border: 0.5px solid rgba(255, 255, 255, 0.45);
   box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.5),
-    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.06),
-    0 1px 3px rgba(0, 0, 0, 0.08);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.65),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.1),
+    0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 0 4px 0.5px rgba(120, 170, 255, 0.18),
+    0 1px 3px rgba(0, 0, 0, 0.1);
   transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
+  text-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.12);
 }
 
 [data-visual-mode="liquid-glass"] .ui-button.primary:hover:not(:disabled) {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.06) 100%),
-    rgba(91, 141, 239, 0.95);
+    radial-gradient(ellipse 120% 55% at calc(50% + (var(--lg-mx) * 50%)) -35%, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.28) 35%, transparent 68%),
+    radial-gradient(ellipse 120% 55% at calc(50% - (var(--lg-mx) * 50%)) 135%, rgba(0,0,0,0.26) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.08) 100%),
+    rgba(91, 141, 239, 0.92);
   box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.6),
-    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.06),
-    0 2px 6px rgba(0, 0, 0, 0.1);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.78),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.12),
+    0 0 0 0.5px rgba(255, 255, 255, 0.16),
+    0 0 5px 1px rgba(120, 170, 255, 0.22),
+    0 2px 6px rgba(0, 0, 0, 0.12);
   transform: translateY(-0.5px);
 }
 
 [data-visual-mode="liquid-glass"] .ui-button.primary:active:not(:disabled) {
   transform: scale(0.96);
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.08) 100%),
-    rgba(61, 107, 184, 0.9);
+    radial-gradient(ellipse 120% 55% at calc(50% + (var(--lg-mx) * 35%)) -35%, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.14) 35%, transparent 68%),
+    radial-gradient(ellipse 120% 55% at calc(50% - (var(--lg-mx) * 35%)) 135%, rgba(0,0,0,0.28) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 100%),
+    rgba(61, 107, 184, 0.88);
   box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.35),
-    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.1),
-    0 1px 2px rgba(0, 0, 0, 0.06);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.14),
+    0 0 0 0.5px rgba(255, 255, 255, 0.1),
+    0 0 3px 0.5px rgba(120, 170, 255, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 [data-visual-mode="liquid-glass"] .ui-button.secondary {
   color: var(--text-primary);
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.42) 50%, rgba(0,0,0,0.03) 100%);
-  backdrop-filter: blur(12px) saturate(150%);
-  -webkit-backdrop-filter: blur(12px) saturate(150%);
-  border: 0.5px solid rgba(255, 255, 255, 0.3);
+    /* 上边缘高光 — 光源从上方边缘扫过，位置随鼠标水平移动 */
+    radial-gradient(ellipse 120% 55% at calc(50% + (var(--lg-mx) * 45%)) -35%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.28) 35%, transparent 68%),
+    /* 下边缘厚度阴影 — 对向生成，反向偏移 */
+    radial-gradient(ellipse 120% 55% at calc(50% - (var(--lg-mx) * 45%)) 135%, rgba(0,0,0,0.12) 0%, transparent 62%),
+    /* 中间体积渐变 */
+    linear-gradient(180deg, rgba(255,255,255,0.68) 0%, rgba(255,255,255,0.38) 50%, rgba(0,0,0,0.02) 100%);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 0.5px solid rgba(255, 255, 255, 0.5);
   box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.5),
-    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.04),
-    0 1px 2px rgba(0, 0, 0, 0.04);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.75),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.05),
+    0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 1px 2px rgba(0, 0, 0, 0.05);
   transition: background-color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
 }
 
 [data-visual-mode="liquid-glass"] .ui-button.secondary:hover:not(:disabled) {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.52) 50%, rgba(0,0,0,0.03) 100%);
+    radial-gradient(ellipse 120% 55% at calc(50% + (var(--lg-mx) * 50%)) -35%, rgba(255,255,255,1) 0%, rgba(255,255,255,0.34) 35%, transparent 68%),
+    radial-gradient(ellipse 120% 55% at calc(50% - (var(--lg-mx) * 50%)) 135%, rgba(0,0,0,0.15) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.48) 50%, rgba(0,0,0,0.03) 100%);
   box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.6),
-    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.04),
-    0 2px 5px rgba(0, 0, 0, 0.05);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.06),
+    0 0 0 0.5px rgba(255, 255, 255, 0.16),
+    0 2px 5px rgba(0, 0, 0, 0.06);
   transform: translateY(-0.5px);
 }
 
 [data-visual-mode="liquid-glass"] .ui-button.secondary:active:not(:disabled) {
   transform: scale(0.95);
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.35) 50%, rgba(0,0,0,0.04) 100%);
+    radial-gradient(ellipse 120% 55% at calc(50% + (var(--lg-mx) * 35%)) -35%, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.2) 35%, transparent 68%),
+    radial-gradient(ellipse 120% 55% at calc(50% - (var(--lg-mx) * 35%)) 135%, rgba(0,0,0,0.18) 0%, transparent 62%),
+    linear-gradient(180deg, rgba(255,255,255,0.58) 0%, rgba(255,255,255,0.3) 50%, rgba(0,0,0,0.04) 100%);
   box-shadow:
-    inset 0 0.5px 0.5px rgba(255, 255, 255, 0.4),
-    inset 0 -0.5px 0.5px rgba(0, 0, 0, 0.05),
-    0 1px 1px rgba(0, 0, 0, 0.04);
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.6),
+    inset 0 -1px 0.5px rgba(0, 0, 0, 0.07),
+    0 0 0 0.5px rgba(255, 255, 255, 0.1),
+    0 1px 1px rgba(0, 0, 0, 0.05);
 }
 
 [data-visual-mode="liquid-glass"] .ui-button.ghost:hover:not(:disabled) {
@@ -436,6 +496,11 @@
    ════════════════════════════════════════════════ */
 [data-visual-mode="liquid-glass"] .settings-section {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.1) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.2) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 18%, rgba(255,255,255,0.25) 40%, rgba(255,255,255,0.25) 82%, rgba(0,0,0,0.02) 100%);
   backdrop-filter: blur(14px) saturate(150%) brightness(1.01);
   -webkit-backdrop-filter: blur(14px) saturate(150%) brightness(1.01);
@@ -457,6 +522,11 @@
 [data-visual-mode="liquid-glass"] .theme-card,
 [data-visual-mode="liquid-glass"] .visual-mode-card {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.42) 0%, rgba(255,255,255,0.1) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.18) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 25%, rgba(255,255,255,0.25) 55%, rgba(0,0,0,0.02) 100%);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -479,6 +549,11 @@
 [data-visual-mode="liquid-glass"] .theme-card.active,
 [data-visual-mode="liquid-glass"] .visual-mode-card.active {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.06) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.12) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.02) 25%, transparent 55%, rgba(0,0,0,0.03) 100%),
     rgba(91, 141, 239, 0.08);
   border-color: rgba(91, 141, 239, 0.35);
@@ -494,6 +569,11 @@
    ════════════════════════════════════════════════ */
 [data-visual-mode="liquid-glass"] .focus-empty {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.09) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.16) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.45) 0%, rgba(255,255,255,0.28) 20%, rgba(255,255,255,0.2) 45%, rgba(255,255,255,0.2) 82%, rgba(0,0,0,0.01) 100%);
   backdrop-filter: blur(12px) saturate(150%);
   -webkit-backdrop-filter: blur(12px) saturate(150%);
@@ -693,6 +773,13 @@
 [data-theme="dark"][data-visual-mode="liquid-glass"] .focus-today,
 [data-theme="dark"][data-visual-mode="liquid-glass"] .stat-card {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(110% - (var(--lg-mx) * 20%)) calc(-14% + (var(--lg-my) * 18%)), rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.03) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-14% + (var(--lg-mx) * 20%)) calc(110% - (var(--lg-my) * 18%)), rgba(255,255,255,0.06) 0%, transparent 68%),
+    /* 底部厚度阴影 */
+    radial-gradient(ellipse 120% 40% at calc(50% - (var(--lg-mx) * 10%)) calc(100% - (var(--lg-my) * 6%)), rgba(0,0,0,0.1) 0%, transparent 70%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.01) 20%, transparent 45%, transparent 80%, rgba(0,0,0,0.03) 100%),
     rgba(255, 255, 255, 0.02);
   border-color: rgba(255, 255, 255, 0.12);
@@ -705,6 +792,13 @@
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-card {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.03) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.06) 0%, transparent 68%),
+    /* 底部厚度阴影 */
+    radial-gradient(ellipse 120% 40% at calc(50% - (var(--lg-mx) * 12%)) calc(100% - (var(--lg-my) * 8%)), rgba(0,0,0,0.1) 0%, transparent 70%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 18%, transparent 40%, transparent 82%, rgba(0,0,0,0.03) 100%),
     rgba(255, 255, 255, 0.015);
   border-color: rgba(255, 255, 255, 0.1);
@@ -743,7 +837,12 @@
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.primary {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.06) 100%),
+    /* 顶部边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 110% 55% at calc(50% + (var(--lg-mx) * 30%)) calc(10% + (var(--lg-my) * 14%)), rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.05) 45%, transparent 82%),
+    /* 底部边缘厚度阴影 — 反向偏移 */
+    radial-gradient(ellipse 110% 50% at calc(50% - (var(--lg-mx) * 25%)) calc(92% - (var(--lg-my) * 12%)), rgba(0,0,0,0.22) 0%, transparent 72%),
+    /* 中间体积渐变 */
+    linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.07) 100%),
     rgba(107, 160, 255, 0.68);
   border-color: rgba(255, 255, 255, 0.2);
   box-shadow:
@@ -754,7 +853,9 @@
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.primary:hover:not(:disabled) {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.24) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.07) 100%),
+    radial-gradient(ellipse 110% 55% at calc(50% + (var(--lg-mx) * 34%)) calc(10% + (var(--lg-my) * 14%)), rgba(255,255,255,0.28) 0%, rgba(255,255,255,0.07) 45%, transparent 82%),
+    radial-gradient(ellipse 110% 50% at calc(50% - (var(--lg-mx) * 28%)) calc(92% - (var(--lg-my) * 12%)), rgba(0,0,0,0.26) 0%, transparent 72%),
+    linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.08) 100%),
     rgba(107, 160, 255, 0.78);
   box-shadow:
     inset 0 0.5px 0.5px rgba(255, 255, 255, 0.5),
@@ -764,13 +865,20 @@
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.primary:active:not(:disabled) {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.08) 100%),
+    radial-gradient(ellipse 110% 55% at calc(50% + (var(--lg-mx) * 22%)) calc(10% + (var(--lg-my) * 14%)), rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 45%, transparent 82%),
+    radial-gradient(ellipse 110% 50% at calc(50% - (var(--lg-mx) * 18%)) calc(92% - (var(--lg-my) * 12%)), rgba(0,0,0,0.28) 0%, transparent 72%),
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 100%),
     rgba(91, 141, 239, 0.72);
 }
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.secondary {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 50%, rgba(0,0,0,0.06) 100%);
+    /* 顶部边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 110% 55% at calc(50% + (var(--lg-mx) * 28%)) calc(10% + (var(--lg-my) * 14%)), rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 45%, transparent 82%),
+    /* 底部边缘厚度阴影 — 反向偏移 */
+    radial-gradient(ellipse 110% 50% at calc(50% - (var(--lg-mx) * 22%)) calc(92% - (var(--lg-my) * 12%)), rgba(0,0,0,0.16) 0%, transparent 72%),
+    /* 中间体积渐变 */
+    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.03) 50%, rgba(0,0,0,0.06) 100%);
   border-color: rgba(255, 255, 255, 0.15);
   box-shadow:
     inset 0 0.5px 0.5px rgba(255, 255, 255, 0.25),
@@ -780,7 +888,9 @@
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.secondary:hover:not(:disabled) {
   background:
-    linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 50%, rgba(0,0,0,0.07) 100%);
+    radial-gradient(ellipse 110% 55% at calc(50% + (var(--lg-mx) * 32%)) calc(10% + (var(--lg-my) * 14%)), rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.06) 45%, transparent 82%),
+    radial-gradient(ellipse 110% 50% at calc(50% - (var(--lg-mx) * 26%)) calc(92% - (var(--lg-my) * 12%)), rgba(0,0,0,0.2) 0%, transparent 72%),
+    linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.05) 50%, rgba(0,0,0,0.07) 100%);
 }
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .ui-button.ghost:hover:not(:disabled) {
@@ -789,6 +899,11 @@
 
 [data-theme="dark"][data-visual-mode="liquid-glass"] .settings-section {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.02) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.05) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 18%, transparent 40%, transparent 82%, rgba(0,0,0,0.03) 100%),
     rgba(255, 255, 255, 0.015);
   border-color: rgba(255, 255, 255, 0.1);
@@ -797,6 +912,11 @@
 [data-theme="dark"][data-visual-mode="liquid-glass"] .theme-card,
 [data-theme="dark"][data-visual-mode="liquid-glass"] .visual-mode-card {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.04) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 25%, transparent 55%, rgba(0,0,0,0.03) 100%),
     rgba(255, 255, 255, 0.02);
   border-color: rgba(255, 255, 255, 0.1);
@@ -805,6 +925,11 @@
 [data-theme="dark"][data-visual-mode="liquid-glass"] .theme-card.active,
 [data-theme="dark"][data-visual-mode="liquid-glass"] .visual-mode-card.active {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.02) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.05) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 25%, transparent 55%, rgba(0,0,0,0.04) 100%),
     rgba(107, 160, 255, 0.06);
   border-color: rgba(107, 160, 255, 0.25);
@@ -841,6 +966,13 @@
 [data-theme="light"][data-visual-mode="liquid-glass"] .focus-today,
 [data-theme="light"][data-visual-mode="liquid-glass"] .stat-card {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(110% - (var(--lg-mx) * 20%)) calc(-14% + (var(--lg-my) * 18%)), rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.18) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-14% + (var(--lg-mx) * 20%)) calc(110% - (var(--lg-my) * 18%)), rgba(255,255,255,0.36) 0%, transparent 68%),
+    /* 底部厚度阴影 */
+    radial-gradient(ellipse 120% 40% at calc(50% - (var(--lg-mx) * 10%)) calc(100% - (var(--lg-my) * 6%)), rgba(0,0,0,0.05) 0%, transparent 70%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.75) 20%, rgba(248,250,253,0.65) 45%, rgba(248,250,253,0.6) 80%, rgba(0,0,0,0.02) 100%);
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow:
@@ -863,6 +995,13 @@
 /* 普通 ui-card — 大面积卡片，重点增强 */
 [data-theme="light"][data-visual-mode="liquid-glass"] .ui-card {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.7) 0%, rgba(255,255,255,0.16) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.32) 0%, transparent 68%),
+    /* 底部厚度阴影 */
+    radial-gradient(ellipse 120% 40% at calc(50% - (var(--lg-mx) * 12%)) calc(100% - (var(--lg-my) * 8%)), rgba(0,0,0,0.05) 0%, transparent 70%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.72) 18%, rgba(248,250,253,0.6) 40%, rgba(248,250,253,0.55) 82%, rgba(0,0,0,0.02) 100%);
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow:
@@ -884,6 +1023,11 @@
 /* 设置分组卡片 */
 [data-theme="light"][data-visual-mode="liquid-glass"] .settings-section {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.6) 0%, rgba(255,255,255,0.14) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.26) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.72) 18%, rgba(248,250,253,0.6) 40%, rgba(248,250,253,0.55) 82%, rgba(0,0,0,0.02) 100%);
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow:
@@ -896,6 +1040,11 @@
 /* 空状态区域 */
 [data-theme="light"][data-visual-mode="liquid-glass"] .focus-empty {
   background:
+    /* 右上边缘高光 — 随鼠标偏移 */
+    radial-gradient(ellipse 70% 55% at calc(112% - (var(--lg-mx) * 22%)) calc(-12% + (var(--lg-my) * 20%)), rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.12) 50%, transparent 82%),
+    /* 左下边缘高光 — 反向偏移 */
+    radial-gradient(ellipse 55% 70% at calc(-12% + (var(--lg-mx) * 22%)) calc(112% - (var(--lg-my) * 20%)), rgba(255,255,255,0.24) 0%, transparent 68%),
+    /* 主体玻璃底色 */
     linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.68) 20%, rgba(248,250,253,0.55) 45%, rgba(248,250,253,0.5) 82%, rgba(0,0,0,0.01) 100%);
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow:

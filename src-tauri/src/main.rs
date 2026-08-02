@@ -189,6 +189,10 @@ fn main() {
             delete_textbook,
             rename_textbook,
             search_in_textbook,
+            // Background image
+            save_background_image,
+            delete_background_image,
+            read_background_as_data_url,
             // User Model
             get_capabilities,
             get_observations,
@@ -198,6 +202,9 @@ fn main() {
             chat_stream,
             test_ai_provider,
             list_ai_models,
+            // AI 用量日志
+            get_ai_usage_log,
+            clear_ai_usage_log,
             // MCP / Tool
             list_mcp_servers,
             call_tool,

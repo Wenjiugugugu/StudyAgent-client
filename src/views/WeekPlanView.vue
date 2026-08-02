@@ -33,6 +33,9 @@ const loading = ref(false);
 const generating = ref(false);
 const error = ref<string | null>(null);
 
+// 今天的日期字符串（YYYY-MM-DD），用于区分「未开始」与「未复盘」
+const today = todayDateStr();
+
 /* ── Date helpers (timezone-safe, local date) ── */
 
 function parseDate(dateStr: string): Date {
@@ -163,7 +166,6 @@ const weekDays = computed<DayInfo[]>(() => {
   const wp = weekPlan.value;
   if (!wp) return [];
   const start = wp.meta.week_start;
-  const today = todayDateStr();
   const summaries = weekSummaries.value;
   const days: DayInfo[] = [];
   for (let i = 0; i < 7; i++) {
@@ -231,6 +233,11 @@ const weekCompletedTasks = computed(() =>
 
 const goals = computed(() => weekPlan.value?.data?.goals ?? []);
 
+// 是否启用「记录学习时长」：关闭时隐藏计划学时相关展示
+const timeTrackingEnabled = computed(
+  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking
+);
+
 const weekPlannedDays = computed(() =>
   weekDays.value.filter((d) => d.hasPlan).length
 );
@@ -261,6 +268,11 @@ function completionVariant(rate: number): string {
   if (rate >= 100) return "success";
   if (rate >= 50) return "warning";
   return "danger";
+}
+
+/** 未复盘时的展示文本：未来日期显示「未开始」，今天及之前显示「未复盘」 */
+function pendingLabel(dateStr: string): string {
+  return dateStr > today ? "未开始" : "未复盘";
 }
 
 /* ── Actions ── */
@@ -393,7 +405,7 @@ onMounted(async () => {
               <span class="sum-label">计划任务</span>
             </div>
           </div>
-          <div class="sum-item">
+          <div v-if="timeTrackingEnabled" class="sum-item">
             <TrendingUp :size="15" class="sum-icon" />
             <div class="sum-text">
               <span class="sum-value">{{ weekTotalHours }}h</span>
@@ -416,7 +428,7 @@ onMounted(async () => {
               <span class="sum-label">周完成率</span>
             </div>
           </div>
-          <div class="sum-item">
+          <div v-if="timeTrackingEnabled" class="sum-item">
             <Clock :size="15" class="sum-icon" />
             <div class="sum-text">
               <span class="sum-value">{{ weekActualHours.toFixed(1) }}h</span>
@@ -493,7 +505,7 @@ onMounted(async () => {
               <CheckCircle2 :size="12" />
               <span>{{ day.tasksDone }}/{{ day.taskCount }}</span>
             </div>
-            <div class="day-hours">{{ day.hours }}h</div>
+            <div v-if="timeTrackingEnabled" class="day-hours">{{ day.hours }}h</div>
             <div v-if="day.hasReview" class="day-rate">
               <div class="rate-bar">
                 <div
@@ -507,7 +519,9 @@ onMounted(async () => {
               </span>
             </div>
             <div v-else class="day-status">
-              <span class="status-pending">未复盘</span>
+              <span class="status-pending" :class="{ 'status-future': day.date > today }">
+                {{ pendingLabel(day.date) }}
+              </span>
             </div>
           </div>
 
@@ -519,7 +533,7 @@ onMounted(async () => {
       </div>
 
       <p v-if="weekPlan" class="week-foot">
-        本周 {{ weekPlannedDays }} 天有计划 · 已完成任务 {{ weekCompletedTasks }}/{{ weekTotalTasks }} · 实际学时 {{ weekActualHours.toFixed(1) }}h
+        本周 {{ weekPlannedDays }} 天有计划 · 已完成任务 {{ weekCompletedTasks }}/{{ weekTotalTasks }}<template v-if="timeTrackingEnabled"> · 实际学时 {{ weekActualHours.toFixed(1) }}h</template>
         <ChevronRight :size="13" />
         点击日期卡片查看详情
       </p>
@@ -873,6 +887,10 @@ onMounted(async () => {
 
 .status-pending {
   color: var(--text-quaternary);
+}
+
+.status-pending.status-future {
+  color: var(--text-tertiary);
 }
 
 /* Completion variant colors (used by summary icons/values too) */

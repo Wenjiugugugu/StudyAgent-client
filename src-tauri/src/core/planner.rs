@@ -671,7 +671,7 @@ impl<'a> Planner<'a> {
                     "- {}: 完成率 {:.0}%, 总时长 {:.1}h\n",
                     review.meta.date,
                     review.data.completion.completion_rate,
-                    review.data.total_hours
+                    crate::data::records::review_actual_hours(review)
                 ));
             }
             prompt.push_str("\n");
@@ -732,7 +732,7 @@ impl<'a> Planner<'a> {
                     prompt.push_str(&format!(
                         "- 复盘: 完成率 {:.0}%, 实际时长 {:.1}h, 精力 {}, A类 {}/{}, B类 {}/{}\n",
                         review.data.completion.completion_rate,
-                        review.data.total_hours,
+                        crate::data::records::review_actual_hours(review),
                         review.data.energy_level,
                         review.data.completion.priority_a_done,
                         review.data.completion.priority_a_total,

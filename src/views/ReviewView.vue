@@ -190,6 +190,41 @@ const overallFeeling = ref("normal");
 // Step 5: main difficulty
 const mainDifficulty = ref("");
 
+// ── 任务计时（仅当设置启用 enable_time_tracking 时启用）──
+const timeTrackingEnabled = computed(
+  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking
+);
+
+/** 每个任务的实际累计分钟数（从 State 读取，仅当前日匹配时有效） */
+const taskActualMinutes = ref<Record<string, number>>({});
+
+/** 格式化分钟为 "Xh Ym" 或 "Ym" */
+function formatMinutes(min: number): string {
+  if (min <= 0) return "0m";
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
+/** 格式化小时为 "Xh" 或 "Xh Ym" */
+function formatHours(hours: number): string {
+  if (hours <= 0) return "0h";
+  const totalMin = Math.round(hours * 60);
+  return formatMinutes(totalMin);
+}
+
+/** 读取某任务在复盘记录中的估时（优先 task_reviews，回退当日计划） */
+function taskEstimatedHours(taskId: string, tr?: TaskReviewEntry): number {
+  if (tr?.estimated_hours != null && tr.estimated_hours > 0) return tr.estimated_hours;
+  return allTasks.value.find(t => t.id === taskId)?.estimated_hours ?? 0;
+}
+
+/** 读取某任务在复盘记录中的实际用时（分钟） */
+function taskActualFromReview(taskId: string, tr?: TaskReviewEntry): number {
+  return tr?.actual_minutes ?? 0;
+}
+
 // ── Computed ──
 const incompletePriorityA = computed(() => {
   return priorityATasks.value.filter(t => !taskCompleted.value[t.id]);
@@ -382,6 +417,9 @@ async function doSubmit() {
       title: t.title,
       subject: t.subject,
       priority: t.priority,
+      // 仅在启用「记录学习时长」时持久化估时与实际用时
+      estimated_hours: timeTrackingEnabled.value && t.estimated_hours > 0 ? t.estimated_hours : undefined,
+      actual_minutes: timeTrackingEnabled.value ? (taskActualMinutes.value[t.id] ?? 0) : undefined,
     }));
 
     const dailyReview: DailyReviewInput = {
@@ -451,6 +489,33 @@ async function doSubmit() {
 }
 
 // ── Data loading ──
+async function loadTaskActualMinutes() {
+  if (!timeTrackingEnabled.value) {
+    taskActualMinutes.value = {};
+    return;
+  }
+  try {
+    const state = await api.getState();
+    const map: Record<string, number> = {};
+    for (const st of state.current_task?.tasks ?? []) {
+      if (!st.task_id) continue;
+      let total = st.accumulated_minutes ?? 0;
+      // 若任务正在计时，加上当前进行中的时段
+      if (st.started_at) {
+        const start = new Date(st.started_at).getTime();
+        const now = Date.now();
+        if (!isNaN(start) && now > start) {
+          total += Math.floor((now - start) / 60000);
+        }
+      }
+      map[st.task_id] = total;
+    }
+    taskActualMinutes.value = map;
+  } catch {
+    taskActualMinutes.value = {};
+  }
+}
+
 async function loadReviewData() {
   loading.value = true;
   resetForm();
@@ -468,6 +533,8 @@ async function loadReviewData() {
   try {
     // 加载选中日期的计划（用于显示任务列表）
     await todayStore.loadByDate(selectedDate.value);
+    // 加载任务实际用时（仅启用计时且当前日匹配时有效）
+    await loadTaskActualMinutes();
 
     // 检查是否已有复盘
     try {
@@ -730,6 +797,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                 </div>
               </div>
               <div class="trr-right">
+                <span v-if="timeTrackingEnabled && taskEstimatedHours(tr.task_id, tr) > 0" class="trr-chip estimate">
+                  <Clock :size="11" />
+                  估时 {{ formatHours(taskEstimatedHours(tr.task_id, tr)) }}
+                </span>
+                <span v-if="timeTrackingEnabled && taskActualFromReview(tr.task_id, tr) > 0" class="trr-chip actual">
+                  <Clock :size="11" />
+                  实际 {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
+                </span>
                 <span v-if="tr.mastery" class="trr-chip mastery">
                   {{ tr.mastery === 'mastered' ? '已掌握' : tr.mastery === 'basic' ? '基本掌握' : '需巩固' }}
                 </span>
@@ -821,6 +896,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
               <div class="tri-badges">
                 <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">{{ subjectLabel(task.subject) }}</Badge>
                 <Badge :variant="task.priority === 'A' ? 'danger' : 'warning'" size="sm">P{{ task.priority }}</Badge>
+                <Badge v-if="timeTrackingEnabled && task.estimated_hours > 0" variant="default" size="sm">
+                  <Clock :size="12" />
+                  ≈{{ formatHours(task.estimated_hours) }}
+                </Badge>
+                <Badge v-if="timeTrackingEnabled && (taskActualMinutes[task.id] ?? 0) > 0" variant="info" size="sm">
+                  <Clock :size="12" />
+                  {{ formatMinutes(taskActualMinutes[task.id] ?? 0) }}
+                </Badge>
               </div>
               <span class="tri-title">{{ task.title }}</span>
             </div>
@@ -1337,6 +1420,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 .trr-chip.mastery { background: var(--accent-subtle); color: var(--accent); }
 .trr-chip.blocker { background: var(--color-danger-subtle); color: var(--color-danger); }
+.trr-chip.estimate { background: var(--bg-overlay); color: var(--text-tertiary); }
+.trr-chip.actual { background: var(--color-info-subtle, var(--bg-tertiary)); color: var(--color-info, var(--text-secondary)); }
+.trr-chip.estimate svg, .trr-chip.actual svg { vertical-align: -1px; margin-right: 2px; }
 .trr-note { font-size: var(--text-xs); color: var(--text-tertiary); font-style: italic; }
 
 /* Overcompletion */

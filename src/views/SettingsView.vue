@@ -49,6 +49,7 @@ import {
   PowerOff,
   Droplet,
   RotateCcw,
+  ImagePlus,
 } from "lucide-vue-next";
 import type {
   AIProviderConfig,
@@ -180,7 +181,7 @@ function initSectionObserver() {
   });
 }
 
-const { setTheme, setVisualMode, setAccentColor } = useTheme();
+const { setTheme, setVisualMode, setAccentColor, setBackgroundImage, setBackgroundBlur, setBackgroundOpacity } = useTheme();
 
 // ── 加载状态 ──
 const saving = ref(false);
@@ -441,6 +442,49 @@ function handleSetAccentColor(color: string) {
 function handleSetShowLogo(show: boolean) {
   settingsStore.setShowLogo(show);
   settingsStore.save();
+}
+
+// ── 自定义背景图 ──
+const bgUploading = ref(false);
+const bgUploadError = ref<string | null>(null);
+
+async function handleUploadBackground() {
+  bgUploadError.value = null;
+  bgUploading.value = true;
+  try {
+    const relativePath = await api.saveBackgroundImage();
+    setBackgroundImage(relativePath);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // 用户取消选择不视为错误
+    if (!msg.includes("未选择文件")) {
+      bgUploadError.value = msg;
+    }
+  } finally {
+    bgUploading.value = false;
+  }
+}
+
+async function handleClearBackground() {
+  const prevPath = settingsStore.backgroundImage;
+  // 先清除设置中的路径，再删除文件
+  setBackgroundImage("");
+  if (prevPath) {
+    try {
+      await api.deleteBackgroundImage(prevPath);
+    } catch (e) {
+      // 文件删除失败不阻塞，仅记录日志
+      console.warn("[Background] 删除背景图文件失败:", e);
+    }
+  }
+}
+
+function handleSetBackgroundBlur(blur: number) {
+  setBackgroundBlur(blur);
+}
+
+function handleSetBackgroundOpacity(opacity: number) {
+  setBackgroundOpacity(opacity);
 }
 
 // ── 教材保存（独立保存，立即生效） ──
@@ -957,6 +1001,71 @@ watch(() => route.hash, (newHash) => {
               <span class="toggle-thumb" />
             </button>
           </div>
+        </div>
+
+        <!-- 自定义背景图 -->
+        <div class="form-field">
+          <label class="form-label">背景图</label>
+          <span class="toggle-desc" style="margin-bottom: 8px; display: block;">
+            上传图片作为应用背景，可调整模糊度与不透明度
+          </span>
+          <div class="background-picker">
+            <button
+              class="bg-upload-btn"
+              :disabled="bgUploading"
+              @click="handleUploadBackground"
+            >
+              <ImagePlus :size="16" />
+              <span>{{ bgUploading ? '上传中…' : '选择图片' }}</span>
+            </button>
+            <button
+              v-if="settingsStore.backgroundImage"
+              class="bg-clear-btn"
+              @click="handleClearBackground"
+            >
+              <Trash2 :size="14" />
+              <span>移除背景</span>
+            </button>
+          </div>
+          <div v-if="bgUploadError" class="bg-error">{{ bgUploadError }}</div>
+          <div v-if="settingsStore.backgroundImage" class="bg-preview-row">
+            <span class="bg-preview-label">当前背景：</span>
+            <span class="bg-preview-path">{{ settingsStore.backgroundImage }}</span>
+          </div>
+        </div>
+
+        <!-- 背景模糊度滑块（仅有背景图时显示） -->
+        <div v-if="settingsStore.backgroundImage" class="form-field">
+          <label class="form-label">
+            模糊度
+            <span class="slider-value">{{ settingsStore.backgroundBlur.toFixed(1) }}px</span>
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="20"
+            step="0.5"
+            :value="settingsStore.backgroundBlur"
+            class="bg-slider"
+            @input="handleSetBackgroundBlur(parseFloat(($event.target as HTMLInputElement).value))"
+          />
+        </div>
+
+        <!-- 背景不透明度滑块（仅有背景图时显示） -->
+        <div v-if="settingsStore.backgroundImage" class="form-field">
+          <label class="form-label">
+            不透明度
+            <span class="slider-value">{{ Math.round(settingsStore.backgroundOpacity * 100) }}%</span>
+          </label>
+          <input
+            type="range"
+            min="0.1"
+            max="1"
+            step="0.05"
+            :value="settingsStore.backgroundOpacity"
+            class="bg-slider"
+            @input="handleSetBackgroundOpacity(parseFloat(($event.target as HTMLInputElement).value))"
+          />
         </div>
       </Card>
 
@@ -2384,6 +2493,124 @@ watch(() => route.hash, (newHash) => {
 .accent-reset:hover {
   color: var(--text-primary);
   border-color: var(--border-secondary);
+}
+
+/* ── 背景图设置 ── */
+.background-picker {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.bg-upload-btn,
+.bg-clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: var(--text-sm);
+  font-family: inherit;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  border: 1px solid var(--border-primary);
+}
+
+.bg-upload-btn {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.bg-upload-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.bg-upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bg-clear-btn {
+  color: var(--color-danger, #ef4444);
+  background: var(--bg-tertiary);
+}
+
+.bg-clear-btn:hover {
+  background: var(--color-danger, #ef4444);
+  color: #fff;
+  border-color: var(--color-danger, #ef4444);
+}
+
+.bg-error {
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: var(--text-xs);
+  color: var(--color-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: var(--radius-sm);
+}
+
+.bg-preview-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.bg-preview-path {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* 滑块 */
+.bg-slider {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  outline: none;
+  margin-top: 8px;
+}
+
+.bg-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform var(--transition-fast);
+}
+
+.bg-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+.bg-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.slider-value {
+  margin-left: 8px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-medium);
 }
 
 /* ── Toggle 开关 ── */
