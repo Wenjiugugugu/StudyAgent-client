@@ -6,7 +6,6 @@
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio_stream::StreamExt;
 
 use super::provider::*;
@@ -85,7 +84,8 @@ impl OpenAIProvider {
 
         let temperature = req
             .temperature
-            .unwrap_or(self.config.temperature);
+            .unwrap_or(self.config.temperature)
+            .clamp(0.0, 2.0);
 
         let mut body = serde_json::json!({
             "model": model,
@@ -254,10 +254,11 @@ impl OpenAIProvider {
         None
     }
 
-    /// 发送请求，遇到连接级错误自动重试一次
+    /// 发送请求，遇到连接级错误或 429/503 自动重试
     ///
-    /// ARK 等服务偶尔在 TCP/TLS 握手阶段超时（表现为 `client error (Connect) → operation timed out`）。
-    /// 对这类瞬时连接失败重试一次能显著提升成功率；业务错误（HTTP 4xx/5xx）不会重试。
+    /// - 连接级错误（Connect/Timeout）：短暂等待后重试
+    /// - HTTP 429（Too Many Requests）/ 503（Service Unavailable）：读取 Retry-After 头，
+    ///   指数退避后重试（最多 3 次）
     async fn send_with_retry(
         &self,
         url: &str,
@@ -265,7 +266,7 @@ impl OpenAIProvider {
         body: &serde_json::Value,
         timeout_override: Option<u64>,
     ) -> Result<reqwest::Response, String> {
-        let max_attempts = 2;
+        let max_attempts = 3;
         let mut last_err: Option<String> = None;
 
         for attempt in 1..=max_attempts {
@@ -275,7 +276,38 @@ impl OpenAIProvider {
             }
 
             match request_builder.send().await {
-                Ok(resp) => return Ok(resp),
+                Ok(resp) => {
+                    let status = resp.status();
+
+                    // 429 / 503：速率限制或服务不可用，读取 Retry-After 后重试
+                    if (status.as_u16() == 429 || status.as_u16() == 503) && attempt < max_attempts {
+                        let retry_after_secs = resp
+                            .headers()
+                            .get(reqwest::header::RETRY_AFTER)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok());
+
+                        // 指数退避：1s, 2s, 4s...；若有 Retry-After 则取较大值
+                        let backoff = retry_after_secs
+                            .unwrap_or(0)
+                            .max(1u64 << (attempt - 1));
+
+                        let error_text = resp.text().await.unwrap_or_default();
+                        log::warn!(
+                            "AI 请求被限流（{}），第 {} 次重试，等待 {}s | body={}",
+                            status,
+                            attempt,
+                            backoff,
+                            error_text.chars().take(200).collect::<String>()
+                        );
+
+                        tokio::time::sleep(Duration::from_secs(backoff)).await;
+                        last_err = Some(format!("AI 请求被限流 ({})", status));
+                        continue;
+                    }
+
+                    return Ok(resp);
+                }
                 Err(e) => {
                     let formatted = format_reqwest_error(&e);
                     let is_connect_error = e.is_connect() || e.is_timeout();
@@ -291,8 +323,9 @@ impl OpenAIProvider {
                         return Err(format!("发送 AI 请求失败: {}", formatted));
                     }
 
-                    // 连接级错误：短暂等待后重试
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    // 连接级错误：指数退避后重试
+                    let backoff = 1u64 << (attempt - 1); // 1s, 2s
+                    tokio::time::sleep(Duration::from_secs(backoff)).await;
                     last_err = Some(formatted);
                 }
             }
@@ -350,7 +383,7 @@ impl AiProvider for OpenAIProvider {
         log::info!(
             "[AI-DEBUG] 原始响应长度: {} 字节, 前 500 字符: {}",
             raw_text.len(),
-            if raw_text.len() > 500 { &raw_text[..500] } else { &raw_text }
+            raw_text.chars().take(500).collect::<String>()
         );
         log::debug!("[AI-DEBUG] 原始响应全文: {}", raw_text);
 
@@ -429,7 +462,7 @@ impl AiProvider for OpenAIProvider {
                     log::debug!(
                         "[AI-DEBUG] SSE #{}: {}",
                         sse_line_count,
-                        line.get(..200).unwrap_or(line)
+                        line.get(..line.floor_char_boundary(200)).unwrap_or(line)
                     );
                 } else {
                     log::debug!("[AI-DEBUG] SSE 非 data 行: {}", line);

@@ -9,8 +9,7 @@
 //! 3. 解析、兜底填充、保存 JSON
 //! 4. 返回 ReviewData
 //!
-//! 注意：不再自动将未完成任务标记为 abandoned。
-//! 任务状态的更新完全由 `submit_review` 根据用户在结构化复盘表单中的勾选决定。
+//! 注意：任务状态由 `submit_review` 根据用户勾选决定。
 
 use std::path::Path;
 
@@ -55,7 +54,7 @@ impl<'a> ReviewAgent<'a> {
 
         // 1. 读取今日计划与状态
         let plan = crate::data::plan::read_daily_plan_with_merged_status(data_dir, date).ok();
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
 
         // 2. 构建复盘 prompt
         // 注意：不在此处修改任务状态。任务状态由 `submit_review` 根据用户输入更新。

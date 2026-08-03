@@ -68,7 +68,7 @@ const navItems: NavItem[] = [
 ];
 
 // 当前版本号（用于侧边栏底部展示）
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.4.1";
 </script>
 
 <template>

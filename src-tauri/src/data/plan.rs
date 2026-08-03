@@ -329,7 +329,7 @@ pub fn save_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> 
     }
     let json = serde_json::to_string_pretty(plan)
         .map_err(|e| format!("序列化日计划失败: {}", e))?;
-    std::fs::write(&path, json)
+    super::atomic_write(&path, &json)
         .map_err(|e| format!("写入日计划文件失败 {:?}: {}", path, e))?;
     Ok(())
 }
@@ -356,7 +356,7 @@ pub fn save_week_plan(data_dir: &Path, plan: &WeekPlanFile) -> DataResult<()> {
     }
     let json = serde_json::to_string_pretty(plan)
         .map_err(|e| format!("序列化周计划失败: {}", e))?;
-    std::fs::write(&path, json)
+    super::atomic_write(&path, &json)
         .map_err(|e| format!("写入周计划文件失败 {:?}: {}", path, e))?;
     Ok(())
 }
@@ -821,6 +821,7 @@ mod tests {
                 after_today: "若数学任务完成，明日继续推进".to_string(),
                 total_hours: 3.0,
                 total_tasks: 2,
+                ..Default::default()
             },
             view: None,
         }
@@ -904,6 +905,7 @@ mod tests {
                         }],
                     }],
                 }],
+                ..Default::default()
             },
             view: None,
         };
@@ -941,6 +943,7 @@ mod tests {
             task: String::new(),
             priority: TaskPriority::A,
             status,
+            ..Default::default()
         }
     }
 
@@ -952,6 +955,7 @@ mod tests {
             task: String::new(),
             priority: TaskPriority::A,
             status,
+            ..Default::default()
         }
     }
 

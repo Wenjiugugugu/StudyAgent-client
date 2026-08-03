@@ -48,7 +48,7 @@ impl DailyScheduler {
             return Err(format!("{} 是休息日，不生成日计划", date));
         }
 
-        let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let mut state = crate::data::state::read_state_or_default(data_dir);
         let remaining_days = days_between(&state.meta.exam_date, date).unwrap_or(0);
         let target = format!(
             "{} {} | 总分 {} / 500",
@@ -138,7 +138,7 @@ impl DailyScheduler {
             let state_clean = !state.current_task.tasks.iter().any(|t| {
                 t.task_id
                     .as_ref()
-                    .map(|id| id.len() >= 10 && &id[..10] != date)
+                    .map(|id| id.get(..id.floor_char_boundary(10)).map(|prefix| prefix != date).unwrap_or(false))
                     .unwrap_or(false)
             });
 
@@ -376,6 +376,7 @@ current_focus = "计组"
                         subject_allocations: vec![],
                     },
                 ],
+                ..Default::default()
             },
             view: None,
         };

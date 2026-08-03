@@ -426,7 +426,7 @@ pub fn save_settings_file(data_dir: &Path, settings: &AppSettings) -> Result<(),
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("序列化 Settings 失败: {}", e))?;
 
-    std::fs::write(&path, json)
+    crate::data::atomic_write(&path, &json)
         .map_err(|e| format!("写入 Settings 文件失败 {:?}: {}", path, e))?;
 
     log::info!("已保存 Settings: {:?}", path);
@@ -541,6 +541,16 @@ pub async fn reinitialize_services(
     state: &Mutex<AppState>,
     settings: AppSettings,
 ) -> Result<(), String> {
+    // 强制校验：每周学习天数不能为 0
+    let study_days = settings
+        .study_schedule
+        .get("study_days_per_week")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(6);
+    if study_days <= 0 {
+        return Err("每周学习天数不能为 0".to_string());
+    }
+
     // 先保存 settings 文件
     let data_dir = {
         let s = state.lock().map_err(|e| e.to_string())?;

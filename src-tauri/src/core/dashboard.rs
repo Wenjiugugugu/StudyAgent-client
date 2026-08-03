@@ -112,7 +112,7 @@ impl DashboardAggregator {
         let today = today_string();
 
         // 读取 State
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
 
         // 读取今日计划（合并 State.current_task + Review 完成度）
         let today_plan = crate::data::plan::read_daily_plan_with_merged_status(data_dir, &today)

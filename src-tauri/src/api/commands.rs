@@ -101,7 +101,7 @@ pub async fn update_task_status(
             .current_task
             .tasks
             .retain(|t| match &t.task_id {
-                Some(id) => id.len() >= 10 && &id[..10] == date,
+                Some(id) => id.get(..id.floor_char_boundary(10)).map(|prefix| prefix == date).unwrap_or(false),
                 None => false, // 旧任务无 task_id 且日期不匹配，丢弃
             });
     }

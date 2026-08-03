@@ -156,7 +156,7 @@ impl<'a> Planner<'a> {
             .collect();
 
         // 5. 读取 State 和设置
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
         let settings = crate::load_settings(data_dir);
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
@@ -398,7 +398,7 @@ impl<'a> Planner<'a> {
             .collect();
 
         // 7. 读取 State 和设置
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
         let settings = crate::load_settings(data_dir);
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
@@ -549,7 +549,7 @@ impl<'a> Planner<'a> {
     /// 将生成的日计划同步到 State.current_task
     /// 仅在 state 中当前日期任务为空或日期不匹配时才写入，避免覆盖已有的完成状态
     fn sync_current_task(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
-        let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let mut state = crate::data::state::read_state_or_default(data_dir);
 
         let need_init = state.current_task.date != date || state.current_task.tasks.is_empty();
         if !need_init {
@@ -615,7 +615,7 @@ impl<'a> Planner<'a> {
         }
 
         // 1. 读取 State 和 User Model
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
         let user_model = crate::data::assets::read_user_model_index(data_dir).unwrap_or_default();
         let recent_reviews = Self::read_recent_reviews(data_dir, week_start, 5);
         let exam_config = Self::read_exam_config(data_dir);
@@ -2207,7 +2207,7 @@ fn save_week_plan_original(data_dir: &Path, plan: &WeekPlanFile) -> DataResult<(
     }
     let json = serde_json::to_string_pretty(plan)
         .map_err(|e| format!("序列化原始周计划失败: {}", e))?;
-    std::fs::write(&path, json)
+    crate::data::atomic_write(&path, &json)
         .map_err(|e| format!("写入原始周计划文件失败 {:?}: {}", path, e))?;
     log::info!("原始周计划副本已保存: {:?}", path);
     Ok(())
@@ -2268,32 +2268,55 @@ struct RegenDayPlan {
 /// ```json
 /// { "days": [ { "date": "...", "subject_allocations": [...] } ] }
 /// ```
+///
+/// 兼容处理：AI 有时会返回完整的周计划结构 `{ version, meta, data: { days: [...] } }`，
+/// 此时从 `data.days` 提取。
 fn parse_regenerate_response(content: &str, data_dir: &Path) -> DataResult<Vec<RegenDayPlan>> {
     let cleaned = clean_ai_json(content);
 
-    // 尝试解析为 { days: [...] }
+    // 方式1：尝试解析为顶层 { days: [...] }
     #[derive(serde::Deserialize)]
     struct RegenResponse {
         #[serde(default)]
         days: Vec<RegenDayPlan>,
     }
 
-    match serde_json::from_str::<RegenResponse>(&cleaned) {
-        Ok(parsed) => Ok(parsed.days),
-        Err(e) => {
-            // 解析失败时将原始响应写入调试文件，便于排查
-            crate::data::write_ai_debug_log(data_dir, "regenerate_parse_error", &format!(
-                "解析 AI 重排响应失败: {}\n\n cleaned 内容前 500 字符:\n{}\n\n 原始响应前 1000 字符:\n{}",
-                e,
-                &cleaned[..cleaned.len().min(500)],
-                &content[..content.len().min(1000)],
-            ));
-            Err(format!(
-                "解析 AI 重排响应失败: {}。详细日志已写入 logs/ai-debug.log",
-                e
-            ))
+    if let Ok(parsed) = serde_json::from_str::<RegenResponse>(&cleaned) {
+        if !parsed.days.is_empty() {
+            return Ok(parsed.days);
         }
     }
+
+    // 方式2：AI 返回了完整周计划结构，尝试从 data.days 提取
+    #[derive(serde::Deserialize)]
+    struct FullWeekPlanResponse {
+        #[serde(default)]
+        data: FullWeekPlanData,
+    }
+
+    #[derive(serde::Deserialize, Default)]
+    struct FullWeekPlanData {
+        #[serde(default)]
+        days: Vec<RegenDayPlan>,
+    }
+
+    if let Ok(parsed) = serde_json::from_str::<FullWeekPlanResponse>(&cleaned) {
+        if !parsed.data.days.is_empty() {
+            log::info!("AI 返回了完整周计划结构，已从 data.days 提取 {} 天的重排结果", parsed.data.days.len());
+            return Ok(parsed.data.days);
+        }
+    }
+
+    // 两种方式都失败：记录调试日志并返回错误
+    let preview: String = cleaned.chars().take(500).collect();
+    crate::data::write_ai_debug_log(data_dir, "regenerate_parse_error", &format!(
+        "解析 AI 重排响应失败：无法从响应中提取 days 数组。\n\ncleaned 内容前 500 字符:\n{}\n\n原始响应前 1000 字符:\n{}",
+        preview,
+        &content[..content.len().min(1000)],
+    ));
+    Err(format!(
+        "解析 AI 重排响应失败：无法从响应中提取 days 数组。AI 可能返回了非预期格式。详细日志已写入 logs/ai-debug.log"
+    ))
 }
 
 #[cfg(test)]
@@ -2309,6 +2332,47 @@ mod tests {
         assert!(cleaned.starts_with('{'));
         assert!(cleaned.ends_with('}'));
         assert!(!cleaned.contains("```"));
+    }
+
+    #[test]
+    fn test_parse_regenerate_response_top_level_days() {
+        // 标准格式：顶层 { days: [...] }
+        let raw = r#"{"days":[{"date":"2026-08-04","subject_allocations":[{"subject":"math","hours":2.0,"focus":"测试","task_templates":[]}]}]}"#;
+        let tmp = std::env::temp_dir().join("test_regen_top");
+        let _ = std::fs::create_dir_all(&tmp);
+        let result = parse_regenerate_response(raw, &tmp);
+        assert!(result.is_ok());
+        let days = result.unwrap();
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0].date, "2026-08-04");
+        assert_eq!(days[0].subject_allocations.len(), 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_parse_regenerate_response_full_week_plan_format() {
+        // AI 返回了完整周计划结构，days 在 data 内部
+        let raw = r#"{"version":"1.0.0","meta":{"week_start":"2026-08-03"},"data":{"goals":"测试","subjects":[{"subject":"math","plan":"..."}],"days":[{"date":"2026-08-04","weekday":"周二","is_rest_day":false,"subject_allocations":[{"subject":"math","hours":2.0,"focus":"向量组","task_templates":[{"title":"向量组","priority":"A","estimated_hours":2.0,"goal":"目标","completion_criteria":[]}]}]}]}}"#;
+        let tmp = std::env::temp_dir().join("test_regen_full");
+        let _ = std::fs::create_dir_all(&tmp);
+        let result = parse_regenerate_response(raw, &tmp);
+        assert!(result.is_ok(), "应能从 data.days 提取");
+        let days = result.unwrap();
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0].date, "2026-08-04");
+        assert_eq!(days[0].subject_allocations[0].focus, "向量组");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_parse_regenerate_response_empty_days_returns_error() {
+        // 既没有顶层 days 也没有 data.days，应返回错误而非空 Vec
+        let raw = r#"{"version":"1.0.0","meta":{"week_start":"2026-08-03"},"data":{"goals":"无 days 字段"}}"#;
+        let tmp = std::env::temp_dir().join("test_regen_empty");
+        let _ = std::fs::create_dir_all(&tmp);
+        let result = parse_regenerate_response(raw, &tmp);
+        assert!(result.is_err(), "无 days 数组时应返回错误");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

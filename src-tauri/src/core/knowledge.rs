@@ -158,7 +158,7 @@ impl KnowledgeService {
         data_dir: &Path,
         subject: &str,
     ) -> Result<Vec<KnowledgeObject>, String> {
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
 
         let subject_state = match subject {
             "math" => &state.subjects.math,

@@ -45,7 +45,26 @@ const MAX_STRING_LEN = 4000;
 /** 自增 ID 计数器（进程内） */
 let nextId = 1;
 
-/** 安全序列化：避免循环引用 / 过大字符串 */
+/** 需要脱敏的敏感字段名（小写匹配） */
+const SENSITIVE_KEYS = new Set([
+  "api_key",
+  "apikey",
+  "api-key",
+  "secret",
+  "token",
+  "authorization",
+  "password",
+  "access_token",
+  "refresh_token",
+]);
+
+/** 对敏感字段的值进行脱敏：保留前 4 位 + 后 4 位，中间用 *** 代替 */
+function maskSensitive(value: string): string {
+  if (value.length <= 8) return "***";
+  return value.slice(0, 4) + "***" + value.slice(-4);
+}
+
+/** 安全序列化：避免循环引用 / 过大字符串 / 敏感字段泄露 */
 function safeClone(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === "string") {
@@ -56,11 +75,17 @@ function safeClone(value: unknown): unknown {
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "function") return "[Function]";
   try {
-    // 先 JSON 序列化以剥离 Proxy / Vue ref
-    const json = JSON.stringify(value, (_k, v) => {
+    // 先 JSON 序列化以剥离 Proxy / Vue ref，同时对敏感字段脱敏
+    const json = JSON.stringify(value, (key, v) => {
       if (typeof v === "function") return "[Function]";
-      if (typeof v === "string" && v.length > MAX_STRING_LEN) {
-        return v.slice(0, MAX_STRING_LEN) + `…[+${v.length - MAX_STRING_LEN} 字符]`;
+      if (typeof v === "string") {
+        // 敏感字段脱敏（key 不区分大小写）
+        if (SENSITIVE_KEYS.has(key.toLowerCase()) && v.length > 0) {
+          return maskSensitive(v);
+        }
+        if (v.length > MAX_STRING_LEN) {
+          return v.slice(0, MAX_STRING_LEN) + `…[+${v.length - MAX_STRING_LEN} 字符]`;
+        }
       }
       return v;
     });

@@ -49,7 +49,7 @@ impl<'a> BriefingAgent<'a> {
             crate::data::records::read_review(data_dir, based_on_review_date).ok();
 
         // 2. 读取当前 State
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
 
         // 3. 读取目标日期的日计划（用于让 AI 感知今日任务重点）
         let target_plan =
@@ -411,12 +411,10 @@ fn parse_briefing_json(content: &str) -> DataResult<BriefingData> {
         }
     }
 
-    // 兜底：返回空数据，避免阻塞复盘流程
-    log::warn!("简报 JSON 解析失败，使用兜底空数据。原始内容前 500 字符: {}", content.chars().take(500).collect::<String>());
-    Ok(BriefingData {
-        greeting: String::new(),
-        estimations: Vec::new(),
-    })
+    // 解析失败：返回错误，避免保存无效的空简报文件
+    let preview = content.chars().take(500).collect::<String>();
+    log::warn!("简报 JSON 解析失败。原始内容前 500 字符: {}", preview);
+    Err(format!("简报 JSON 解析失败，AI 返回内容无法识别。前 500 字符: {}", preview))
 }
 
 /// 计算目标日期的「昨日」日期（用于读取复盘）
@@ -451,11 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_briefing_json_falls_back_to_empty() {
+    fn parse_briefing_json_returns_err_on_invalid() {
         let json = "not a json at all";
-        let data = parse_briefing_json(json).unwrap();
-        assert!(data.greeting.is_empty());
-        assert!(data.estimations.is_empty());
+        let result = parse_briefing_json(json);
+        assert!(result.is_err());
     }
 
     #[test]

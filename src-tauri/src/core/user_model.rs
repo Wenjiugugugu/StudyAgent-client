@@ -97,7 +97,7 @@ impl UserModelService {
     /// 用于 AI prompt 注入
     pub fn get_user_model_summary(data_dir: &Path) -> Result<String, String> {
         let model = crate::data::assets::read_user_model_index(data_dir)?;
-        let state = crate::data::state::read_state(data_dir).unwrap_or_default();
+        let state = crate::data::state::read_state_or_default(data_dir);
 
         let mut summary = String::new();
 
