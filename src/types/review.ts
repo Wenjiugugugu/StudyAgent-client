@@ -154,6 +154,8 @@ export interface SubmitReviewResult {
   needs_regeneration: boolean;
   /** 触发重排的原因（用于前端展示） */
   regen_reasons: string[];
+  /** 次日简报是否已在后台开始生成（fire-and-forget） */
+  briefing_generating?: boolean;
 }
 
 /** 重排剩余天数的返回结果 */

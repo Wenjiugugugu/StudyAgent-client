@@ -72,7 +72,7 @@ impl<'a> Planner<'a> {
         data_dir: &Path,
         date: &str,
     ) -> DataResult<DailyPlanFile> {
-        let plan = DailyScheduler::generate_daily_plan(data_dir, date)?;
+        let plan = DailyScheduler::generate_daily_plan(data_dir, date, true)?;
         crate::data::plan::save_daily_plan(data_dir, &plan)?;
         if let Err(e) = Self::sync_current_task(data_dir, date, &plan) {
             log::warn!("同步 current_task 失败: {}", e);
@@ -253,21 +253,48 @@ impl<'a> Planner<'a> {
             &format!("周计划已保存, 影响日期: {:?}", regen_dates),
         );
 
-        // 10. 如果今天在重排范围内，且今天的日计划已存在，重新生成今天的日计划
+        // 10. 重新生成所有受影响日期的日计划文件
         let today = today_string();
-        if regen_dates.contains(&today) {
-            log::info!("今天 {} 在重排范围内，重新生成今日日计划", today);
-            let plan = DailyScheduler::generate_daily_plan(data_dir, &today)?;
-            crate::data::plan::save_daily_plan(data_dir, &plan)?;
-            crate::data::write_ai_debug_log(
-                data_dir,
-                "regenerate_today_plan_saved",
-                &format!("今日日计划已重新生成并保存, date={}", today),
-            );
-            if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
-                log::warn!("同步 current_task 失败: {}", e);
+        let today_is_excluded = week_plan
+            .data
+            .excluded_days
+            .iter()
+            .any(|d| d.date == today);
+        for date in &regen_dates {
+            // 排除日不生成日计划
+            let is_excluded = week_plan
+                .data
+                .excluded_days
+                .iter()
+                .any(|d| &d.date == date);
+            if is_excluded {
+                log::info!("{} 是排除日，跳过日计划生成", date);
+                continue;
+            }
+            match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
+                Ok(plan) => {
+                    if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
+                        log::warn!("保存 {} 日计划失败: {}", date, e);
+                    } else {
+                        log::info!("已重新生成 {} 的日计划", date);
+                        // 对今天额外执行温和同步
+                        if date == &today && !today_is_excluded {
+                            if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
+                                log::warn!("同步 current_task 失败: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("重新生成 {} 日计划失败: {}", date, e);
+                }
             }
         }
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "regenerate_daily_plans_saved",
+            &format!("已重新生成受影响日期的日计划, 日期列表: {:?}", regen_dates),
+        );
 
         crate::data::write_ai_debug_log(
             data_dir,
@@ -468,29 +495,47 @@ impl<'a> Planner<'a> {
             &format!("周计划已保存, 影响日期: {:?}", regen_dates),
         );
 
-        // 12. 如果今天在重排范围内且今天不是排除日，重新生成今日日计划
-        if regen_dates.contains(&today) {
-            let today_is_excluded = week_plan
+        // 12. 重新生成所有受影响日期的日计划文件
+        let today_is_excluded = week_plan
+            .data
+            .excluded_days
+            .iter()
+            .any(|d| d.date == today);
+        for date in &regen_dates {
+            // 排除日不生成日计划
+            let is_excluded = week_plan
                 .data
                 .excluded_days
                 .iter()
-                .any(|d| d.date == today);
-            if !today_is_excluded {
-                log::info!("今天 {} 在重排范围内且非排除日，重新生成今日日计划", today);
-                let plan = DailyScheduler::generate_daily_plan(data_dir, &today)?;
-                crate::data::plan::save_daily_plan(data_dir, &plan)?;
-                crate::data::write_ai_debug_log(
-                    data_dir,
-                    "exclusion_regen_today_plan_saved",
-                    &format!("今日日计划已重新生成并保存, date={}", today),
-                );
-                if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
-                    log::warn!("同步 current_task 失败: {}", e);
+                .any(|d| &d.date == date);
+            if is_excluded {
+                log::info!("{} 是排除日，跳过日计划生成", date);
+                continue;
+            }
+            match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
+                Ok(plan) => {
+                    if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
+                        log::warn!("保存 {} 日计划失败: {}", date, e);
+                    } else {
+                        log::info!("已重新生成 {} 的日计划", date);
+                        // 对今天额外执行温和同步
+                        if date == &today && !today_is_excluded {
+                            if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
+                                log::warn!("同步 current_task 失败: {}", e);
+                            }
+                        }
+                    }
                 }
-            } else {
-                log::info!("今天 {} 是排除日，不生成日计划", today);
+                Err(e) => {
+                    log::warn!("重新生成 {} 日计划失败: {}", date, e);
+                }
             }
         }
+        crate::data::write_ai_debug_log(
+            data_dir,
+            "exclusion_regen_daily_plans_saved",
+            &format!("已重新生成受影响日期的日计划, 日期列表: {:?}", regen_dates),
+        );
 
         crate::data::write_ai_debug_log(
             data_dir,
@@ -658,7 +703,63 @@ impl<'a> Planner<'a> {
             log::warn!("保存原始周计划副本失败（不阻塞主流程）: {}", e);
         }
 
+        // 5. 从周计划批量生成本周所有学习日的日计划文件
+        // 仅对今天同步 State.current_task，其他日期只生成文件
+        Self::generate_daily_plans_for_week(data_dir, &week_plan)?;
+
         Ok(week_plan)
+    }
+
+    /// 从周计划批量生成本周所有学习日的日计划文件
+    ///
+    /// 遍历周计划的每一天，对非休息日生成日计划 JSON 并保存。
+    /// 仅对今天同步 State.current_task（避免覆盖已有完成状态），
+    /// 其他日期只生成文件，前端按每日开始时间控制显示。
+    fn generate_daily_plans_for_week(
+        data_dir: &Path,
+        week_plan: &WeekPlanFile,
+    ) -> DataResult<()> {
+        let today = today_string();
+        let mut generated = 0;
+        let mut skipped_rest = 0;
+        let mut errors: Vec<(String, String)> = Vec::new();
+
+        for day in &week_plan.data.days {
+            if day.is_rest_day {
+                skipped_rest += 1;
+                continue;
+            }
+            match DailyScheduler::generate_daily_plan(data_dir, &day.date, day.date == today) {
+                Ok(plan) => {
+                    if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
+                        errors.push((day.date.clone(), format!("保存日计划失败: {}", e)));
+                    } else {
+                        // 对今天额外执行温和同步（sync_current_task 不覆盖已有完成状态）
+                        if day.date == today {
+                            if let Err(e) = Self::sync_current_task(data_dir, &day.date, &plan) {
+                                log::warn!("同步 {} 的 current_task 失败: {}", day.date, e);
+                            }
+                        }
+                        generated += 1;
+                    }
+                }
+                Err(e) => {
+                    errors.push((day.date.clone(), e));
+                }
+            }
+        }
+
+        log::info!(
+            "批量生成日计划完成: 生成 {} 个, 跳过休息日/排除日 {} 个, 失败 {} 个",
+            generated,
+            skipped_rest,
+            errors.len()
+        );
+        for (date, err) in &errors {
+            log::warn!("生成 {} 日计划失败: {}", date, err);
+        }
+
+        Ok(())
     }
 
     /// 构建周计划 prompt
@@ -853,36 +954,53 @@ impl<'a> Planner<'a> {
             if state.subjects.math.active { "活跃" } else { "未启动" }
         ));
         prompt.push_str(&format!(
-            "### 英语\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            "### 英语\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
             state.subjects.english.phase,
             state.subjects.english.weekly_hours,
             state.subjects.english.target_score,
             state.subjects.english.current_focus,
             state.subjects.english.weak_chapters,
+            state.subjects.english.completed,
             state.subjects.english.textbook.as_deref().unwrap_or("未指定"),
             if state.subjects.english.active { "活跃" } else { "未启动" }
         ));
         prompt.push_str(&format!(
-            "### 专业课（{}）\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            "### 专业课（{}）\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
             state.subjects.professional.name.as_ref().unwrap_or(&"专业课".to_string()),
             state.subjects.professional.phase,
             state.subjects.professional.weekly_hours,
             state.subjects.professional.target_score,
             state.subjects.professional.current_focus,
             state.subjects.professional.weak_chapters,
+            state.subjects.professional.completed,
             state.subjects.professional.textbook.as_deref().unwrap_or("未指定"),
             if state.subjects.professional.active { "活跃" } else { "未启动" }
         ));
         if state.subjects.politics.active {
             prompt.push_str(&format!(
-                "### 政治\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 教材: {}\n- 状态: 活跃\n\n",
+                "### 政治\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: 活跃\n\n",
                 state.subjects.politics.phase,
                 state.subjects.politics.weekly_hours,
                 state.subjects.politics.target_score,
                 state.subjects.politics.current_focus,
                 state.subjects.politics.weak_chapters,
+                state.subjects.politics.completed,
                 state.subjects.politics.textbook.as_deref().unwrap_or("未指定")
             ));
+        }
+
+        // 已完成内容防重复提示
+        let has_any_completed = !state.subjects.math.completed.is_empty()
+            || !state.subjects.english.completed.is_empty()
+            || !state.subjects.professional.completed.is_empty()
+            || (state.subjects.politics.active && !state.subjects.politics.completed.is_empty());
+        if has_any_completed {
+            prompt.push_str("## 已完成内容防重复（重要）\n");
+            prompt.push_str("上述各科「已完成」列表中的章节/任务均已完成，本周计划**严禁重复**这些内容。具体要求：\n");
+            prompt.push_str("1. 不得在 task_templates 的 title/goal/focus 中再次安排「已完成」列表中的章节或知识点；\n");
+            prompt.push_str("2. 各科目必须从「已完成」列表之后的下一个章节/知识点继续推进，不得回退；\n");
+            prompt.push_str("3. 若「当前重点」与「已完成」有重叠，以「已完成」为准并向前推进；\n");
+            prompt.push_str("4. 英语若已完成某些真题/单元，本周应安排后续真题/单元，不重做已完成题目。\n\n");
         }
 
         // 教材联网检索指令
@@ -1178,6 +1296,8 @@ impl<'a> Planner<'a> {
 11. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
 12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
 13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
+14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。
+15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。周一应作为本周的起始点，从各科「已完成」之后的章节开始，逐天分配到剩余学习日。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
 "#,
             week_start, week_end, week_end, daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
@@ -1427,8 +1547,10 @@ impl<'a> Planner<'a> {
         ));
         if state.subjects.politics.active {
             prompt.push_str(&format!(
-                "### 政治\n- 阶段: {:?}\n- 当前重点: {}\n\n",
-                state.subjects.politics.phase, state.subjects.politics.current_focus
+                "### 政治\n- 阶段: {:?}\n- 当前重点: {}\n- 已完成: {:?}\n\n",
+                state.subjects.politics.phase,
+                state.subjects.politics.current_focus,
+                state.subjects.politics.completed
             ));
         }
 
@@ -1584,6 +1706,8 @@ impl<'a> Planner<'a> {
 7. 每天的 task_templates 数量约 {} 个，每科约一条。
 8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
 9. 休息日的 subject_allocations 为空数组。
+10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
+11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。若存在排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束7）仍须遵守。
 "#,
             regen_start, week_end, daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
@@ -1673,9 +1797,21 @@ impl<'a> Planner<'a> {
         ));
         if state.subjects.politics.active {
             prompt.push_str(&format!(
-                "### 政治\n- 阶段: {:?}\n- 当前重点: {}\n\n",
-                state.subjects.politics.phase, state.subjects.politics.current_focus
+                "### 政治\n- 阶段: {:?}\n- 当前重点: {}\n- 已完成: {:?}\n\n",
+                state.subjects.politics.phase,
+                state.subjects.politics.current_focus,
+                state.subjects.politics.completed
             ));
+        }
+
+        // 已完成内容防重复提示
+        let has_any_completed = !state.subjects.math.completed.is_empty()
+            || !state.subjects.english.completed.is_empty()
+            || !state.subjects.professional.completed.is_empty()
+            || (state.subjects.politics.active && !state.subjects.politics.completed.is_empty());
+        if has_any_completed {
+            prompt.push_str("\n## 已完成内容防重复（重要）\n");
+            prompt.push_str("上述各科「已完成」列表中的章节/任务均已完成，重排时**严禁重复**这些内容。各科目必须从「已完成」之后的下一个章节/知识点继续推进，不得回退。\n\n");
         }
 
         // 学习日程约束
@@ -1830,6 +1966,8 @@ impl<'a> Planner<'a> {
 7. 排除日原本的任务量必须分摊到剩余学习日，可通过适当增加每日任务数或难度来实现。
 8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
 9. 休息日的 subject_allocations 为空数组。
+10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
+11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。实际可学习天数 = 7 - 休息日 - 排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束6）仍须遵守。
 "#,
             regen_start, week_end,
             all_excluded_days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>().join("、"),

@@ -26,7 +26,6 @@ import {
   Flag,
   ShieldAlert,
   ArrowRight,
-  Sparkles,
   Timer,
   Pause,
   Play,
@@ -226,10 +225,6 @@ function isTaskRunning(taskId: string): boolean {
   return !!taskTimers.value[taskId]?.startedAt;
 }
 
-async function generatePlan() {
-  await todayStore.generate(currentDate.value);
-}
-
 function goToReview() {
   const yesterday = yesterdayString();
   router.push({ name: "review", query: { date: yesterday } });
@@ -427,13 +422,9 @@ onUnmounted(() => {
     <EmptyState
       v-else-if="!plan"
       :title="`${currentDate} 还没有学习计划`"
-      :description="todayStore.error || '生成一份基于当前状态与用户画像的个性化计划'"
+      :description="todayStore.error || '请先生成周计划，日计划将自动从周计划中拆分生成'"
     >
       <template #actions>
-        <Button v-if="isToday" variant="primary" :loading="todayStore.generating" @click="generatePlan">
-          <Sparkles :size="15" />
-          生成今日计划
-        </Button>
         <Button v-if="!isToday" variant="secondary" @click="goBack">
           {{ backLabel }}
         </Button>
@@ -485,22 +476,11 @@ onUnmounted(() => {
             variant="ghost"
             size="sm"
             :loading="todayStore.loading"
-            :disabled="todayStore.loading || todayStore.generating"
+            :disabled="todayStore.loading"
             @click="loadPlan"
           >
             <RotateCcw :size="14" />
             刷新
-          </Button>
-          <Button
-            v-if="isToday"
-            variant="ghost"
-            size="sm"
-            :loading="todayStore.generating"
-            :disabled="todayStore.generating"
-            @click="generatePlan"
-          >
-            <RefreshCw :size="14" />
-            重新生成
           </Button>
         </div>
       </div>

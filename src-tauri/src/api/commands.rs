@@ -11,6 +11,7 @@ use tauri::{Emitter, State};
 use crate::ai::provider::{AIProviderConfig, ChatRequest, ChatResponse};
 use crate::ai::service::AiService;
 use crate::core::analytics::{AnalyticsRange, AnalyticsSummary, build_analytics};
+use crate::core::briefing::{BriefingAgent, yesterday_of};
 use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
 use crate::core::knowledge::KnowledgeService;
 use crate::core::planner::Planner;
@@ -778,6 +779,9 @@ pub struct SubmitReviewResult {
     pub needs_regeneration: bool,
     /// 触发重排的原因（用于前端展示）
     pub regen_reasons: Vec<String>,
+    /// 次日简报是否已在后台开始生成（fire-and-forget）
+    #[serde(default)]
+    pub briefing_generating: bool,
 }
 
 #[tauri::command]
@@ -957,9 +961,48 @@ pub async fn submit_review(
         );
     }
 
+    // 4. 在后台自动生成次日简报（fire-and-forget，失败不影响复盘提交）
+    //
+    // 简报基于本次复盘生成，供次日打开应用时展示。
+    // 使用 tauri::async_runtime::spawn 异步执行，不阻塞当前命令返回。
+    // 失败仅记录日志，不影响复盘提交结果。
+    let briefing_generating = if let Ok(next_day) = crate::data::add_days(&payload.date, 1) {
+        let ai_service = get_ai_service(app_state.inner()).ok();
+        let data_dir_clone = data_dir.clone();
+        let review_date = payload.date.clone();
+        if let Some(ai) = ai_service {
+            log::info!(
+                "复盘 {} 提交后触发次日 {} 简报生成（后台）",
+                payload.date,
+                next_day
+            );
+            tauri::async_runtime::spawn(async move {
+                let agent = BriefingAgent::new(&ai);
+                match agent
+                    .generate_briefing(&data_dir_clone, &next_day, &review_date, "auto")
+                    .await
+                {
+                    Ok(_) => {
+                        log::info!("次日简报已自动生成: {}", next_day);
+                    }
+                    Err(e) => {
+                        log::warn!("次日简报自动生成失败 {}: {}", next_day, e);
+                    }
+                }
+            });
+            true
+        } else {
+            log::warn!("未配置 AI Provider，跳过次日简报自动生成");
+            false
+        }
+    } else {
+        false
+    };
+
     Ok(SubmitReviewResult {
         needs_regeneration,
         regen_reasons,
+        briefing_generating,
     })
 }
 
@@ -1001,6 +1044,147 @@ pub struct RegenerateResult {
     pub regenerated: bool,
     /// 受影响的日期列表
     pub affected_dates: Vec<String>,
+}
+
+// ============================================================================
+// Briefing 命令
+// ============================================================================
+
+/// get_briefing 的返回结构
+///
+/// 包含简报文件本体、昨日复盘是否存在、是否在补复盘窗口内等元信息，
+/// 供前端判断是否展示「先去复盘」提示或「AI 建议不可用」状态。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GetBriefingResult {
+    /// 简报文件（若存在）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub briefing: Option<crate::data::briefing::BriefingFile>,
+    /// 简报是否存在
+    pub exists: bool,
+    /// 昨日复盘是否存在（决定能否提供 AI 建议）
+    pub yesterday_review_exists: bool,
+    /// 今日是否为休息日（来自用户设置）
+    pub is_rest_day: bool,
+    /// 今日是否为周计划排除日
+    pub is_excluded_day: bool,
+    /// 昨日是否为休息日或排除日（若是，则不要求补复盘）
+    pub yesterday_exempt: bool,
+    /// 是否在补复盘窗口内（今日且未过每日结束时间 +1 小时）
+    pub within_makeup_window: bool,
+}
+
+/// 获取指定日期的每日简报
+///
+/// 前端调用: `invoke('get_briefing', { date: '2026-08-04' })`
+#[tauri::command]
+pub async fn get_briefing(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<GetBriefingResult, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let settings = crate::load_settings(&data_dir);
+
+    // 读取简报文件
+    let briefing = crate::data::briefing::read_briefing(&data_dir, &date).ok();
+    let exists = briefing.is_some();
+
+    // 昨日日期
+    let yesterday = crate::data::add_days(&date, -1).unwrap_or_else(|_| date.clone());
+
+    // 昨日复盘是否存在
+    let yesterday_review_exists = crate::data::records::read_review(&data_dir, &yesterday).is_ok();
+
+    // 判断昨日是否为休息日或排除日（若是则不要求补复盘）
+    let rest_days = settings.rest_days();
+    let yesterday_weekday = crate::data::weekday_name(&yesterday).unwrap_or_default();
+    let yesterday_is_rest = rest_days.iter().any(|d| d == &yesterday_weekday);
+
+    let yesterday_is_excluded = crate::data::plan::read_week_plan_for_date(&data_dir, &yesterday)
+        .ok()
+        .map(|wp| wp.data.excluded_days.iter().any(|d| d.date == yesterday))
+        .unwrap_or(false);
+    let yesterday_exempt = yesterday_is_rest || yesterday_is_excluded;
+
+    // 今日是否为休息日
+    let today_weekday = crate::data::weekday_name(&date).unwrap_or_default();
+    let is_rest_day = rest_days.iter().any(|d| d == &today_weekday);
+
+    // 今日是否为排除日
+    let is_excluded_day = crate::data::plan::read_week_plan_for_date(&data_dir, &date)
+        .ok()
+        .map(|wp| wp.data.excluded_days.iter().any(|d| d.date == date))
+        .unwrap_or(false);
+
+    // 补复盘窗口：今日日期等于今天，且当前时间在每日结束时间 +1 小时内
+    // 超过该窗口则视为「错过补复盘」，不再提供 AI 建议
+    let today = crate::data::today_string();
+    let within_makeup_window = if date == today {
+        // 简单判断：今日都在补复盘窗口内（用户可在今日任何时候补复盘）
+        // 真正的「错过」是指到了次日仍未补复盘，那时简报就不会自动生成了
+        true
+    } else {
+        false
+    };
+
+    Ok(GetBriefingResult {
+        briefing,
+        exists,
+        yesterday_review_exists,
+        is_rest_day,
+        is_excluded_day,
+        yesterday_exempt,
+        within_makeup_window,
+    })
+}
+
+/// 重新生成指定日期的每日简报（AI 驱动）
+///
+/// 用户在 Dashboard 手动点击「重新生成简报」时调用。
+/// 必须存在昨日复盘才能生成（否则 AI 无依据）。
+///
+/// 前端调用: `invoke('regenerate_briefing', { date: '2026-08-04' })`
+#[tauri::command]
+pub async fn regenerate_briefing(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::data::briefing::BriefingFile, String> {
+    let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    if !ai_service.has_provider() {
+        return Err(
+            "未配置 AI Provider，无法生成简报。请先在「设置」中添加并启用 AI Provider。".to_string(),
+        );
+    }
+
+    // 基于昨日复盘生成
+    let yesterday = yesterday_of(&date)?;
+
+    // 校验昨日复盘存在（简报必须有依据）
+    if crate::data::records::read_review(&data_dir, &yesterday).is_err() {
+        return Err(format!(
+            "昨日（{}）复盘不存在，无法生成简报。请先完成昨日复盘。",
+            yesterday
+        ));
+    }
+
+    // 删除旧简报（若有）
+    let _ = crate::data::briefing::delete_briefing(&data_dir, &date);
+
+    let agent = BriefingAgent::new(&ai_service);
+    agent
+        .generate_briefing(&data_dir, &date, &yesterday, "manual")
+        .await
+}
+
+/// 列出所有简报日期（YYYY-MM-DD，升序）
+///
+/// 前端调用: `invoke('list_briefing_dates')`
+#[tauri::command]
+pub async fn list_briefing_dates(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<String>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    crate::data::briefing::list_briefing_dates(&data_dir)
 }
 
 // ============================================================================

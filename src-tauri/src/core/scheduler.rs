@@ -30,8 +30,16 @@ impl DailyScheduler {
     /// 4. 将每个 DaySubjectAllocation.task_templates 映射为 PlanTask
     /// 5. 汇总 total_hours / total_tasks
     /// 6. 补充 State 中的剩余天数与目标信息
-    /// 7. 同步初始化 State.current_task（仅当 state 中当天任务为空时）
-    pub fn generate_daily_plan(data_dir: &Path, date: &str) -> DataResult<DailyPlanFile> {
+    /// 7. 若 sync_state=true，同步初始化 State.current_task（仅当 state 中当天任务为空时）
+    ///
+    /// sync_state 参数：
+    /// - true: 强制重置 State.current_task 为当天任务（用于前端按钮触发生成/重排今天）
+    /// - false: 不同步 state（用于批量生成多天日计划，避免互相覆盖 current_task）
+    pub fn generate_daily_plan(
+        data_dir: &Path,
+        date: &str,
+        sync_state: bool,
+    ) -> DataResult<DailyPlanFile> {
         let iso_week = iso_week_string(date)?;
         let week_plan = crate::data::plan::read_week_plan(data_dir, &iso_week)?;
 
@@ -125,7 +133,8 @@ impl DailyScheduler {
         // 原则：每次生成新的日计划，都强制重置 current_task 为该日全新任务，状态全部 Pending。
         // 这能避免旧版本遗留的污染状态（错位 task_id、错误 done 状态）被带到新计划。
         // 用户在生成计划之后点击的完成状态，会在 update_task_status 中正常写入 state。
-        if !tasks.is_empty() {
+        // 批量生成多天日计划时传 sync_state=false，避免互相覆盖 current_task。
+        if sync_state && !tasks.is_empty() {
             let state_clean = !state.current_task.tasks.iter().any(|t| {
                 t.task_id
                     .as_ref()
@@ -374,7 +383,7 @@ current_focus = "计组"
         save_week_plan(&tmp, &week_plan).unwrap();
 
         // 生成周一的日计划
-        let daily = DailyScheduler::generate_daily_plan(&tmp, "2026-07-20").unwrap();
+        let daily = DailyScheduler::generate_daily_plan(&tmp, "2026-07-20", true).unwrap();
         assert_eq!(daily.meta.date, "2026-07-20");
         assert_eq!(daily.data.tasks.len(), 1);
         assert_eq!(daily.data.tasks[0].id, "2026-07-20-01");
@@ -383,7 +392,7 @@ current_focus = "计组"
         assert_eq!(daily.data.total_tasks, 1);
 
         // 休息日应返回错误
-        let rest_result = DailyScheduler::generate_daily_plan(&tmp, "2026-07-25");
+        let rest_result = DailyScheduler::generate_daily_plan(&tmp, "2026-07-25", true);
         assert!(rest_result.is_err());
 
         let _ = std::fs::remove_dir_all(&tmp);

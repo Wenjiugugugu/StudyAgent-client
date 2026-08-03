@@ -51,7 +51,7 @@ import type {
 } from "@/types";
 
 // ── 系统信息 ──
-const APP_VERSION = "0.3.2";
+const APP_VERSION = "0.4.0";
 const TAURI_VERSION = "2.x";
 const sysInfo = computed(() => ({
   appVersion: APP_VERSION,
@@ -1176,7 +1176,6 @@ onUnmounted(() => {
       </div>
 
       <p class="section-desc">
-        持久化记录每次 AI 调用的 token 消耗与耗时，重启后不丢失。
         根据各厂商官方定价估算费用，仅供参考。{{ pricingNote }}
       </p>
 

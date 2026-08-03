@@ -7,7 +7,7 @@ import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
 import * as api from "@/api";
 import { isTauri } from "@/api/tauri";
-import { currentMinutesShanghai, timeStringToMinutes, todayString } from "@/utils/date";
+import { currentMinutesShanghai, timeStringToMinutes, todayString, weekdayName, getWeekStart } from "@/utils/date";
 import AppLayout from "@/layouts/AppLayout.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
@@ -84,6 +84,59 @@ async function listenCloseEvents() {
   }
 }
 
+// ── 启动时检测是否到达复盘提醒时间，自动跳转复盘页 ──
+// 避免缺失复盘：若当前时间已过 review_reminder_time 且今日尚未复盘（且非休息/排除日），自动跳转 /review
+async function checkReviewOnStartup() {
+  if (!isTauri()) return;
+  try {
+    const settings = settingsStore.settings;
+    if (!settings?.study_schedule) return;
+
+    const reviewTime = settings.study_schedule.review_reminder_time;
+    if (!reviewTime) return;
+
+    const now = currentMinutesShanghai();
+    const target = timeStringToMinutes(reviewTime);
+    if (target < 0 || now < target) return; // 未到复盘时间
+
+    const today = todayString();
+
+    // 每天仅自动跳转一次（sessionStorage 标记）
+    const navKey = "studyagent.auto_review_nav";
+    const navRaw = sessionStorage.getItem(navKey);
+    if (navRaw === today) return; // 今日已自动跳转过
+
+    // 休息日和排除日跳过
+    const restDays = settings.study_schedule.rest_days ?? ["周日"];
+    if (restDays.includes(weekdayName(today))) return;
+
+    try {
+      const wp = await api.getWeekPlan(getWeekStart(today));
+      if (wp.data?.excluded_days?.some((d) => d.date === today)) return;
+    } catch {
+      // 无周计划，按正常流程检查复盘
+    }
+
+    // 检查今日复盘是否已存在
+    try {
+      await api.getReview(today);
+      // 复盘已存在，无需跳转
+      sessionStorage.setItem(navKey, today);
+      return;
+    } catch {
+      // 今日复盘不存在，自动跳转
+    }
+
+    // 避免在引导页或已离开首页时打断用户
+    if (route.path === "/onboarding") return;
+
+    sessionStorage.setItem(navKey, today);
+    router.push("/review");
+  } catch (e) {
+    console.warn("[AutoReview] 启动复盘检查失败:", e);
+  }
+}
+
 // ── 启动更新检查（结果存入 updateStore，由首页弹窗展示） ──
 async function checkStartupUpdate() {
   if (!isTauri()) return;
@@ -126,6 +179,36 @@ const VERSION_CHANGELOGS: Record<string, string> = {
     "### 优化",
     "- 侧边导航栏顺序调整：「分析」页面入口移至「时间线」上方，更符合使用频率。",
     "- 旧版本数据兼容：plan/state/review 文件中的 risks、reminders、risks_resolved 字段仍保留反序列化能力，旧数据不会导致崩溃，但新数据不再写入这些字段。",
+  ].join("\n"),
+  "0.4.0": [
+    "## 0.4.0 更新内容",
+    "",
+    "本次更新带来两大核心升级：全新的「每日简报」取代了原有的今日焦点卡片，让首页以 AI 生成的寄语、任务清单和阶段估时为核心重新设计；同时周计划现在能自动拆分生成每日计划文件，不再需要手动点击生成。",
+    "",
+    "### 新增",
+    "- **每日简报功能**：首页工作台以「每日简报」为核心全新设计，替换原有的「今日焦点」卡片。",
+    "  - AI 寄语：基于昨日复盘数据（完成率、感受、困难类型）与今日任务，生成 2-3 句理性策略型寄语——前句客观点出昨日情况，中句给出今日具体策略，末句方向提示，不堆砌空泛口号。",
+    "  - 大字引言式展示：寄语采用左侧 accent 竖线 + 渐变背景 + 衬线引号的引言式排版，作为视觉焦点。",
+    "  - 各科阶段估时：AI 基于当前章节、剩余备考天数和每周学习时长，估算「学完当前阶段还需多少天」。",
+    "  - 简报闪烁提示：每日首次打开时顶部显示「有新的每日简报可供查看」脉冲提示，4 秒后淡出。",
+    "  - 入场动画：简报卡从下方滑入，侧栏延迟从右侧滑入。",
+    "- **复盘后自动生成次日简报**：提交复盘后自动在后台为次日生成简报（fire-and-forget），不阻塞用户操作。",
+    "- **到达复盘时间自动跳转复盘页**：App 启动时若已过复盘提醒时间且今日未复盘（非休息/排除日），自动跳转复盘页，每天仅触发一次，避免缺失复盘。",
+    "- **周计划自动拆分日计划**：生成周计划时自动为本周所有学习日生成日计划文件，无需再每天手动点击「生成今日计划」；复盘重排或排除日重排后也会自动更新受影响日期的日计划文件。",
+    "- **周计划防重复已学内容**：AI 生成周计划时现在能看到全部科目（数学/英语/专业课/政治）的「已完成」列表，并新增「已完成内容防重复」约束，严禁重复安排已学章节，必须从已完成之后继续推进。",
+    "- **周计划按天推进切分**：新增「按天推进切分」约束，每个科目的学习内容必须切分到每一天，每天推进不同章节/知识点，相邻两天 focus 不得完全相同；切分受排除日影响，排除日任务量分摊到其他学习日。",
+    "- **昨日复盘摘要侧栏**：首页右侧侧栏展示昨日完成率、整体感受、主要困难和学习时长，一目了然。",
+    "- **迷你本周进度**：简报卡内嵌入本周进度迷你版——百分比、已学天数、剩余小时、进度状态、7 天微点指示器，点击跳转周计划页。",
+    "- 安装向导底部清理：NSIS 安装向导底部不再显示「Nullsoft Install System v3.11」工具链信息，改为显示版权信息。",
+    "",
+    "### 移除",
+    "- 移除首页工作台的「今日焦点」「本周进度」「学科进度」三卡布局，改为以每日简报为核心的全新布局。",
+    "- 移除今日计划页、首页工作台和复盘页的「生成今日计划」「重新生成」按钮：日计划现由周计划自动拆分生成，无需手动触发。",
+    "",
+    "### 优化",
+    "- 缺失昨日复盘时显示横幅提示并提供「去补复盘」按钮；错过补复盘窗口（非今日）则不提供 AI 建议，仅展示任务清单。",
+    "- 休息日、排除日、每日开始时间前：隐藏侧栏，简报卡居中显示提示，页面更聚焦。",
+    "- Dashboard 布局响应式：≤860px 侧栏移到下方，≤720px 寄语字号缩小、估时网格变单列。",
   ].join("\n"),
   "0.3.2": [
     "## 0.3.2 更新内容",
@@ -358,6 +441,8 @@ onMounted(async () => {
   // 引导完成后再做启动更新检查，避免引导页被打断
   if (settingsStore.onboardingCompleted) {
     void checkStartupUpdate();
+    // 到达复盘提醒时间则自动跳转复盘页（避免缺失复盘）
+    void checkReviewOnStartup();
   }
 });
 

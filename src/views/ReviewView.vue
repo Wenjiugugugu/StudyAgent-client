@@ -738,11 +738,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
     <EmptyState
       v-else-if="!plan"
       :title="`${selectedDate} 没有学习计划`"
-      :description="isToday ? '请先生成今日计划后，再进行复盘' : '该日无学习计划，无法复盘'"
+      :description="isToday ? '请先生成周计划，日计划将自动从周计划中拆分生成' : '该日无学习计划，无法复盘'"
     >
       <template #actions>
-        <Button v-if="isToday" variant="primary" @click="router.push('/today')">
-          生成今日计划
+        <Button v-if="isToday" variant="primary" @click="router.push('/week')">
+          前往周计划
         </Button>
         <Button v-if="!isToday" variant="secondary" @click="goToday">回到今天</Button>
       </template>

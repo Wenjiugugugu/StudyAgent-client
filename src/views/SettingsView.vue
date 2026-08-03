@@ -690,7 +690,7 @@ async function handleSave() {
 }
 
 // ── 检查更新（使用共享 update store，与首页更新弹窗状态同步） ──
-const APP_VERSION = "0.3.2";
+const APP_VERSION = "0.4.0";
 
 // 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
 const checking = computed(() => updateStore.checking);

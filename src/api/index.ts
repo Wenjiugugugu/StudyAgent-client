@@ -66,6 +66,8 @@ import type {
   UpdateAsset,
   DownloadProgress,
   AiUsageEntry,
+  BriefingFile,
+  GetBriefingResult,
 } from "@/types";
 
 export { isTauri } from "./tauri";
@@ -311,6 +313,27 @@ export async function addExcludedDayAndRegenerate(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+// ── Briefing ──
+
+/** 获取指定日期的每日简报（含状态判断字段） */
+export async function getBriefing(date: string): Promise<GetBriefingResult> {
+  return invokeDirect<GetBriefingResult>("get_briefing", { date });
+}
+
+/** 重新生成指定日期的每日简报（AI 驱动，需存在昨日复盘） */
+export async function regenerateBriefing(date: string): Promise<BriefingFile> {
+  return invokeWithAiTrace<BriefingFile>(
+    "regenerate_briefing",
+    `重新生成简报 ${date}`,
+    { date },
+  );
+}
+
+/** 列出所有简报日期（YYYY-MM-DD，升序） */
+export async function listBriefingDates(): Promise<string[]> {
+  return invokeDirect<string[]>("list_briefing_dates");
 }
 
 // ── Knowledge ──

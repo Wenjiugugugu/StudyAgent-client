@@ -26,7 +26,7 @@ export function useTheme() {
     if (mode === "liquid-glass") {
       document.documentElement.setAttribute("data-visual-mode", "liquid-glass");
     } else {
-      // 标准模式：移除属性，确保无 backdrop-filter 开销
+      // 标准模式：移除属性，确保无额外样式开销
       document.documentElement.removeAttribute("data-visual-mode");
     }
   }

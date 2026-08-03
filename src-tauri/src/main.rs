@@ -178,6 +178,10 @@ fn main() {
             generate_review,
             submit_review,
             regenerate_remaining_days,
+            // Briefing
+            get_briefing,
+            regenerate_briefing,
+            list_briefing_dates,
             // Knowledge
             list_knowledge,
             get_knowledge,
