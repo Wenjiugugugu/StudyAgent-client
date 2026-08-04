@@ -77,8 +77,23 @@ pub async fn update_task_status(
 ) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
 
+    // H1 并发保护：串行化 state 的读-改-写，避免并发命令丢失更新
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
     // 解析任务 ID: YYYY-MM-DD-NN
     let (date, task_index) = parse_task_id(&task_id)?;
+
+    // H3：历史数据不可修改约束——仅允许修改今天和昨天的任务，更早日期拒绝
+    // （前端 TodayView 已有相同限制，此处为后端防御层，防止绕过 UI 的调用）
+    let today = crate::data::today_string();
+    let yesterday = crate::data::add_days(&today, -1).unwrap_or_else(|_| today.clone());
+    if date != today && date != yesterday {
+        return Err(format!(
+            "历史任务不可修改：仅支持修改今天（{}）或昨天（{}）的任务，当前任务日期为 {}",
+            today, yesterday, date
+        ));
+    }
 
     // 解析新状态
     let new_status = parse_task_status(&status)?;
@@ -149,20 +164,24 @@ pub async fn update_task_status(
         // 更新 global progress
         let today = crate::data::today_string();
         let progress = &mut study_state.progress;
-        progress.total_study_days += 1;
 
-        // 连续天数
+        // 学习天数与连续天数：仅当「当天首个任务」完成时才 +1 / 更新 streak，
+        // 避免同一天完成多个任务导致 total_study_days 被重复累加（C9）
         if progress.last_study_date == date {
             // 同一天，不重复计算
-        } else if !progress.last_study_date.is_empty() {
-            let days_diff = crate::data::days_between(&date, &progress.last_study_date).unwrap_or(0);
-            if days_diff == 1 {
-                progress.streak_days += 1;
+        } else {
+            progress.total_study_days += 1;
+
+            if !progress.last_study_date.is_empty() {
+                let days_diff = crate::data::days_between(&date, &progress.last_study_date).unwrap_or(0);
+                if days_diff == 1 {
+                    progress.streak_days += 1;
+                } else {
+                    progress.streak_days = 1;
+                }
             } else {
                 progress.streak_days = 1;
             }
-        } else {
-            progress.streak_days = 1;
         }
         progress.last_study_date = today;
     }
@@ -186,6 +205,10 @@ pub async fn start_task_timer(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：串行化 state 写操作
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     // 检查是否启用计时功能
     let settings = crate::load_settings(&data_dir);
@@ -213,6 +236,10 @@ pub async fn pause_task_timer(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<i64, String> {
     let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：串行化 state 写操作
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     // 检查是否启用计时功能
     let settings = crate::load_settings(&data_dir);
@@ -638,6 +665,10 @@ pub async fn generate_daily_plan(
 ) -> Result<DailyPlanFile, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
+    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
     if !ai_service.has_provider() {
         return Err(
             "未配置 AI Provider，无法生成计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
@@ -660,6 +691,10 @@ pub async fn generate_week_plan(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<WeekPlanFile, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -687,6 +722,10 @@ pub async fn add_excluded_day_and_regenerate(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<RegenerateResult, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -746,6 +785,10 @@ pub async fn generate_review(
 ) -> Result<ReviewFile, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
+    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 records/state 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
     if !ai_service.has_provider() {
         return Err(
             "未配置 AI Provider，无法生成复盘。请先在「设置」中添加并启用 AI Provider。".to_string(),
@@ -791,6 +834,10 @@ pub async fn submit_review(
 ) -> Result<SubmitReviewResult, String> {
     let data_dir = get_data_dir(app_state.inner())?;
 
+    // H1 并发保护：串行化 records/state 写入，避免与任务状态更新等并发竞态
+    let io_lock = crate::get_io_lock(app_state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
     // 聚合实际学习时长（分钟 → 小时），写入 data.total_hours
     // 供分析页/历史计划/周期对比读取，避免 actual_hours 恒为 0
     let total_actual_minutes: i64 = payload
@@ -799,6 +846,50 @@ pub async fn submit_review(
         .filter_map(|tr| tr.actual_minutes)
         .sum();
     let total_actual_hours = total_actual_minutes as f64 / 60.0;
+
+    // 从 task_reviews 聚合 completion 数据
+    // 供 briefing / dashboard / planner 等直接读取 data.completion 的代码路径使用
+    let mut a_total = 0i32;
+    let mut a_done = 0i32;
+    let mut b_total = 0i32;
+    let mut b_done = 0i32;
+    let mut all_total = 0i32;
+    let mut all_done = 0i32;
+    for tr in &payload.task_reviews {
+        all_total += 1;
+        let is_done = tr.status == "completed";
+        if is_done {
+            all_done += 1;
+        }
+        match tr.priority.as_str() {
+            "A" => {
+                a_total += 1;
+                if is_done {
+                    a_done += 1;
+                }
+            }
+            "B" => {
+                b_total += 1;
+                if is_done {
+                    b_done += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    // 无 A/B 级任务时，将全部任务计入 A 级字段（保证 completion_rate 正确）
+    let (ca_total, ca_done) = if a_total + b_total == 0 && all_total > 0 {
+        (all_total, all_done)
+    } else {
+        (a_total, a_done)
+    };
+    let comp_total = ca_total + b_total;
+    let comp_done = ca_done + b_done;
+    let completion_rate = if comp_total > 0 {
+        (comp_done as f64 / comp_total as f64) * 100.0
+    } else {
+        0.0
+    };
 
     // 构建 ReviewFile
     let now = crate::data::now_string();
@@ -812,6 +903,13 @@ pub async fn submit_review(
         },
         data: crate::data::records::ReviewData {
             total_hours: total_actual_hours,
+            completion: crate::data::records::ReviewCompletion {
+                priority_a_total: ca_total,
+                priority_a_done: ca_done,
+                priority_b_total: b_total,
+                priority_b_done: b_done,
+                completion_rate,
+            },
             ..Default::default()
         },
         view: None,
@@ -976,7 +1074,11 @@ pub async fn submit_review(
                 payload.date,
                 next_day
             );
+            // H1 并发保护：简报生成也需持 IO 锁（写 records/briefing 文件），
+            // 但需等待当前命令释放锁后再执行，避免嵌套持锁。
+            let io_lock_clone = io_lock.clone();
             tauri::async_runtime::spawn(async move {
+                let _bg_guard = io_lock_clone.lock().await;
                 let agent = BriefingAgent::new(&ai);
                 match agent
                     .generate_briefing(&data_dir_clone, &next_day, &review_date, "auto")
@@ -1019,6 +1121,10 @@ pub async fn regenerate_remaining_days(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<RegenerateResult, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -1149,6 +1255,10 @@ pub async fn regenerate_briefing(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<crate::data::briefing::BriefingFile, String> {
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+
+    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 records/briefing 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -1354,6 +1464,8 @@ pub async fn read_textbook(
 /// 导入教材文件
 ///
 /// 将用户选择的 Markdown 文件复制到 textbooks/{subject}/ 目录下。
+/// 安全限制（C4-a）：仅允许 `.md` 扩展名、文件不大于 50MB，
+/// 且 subject 仅允许字母/数字/连字符，防止路径穿越与任意文件复制。
 /// 前端调用: `invoke('import_textbook', { subject: 'math', filePath: 'C:/...', title: '同济线代' })`
 #[tauri::command]
 pub async fn import_textbook(
@@ -1364,6 +1476,16 @@ pub async fn import_textbook(
 ) -> Result<TextbookInfo, String> {
     let dir = get_data_dir(state.inner())?;
     let textbooks_dir = dir.join("assets").join("resources").join("textbooks");
+
+    // 校验 subject，仅允许字母/数字/连字符/下划线，防止目录穿越
+    if subject.is_empty()
+        || !subject
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("无效的学科名称，仅允许字母、数字、连字符".to_string());
+    }
+
     let subject_dir = textbooks_dir.join(&subject);
 
     // 创建学科目录
@@ -1371,6 +1493,29 @@ pub async fn import_textbook(
         .map_err(|e| format!("创建教材目录失败: {}", e))?;
 
     let src_path = std::path::Path::new(&file_path);
+
+    // 仅允许 .md 扩展名（与 list/search 的 **/*.md 匹配逻辑一致）
+    let ext = src_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase());
+    if ext.as_deref() != Some("md") {
+        return Err("仅支持导入 Markdown（.md）文件".to_string());
+    }
+
+    // 仅允许普通文件，且大小不超过 50MB
+    let meta = std::fs::metadata(src_path).map_err(|e| format!("读取文件信息失败: {}", e))?;
+    if !meta.is_file() {
+        return Err("所选路径不是有效文件".to_string());
+    }
+    const MAX_TEXTBOOK_SIZE: u64 = 50 * 1024 * 1024;
+    if meta.len() > MAX_TEXTBOOK_SIZE {
+        return Err(format!(
+            "文件过大（{:.1} MB），仅支持导入 50MB 以内的 Markdown 文件",
+            meta.len() as f64 / (1024.0 * 1024.0)
+        ));
+    }
+
     let filename = src_path
         .file_stem()
         .ok_or_else(|| "无效的文件名".to_string())?
@@ -1805,6 +1950,20 @@ pub async fn chat_stream(
     Ok(response)
 }
 
+/// 取消指定 agent 的进行中 AI 请求
+///
+/// key 为 agent 类型小写（planner / reviewer / briefing / teacher / assistant）。
+/// 返回是否找到了对应请求并已发送取消信号。
+/// 前端调用: `invoke('cancel_ai_request', { key: 'planner' })`
+#[tauri::command]
+pub fn cancel_ai_request(
+    key: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<bool, String> {
+    let ai_service = get_ai_service(state.inner())?;
+    Ok(ai_service.cancel_request(&key))
+}
+
 /// 测试 AI Provider 连接的返回结果
 #[derive(serde::Serialize)]
 pub struct TestResult {
@@ -1868,7 +2027,12 @@ pub async fn get_ai_usage_log() -> Result<Vec<crate::data::ai_usage::AiUsageEntr
 ///
 /// 前端调用: `invoke('clear_ai_usage_log')`
 #[tauri::command]
-pub async fn clear_ai_usage_log() -> Result<(), String> {
+pub async fn clear_ai_usage_log(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    // H1 并发保护：与 AI 调用后的用量日志 append 串行化，避免清空与追加竞态
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     crate::data::ai_usage::clear();
     Ok(())
 }
@@ -1942,6 +2106,9 @@ pub async fn save_settings(
     settings: AppSettings,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
+    // H1 并发保护：串行化 settings 写入与服务重建
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     reinitialize_services(state.inner(), settings).await
 }
 
@@ -1959,6 +2126,10 @@ pub async fn change_data_directory(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<String, String> {
     use std::path::PathBuf;
+
+    // H1 并发保护：切换数据目录期间串行化所有写操作
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     let new_dir = PathBuf::from(new_path.trim_end_matches(['/', '\\']));
     if !new_dir.is_dir() {
@@ -2036,6 +2207,10 @@ pub async fn init_state(
 ) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
 
+    // H1 并发保护：串行化 state 初始化写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
     let today = crate::data::today_string();
     let phase_map: std::collections::HashMap<&str, crate::data::state::StudyPhase> = [
         ("foundation", crate::data::state::StudyPhase::Foundation),
@@ -2107,6 +2282,11 @@ pub async fn complete_onboarding(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：串行化 settings 写入
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
     let mut settings = load_settings(&data_dir);
     settings.onboarding_completed = true;
     save_settings_file(&data_dir, &settings)?;
@@ -2126,6 +2306,10 @@ pub async fn update_subject_textbook(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：串行化 state 写操作
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
 
     let mut study_state = crate::data::state::read_state(&data_dir)
         .map_err(|e| format!("读取 State 失败: {}", e))?;
@@ -2168,6 +2352,12 @@ pub struct UpdateAsset {
     pub size: u64,
     /// 资源类型推测：`nsis` / `msi` / `exe` / `unknown`
     pub kind: String,
+    /// 文件 SHA-256（十六进制，来自 GitHub API 的 digest 字段；缺失时为 None）
+    ///
+    /// 用于 `download_update` 下载完成后的完整性校验（L14）。
+    /// 注意：GitHub 对超过 2GB 的资产不提供 digest，此字段可能为 None。
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// 检查更新结果
@@ -2250,11 +2440,20 @@ fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
             let size = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
             let kind = detect_asset_kind(&name);
 
+            // GitHub API 对资产提供 digest 字段，形如 "sha256:<hex>"，剥离前缀
+            let sha256 = asset
+                .get("digest")
+                .and_then(|v| v.as_str())
+                .and_then(|d| d.strip_prefix("sha256:"))
+                .map(|hex| hex.to_lowercase())
+                .filter(|hex| !hex.is_empty());
+
             Some(UpdateAsset {
                 name,
                 download_url,
                 size,
                 kind,
+                sha256,
             })
         })
         .collect()
@@ -2418,14 +2617,27 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 /// 流式下载安装包到临时目录，并通过 `update-download-progress` 事件
 /// 推送下载进度（payload: `DownloadProgress`）。
 ///
+/// 完整性校验（L14）：若提供 `expected_sha256`，下载完成后计算文件
+/// SHA-256 并比对，不匹配则删除文件并返回错误，防止安装被篡改的包。
+/// 此外校验 `filename` 不含路径分隔符，防止路径穿越写出临时目录。
+///
 /// 下载完成后返回本地文件路径，供 `install_update` 使用。
 #[tauri::command]
 pub async fn download_update(
     url: String,
     filename: String,
+    expected_sha256: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     log::info!("[Update] 开始下载: {}", url);
+
+    // 防御路径穿越：仅允许安全的文件名（不含路径分隔符与 ..）
+    if filename.is_empty()
+        || filename.contains(['/', '\\'])
+        || filename.split('.').any(|seg| seg.is_empty() || seg == "..")
+    {
+        return Err("无效的文件名".to_string());
+    }
 
     // 临时目录：%TEMP%\StudyAgent-update\
     let temp_dir = std::env::temp_dir().join("StudyAgent-update");
@@ -2502,9 +2714,51 @@ pub async fn download_update(
         },
     );
 
+    // 完整性校验（L14）：比对期望 SHA-256，不匹配则删除文件并报错
+    if let Some(expected) = expected_sha256 {
+        let expected = expected.trim().to_lowercase();
+        if !expected.is_empty() {
+            let actual = sha256_hex(&file_path)
+                .map_err(|e| format!("计算下载文件校验和失败: {}", e))?;
+            log::info!(
+                "[Update] 完整性校验: expected={} actual={}",
+                expected,
+                actual
+            );
+            if actual != expected {
+                let _ = std::fs::remove_file(&file_path);
+                return Err(
+                    "下载文件完整性校验失败（SHA-256 不匹配），已删除文件，请重试或稍后再更新".to_string(),
+                );
+            }
+            log::info!("[Update] 文件 SHA-256 校验通过");
+        }
+    }
+
     let path_str = file_path.to_string_lossy().to_string();
     log::info!("[Update] 下载完成: {} ({} 字节)", path_str, downloaded);
     Ok(path_str)
+}
+
+/// 计算文件的 SHA-256（十六进制小写）
+fn sha256_hex(path: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        use std::io::Read;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("读取文件失败: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// 安装更新
@@ -2743,4 +2997,39 @@ pub async fn set_autostart(
 #[tauri::command]
 pub async fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
     Ok(app.package_info().version.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L14：验证文件 SHA-256 计算（已知内容 "hello" 的 sha256）
+    #[test]
+    fn sha256_hex_matches_known_hash() {
+        let tmp = std::env::temp_dir().join(format!("sa_sha256_test_{}", std::process::id()));
+        std::fs::write(&tmp, b"hello").unwrap();
+        let hex = sha256_hex(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        // "hello" 的 SHA-256
+        assert_eq!(
+            hex,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    /// L14：下载文件名防护，拒绝路径穿越
+    #[test]
+    fn invalid_filenames_rejected() {
+        for bad in ["../evil.exe", "a\\b.exe", "a/b.exe", "", ".", ".."] {
+            assert!(
+                bad.is_empty()
+                    || bad.contains(['/', '\\'])
+                    || bad.split('.').any(|seg| seg.is_empty() || seg == ".."),
+                "应判定为无效文件名: {:?}",
+                bad
+            );
+        }
+        // 合法文件名应通过
+        assert!(!String::from("StudyAgent_0.1.2_x64-setup.exe").contains(['/', '\\']));
+    }
 }

@@ -117,7 +117,7 @@ export const useUpdateStore = defineStore("update", () => {
 
     try {
       await ensureProgressListener();
-      const path = await api.downloadUpdate(asset.download_url, asset.name);
+      const path = await api.downloadUpdate(asset.download_url, asset.name, asset.sha256);
       downloadedFilePath.value = path;
       downloadState.value = "downloaded";
     } catch (e) {

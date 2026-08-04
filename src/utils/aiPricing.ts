@@ -354,7 +354,7 @@ export function formatCost(costCny: number): string {
   if (costCny === 0) return "¥0.00";
   if (costCny < 0.01) return `¥${costCny.toFixed(6)}`;
   if (costCny < 1) return `¥${costCny.toFixed(4)}`;
-  return `¥${costCny.toFixed(4)}`;
+  return `¥${costCny.toFixed(2)}`; // M40：1 元以上保留两位小数
 }
 
 /** 格式化 token 数为可读字符串（如 1.2k / 12.5k / 1.2M） */

@@ -518,6 +518,18 @@ async function confirmExclude() {
   }
 }
 
+/** 取消 AI 重排（M9：超时过长且无取消机制） */
+async function cancelRegeneration() {
+  try {
+    const found = await api.cancelAiRequest(api.AI_CANCEL_KEYS.planner);
+    regenMessage.value = found
+      ? "正在取消 AI 调整，请稍候…"
+      : "未找到进行中的 AI 调整请求";
+  } catch {
+    regenMessage.value = "取消失败，请稍后再试";
+  }
+}
+
 async function generateWeek() {
   await openConfigModal();
 }
@@ -774,6 +786,9 @@ onMounted(async () => {
         <LoadingSpinner v-if="regenerating" :size="18" />
         <CheckCircle2 v-else :size="18" class="regen-done-icon" />
         <span class="regen-text">{{ regenMessage }}</span>
+        <Button v-if="regenerating" variant="ghost" size="sm" class="regen-cancel-btn" @click="cancelRegeneration">
+          取消
+        </Button>
       </div>
     </Card>
 
@@ -1451,6 +1466,11 @@ onMounted(async () => {
   font-size: var(--text-sm);
   color: var(--text-primary);
   line-height: var(--leading-normal);
+}
+
+.regen-cancel-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* ── Form elements (shared) ── */

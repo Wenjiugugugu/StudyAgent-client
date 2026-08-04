@@ -5,7 +5,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 import { useSettingsStore } from "@/stores/settings";
 import { useTodayStore } from "@/stores/today";
 import { useUpdateStore } from "@/stores/update";
-import { todayString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween, weekdayName, getWeekStart } from "@/utils/date";
+import { todayString, prevDateString, currentHourShanghai, currentMinutesShanghai, timeStringToMinutes, daysBetween, weekdayName, getWeekStart } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -74,7 +74,19 @@ const yesterdayReviewData = ref<ReviewFile | null>(null);
 
 const yesterdayCompletionRate = computed(() => {
   if (!yesterdayReviewData.value) return 0;
-  const c = yesterdayReviewData.value.data.completion;
+  const review = yesterdayReviewData.value;
+  // 优先从 task_reviews 聚合（与后端 compute_priority_a_completion 口径一致）
+  if (review.task_reviews?.length) {
+    const all = review.task_reviews;
+    const aTasks = all.filter((t) => t.priority === "A");
+    const allDone = all.filter((t) => t.status === "completed").length;
+    const aDone = aTasks.filter((t) => t.status === "completed").length;
+    if (aTasks.length > 0) return Math.round((aDone / aTasks.length) * 100);
+    if (all.length > 0) return Math.round((allDone / all.length) * 100);
+    return 0;
+  }
+  // 回退到 data.completion（旧版复盘文件）
+  const c = review.data.completion;
   const total = c.priority_a_total + c.priority_b_total;
   if (total === 0) return 0;
   return Math.round(((c.priority_a_done + c.priority_b_done) / total) * 100);
@@ -441,11 +453,7 @@ function refresh() {
 const todayTasks = computed<PlanTask[]>(() => todayStore.allTasks);
 
 // 昨日复盘摘要：从 dashboard summary 读取（review_reminder 字段）
-const yesterdayDateStr = computed(() => {
-  const d = new Date(todayDateStr + "T00:00:00");
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().split("T")[0];
-});
+const yesterdayDateStr = computed(() => prevDateString(todayDateStr));
 
 // 科目估算展示：附中文科目名
 const estimationList = computed(() => {

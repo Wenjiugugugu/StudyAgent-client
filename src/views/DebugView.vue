@@ -51,7 +51,7 @@ import type {
 } from "@/types";
 
 // ── 系统信息 ──
-const APP_VERSION = "0.4.1";
+const APP_VERSION = "0.4.2";
 const TAURI_VERSION = "2.x";
 const sysInfo = computed(() => ({
   appVersion: APP_VERSION,
@@ -709,6 +709,9 @@ onMounted(async () => {
 onUnmounted(() => {
   if (timeTimer) window.clearInterval(timeTimer);
   restoreConsole();
+  // H34：卸载时断开 IntersectionObserver，避免跨路由内存泄漏
+  sectionObserver?.disconnect();
+  sectionObserver = null;
 });
 </script>
 

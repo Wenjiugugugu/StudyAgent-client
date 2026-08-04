@@ -182,18 +182,10 @@ impl<'a> BriefingAgent<'a> {
         prompt.push_str("## 昨日复盘（生成依据）\n");
         prompt.push_str(&format!("- 复盘日期: {}\n", based_on_review_date));
         if let Some(review) = yesterday_review {
-            // 完成率
-            let a_total = review.data.completion.priority_a_total;
-            let a_done = review.data.completion.priority_a_done;
-            let b_total = review.data.completion.priority_b_total;
-            let b_done = review.data.completion.priority_b_done;
-            let total = a_total + b_total;
-            let done = a_done + b_done;
-            let rate = if total > 0 {
-                (done as f64 / total as f64 * 100.0).round() as i64
-            } else {
-                0
-            };
+            // 完成率：优先从 task_reviews 聚合（兼容旧版 data.completion 全零的复盘文件）
+            let (a_total, a_done, b_total, b_done, comp_rate) =
+                crate::data::records::review_completion_stats(review);
+            let rate = comp_rate.round() as i64;
             prompt.push_str(&format!(
                 "- 完成情况: A 级 {}/{}, B 级 {}/{}, 总完成率 {}%\n",
                 a_done, a_total, b_done, b_total, rate

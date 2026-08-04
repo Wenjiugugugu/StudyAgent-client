@@ -376,17 +376,21 @@ async function saveProvider() {
   testResult.value = null;
 }
 
-function removeProvider(id: string) {
+async function removeProvider(id: string) {
   settingsStore.removeProvider(id);
+  // H33：修改后立即持久化，避免刷新丢失
+  await settingsStore.save();
 }
 
-function setDefaultProvider(id: string) {
+async function setDefaultProvider(id: string) {
   const s = settingsStore.settings;
   if (!s) return;
   s.ai_providers.forEach((p) => {
     p.is_default = p.id === id;
   });
   s.default_provider_id = id;
+  // H33：修改后立即持久化，避免刷新丢失
+  await settingsStore.save();
 }
 
 async function handleTestProvider() {
@@ -690,7 +694,7 @@ async function handleSave() {
 }
 
 // ── 检查更新（使用共享 update store，与首页更新弹窗状态同步） ──
-const APP_VERSION = "0.4.1";
+const APP_VERSION = "0.4.2";
 
 // 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
 const checking = computed(() => updateStore.checking);
@@ -841,6 +845,12 @@ watch(() => route.hash, (newHash) => {
     scrollToSection("update");
     handleCheckUpdate();
   }
+});
+
+// H34：卸载时断开 IntersectionObserver，避免跨路由内存泄漏
+onBeforeUnmount(() => {
+  sectionObserver?.disconnect();
+  sectionObserver = null;
 });</script>
 
 <template>

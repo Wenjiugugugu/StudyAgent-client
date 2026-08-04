@@ -815,9 +815,10 @@ impl<'a> Planner<'a> {
                 "- 用户休息日：{}（这些日子 is_rest_day 必须为 true，且不分配任何任务）\n",
                 rest_days.join("、")
             ));
+            // M1：用 saturating_sub 防止 rest_days 超过 7 时下溢
             prompt.push_str(&format!(
                 "- 每周学习天数：{} 天\n",
-                7 - rest_days.len()
+                7usize.saturating_sub(rest_days.len())
             ));
         }
         prompt.push_str(&format!(
@@ -881,7 +882,7 @@ impl<'a> Planner<'a> {
                 }
             };
             for ex in excluded_days {
-                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_default();
+                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -895,12 +896,14 @@ impl<'a> Planner<'a> {
                 }
                 prompt.push('\n');
             }
+            let study_days = 7usize.saturating_sub(rest_days.len());
+            let study_days_after_exclusion = study_days.saturating_sub(excluded_days.len());
             prompt.push_str(&format!(
                 "\n本周实际可学习天数 = 7 - {}（休息日）- {}（排除日）= {} 天。请确保这 {} 天的任务量合理覆盖本周目标。\n\n",
                 rest_days.len(),
                 excluded_days.len(),
-                7 - rest_days.len() - excluded_days.len(),
-                7 - rest_days.len() - excluded_days.len()
+                study_days_after_exclusion,
+                study_days_after_exclusion
             ));
         }
 
@@ -1091,10 +1094,11 @@ impl<'a> Planner<'a> {
         if !recent_reviews.is_empty() {
             prompt.push_str("## 最近复盘记录\n");
             for review in recent_reviews.iter().take(5) {
+                let (_, _, _, _, rate) = crate::data::records::review_completion_stats(review);
                 prompt.push_str(&format!(
                     "- {}: 完成率 {:.0}%, 总时长 {:.1}h\n",
                     review.meta.date,
-                    review.data.completion.completion_rate,
+                    rate,
                     crate::data::records::review_actual_hours(review)
                 ));
             }
@@ -1121,7 +1125,7 @@ impl<'a> Planner<'a> {
             let mut uncompleted_tasks: Vec<(String, String, String, String)> = Vec::new();
             for plan in prev_week_daily_plans.iter() {
                 let date = &plan.meta.date;
-                let weekday = crate::data::weekday_name(date).unwrap_or_default();
+                let weekday = crate::data::weekday_name(date).unwrap_or_else(|_| "未知".to_string());
                 let is_rest = plan.data.tasks.is_empty();
                 prompt.push_str(&format!(
                     "\n**{}（{}）**{}",
@@ -1153,15 +1157,16 @@ impl<'a> Planner<'a> {
                 }
                 // 对应复盘
                 if let Some(review) = review_by_date.get(date.as_str()) {
+                    let (a_total, a_done, b_total, b_done, rate) = crate::data::records::review_completion_stats(review);
                     prompt.push_str(&format!(
                         "- 复盘: 完成率 {:.0}%, 实际时长 {:.1}h, 精力 {}, A类 {}/{}, B类 {}/{}\n",
-                        review.data.completion.completion_rate,
+                        rate,
                         crate::data::records::review_actual_hours(review),
                         review.data.energy_level,
-                        review.data.completion.priority_a_done,
-                        review.data.completion.priority_a_total,
-                        review.data.completion.priority_b_done,
-                        review.data.completion.priority_b_total,
+                        a_done,
+                        a_total,
+                        b_done,
+                        b_total,
                     ));
                     if !review.data.difficulties.is_empty() {
                         let diffs: Vec<&str> = review
@@ -1586,7 +1591,7 @@ impl<'a> Planner<'a> {
                 }
             };
             for ex in excluded_days {
-                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_default();
+                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -1632,7 +1637,7 @@ impl<'a> Planner<'a> {
         // 原安排参考
         prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
         for day in regen_days {
-            let weekday = crate::data::weekday_name(&day.date).unwrap_or_default();
+            let weekday = crate::data::weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
             prompt.push_str(&format!(
                 "\n**{}（{}）**{}\n",
                 day.date,
@@ -1846,7 +1851,7 @@ impl<'a> Planner<'a> {
                 }
             };
             for ex in all_excluded_days {
-                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_default();
+                let weekday = crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -1892,7 +1897,7 @@ impl<'a> Planner<'a> {
         // 原安排参考
         prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
         for day in regen_days {
-            let weekday = crate::data::weekday_name(&day.date).unwrap_or_default();
+            let weekday = crate::data::weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
             prompt.push_str(&format!(
                 "\n**{}（{}）**{}\n",
                 day.date,

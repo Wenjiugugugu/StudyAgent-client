@@ -84,8 +84,7 @@ impl DailyScheduler {
             }
         }
 
-        let style_tips: Vec<String> = Vec::new();
-
+        // L1：移除死变量 style_tips（恒为空列表，写入后无任何读取路径）
         let total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let total_tasks = tasks.len() as i32;
 
@@ -104,7 +103,7 @@ impl DailyScheduler {
             strategy: strategy.clone(),
             tasks: tasks.clone(),
             risks: Vec::new(),
-            style_tips,
+            style_tips: Vec::new(),
             after_today: String::new(),
             reminders: Vec::new(),
             total_hours,

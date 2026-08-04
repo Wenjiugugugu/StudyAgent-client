@@ -14,6 +14,7 @@ use crate::data::state::StudyState;
 use crate::data::{
     add_days, days_between, get_week_end, get_week_start, today_string, DataResult,
 };
+use crate::data::state::TaskStatus;
 
 // ============================================================================
 // Dashboard 类型定义
@@ -173,7 +174,8 @@ impl DashboardAggregator {
                 total,
                 done,
                 in_progress: 0,
-                pending: total - done,
+                // M5：防御数据不一致导致的负数
+                pending: (total - done).max(0),
             };
         }
 
@@ -183,18 +185,18 @@ impl DashboardAggregator {
             let done = p
                 .tasks
                 .iter()
-                .filter(|t| format!("{:?}", t.status) == "Done")
+                .filter(|t| t.status == TaskStatus::Done)
                 .count() as i32;
             let in_progress = p
                 .tasks
                 .iter()
-                .filter(|t| format!("{:?}", t.status) == "InProgress")
+                .filter(|t| t.status == TaskStatus::InProgress)
                 .count() as i32;
             return TodayTaskStats {
                 total,
                 done,
                 in_progress,
-                pending: total - done - in_progress,
+                pending: (total - done - in_progress).max(0),
             };
         }
 
@@ -204,20 +206,20 @@ impl DashboardAggregator {
             .current_task
             .tasks
             .iter()
-            .filter(|t| format!("{:?}", t.status) == "Done")
+            .filter(|t| t.status == TaskStatus::Done)
             .count() as i32;
         let in_progress = state
             .current_task
             .tasks
             .iter()
-            .filter(|t| format!("{:?}", t.status) == "InProgress")
+            .filter(|t| t.status == TaskStatus::InProgress)
             .count() as i32;
 
         TodayTaskStats {
             total,
             done,
             in_progress,
-            pending: total - done - in_progress,
+            pending: (total - done - in_progress).max(0),
         }
     }
 
@@ -270,7 +272,12 @@ impl DashboardAggregator {
     ) -> DailyBreakdown {
         // 1. 优先读取复盘
         if let Ok(review) = crate::data::records::read_review(data_dir, date) {
-            let tasks_done = review.data.completion.priority_a_done + review.data.completion.priority_b_done;
+            // 优先从 task_reviews 统计已完成任务数（兼容旧版 data.completion 全零的复盘文件）
+            let tasks_done = if !review.task_reviews.is_empty() {
+                review.task_reviews.iter().filter(|tr| tr.status == "completed").count() as i32
+            } else {
+                review.data.completion.priority_a_done + review.data.completion.priority_b_done
+            };
             return DailyBreakdown {
                 date: date.to_string(),
                 hours: crate::data::records::review_actual_hours(&review),

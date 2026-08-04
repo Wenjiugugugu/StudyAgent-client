@@ -121,7 +121,7 @@ impl UserModelService {
                     cap.category,
                     confidence_pct,
                     cap.activity,
-                    cap.description.lines().next().unwrap_or("")
+                    cap.description.lines().next().map(str::trim).unwrap_or("")
                 ));
             }
             summary.push_str("\n");

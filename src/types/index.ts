@@ -73,6 +73,8 @@ export interface UpdateAsset {
   size: number;
   /** 资源类型推测：`nsis` / `msi` / `exe` / `unknown` */
   kind: string;
+  /** 文件 SHA-256（十六进制，GitHub 资产缺失时为空字符串；用于下载后完整性校验） */
+  sha256?: string;
 }
 
 /** 检查更新结果（与后端 `UpdateCheckResult` 对应） */

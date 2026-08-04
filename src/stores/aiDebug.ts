@@ -168,8 +168,8 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
       record.status = status;
       record.response = status === "success" ? safeClone(response) : null;
       record.error = error;
-      // 触发响应式更新（直接修改对象属性 Pinia 也能感知，但保险起见）
-      records.value = [...records.value];
+      // M34：record 为 store 内 reactive 数组元素，直接修改属性已触发响应式更新，
+      // 无需通过整体替换数组强制重渲染（原写法会造成全量重渲染）
       if (status === "success") {
         console.info(`[AI 调用] 完成 ${command} 耗时 ${duration}ms`, response);
       } else {

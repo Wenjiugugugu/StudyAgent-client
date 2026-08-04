@@ -241,11 +241,8 @@ impl OpenAIProvider {
                     return Some(ChatStreamChunk {
                         content,
                         done,
-                        tool_calls: if tool_calls.is_some() {
-                            Some(tool_calls.unwrap())
-                        } else {
-                            None
-                        },
+                        // L25：tool_calls 已通过 is_some() 检查，直接移动即可
+                        tool_calls,
                     });
                 }
             }
@@ -256,9 +253,8 @@ impl OpenAIProvider {
 
     /// 发送请求，遇到连接级错误或 429/503 自动重试
     ///
-    /// - 连接级错误（Connect/Timeout）：短暂等待后重试
-    /// - HTTP 429（Too Many Requests）/ 503（Service Unavailable）：读取 Retry-After 头，
-    ///   指数退避后重试（最多 3 次）
+    /// 实现已抽取到 `provider::send_with_retry` 供各 Provider 共用，
+    /// 此处仅委托并复用共享的重试逻辑。
     async fn send_with_retry(
         &self,
         url: &str,
@@ -266,76 +262,7 @@ impl OpenAIProvider {
         body: &serde_json::Value,
         timeout_override: Option<u64>,
     ) -> Result<reqwest::Response, String> {
-        let max_attempts = 3;
-        let mut last_err: Option<String> = None;
-
-        for attempt in 1..=max_attempts {
-            let mut request_builder = self.client.post(url).headers(headers.clone()).json(body);
-            if let Some(secs) = timeout_override {
-                request_builder = request_builder.timeout(Duration::from_secs(secs));
-            }
-
-            match request_builder.send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-
-                    // 429 / 503：速率限制或服务不可用，读取 Retry-After 后重试
-                    if (status.as_u16() == 429 || status.as_u16() == 503) && attempt < max_attempts {
-                        let retry_after_secs = resp
-                            .headers()
-                            .get(reqwest::header::RETRY_AFTER)
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok());
-
-                        // 指数退避：1s, 2s, 4s...；若有 Retry-After 则取较大值
-                        let backoff = retry_after_secs
-                            .unwrap_or(0)
-                            .max(1u64 << (attempt - 1));
-
-                        let error_text = resp.text().await.unwrap_or_default();
-                        log::warn!(
-                            "AI 请求被限流（{}），第 {} 次重试，等待 {}s | body={}",
-                            status,
-                            attempt,
-                            backoff,
-                            error_text.chars().take(200).collect::<String>()
-                        );
-
-                        tokio::time::sleep(Duration::from_secs(backoff)).await;
-                        last_err = Some(format!("AI 请求被限流 ({})", status));
-                        continue;
-                    }
-
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    let formatted = format_reqwest_error(&e);
-                    let is_connect_error = e.is_connect() || e.is_timeout();
-                    log::warn!(
-                        "AI 请求发送失败（第 {} 次）: {} | is_connect={} is_timeout={}",
-                        attempt,
-                        formatted,
-                        e.is_connect(),
-                        e.is_timeout()
-                    );
-
-                    if !is_connect_error || attempt == max_attempts {
-                        return Err(format!("发送 AI 请求失败: {}", formatted));
-                    }
-
-                    // 连接级错误：指数退避后重试
-                    let backoff = 1u64 << (attempt - 1); // 1s, 2s
-                    tokio::time::sleep(Duration::from_secs(backoff)).await;
-                    last_err = Some(formatted);
-                }
-            }
-        }
-
-        Err(format!(
-            "发送 AI 请求失败（已重试 {} 次）: {}",
-            max_attempts,
-            last_err.unwrap_or_default()
-        ))
+        super::provider::send_with_retry(&self.client, url, headers, body, timeout_override).await
     }
 }
 

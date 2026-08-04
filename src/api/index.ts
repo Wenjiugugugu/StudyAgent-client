@@ -369,12 +369,34 @@ export async function getKnowledgeGraph(subject: string): Promise<KnowledgeGraph
 
 // ── AI ──
 
+/** AI 请求取消键（与后端 agent 类型小写对应） */
+export const AI_CANCEL_KEYS = {
+  planner: "planner",
+  reviewer: "reviewer",
+  briefing: "briefing",
+  teacher: "teacher",
+  assistant: "assistant",
+} as const;
+
+export type AiCancelKey = (typeof AI_CANCEL_KEYS)[keyof typeof AI_CANCEL_KEYS];
+
 export async function chat(request: ChatRequest): Promise<ChatResponse> {
   return invokeWithAiTrace<ChatResponse>(
     "chat",
     `AI 对话（${request.messages.length} 条消息）`,
     { request },
   );
+}
+
+/**
+ * 取消指定 agent 的进行中 AI 请求（M9：超时过长且无取消机制）
+ *
+ * 后端收到取消信号后以「AI 请求已被用户取消」提前结束，
+ * 不会等待到 300s 超时，也不会切换 fallback provider。
+ * 返回是否找到了对应请求。
+ */
+export async function cancelAiRequest(key: AiCancelKey): Promise<boolean> {
+  return invokeDirect<boolean>("cancel_ai_request", { key });
 }
 
 export async function testAIProvider(config: AIProviderConfig): Promise<{ success: boolean; message: string }> {
@@ -579,9 +601,19 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
  *
  * @param url 下载地址（来自 UpdateAsset.download_url）
  * @param filename 保存到本地的文件名（来自 UpdateAsset.name）
+ * @param expectedSha256 期望的 SHA-256（来自 UpdateAsset.sha256，可选）。
+ *  后端下载完成后校验文件完整性，不匹配则删除文件并报错（L14）。
  */
-export async function downloadUpdate(url: string, filename: string): Promise<string> {
-  return invokeDirect<string>("download_update", { url, filename });
+export async function downloadUpdate(
+  url: string,
+  filename: string,
+  expectedSha256?: string,
+): Promise<string> {
+  return invokeDirect<string>("download_update", {
+    url,
+    filename,
+    expected_sha256: expectedSha256 || null,
+  });
 }
 
 /**

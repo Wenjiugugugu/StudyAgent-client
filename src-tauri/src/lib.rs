@@ -51,6 +51,13 @@ pub struct AppState {
     pub ai_service: Arc<AiService>,
     /// MCP Tool Dispatcher 实例（统一工具调用入口）
     pub tool_dispatcher: Arc<ToolDispatcher>,
+    /// IO 锁：串行化所有涉及 state/plan/records/settings 的「读-改-写」操作（H1）
+    ///
+    /// Tauri 命令默认并发执行，若两个命令同时执行
+    /// `read_state → modify → save_state`，后写的会覆盖先写的，导致丢失更新。
+    /// 所有写命令在文件操作（含 AI 生成后的写回）期间持有该锁。
+    /// 使用 `tokio::sync::Mutex` 以便守卫可跨 `await` 持有（AI 调用期间）。
+    pub io_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -64,6 +71,7 @@ impl AppState {
             data_dir,
             ai_service,
             tool_dispatcher,
+            io_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -587,6 +595,18 @@ pub async fn reinitialize_services(
 pub fn get_data_dir(state: &Mutex<AppState>) -> Result<PathBuf, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(s.data_dir.clone())
+}
+
+/// 获取 IO 锁的 Arc 克隆（H1 并发保护）
+///
+/// 写命令通过 `let _guard = get_io_lock(state.inner())?.lock().await;`
+/// 持有锁，串行化 state/plan/records 的读-改-写操作。
+/// 使用 `tokio::sync::Mutex`，守卫可跨 `await` 持有（覆盖 AI 生成期间）。
+pub fn get_io_lock(
+    state: &Mutex<AppState>,
+) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+    let s = state.lock().map_err(|e| e.to_string())?;
+    Ok(s.io_lock.clone())
 }
 
 /// 从 Mutex<AppState> 中获取 AI Service 的 Arc 克隆

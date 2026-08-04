@@ -5,7 +5,7 @@
 //! 并提供 fallback 机制（默认 provider 失败时尝试备用 provider）。
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use super::provider::*;
 
@@ -17,6 +17,11 @@ pub struct AiService {
     configs: RwLock<Vec<AIProviderConfig>>,
     /// 默认 Provider ID
     default_provider_id: RwLock<String>,
+    /// 活跃请求的取消令牌（按 agent 键索引）
+    ///
+    /// 前端通过 `cancel_ai_request` 命令触发取消，`chat`/`chat_stream`
+    /// 用 `tokio::select!` 监听取消信号并提前返回，避免用户等待到超时。
+    cancellations: Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>,
 }
 
 impl AiService {
@@ -26,6 +31,7 @@ impl AiService {
             providers: RwLock::new(HashMap::new()),
             configs: RwLock::new(Vec::new()),
             default_provider_id: RwLock::new(String::new()),
+            cancellations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -148,6 +154,30 @@ impl AiService {
             .collect()
     }
 
+    /// 取消指定 agent 键的进行中 AI 请求
+    ///
+    /// 返回是否找到了对应请求。取消后请求会以 `REQUEST_CANCELLED` 错误提前结束，
+    /// 不会触发 fallback provider 切换。
+    pub fn cancel_request(&self, key: &str) -> bool {
+        let cancellations = self.cancellations.lock().unwrap();
+        match cancellations.get(key) {
+            Some(tx) => {
+                let _ = tx.send(true);
+                log::info!("已请求取消 AI 请求（agent={}）", key);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 根据请求的 agent 类型生成取消键
+    fn cancel_key(req: &ChatRequest) -> String {
+        req.agent
+            .as_ref()
+            .map(|a| format!("{:?}", a).to_lowercase())
+            .unwrap_or_else(|| "assistant".to_string())
+    }
+
     /// 聊天（非流式）
     ///
     /// 1. 根据 agent 类型注入 system prompt
@@ -165,19 +195,43 @@ impl AiService {
             inject_system_prompt(&mut req, &agent);
         }
 
+        // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发
+        let cancel_key = Self::cancel_key(&req);
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        self.cancellations
+            .lock()
+            .unwrap()
+            .insert(cancel_key.clone(), cancel_tx);
+
         let default_provider = self.get_default_provider()?;
         let started = std::time::Instant::now();
 
-        let result = match default_provider.chat(&req).await {
+        let result = if *cancel_rx.borrow() {
+            Err(REQUEST_CANCELLED.to_string())
+        } else {
+            tokio::select! {
+                r = default_provider.chat(&req) => r,
+                _ = cancel_rx.changed() => Err(REQUEST_CANCELLED.to_string()),
+            }
+        };
+
+        self.cancellations.lock().unwrap().remove(&cancel_key);
+
+        let result = match result {
             Ok(resp) => Ok(resp),
             Err(e) => {
-                log::warn!("默认 Provider 调用失败: {}", e);
-                // 没有备用 provider 时直接返回原始错误，方便排查
-                let fallback = self.fallback_chat(&req).await;
-                if fallback.is_err() {
-                    return Err(format!("Provider 调用失败: {}", e));
+                if e.contains(REQUEST_CANCELLED) {
+                    // 用户主动取消：不切换 fallback provider
+                    Err(e)
+                } else {
+                    log::warn!("默认 Provider 调用失败: {}", e);
+                    // 没有备用 provider 时直接返回原始错误，方便排查
+                    let fallback = self.fallback_chat(&req).await;
+                    if fallback.is_err() {
+                        return Err(format!("Provider 调用失败: {}", e));
+                    }
+                    fallback
                 }
-                fallback
             }
         };
 
@@ -206,11 +260,28 @@ impl AiService {
             inject_system_prompt(&mut req, &agent);
         }
 
+        // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发
+        let cancel_key = Self::cancel_key(&req);
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        self.cancellations
+            .lock()
+            .unwrap()
+            .insert(cancel_key.clone(), cancel_tx);
+
         let default_provider = self.get_default_provider()?;
         let on_chunk_ref: &(dyn Fn(ChatStreamChunk) + Send + Sync) = &on_chunk;
         let started = std::time::Instant::now();
 
-        let result = default_provider.chat_stream(&req, on_chunk_ref).await;
+        let result = if *cancel_rx.borrow() {
+            Err(REQUEST_CANCELLED.to_string())
+        } else {
+            tokio::select! {
+                r = default_provider.chat_stream(&req, on_chunk_ref) => r,
+                _ = cancel_rx.changed() => Err(REQUEST_CANCELLED.to_string()),
+            }
+        };
+
+        self.cancellations.lock().unwrap().remove(&cancel_key);
 
         let duration_ms = started.elapsed().as_millis() as u64;
         log_usage(&agent_tag, &result, duration_ms);

@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 // ============================================================================
 // 枚举类型
@@ -514,12 +515,100 @@ pub fn create_provider(config: AIProviderConfig) -> Result<Arc<dyn AiProvider>, 
             Ok(Arc::new(crate::ai::openai::OpenAIProvider::new(config)))
         }
         ProviderType::Gemini => {
-            // Gemini 也可以用 OpenAI 兼容接口
-            Ok(Arc::new(crate::ai::openai::OpenAIProvider::new(config)))
+            // Gemini 原生 API（x-goog-api-key 认证 + contents/parts 消息格式）
+            Ok(Arc::new(crate::ai::gemini::GeminiProvider::new(config)))
         }
         ProviderType::Anthropic => {
-            // Anthropic 可以用 OpenAI 兼容接口（如果配置了兼容端点）
-            Ok(Arc::new(crate::ai::openai::OpenAIProvider::new(config)))
+            // Anthropic 原生 API（x-api-key + anthropic-version 认证，system 顶层字段）
+            Ok(Arc::new(crate::ai::anthropic::AnthropicProvider::new(config)))
         }
     }
+}
+
+/// 用户取消 AI 请求时的统一错误消息
+///
+/// service.rs 据此区分「用户主动取消」与「调用失败」，
+/// 取消时不触发 fallback provider 切换。
+pub const REQUEST_CANCELLED: &str = "AI 请求已被用户取消";
+
+/// 发送 HTTP 请求，遇到连接级错误或 429/503 自动重试（各 Provider 共用）
+///
+/// - 连接级错误（Connect/Timeout）：指数退避后重试（1s, 2s）
+/// - HTTP 429（Too Many Requests）/ 503（Service Unavailable）：读取 Retry-After 头，
+///   与指数退避取较大值后重试（最多 3 次）
+pub async fn send_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    headers: reqwest::header::HeaderMap,
+    body: &serde_json::Value,
+    timeout_override: Option<u64>,
+) -> Result<reqwest::Response, String> {
+    let max_attempts = 3;
+    let mut last_err: Option<String> = None;
+
+    for attempt in 1..=max_attempts {
+        let mut request_builder = client.post(url).headers(headers.clone()).json(body);
+        if let Some(secs) = timeout_override {
+            request_builder = request_builder.timeout(Duration::from_secs(secs));
+        }
+
+        match request_builder.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+
+                // 429 / 503：速率限制或服务不可用，读取 Retry-After 后重试
+                if (status.as_u16() == 429 || status.as_u16() == 503) && attempt < max_attempts {
+                    let retry_after_secs = resp
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok());
+
+                    // 指数退避：1s, 2s, 4s...；若有 Retry-After 则取较大值
+                    let backoff = retry_after_secs.unwrap_or(0).max(1u64 << (attempt - 1));
+
+                    let error_text = resp.text().await.unwrap_or_default();
+                    log::warn!(
+                        "AI 请求被限流（{}），第 {} 次重试，等待 {}s | body={}",
+                        status,
+                        attempt,
+                        backoff,
+                        error_text.chars().take(200).collect::<String>()
+                    );
+
+                    tokio::time::sleep(Duration::from_secs(backoff)).await;
+                    last_err = Some(format!("AI 请求被限流 ({})", status));
+                    continue;
+                }
+
+                return Ok(resp);
+            }
+            Err(e) => {
+                let formatted = crate::ai::openai::format_reqwest_error(&e);
+                let is_connect_error = e.is_connect() || e.is_timeout();
+                log::warn!(
+                    "AI 请求发送失败（第 {} 次）: {} | is_connect={} is_timeout={}",
+                    attempt,
+                    formatted,
+                    e.is_connect(),
+                    e.is_timeout()
+                );
+
+                if !is_connect_error || attempt == max_attempts {
+                    return Err(format!("发送 AI 请求失败: {}", formatted));
+                }
+
+                // 连接级错误：指数退避后重试
+                let backoff = 1u64 << (attempt - 1); // 1s, 2s
+                tokio::time::sleep(Duration::from_secs(backoff)).await;
+                last_err = Some(formatted);
+            }
+        }
+    }
+
+    Err(format!(
+        "发送 AI 请求失败（已重试 {} 次）: {}",
+        max_attempts,
+        last_err.unwrap_or_default()
+    ))
 }

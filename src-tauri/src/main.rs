@@ -205,6 +205,7 @@ fn main() {
             // AI 对话
             chat,
             chat_stream,
+            cancel_ai_request,
             test_ai_provider,
             list_ai_models,
             // AI 用量日志

@@ -514,6 +514,18 @@ async function doSubmit() {
   }
 }
 
+/** 取消 AI 重排剩余天数（M9：超时过长且无取消机制） */
+async function cancelRegeneration() {
+  try {
+    const found = await api.cancelAiRequest(api.AI_CANCEL_KEYS.planner);
+    regenMessage.value = found
+      ? "正在取消 AI 调整，请稍候…"
+      : "未找到进行中的 AI 调整请求";
+  } catch {
+    regenMessage.value = "取消失败，请稍后再试";
+  }
+}
+
 // ── Data loading ──
 async function loadTaskActualMinutes() {
   if (!timeTrackingEnabled.value) {
@@ -772,9 +784,12 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
     <Card v-else-if="submitting || regenerating" padding="lg" class="gate-card">
       <div class="gate-hero">
         <div class="gate-icon"><LoadingSpinner :size="40" /></div>
-        <h1 class="gate-title">正在保存复盘…</h1>
+        <h1 class="gate-title">{{ regenerating ? '正在调整后续计划…' : '正在保存复盘…' }}</h1>
         <p v-if="regenerating" class="gate-desc">正在调用 AI 调整后续计划，请勿关闭应用。</p>
         <p v-else class="gate-desc">正在保存复盘数据…</p>
+        <Button v-if="regenerating" variant="ghost" size="sm" class="gate-cancel-btn" @click="cancelRegeneration">
+          取消本次调整
+        </Button>
       </div>
     </Card>
 
@@ -1247,6 +1262,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .gate-title { font-size: var(--text-xl); font-weight: var(--font-bold); color: var(--text-primary); }
 .gate-desc { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
 .gate-hint { font-size: var(--text-sm); color: var(--text-tertiary); margin: 0; }
+.gate-cancel-btn { margin-top: var(--space-2); }
 
 .step-bar {
   display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2);
