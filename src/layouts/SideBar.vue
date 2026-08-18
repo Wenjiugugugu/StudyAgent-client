@@ -18,6 +18,7 @@ import {
   SunMedium,
   Bug,
   HelpCircle,
+  Timer,
 } from "lucide-vue-next";
 import { useAppVersion } from "@/version";
 
@@ -67,6 +68,7 @@ const navItems: NavItem[] = [
   { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" },
   { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" },
   { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" },
+  { name: "focus", label: "专注", icon: Timer, path: "/focus" },
   { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true },
 ];
 

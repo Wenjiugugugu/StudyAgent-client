@@ -301,6 +301,13 @@ export async function getTaskTotalMinutes(taskId: string): Promise<number> {
   return invokeWithFallback("get_task_total_minutes", { taskId }, async () => 0);
 }
 
+/** 番茄钟：把完成的学习会话分钟数累加到关联任务（今日计划/复盘会累计实际用时） */
+export async function focusAddMinutes(taskId: string, minutes: number): Promise<void> {
+  return invokeWithFallback("focus_add_minutes", { taskId, minutes }, async () => {
+    console.log(`[Mock] Focus added ${minutes} min to ${taskId}`);
+  });
+}
+
 // ── Review ──
 
 export async function getReview(date: string): Promise<ReviewRecord> {
@@ -487,6 +494,16 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 /** 切换数据目录（重启后生效；旧目录数据不自动迁移） */
 export async function changeDataDirectory(newPath: string): Promise<string> {
   return invokeDirect<string>("change_data_directory", { newPath });
+}
+
+/** 导出数据备份（zip）到指定路径，返回导出的文件数 */
+export async function exportBackup(destPath: string, includeLogs: boolean = false): Promise<number> {
+  return invokeDirect<number>("export_backup", { destPath, includeLogs });
+}
+
+/** 导入数据备份（zip），覆盖前自动备份原数据目录；返回恢复摘要 */
+export async function importBackup(filePath: string): Promise<import("@/types").ImportSummary> {
+  return invokeDirect<import("@/types").ImportSummary>("import_backup", { filePath });
 }
 
 // ── Textbooks ──

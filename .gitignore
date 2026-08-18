@@ -65,8 +65,8 @@ src-tauri/gen/
 *.nsis
 *.zip
 
-# Runtime data
-data/
+# Runtime data（仅仓库根目录的运行数据，不误伤 src-tauri/src/data/ 源码）
+/data/
 .cache/
 *.state
 

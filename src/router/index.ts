@@ -56,6 +56,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "解惑", icon: "HelpCircle" },
   },
   {
+    path: "/focus",
+    name: "focus",
+    component: () => import("@/views/FocusView.vue"),
+    meta: { title: "专注", icon: "Timer" },
+  },
+  {
     path: "/timeline",
     name: "timeline",
     component: () => import("@/views/TimelineView.vue"),

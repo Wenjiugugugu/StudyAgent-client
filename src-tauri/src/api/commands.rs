@@ -269,6 +269,33 @@ pub async fn get_task_total_minutes(
     crate::data::state::task_total_minutes(&study_state, &task_id)
 }
 
+/// 番茄钟：把完成的学习会话分钟数累加到关联任务
+///
+/// 前端在「专注」页完成一个学习番茄后调用，把实际专注分钟数写入
+/// 关联任务的 accumulated_minutes，使今日计划/复盘自动累计实际用时。
+/// 不依赖「记录学习时长」设置（番茄钟本身是显式计时）。
+///
+/// 前端调用: `invoke('focus_add_minutes', { taskId, minutes })`
+#[tauri::command]
+pub async fn focus_add_minutes(
+    task_id: String,
+    minutes: i64,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：串行化 state 写操作
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let mut study_state = crate::data::state::read_state(&data_dir)?;
+    crate::data::state::add_accumulated_minutes(&mut study_state, &task_id, minutes)?;
+    crate::data::state::save_state(&data_dir, &study_state)?;
+
+    log::info!("番茄钟：任务 {} 累加专注 {} 分钟", task_id, minutes);
+    Ok(())
+}
+
 // ============================================================================
 // Analytics 命令
 // ============================================================================
@@ -2688,6 +2715,62 @@ pub async fn change_data_directory(
     );
     log::info!("{}", msg);
     Ok(msg)
+}
+
+// ============================================================================
+// 数据备份 / 导出 / 导入
+// ============================================================================
+
+/// 导出数据备份（zip）
+///
+/// 把数据目录下允许的子目录（state/plan/records/config/assets，可选 logs/）
+/// 压缩到 `dest_path` 指定的 zip 文件。
+/// 返回导出的文件数。
+///
+/// 前端调用: `invoke('export_backup', { destPath, includeLogs })`
+#[tauri::command]
+pub async fn export_backup(
+    dest_path: String,
+    include_logs: bool,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：导出期间不允许写入，保证快照一致
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let dest = std::path::PathBuf::from(dest_path.trim_end_matches(['/', '\\']));
+    let count = crate::data::backup::export_backup(&data_dir, &dest, include_logs)?;
+    log::info!("数据备份导出完成: {} 个文件 -> {:?}", count, dest);
+    Ok(count)
+}
+
+/// 导入数据备份（zip），覆盖前自动备份现有数据目录
+///
+/// 校验 zip 合法性后，把现有数据目录重命名为 `{data_dir}-bak-{timestamp}`，
+/// 再解压备份内容到数据目录。导入完成后需重启应用以加载最新数据。
+///
+/// 前端调用: `invoke('import_backup', { filePath })`
+#[tauri::command]
+pub async fn import_backup(
+    file_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::data::backup::ImportSummary, String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：导入覆盖期间串行化所有写操作
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let zip_path = std::path::PathBuf::from(file_path.trim_end_matches(['/', '\\']));
+    let summary = crate::data::backup::import_backup(&data_dir, &zip_path)?;
+    log::info!(
+        "数据备份导入完成: 恢复 {} 个文件, 原数据备份至 {}",
+        summary.files_restored,
+        summary.backup_dir
+    );
+    Ok(summary)
 }
 
 // ============================================================================

@@ -18,6 +18,12 @@ export interface ApiResponse<T = unknown> {
   error?: string;
 }
 
+/** 数据备份导入恢复摘要 */
+export interface ImportSummary {
+  files_restored: number;
+  backup_dir: string;
+}
+
 /** 教材元信息 */
 export interface TextbookInfo {
   id: string;

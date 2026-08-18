@@ -676,6 +676,8 @@ impl<'a> Planner<'a> {
         enforce_rest_days(&mut week_plan, &rest_days, week_start, &week_end)?;
         // 3.2 后置校验：把排除日也标记为 is_rest_day=true 并清空 allocations
         enforce_excluded_days(&mut week_plan, excluded_days)?;
+        // 3.3 后置校验：周中生成时清空已过去日期的任务分配（确定性兜底，避免 AI 补排历史日）
+        enforce_past_days_empty(&mut week_plan);
 
         // 3.3 持久化用户本周配置（排除日 + 任务量调整）
         week_plan.data.excluded_days = excluded_days.to_vec();
@@ -713,6 +715,12 @@ impl<'a> Planner<'a> {
         for day in &week_plan.data.days {
             if day.is_rest_day {
                 skipped_rest += 1;
+                continue;
+            }
+            // 周中生成周计划时，跳过早于今天的日期：
+            // 过去天已有历史日计划/已完成学习，不应被本次生成覆盖或重新排程
+            if day.date.as_str() < today.as_str() {
+                log::info!("{} 早于今天，跳过日计划生成（保留历史计划）", day.date);
                 continue;
             }
             match DailyScheduler::generate_daily_plan(data_dir, &day.date, day.date == today) {
@@ -842,6 +850,14 @@ impl<'a> Planner<'a> {
         prompt.push_str(&format!(
             "请为 {}（{} 至 {}）生成考研学习周计划。请严格遵循以下数据和输出规范。\n\n",
             iso_week, week_start, week_end
+        ));
+
+        // 周中生成提示：明确告知今天日期，要求已过去的日期不安排任务
+        let today = today_string();
+        let today_weekday = weekday_name(&today).unwrap_or_default();
+        prompt.push_str(&format!(
+            "## 当前时间\n- 今天是 {}（{}）。\n- **已过去的日期（早于今天）不得安排任何任务**：这些天的 subject_allocations 必须为空数组，任务只从今天（{}）起安排到本周日（{}）。\n- 若今天是周一，则整周从周一到周日正常安排。\n\n",
+            today, today_weekday, today, week_end
         ));
 
         // 本周任务量自动校准提示（仅当上周完成率触发真实减量时写入，说明系数来源）
@@ -1415,10 +1431,11 @@ impl<'a> Planner<'a> {
 12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
 13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
 14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。
-15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。周一应作为本周的起始点，从各科「已完成」之后的章节开始，逐天分配到剩余学习日。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
+15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。**{}应作为本周的起始点**，从各科「已完成」之后的章节开始，逐天分配到剩余学习日（若为周中生成，起点为今天而非周一，已过去的日期不安排任务）。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
 "#,
             week_start, week_end, week_end, daily_task_count,
-            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
+            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if today == week_start { "周一" } else { "今天" }
         ));
 
         prompt
@@ -2580,6 +2597,33 @@ fn enforce_excluded_days(plan: &mut WeekPlanFile, excluded_days: &[ExcludedDay])
     Ok(())
 }
 
+/// 后置校验：清空「早于今天」的日期的任务分配（周中生成周计划的确定性兜底）
+///
+/// 周计划正常在周一生成，覆盖整周 7 天。但当用户**周中**才首次生成周计划时，
+/// 之前已过去的几天（如周一、周二）本应已有计划或已完成学习，AI 若按整周
+/// 生成会把这些过去的日期也补上任务，造成与历史进度/已完成的日计划冲突。
+///
+/// 规则：凡 `date < today` 的日期，`subject_allocations` 一律清空（不安排任务）。
+/// 这是确定性硬保证，不依赖 AI 是否遵循 prompt 中的「从今天开始」约束。
+/// 周初（today = 周一）生成时，没有日期早于今天，此函数为空操作。
+fn enforce_past_days_empty(plan: &mut WeekPlanFile) {
+    let today = today_string();
+    let mut cleared = 0usize;
+    for day in plan.data.days.iter_mut() {
+        if day.date.as_str() < today.as_str() && !day.subject_allocations.is_empty() {
+            day.subject_allocations.clear();
+            cleared += 1;
+        }
+    }
+    if cleared > 0 {
+        log::warn!(
+            "周计划校验: {} 个已过去日期（早于 {}）的任务分配已清空（周中生成时不再补排历史日）",
+            cleared,
+            today
+        );
+    }
+}
+
 // ============================================================================
 // 复盘后重排相关：辅助函数
 // ============================================================================
@@ -3050,6 +3094,35 @@ mod tests {
 
         // 验证：补全了缺失的日期（周一到周五）
         assert_eq!(plan.data.days.len(), 7, "应补全为 7 天");
+    }
+
+    #[test]
+    fn test_enforce_past_days_empty_clears_past_allocations() {
+        // 模拟周中生成：昨天/前天被 AI 排了任务，今天为空操作边界
+        let today = today_string();
+        let yesterday = add_days(&today, -1).unwrap();
+        let day_before = add_days(&today, -2).unwrap();
+
+        let raw = format!(
+            r#"{{"version":"1.0.0","meta":{{"week_start":"","week_end":"","week_number":1,"generated_at":"","based_on":{{"state":"","user_model":"","exam_config":""}}}},"data":{{"goals":[],"subjects":[],"days":[
+                {{"date":"{}","weekday":"","is_rest_day":false,"subject_allocations":[{{"subject":"math","hours":2.0,"focus":"线性方程组","task_templates":[]}}]}},
+                {{"date":"{}","weekday":"","is_rest_day":false,"subject_allocations":[{{"subject":"math","hours":2.0,"focus":"行列式","task_templates":[]}}]}},
+                {{"date":"{}","weekday":"","is_rest_day":false,"subject_allocations":[{{"subject":"math","hours":2.0,"focus":"向量组","task_templates":[]}}]}}
+            ]}},"view":""}}"#,
+            day_before, yesterday, today
+        );
+        let mut plan = parse_week_plan_json(&raw, "", "").unwrap();
+
+        enforce_past_days_empty(&mut plan);
+
+        // 过去的两个日期任务应被清空
+        let cleared1 = plan.data.days.iter().find(|d| d.date == day_before).unwrap();
+        assert!(cleared1.subject_allocations.is_empty(), "前天任务应被清空");
+        let cleared2 = plan.data.days.iter().find(|d| d.date == yesterday).unwrap();
+        assert!(cleared2.subject_allocations.is_empty(), "昨天任务应被清空");
+        // 今天任务应保留
+        let today_plan = plan.data.days.iter().find(|d| d.date == today).unwrap();
+        assert_eq!(today_plan.subject_allocations.len(), 1, "今天任务应保留");
     }
 
     /// 构造一个含 数学(10h)/英语(5h)/专业课(8h) 已开课、政治未开课 的 State

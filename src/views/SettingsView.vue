@@ -7,6 +7,7 @@ import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
 import { useAppVersion } from "@/version";
 import * as api from "@/api";
+import { todayString } from "@/utils/date";
 import type { StudyState } from "@/types/state";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -279,6 +280,76 @@ async function handleChangeDataDir() {
     dirChangeError.value = true;
   } finally {
     changingDir.value = false;
+  }
+}
+
+// ── 数据备份 / 导出 / 导入 ──
+const exporting = ref(false);
+const importing = ref(false);
+const backupMsg = ref<string | null>(null);
+const backupError = ref(false);
+
+async function handleExportBackup() {
+  backupMsg.value = null;
+  backupError.value = false;
+
+  let dest: string | null = null;
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const result = await save({
+      defaultPath: `StudyAgent-backup-${todayString()}.zip`,
+      filters: [{ name: "ZIP", extensions: ["zip"] }],
+    });
+    dest = typeof result === "string" ? result : null;
+  } catch (e) {
+    backupMsg.value = `打开保存对话框失败：${e instanceof Error ? e.message : String(e)}`;
+    backupError.value = true;
+    return;
+  }
+  if (!dest) return;
+
+  exporting.value = true;
+  try {
+    const count = await api.exportBackup(dest, false);
+    backupMsg.value = `导出成功：共 ${count} 个文件，已保存到 ${dest}`;
+    backupError.value = false;
+  } catch (e) {
+    backupMsg.value = `导出失败：${e instanceof Error ? e.message : String(e)}`;
+    backupError.value = true;
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function handleImportBackup() {
+  backupMsg.value = null;
+  backupError.value = false;
+
+  let selected: string | null = null;
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({
+      multiple: false,
+      filters: [{ name: "ZIP", extensions: ["zip"] }],
+    });
+    selected = typeof result === "string" ? result : null;
+  } catch (e) {
+    backupMsg.value = `打开文件对话框失败：${e instanceof Error ? e.message : String(e)}`;
+    backupError.value = true;
+    return;
+  }
+  if (!selected) return;
+
+  importing.value = true;
+  try {
+    const summary = await api.importBackup(selected);
+    backupMsg.value = `导入成功：恢复 ${summary.files_restored} 个文件。原数据已备份到 ${summary.backup_dir}，重启应用后生效。`;
+    backupError.value = false;
+  } catch (e) {
+    backupMsg.value = `导入失败：${e instanceof Error ? e.message : String(e)}`;
+    backupError.value = true;
+  } finally {
+    importing.value = false;
   }
 }
 
@@ -1881,6 +1952,41 @@ onBeforeUnmount(() => {
             <span>{{ dirChangeMsg }}</span>
           </div>
         </div>
+
+        <!-- 数据备份 / 导出 / 导入 -->
+        <div class="form-field form-field-full backup-field">
+          <label class="form-label">数据备份</label>
+          <div class="backup-actions">
+            <Button
+              variant="secondary"
+              size="md"
+              :loading="exporting"
+              :disabled="importing"
+              @click="handleExportBackup"
+            >
+              <Download :size="15" />
+              <span>导出备份（zip）</span>
+            </Button>
+            <Button
+              variant="secondary"
+              size="md"
+              :loading="importing"
+              :disabled="exporting"
+              @click="handleImportBackup"
+            >
+              <Package :size="15" />
+              <span>导入恢复</span>
+            </Button>
+          </div>
+          <p class="field-hint">
+            导出会把学习计划、复盘记录、状态、设置与教材等数据打包为 zip 备份；
+            导入会覆盖当前数据（导入前自动备份原数据目录），完成后需重启应用生效。
+          </p>
+          <div v-if="backupMsg" class="backup-msg" :class="{ error: backupError }">
+            <component :is="backupError ? AlertCircle : CheckCircle" :size="14" />
+            <span>{{ backupMsg }}</span>
+          </div>
+        </div>
       </Card>
 
       <!-- 检查更新 -->
@@ -3071,6 +3177,34 @@ onBeforeUnmount(() => {
 }
 
 .dir-change-msg.error {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+
+/* ── 数据备份 ── */
+.backup-field {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--divider-color);
+}
+.backup-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.backup-msg {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+  line-height: 1.5;
+}
+.backup-msg.error {
   background: var(--color-danger-subtle);
   color: var(--color-danger);
 }
