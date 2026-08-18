@@ -2,6 +2,10 @@
 
 考研 AI 学习助手 — 基于 AI 的智能学习规划与复盘桌面客户端。
 
+> **Git 仓库说明**：本目录 `desktop/` 即为 Git 仓库根目录（remote: `origin` → `https://github.com/Wenjiugugugu/StudyAgent-client.git`，分支 `main`）。
+> 所有 git 操作都在本目录执行（`git -C desktop ...`）。项目外层目录 `D:\StudyAgent` 的 `plan/`、`records/`、`state/`、`config/`、`scripts/` 等不属于本仓库。
+> 打包产物位于 `src-tauri/target/release/bundle/{nsis,msi}/`，发布时上传至 GitHub Release。
+
 ## 功能概览
 
 ### 智能规划
