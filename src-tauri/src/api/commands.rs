@@ -13,12 +13,11 @@ use crate::ai::service::AiService;
 use crate::core::analytics::{AnalyticsRange, AnalyticsSummary, build_analytics};
 use crate::core::briefing::{BriefingAgent, yesterday_of};
 use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
-use crate::core::knowledge::KnowledgeService;
 use crate::core::planner::Planner;
 use crate::core::review::ReviewAgent;
 use crate::core::user_model::UserModelService;
 use crate::data::assets::{
-    KnowledgeGraph, KnowledgeObject, KnowledgeSubjectIndex, UserCapability, UserObservation,
+    UserCapability, UserObservation,
 };
 use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment, iso_week_string};
 use crate::data::records::ReviewFile;
@@ -116,7 +115,9 @@ pub async fn update_task_status(
             .current_task
             .tasks
             .retain(|t| match &t.task_id {
-                Some(id) => id.get(..id.floor_char_boundary(10)).map(|prefix| prefix == date).unwrap_or(false),
+                Some(id) => crate::data::task_id_date_prefix(id)
+                    .map(|prefix| prefix == date)
+                    .unwrap_or(false),
                 None => false, // 旧任务无 task_id 且日期不匹配，丢弃
             });
     }
@@ -327,6 +328,7 @@ pub async fn get_plan_by_date(
     date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<DailyPlanFile, String> {
+    crate::data::validate_date(&date)?;
     let data_dir = get_data_dir(state.inner())?;
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
 }
@@ -341,6 +343,7 @@ pub async fn get_week_plan(
     week_start: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<WeekPlanFile, String> {
+    crate::data::validate_date(&week_start)?;
     let data_dir = get_data_dir(state.inner())?;
     let iso_week = iso_week_string(&week_start)?;
     crate::data::plan::read_week_plan(&data_dir, &iso_week)
@@ -586,6 +589,7 @@ pub async fn get_week_summaries(
     week_start: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<Vec<PlanSummary>, String> {
+    crate::data::validate_date(&week_start)?;
     let data_dir = get_data_dir(state.inner())?;
 
     // 读取本周的周计划，获取休息日标记和特殊情况排除日
@@ -663,6 +667,7 @@ pub async fn generate_daily_plan(
     date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<DailyPlanFile, String> {
+    crate::data::validate_date(&date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
@@ -690,6 +695,7 @@ pub async fn generate_week_plan(
     #[allow(unused_variables)] workload_adjustment: Option<WorkloadAdjustment>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<WeekPlanFile, String> {
+    crate::data::validate_date(&week_start)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
@@ -721,6 +727,8 @@ pub async fn add_excluded_day_and_regenerate(
     excluded_day: ExcludedDay,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<RegenerateResult, String> {
+    crate::data::validate_date(&week_start)?;
+    crate::data::validate_date(&excluded_day.date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
@@ -757,6 +765,7 @@ pub async fn get_review(
     date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<ReviewFile, String> {
+    crate::data::validate_date(&date)?;
     let data_dir = get_data_dir(state.inner())?;
     crate::data::records::read_review(&data_dir, &date)
 }
@@ -783,6 +792,7 @@ pub async fn generate_review(
     date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<ReviewFile, String> {
+    crate::data::validate_date(&date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 records/state 写入
@@ -832,6 +842,7 @@ pub async fn submit_review(
     payload: SubmitReviewPayload,
     app_state: State<'_, Mutex<AppState>>,
 ) -> Result<SubmitReviewResult, String> {
+    crate::data::validate_date(&payload.date)?;
     let data_dir = get_data_dir(app_state.inner())?;
 
     // H1 并发保护：串行化 records/state 写入，避免与任务状态更新等并发竞态
@@ -1120,6 +1131,7 @@ pub async fn regenerate_remaining_days(
     review_date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<RegenerateResult, String> {
+    crate::data::validate_date(&review_date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
@@ -1187,6 +1199,7 @@ pub async fn get_briefing(
     date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<GetBriefingResult, String> {
+    crate::data::validate_date(&date)?;
     let data_dir = get_data_dir(state.inner())?;
     let settings = crate::load_settings(&data_dir);
 
@@ -1254,6 +1267,7 @@ pub async fn regenerate_briefing(
     date: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<crate::data::briefing::BriefingFile, String> {
+    crate::data::validate_date(&date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 records/briefing 写入
@@ -1295,62 +1309,6 @@ pub async fn list_briefing_dates(
 ) -> Result<Vec<String>, String> {
     let data_dir = get_data_dir(state.inner())?;
     crate::data::briefing::list_briefing_dates(&data_dir)
-}
-
-// ============================================================================
-// Knowledge 命令
-// ============================================================================
-
-/// 列出知识对象索引
-///
-/// `subject` 为学科标识（如 "408", "math"）或 "all" 列出所有学科。
-/// 前端调用: `invoke('list_knowledge', { subject: '408' })`
-#[tauri::command]
-pub async fn list_knowledge(
-    subject: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Vec<KnowledgeSubjectIndex>, String> {
-    let data_dir = get_data_dir(state.inner())?;
-    KnowledgeService::list_knowledge(&data_dir, &subject)
-}
-
-/// 获取知识对象详情
-///
-/// 根据 ID 读取知识对象 Markdown 文件。
-/// 前端调用: `invoke('get_knowledge', { id: '408-ds-03-bst' })`
-#[tauri::command]
-pub async fn get_knowledge(
-    id: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<KnowledgeObject, String> {
-    let data_dir = get_data_dir(state.inner())?;
-    KnowledgeService::get_knowledge(&data_dir, &id)
-}
-
-/// 搜索知识对象
-///
-/// 在所有知识对象的标题、内容、标签和别名中搜索。
-/// 前端调用: `invoke('search_knowledge', { query: '二叉搜索树' })`
-#[tauri::command]
-pub async fn search_knowledge(
-    query: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Vec<KnowledgeObject>, String> {
-    let data_dir = get_data_dir(state.inner())?;
-    KnowledgeService::search_knowledge(&data_dir, &query)
-}
-
-/// 获取知识图谱
-///
-/// 根据 prerequisites 字段构建有向无环图 (DAG)。
-/// 前端调用: `invoke('get_knowledge_graph', { subject: '408' })`
-#[tauri::command]
-pub async fn get_knowledge_graph(
-    subject: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<KnowledgeGraph, String> {
-    let data_dir = get_data_dir(state.inner())?;
-    KnowledgeService::get_knowledge_graph(&data_dir, &subject)
 }
 
 // ============================================================================
@@ -1579,6 +1537,41 @@ pub async fn save_background_image(
     Ok(relative)
 }
 
+/// 将 relative_path 解析为 data_dir 内的绝对路径
+///
+/// 规范化 `..` / `.` / 反斜杠，并校验结果路径仍位于 data_dir 内，
+/// 防止通过 `../../config/settings` 之类参数读取或删除 data_dir 之外的任意文件（C4-b）。
+fn resolve_relative_path(data_dir: &std::path::Path, relative_path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+
+    let cleaned = relative_path.replace('\\', "/");
+    let normalized = cleaned
+        .split('/')
+        .fold(PathBuf::new(), |mut acc, part| {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    acc.pop();
+                }
+                _ => acc.push(part),
+            }
+            acc
+        });
+
+    let target = data_dir.join(normalized);
+    let canonical_data_dir = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let canonical_target = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
+
+    if !canonical_target.starts_with(&canonical_data_dir) {
+        return Err(format!(
+            "路径越界: {:?} 不在数据目录 {:?} 内",
+            canonical_target, canonical_data_dir
+        ));
+    }
+
+    Ok(canonical_target)
+}
+
 /// 删除已保存的背景图文件
 ///
 /// 前端调用: `invoke('delete_background_image', { relativePath: 'assets/backgrounds/xxx.png' })`
@@ -1588,7 +1581,7 @@ pub async fn delete_background_image(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     let dir = get_data_dir(state.inner())?;
-    let full_path = dir.join(&relative_path);
+    let full_path = resolve_relative_path(&dir, &relative_path)?;
     if full_path.exists() {
         std::fs::remove_file(&full_path)
             .map_err(|e| format!("删除背景图失败: {}", e))?;
@@ -1606,7 +1599,7 @@ pub async fn read_background_as_data_url(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<String, String> {
     let dir = get_data_dir(state.inner())?;
-    let full_path = dir.join(&relative_path);
+    let full_path = resolve_relative_path(&dir, &relative_path)?;
     if !full_path.exists() {
         return Err(format!("背景图文件不存在: {}", full_path.display()));
     }
@@ -1775,11 +1768,20 @@ pub struct TextbookSearchHit {
     pub subject: String,
     pub line_number: usize,
     pub snippet: String,
+    /// 该行命中的关键词数量（用于排序，前端可忽略）
+    #[serde(default)]
+    pub hit_weight: usize,
 }
 
 /// 在已导入教材中全文搜索
 ///
 /// 前端调用: `invoke('search_in_textbook', { query: '二叉搜索树' })`
+///
+/// 用户输入通常是整句提问或整道题目，不能作为单一子串去精确匹配。
+/// 因此先将查询拆解为关键词（中文按 2-gram、英文按单词、数字按连续串），
+/// 过滤常见停用字后，逐词在教材中匹配并按命中关键词数量打分排序。
+/// 同时解析「第N章 / 第N题」式章节引用做定向检索，命中章节标题与题目行
+/// 可获得额外加权，确保用户只报章节/题号时也能定位到教材内容。
 #[tauri::command]
 pub async fn search_in_textbook(
     query: String,
@@ -1787,7 +1789,10 @@ pub async fn search_in_textbook(
 ) -> Result<Vec<TextbookSearchHit>, String> {
     let dir = get_data_dir(state.inner())?;
     let textbooks_dir = dir.join("assets").join("resources").join("textbooks");
-    let query_lower = query.to_lowercase();
+
+    // 1. 解析章节 / 题号引用 + 拆解关键词
+    let (chapter_ref, problem_ref) = parse_refs(&query);
+    let terms = extract_search_terms(&query);
 
     let mut hits = Vec::new();
 
@@ -1812,32 +1817,540 @@ pub async fn search_in_textbook(
                         Ok(c) => c,
                         Err(_) => continue,
                     };
+                    let lines: Vec<&str> = content.lines().collect();
+                    if lines.is_empty() {
+                        continue;
+                    }
 
-                    for (idx, line) in content.lines().enumerate() {
-                        if line.to_lowercase().contains(&query_lower) {
-                            // 截取匹配上下文（前后各 40 字符）
-                            let lower = line.to_lowercase();
-                            let start = lower.find(&query_lower).unwrap_or(0);
-                            let ctx_start = start.saturating_sub(40);
-                            let ctx_end = (start + query_lower.len() + 40).min(line.len());
-                            let snippet = &line[ctx_start..ctx_end];
-                            let prefix = if ctx_start > 0 { "…" } else { "" };
-                            let suffix = if ctx_end < line.len() { "…" } else { "" };
-                            hits.push(TextbookSearchHit {
-                                textbook_id: textbook_id.clone(),
-                                textbook_title: textbook_title.clone(),
-                                subject: subject.clone(),
-                                line_number: idx + 1,
-                                snippet: format!("{}{}{}", prefix, snippet, suffix),
-                            });
+                    // 2. 确定检索范围：若指定了章节，限定在该章标题到下一章之间
+                    let (start, end) = match chapter_ref {
+                        Some(n) => {
+                            // 优先 Markdown 标题（`# 第N章`）
+                            if let Some(ci) = find_chapter_line(&lines, n) {
+                                let next = lines[ci + 1..]
+                                    .iter()
+                                    .position(|l| is_chapter_heading(l))
+                                    .map(|p| ci + 1 + p)
+                                    .unwrap_or(lines.len());
+                                (ci, next)
+                            }
+                            // 扁平 OCR 文本（无 `#` 标题）：用 `N.x` 小节前缀定位章节范围
+                            else if let Some((fs, fe)) = find_flat_chapter_range(&lines, n) {
+                                (fs, fe)
+                            }
+                            // 完全找不到章节，退回全文
+                            else {
+                                (0, lines.len())
+                            }
                         }
+                        None => (0, lines.len()),
+                    };
+
+                    // 3. 逐行打分
+                    // problem_ordinal 记录当前习题小节内第几道题（OCR 题号识别失败时的顺序兜底）
+                    let mut in_exercise = false; // 是否处于习题区（仅在此区内计数题目序号）
+                    let mut problem_ordinal = 0usize;
+                    for idx in start..end {
+                        let line = lines[idx];
+                        let lower = line.to_lowercase();
+                        let mut matched = 0usize;
+                        let mut first_pos: Option<usize> = None;
+
+                        for term in &terms {
+                            let tl = term.to_lowercase();
+                            if lower.contains(&tl) {
+                                matched += 1;
+                                let pos = lower.find(&tl).unwrap_or(0);
+                                if first_pos.map(|p| pos < p).unwrap_or(true) {
+                                    first_pos = Some(pos);
+                                }
+                            }
+                        }
+
+                        // 章节标题：仅当查询本身含章节引用时作为定位锚点加权，
+                        // 普通关键词查询不奖励标题，避免挤掉真正的内容匹配
+                        if chapter_ref.is_some() && is_chapter_heading(line) {
+                            matched += 2;
+                        }
+                        // 题号引用：OCR 容错匹配题号 + 顺序位置兜底
+                        if let Some(target) = problem_ref {
+                            // 习题区状态机：进入习题区才计数题目序号，
+                            // 避免把正文里的列表序号（如 `3 第三代…`）误当题号导致顺序偏移
+                            if is_exercise_start(&lower) {
+                                in_exercise = true;
+                                problem_ordinal = 0;
+                            } else if is_answer_section(&lower) {
+                                in_exercise = false;
+                            }
+                            if in_exercise {
+                                let extracted = problem_number_of(line);
+                                if extracted.is_some() {
+                                    problem_ordinal += 1;
+                                }
+                                match extracted {
+                                    // 精确命中题号（已做 OCR 噪音容错）
+                                    Some(n) if n == target => matched += 5,
+                                    // 题号被 OCR 认错时，用「本节第 N 道题」的序号兜底定位
+                                    Some(_) if problem_ordinal == target as usize => matched += 3,
+                                    _ => {}
+                                }
+                            }
+                        }
+                        // 单独报章节（无关键词）时，也要把该章标题带出来
+                        if matched == 0 && chapter_ref.is_some() && idx == start && is_chapter_heading(line) {
+                            matched = 1;
+                        }
+
+                        if matched == 0 {
+                            continue;
+                        }
+
+                        // 4. 截取首个命中位置的上下文（前后各 50 字符）
+                        let ctx_start = first_pos.unwrap_or(0).saturating_sub(50);
+                        let ctx_end = (ctx_start + 100).min(line.len());
+                        let snippet = safe_char_slice(line, ctx_start, ctx_end);
+                        let prefix = if ctx_start > 0 { "…" } else { "" };
+                        let suffix = if ctx_end < line.len() { "…" } else { "" };
+                        hits.push(TextbookSearchHit {
+                            textbook_id: textbook_id.clone(),
+                            textbook_title: textbook_title.clone(),
+                            subject: subject.clone(),
+                            line_number: idx + 1,
+                            snippet: format!("{}{}{}", prefix, snippet, suffix),
+                            hit_weight: matched,
+                        });
                     }
                 }
             }
         }
     }
 
+    // 5. 按命中关键词数量降序，保留最相关的若干条
+    hits.sort_by(|a, b| {
+        b.hit_weight
+            .cmp(&a.hit_weight)
+            .then(b.line_number.cmp(&a.line_number))
+    });
+    hits.truncate(20);
+
     Ok(hits)
+}
+
+/// 浅层中文分词：把查询拆成可检索的关键词。
+///
+/// - ASCII 连续串（英文单词 / 数字 / 符号）作为独立词；
+/// - CJK 汉字按相邻 2-gram 切分并过滤常见停用字；
+/// - 过滤掉过于通用的单字/词，避免噪声。
+fn extract_search_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+
+    // ASCII 连续串
+    let mut ascii_buf = String::new();
+    for ch in query.chars() {
+        if ch.is_ascii_alphanumeric() {
+            ascii_buf.push(ch);
+        } else {
+            if ascii_buf.len() >= 2 {
+                terms.push(ascii_buf.clone());
+            }
+            ascii_buf.clear();
+        }
+    }
+    if ascii_buf.len() >= 2 {
+        terms.push(ascii_buf);
+    }
+
+    // CJK：过滤停用字后生成 2-gram
+    let cjk_chars: Vec<char> = query
+        .chars()
+        .filter(|c| is_cjk(*c))
+        .filter(|c| !is_stop_char(*c))
+        .collect();
+    for w in cjk_chars.windows(2) {
+        let t: String = w.iter().collect();
+        if !t.is_empty() {
+            terms.push(t);
+        }
+    }
+
+    terms
+}
+
+/// 是否为 CJK 汉字（不含标点、数字、字母）
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{4e00}'..='\u{9fff}')
+}
+
+/// 常见提问/口语停用字：这些字单独作为 2-gram 没有检索意义
+fn is_stop_char(c: char) -> bool {
+    matches!(
+        c,
+        '的' | '了' | '是' | '我' | '你' | '他' | '她' | '它' | '这' | '那' | '就' | '都'
+            | '也' | '在' | '有' | '和' | '与' | '及' | '把' | '被' | '让' | '帮' | '请'
+            | '问' | '题' | '道' | '下' | '么' | '什' | '怎' | '吗' | '呢' | '呀' | '啊'
+            | '吧' | '个' | '种' | '讲' | '解' | '答' | '方' | '法' | '一' | '不' | '要'
+            | '会' | '能' | '可' | '以' | '到' | '里' | '之' | '后' | '前' | '上' | '中'
+            | '或' | '于' | '而' | '并' | '且' | '对' | '为' | '从' | '叫' | '给'
+            | '过' | '来' | '去' | '起' | '张' | '章' | '节' | '本' | '出'
+            | '面' | '路' | '程' | '点' | '想' | '看' | '试' | '列' | '好'
+            | '很' | '太' | '更' | '最' | '紧' | '关' | '键' | '核' | '心'
+    )
+}
+
+/// 是否为中文数字字符
+fn is_cjk_numeral(c: char) -> bool {
+    matches!(
+        c,
+        '零' | '〇' | '一' | '二' | '两' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十'
+    )
+}
+
+/// 中文数字 → 阿拉伯数字（支持 0-99 及常见写法）
+fn chinese_num_to_arabic(s: &str) -> Option<u32> {
+    if s.chars().all(|c| c.is_ascii_digit()) {
+        return s.parse().ok();
+    }
+    let mut total = 0u32;
+    let mut cur = 0u32;
+    for c in s.chars() {
+        if c == '十' {
+            if cur == 0 {
+                cur = 1;
+            }
+            total += cur * 10;
+            cur = 0;
+        } else if let Some(v) = single_num(c) {
+            cur = v;
+        } else {
+            return None;
+        }
+    }
+    total += cur;
+    Some(total)
+}
+
+fn single_num(c: char) -> Option<u32> {
+    match c {
+        '零' | '〇' => Some(0),
+        '一' => Some(1),
+        '二' | '两' => Some(2),
+        '三' => Some(3),
+        '四' => Some(4),
+        '五' => Some(5),
+        '六' => Some(6),
+        '七' => Some(7),
+        '八' => Some(8),
+        '九' => Some(9),
+        _ => None,
+    }
+}
+
+/// 从查询中解析「第N章」章节号与「第N题」题号
+fn parse_refs(query: &str) -> (Option<u32>, Option<u32>) {
+    let mut chapter = None;
+    let mut problem = None;
+    let chars: Vec<char> = query.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '第' {
+            let mut j = i + 1;
+            // 「第」与数字之间允许空格（OCR 会在 `第 2 章` / `第 2 题` 里插入空格）
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            let mut num = String::new();
+            while j < chars.len() && (chars[j].is_ascii_digit() || is_cjk_numeral(chars[j])) {
+                num.push(chars[j]);
+                j += 1;
+            }
+            // 数字后允许空格再跟「章/题」
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            if !num.is_empty() && j < chars.len() {
+                if let Some(n) = chinese_num_to_arabic(&num) {
+                    if chars[j] == '章' && chapter.is_none() {
+                        chapter = Some(n);
+                    } else if chars[j] == '题' && problem.is_none() {
+                        problem = Some(n);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    (chapter, problem)
+}
+
+/// 判断一行是否为 Markdown 章节标题（以 # 开头且含「第N章」）
+fn is_chapter_heading(line: &str) -> bool {
+    let l = line.trim_start();
+    l.starts_with('#') && extract_chapter_num(l).is_some()
+}
+
+/// 从一行中提取章节号（仅匹配「第N章」形式）
+fn extract_chapter_num(line: &str) -> Option<u32> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '第' {
+            let mut j = i + 1;
+            // 「第」与数字之间允许空格
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            let mut num = String::new();
+            while j < chars.len() && (chars[j].is_ascii_digit() || is_cjk_numeral(chars[j])) {
+                num.push(chars[j]);
+                j += 1;
+            }
+            // 数字后允许空格再跟「章」
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            if !num.is_empty() && j < chars.len() && chars[j] == '章' {
+                return chinese_num_to_arabic(&num);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 在教材行中定位指定章节的标题行
+///
+/// 只匹配以 `#` 开头的 Markdown 章节标题，忽略目录中或正文里的引用。
+fn find_chapter_line(lines: &[&str], num: u32) -> Option<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .find(|(_, l)| {
+            let trimmed = l.trim_start();
+            trimmed.starts_with('#') && extract_chapter_num(trimmed) == Some(num)
+        })
+        .map(|(i, _)| i)
+}
+
+/// 从一行中提取题目编号（OCR 容错）。
+///
+/// 支持：
+/// - `第N题`（阿拉伯/中文数字）行内写法；
+/// - Markdown 标题或普通行首的数字编号，如 `#### 02.`、`2)`、`2、`、`（3）`、
+///   `0 2.`（数字间空格）、全角数字 `３` 等 OCR 杂音；
+/// - 返回 `None` 表示该行不是「编号题目行」。
+fn problem_number_of(line: &str) -> Option<u32> {
+    let mut l = line.trim_start();
+    // 行内「第N题」
+    if let Some(n) = extract_problem_from_text(l) {
+        return Some(n);
+    }
+    // 去掉 Markdown 标题记号 `#`
+    while l.starts_with('#') {
+        l = l[1..].trim_start();
+    }
+    extract_leading_number(l)
+}
+
+/// 提取行内「第N题」编号
+fn extract_problem_from_text(l: &str) -> Option<u32> {
+    let chars: Vec<char> = l.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '第' {
+            let mut j = i + 1;
+            // 「第」与数字之间允许空格（OCR 会在 `第 2 题` 里插入空格）
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            let mut digs = String::new();
+            while j < chars.len() && (chars[j].is_ascii_digit() || is_cjk_numeral(chars[j])) {
+                digs.push(chars[j]);
+                j += 1;
+            }
+            // 数字后允许空格再跟「题」
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            if !digs.is_empty() && j < chars.len() && chars[j] == '题' {
+                if let Some(n) = chinese_num_to_arabic(&digs) {
+                    return Some(n);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 提取行首编号（OCR 容错），要求编号后跟题号分隔符（`.`/`、`/`)`/`）`/`:`/空格等）
+fn extract_leading_number(s: &str) -> Option<u32> {
+    let mut it = s.chars().peekable();
+    // 可选的开括号
+    if matches!(it.peek(), Some('（') | Some('(')) {
+        it.next();
+    }
+    let mut num = String::new();
+    while let Some(&c) = it.peek() {
+        if c.is_ascii_digit() || is_fullwidth_digit(c) {
+            num.push(to_ascii_digit(c));
+            it.next();
+        } else if c == ' ' || c == '\t' {
+            // 数字间允许空格（如 `0 2.`）；但若空格后不再是数字，
+            // 则该空格就是编号结束的分隔符（如 `11 若…`），停止解析
+            let mut rest = it.clone();
+            rest.next(); // 跳过当前空格
+            let next_non_space = rest.find(|&c| c != ' ' && c != '\t');
+            match next_non_space {
+                Some(ch) if ch.is_ascii_digit() || is_fullwidth_digit(ch) => {
+                    it.next(); // 数字间的空格，消费后继续
+                }
+                _ => break, // 空格即编号结束，保留其作为分隔符的语义
+            }
+        } else {
+            break;
+        }
+    }
+    if num.is_empty() {
+        return None;
+    }
+    // 必须跟编号分隔符，避免把正文数字误判为题号
+    // 含逗号（`,`/`，`）：OCR 常把题号后的 `.` 识别成 `,`（如 `05, 若…`）
+    if matches!(
+        it.peek(),
+        Some('.') | Some('、') | Some(')') | Some('）') | Some(':') | Some('：')
+            | Some('-') | Some(' ') | Some(',') | Some('，')
+    ) {
+        num.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// 是否为全角数字
+fn is_fullwidth_digit(c: char) -> bool {
+    matches!(c, '０' | '１' | '２' | '３' | '４' | '５' | '６' | '７' | '８' | '９')
+}
+
+/// 全角数字 → 半角
+fn to_ascii_digit(c: char) -> char {
+    match c {
+        '０' => '0',
+        '１' => '1',
+        '２' => '2',
+        '３' => '3',
+        '４' => '4',
+        '５' => '5',
+        '６' => '6',
+        '７' => '7',
+        '８' => '8',
+        '９' => '9',
+        _ => c,
+    }
+}
+
+/// 判断扁平 OCR 文本中某行是否为「第 N 章」的小节标题。
+///
+/// 只匹配行首为 `N.` 且后跟数字的多级小节号（如 `3.2.1`、`3.43`），
+/// 排除 `3. 题目` 这类单号题干，避免把题目行误当作章节边界。
+fn is_flat_section_header(line: &str, num: u32) -> bool {
+    let t = line.trim_start();
+    let chars: Vec<char> = t.chars().collect();
+    let mut i = 0;
+    let mut digs = String::new();
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        digs.push(chars[i]);
+        i += 1;
+    }
+    if digs.is_empty() {
+        return false;
+    }
+    let n: u32 = digs.parse().unwrap_or(0);
+    if n != num {
+        return false;
+    }
+    // 下一个字符必须是点号，且后面跟数字（区分 `3.2` 与 `3. 题目`）
+    if i < chars.len() && (chars[i] == '.' || chars[i] == '．') {
+        return i + 1 < chars.len() && chars[i + 1].is_ascii_digit();
+    }
+    false
+}
+
+/// 在扁平 OCR 文本中定位「第 num 章」的范围（num.x 小节起始 → num+1.x 小节起始）
+fn find_flat_chapter_range(lines: &[&str], num: u32) -> Option<(usize, usize)> {
+    // 先跳过目录/封面区，避免把目录里的 `N.M` 小节号误当成章节边界
+    let content_start = find_content_start(lines);
+    let mut start = None;
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(content_start) {
+        if start.is_none() {
+            if is_flat_section_header(l, num) {
+                start = Some(i);
+            }
+        } else if is_flat_section_header(l, num + 1) {
+            end = i;
+            break;
+        }
+    }
+    start.map(|s| (s, end))
+}
+
+/// 定位扁平 OCR 文本的「正文起点」，跳过开头的目录/封面/版权等前置噪声。
+///
+/// 目录区通常由短行（`N.M` 小节号 + 标题）构成，且包含与正文重复的小节编号，
+/// 若直接从中定位章节会得到错误边界。正文以 `【考纲内容】`、`【复习提示】` 等
+/// 专属标记（王道教材常见），或较长整段文字（>=40 字符）为信号，据此估算正文起点。
+fn find_content_start(lines: &[&str]) -> usize {
+    // 1) 正文专属标记：`【考纲…】`/`【复习…】`/`【考点…】`/`【本节…】`/`【答案…】` 等方括号标记
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if t.contains('【')
+            && (t.contains("考纲") || t.contains("复习") || t.contains("考点") || t.contains("本节") || t.contains("答案"))
+        {
+            return i;
+        }
+        if t.ends_with("考纲") || t.ends_with("复习提示") {
+            return i;
+        }
+    }
+    // 2) 回退：第一个长行（>=40 字符）视为正文
+    for (i, l) in lines.iter().enumerate() {
+        if l.trim().chars().count() >= 40 {
+            return i;
+        }
+    }
+    0
+}
+
+/// 是否进入习题区（习题小节标题）。用于限定题目顺序计数范围，
+/// 避免把正文里的列表序号（如 `3 第三代…`）误当题号导致第 N 题顺序偏移。
+fn is_exercise_start(lower: &str) -> bool {
+    lower.contains("本节习题")
+        || lower.contains("习题精选")
+        || lower.contains("单项选择题")
+        || lower.contains("综合应用题")
+        || lower.contains("综合题")
+}
+
+/// 是否退出习题区（答案区标题）
+fn is_answer_section(lower: &str) -> bool {
+    lower.contains("答案与解析") || lower.contains("答案解析") || lower.contains("参考答案")
+}
+
+/// 在字符边界上安全切片，避免 `ctx_end` 落在多字节 UTF-8 字符中间导致 panic
+fn safe_char_slice(s: &str, start: usize, end: usize) -> &str {
+    let len = s.len();
+    let mut cstart = start;
+    while cstart < len && !s.is_char_boundary(cstart) {
+        cstart += 1;
+    }
+    if cstart >= len {
+        return "";
+    }
+    let mut cend = end.min(len);
+    while cend > cstart && !s.is_char_boundary(cend) {
+        cend -= 1;
+    }
+    &s[cstart..cend]
 }
 
 /// 获取用户能力列表
@@ -2077,7 +2590,13 @@ pub async fn call_tool(
         return execute_builtin_tool(&tool_name, &args, &data_dir);
     }
 
-    log::info!("调用工具: {} args={}", tool_name, args);
+    // H16：工具参数可能包含敏感数据（如任务标题、token），降为 debug 级别并截断
+    let args_str = args.to_string();
+    log::debug!(
+        "调用工具: {} args={}",
+        tool_name,
+        args_str.chars().take(200).collect::<String>()
+    );
     dispatcher.dispatch(&tool_name, args).await
 }
 
@@ -2159,6 +2678,9 @@ pub async fn change_data_directory(
         let mut s = state.lock().map_err(|e| e.to_string())?;
         s.data_dir = new_dir.clone();
     }
+
+    // H17：同步更新 AI 用量日志目录，使日志写入新数据目录
+    crate::data::ai_usage::set_log_dir(new_dir.clone());
 
     let msg = format!(
         "数据目录已切换至 {:?}。旧目录 {:?} 中的历史数据未自动迁移，如需保留历史计划/复盘记录，请手动复制 state/、plan/、records/、assets/ 等子目录到新目录。重启应用后配置仍然生效。",
@@ -3031,5 +3553,132 @@ mod tests {
         }
         // 合法文件名应通过
         assert!(!String::from("StudyAgent_0.1.2_x64-setup.exe").contains(['/', '\\']));
+    }
+
+    // ── 教材 OCR 容错检索的单元测试 ──────────────────────────────
+
+    /// 题号解析：OCR 把 `.` 识别成 `,`/`、`/空格/全角数字等杂音时仍能识别题号
+    #[test]
+    fn problem_number_ocr_noise() {
+        // 标准
+        assert_eq!(problem_number_of("01. 若十进制数为 137.5"), Some(1));
+        assert_eq!(problem_number_of("02. 一个 16 位无符号"), Some(2));
+        // 顿号 / 逗号（OCR 常把 `.` 识别成 `,`）
+        assert_eq!(problem_number_of("04、对真值 0 表示"), Some(4));
+        assert_eq!(problem_number_of("05, 若 [#= 11101010"), Some(5));
+        assert_eq!(problem_number_of("08, 一个 + 1 位整数"), Some(8));
+        assert_eq!(problem_number_of("09, 若定点整数为 64 位"), Some(9));
+        assert_eq!(problem_number_of("10, 下列关于补码"), Some(10));
+        // 题号后接空格
+        assert_eq!(problem_number_of("11 若 [xJ#=lxixarsxryrsxe"), Some(11));
+        // 全角数字
+        assert_eq!(problem_number_of("３. 全角题号"), Some(3));
+        // 行内「第N题」
+        assert_eq!(problem_number_of("第 2 题 求下列行列式"), Some(2));
+        assert_eq!(problem_number_of("第10题 写出"), Some(10));
+        // Markdown 标题
+        assert_eq!(problem_number_of("#### 02. 习题"), Some(2));
+        // 正文列表序号不应被误识别为高权题号（题目号匹配阶段不参与，但函数本身应能解析）
+        assert_eq!(problem_number_of("3 第三代计算机"), Some(3));
+    }
+
+    /// 正文起点检测：跳过目录/封面区，避免 `N.M` 目录小节号被误当章节边界
+    #[test]
+    fn content_start_skips_toc() {
+        let lines: Vec<&str> = vec![
+            "# 计算机组成原理",
+            "[此页为封面页]",
+            "2.3",
+            "3.2",
+            "3.2.1 半导体随机存取存储器",
+            "第 7 章",
+            "7.1",
+            "计算机系统概述",
+            "【考纲内容】",
+            "( 一 ) 计算机系统层次结构",
+            "1.1.1 计算机硬件的发展",
+        ];
+        assert_eq!(find_content_start(&lines), 8); // 命中「【考纲内容】」
+    }
+
+    /// 无「【…】」标记时回退到第一个长行
+    #[test]
+    fn content_start_fallback_long_line() {
+        let lines: Vec<&str> = vec![
+            "1.1",
+            "1.2",
+            "这一行是某章正文的第一段，长度明显超过四十个字符的阈值，应该被视为正文开始的地方。",
+        ];
+        assert_eq!(find_content_start(&lines), 2);
+    }
+
+    /// 章节范围定位：目录区被跳过，正文里 `num.x` 小节才是真正的章节边界
+    #[test]
+    fn flat_chapter_range_skips_toc() {
+        let lines: Vec<&str> = vec![
+            "# 标题",
+            "【考纲内容】",
+            "1.1.1 计算机硬件的发展", // 第1章正文
+            "（一）计算机发展",
+            "2.1.1 进位计数制", // 第2章正文
+            "2.1.5 本节习题精选",
+            "3.1.1 存储器的分类", // 第3章正文
+        ];
+        let r = find_flat_chapter_range(&lines, 1).unwrap();
+        assert_eq!(r.0, 2); // 从 `1.1.1` 开始
+        assert_eq!(r.1, 4); // 到 `2.1.1` 结束
+    }
+
+    /// 习题区状态机：只有进入习题区才计数题目序号，正文列表序号不污染顺序
+    #[test]
+    fn exercise_section_state_machine() {
+        assert!(is_exercise_start("2.1.5 本节习题精选"));
+        assert!(is_exercise_start("单项选择题"));
+        assert!(is_exercise_start("综合应用题"));
+        assert!(!is_exercise_start("计算机硬件的发展"));
+        assert!(is_answer_section("2.1.6 答案与解析"));
+        assert!(is_answer_section("参考答案"));
+        assert!(!is_answer_section("解析一下这道题"));
+    }
+
+    /// 顺序兜底：找「第 2 题」时，即使 OCR 把 `02.` 认成 `02,` 等，也能按顺序定位
+    #[test]
+    fn problem_ordinal_fallback_over_ocr_noise() {
+        // 模拟一个习题区：题号带各种 OCR 杂音，但题干完整
+        let exercise: Vec<&str> = vec![
+            "2.1.5 本节习题精选",
+            "单项选择题",
+            "01. 若十进制数为 137.5",   // 第1题
+            "A 89.8 B 211.4",
+            "02, 一个 16 位无符号",      // 第2题（OCR 逗号）
+            "A 0 一 63536",
+            "03、下列说法有误的是",      // 第3题（OCR 顿号）
+            "04 若叉为负数",            // 第4题（OCR 空格）
+            "2.1.6 答案与解析",
+        ];
+        // 模拟主循环的 ordinal 计数逻辑
+        let target = 2u32;
+        let mut in_exercise = false;
+        let mut ordinal = 0usize;
+        let mut second_hit = None;
+        for l in &exercise {
+            let lower = l.to_lowercase();
+            if is_exercise_start(&lower) {
+                in_exercise = true;
+                ordinal = 0;
+            } else if is_answer_section(&lower) {
+                in_exercise = false;
+            }
+            if in_exercise {
+                if let Some(n) = problem_number_of(l) {
+                    ordinal += 1;
+                    if n == target {
+                        second_hit = Some(ordinal);
+                    }
+                }
+            }
+        }
+        // 第2题命中的行「02,」应被识别为第 2 道题
+        assert_eq!(second_hit, Some(2));
     }
 }

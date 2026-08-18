@@ -2,13 +2,16 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api";
 import { todayString, yesterdayString, weekdayName, getWeekStart } from "@/utils/date";
+import { useAiRequest } from "@/composables/useAiRequest";
 import type { DailyPlan, PlanTask } from "@/types";
 
 export const useTodayStore = defineStore("today", () => {
   const plan = ref<DailyPlan | null>(null);
   const loading = ref(false);
-  const generating = ref(false);
-  const error = ref<string | null>(null);
+  // 统一 AI 请求状态（H21：替代手写 withTimeout + generating 三件套）
+  const ai = useAiRequest();
+  const generating = ai.pending;
+  const error = ai.error;
   /** 昨日复盘是否缺失（仅今天加载时检查） */
   const missingYesterdayReview = ref(false);
 
@@ -16,13 +19,6 @@ export const useTodayStore = defineStore("today", () => {
     if (!plan.value?.data?.tasks) return [];
     return plan.value.data.tasks;
   });
-
-  const priorityATasks = computed(() =>
-    allTasks.value.filter((t) => t.priority === "A")
-  );
-  const priorityBTasks = computed(() =>
-    allTasks.value.filter((t) => t.priority === "B")
-  );
 
   const doneCount = computed(() => allTasks.value.filter((t) => t.status === "done").length);
   const totalCount = computed(() => allTasks.value.length);
@@ -32,6 +28,28 @@ export const useTodayStore = defineStore("today", () => {
 
   async function loadToday() {
     await loadByDate(todayString());
+  }
+
+  /** M33：判断昨日是否为休息日或排除日（免复盘），内部封装三层检查 */
+  async function isYesterdayExempt(yesterday: string): Promise<boolean> {
+    // 1) 休息日判断（依据用户设置的 rest_days）
+    try {
+      const settings = await api.getSettings();
+      const restDays = settings.study_schedule?.rest_days ?? ["周日"];
+      if (restDays.includes(weekdayName(yesterday))) {
+        return true;
+      }
+    } catch {
+      // 设置读取失败，继续后续检查
+    }
+    // 2) 排除日判断（依据周计划中的 excluded_days）
+    try {
+      const wp = await api.getWeekPlan(getWeekStart(yesterday));
+      return !!wp.data?.excluded_days?.some((d) => d.date === yesterday);
+    } catch {
+      // 无周计划，按正常流程检查复盘
+    }
+    return false;
   }
 
   async function loadByDate(date: string) {
@@ -44,28 +62,8 @@ export const useTodayStore = defineStore("today", () => {
       // 仅今天加载时检查昨日复盘是否存在
       if (date === todayString()) {
         const yesterday = yesterdayString();
-        // 检查昨日是否为休息日或排除日（这两种情况自动免复盘）
-        let yesterdayExempt = false;
-        // 1) 休息日判断（依据用户设置的 rest_days）
-        try {
-          const settings = await api.getSettings();
-          const restDays = settings.study_schedule?.rest_days ?? ["周日"];
-          if (restDays.includes(weekdayName(yesterday))) {
-            yesterdayExempt = true;
-          }
-        } catch {
-          // 设置读取失败，继续后续检查
-        }
-        // 2) 排除日判断（依据周计划中的 excluded_days）
-        if (!yesterdayExempt) {
-          try {
-            const wp = await api.getWeekPlan(getWeekStart(yesterday));
-            yesterdayExempt = !!wp.data?.excluded_days?.some((d) => d.date === yesterday);
-          } catch {
-            // 无周计划，按正常流程检查复盘
-          }
-        }
-        if (!yesterdayExempt) {
+        const exempt = await isYesterdayExempt(yesterday);
+        if (!exempt) {
           try {
             await api.getReview(yesterday);
           } catch {
@@ -82,8 +80,6 @@ export const useTodayStore = defineStore("today", () => {
   }
 
   async function generate(date?: string) {
-    generating.value = true;
-    error.value = null;
     const targetDate = date ?? todayString();
     try {
       // 仅允许生成今天的计划
@@ -98,35 +94,29 @@ export const useTodayStore = defineStore("today", () => {
         throw new Error(`${targetDate}（${weekday}）是休息日，不生成学习计划`);
       }
 
-      // 增加 60 秒 UI 层超时保护，避免 AI 请求挂起时一直转圈
-      plan.value = await withTimeout(
-        api.generateDailyPlan(targetDate),
-        60000,
-        `生成日计划超时（超过 60 秒）。请检查 AI Provider 配置或网络连接。`
+      // 统一 AI 调用：api.generateDailyPlan 内部已含 60s 超时 + 自动取消（aiInvoke）
+      await ai.run(
+        () => api.generateDailyPlan(targetDate).then((p) => { plan.value = p; }),
+        "生成日计划失败"
       );
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
-    } finally {
-      generating.value = false;
+      // useAiRequest 已记录 error，此处不再重复赋值
     }
-  }
-
-  function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(timeoutMessage)), ms)
-      ),
-    ]);
   }
 
   async function updateTaskStatus(taskId: string, status: PlanTask["status"]) {
     if (!plan.value) return;
     const task = allTasks.value.find((t) => t.id === taskId);
     if (task) {
+      const oldStatus = task.status;
       task.status = status;
+      try {
+        await api.updateTaskStatus(taskId, status);
+      } catch (e) {
+        task.status = oldStatus;
+        throw e;
+      }
     }
-    await api.updateTaskStatus(taskId, status);
   }
 
   return {
@@ -136,8 +126,6 @@ export const useTodayStore = defineStore("today", () => {
     error,
     missingYesterdayReview,
     allTasks,
-    priorityATasks,
-    priorityBTasks,
     doneCount,
     totalCount,
     completionRate,

@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed, watch } from "vue";
-import { useRoute } from "vue-router";
+import type { Component } from "vue";
+import { useRoute, onBeforeRouteLeave } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
+import { useAppVersion } from "@/version";
 import * as api from "@/api";
-import type { StudyState, SubjectState } from "@/types/state";
+import type { StudyState } from "@/types/state";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import TimePicker from "@/components/ui/TimePicker.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
+import Modal from "@/components/ui/Modal.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import {
   Bot,
@@ -50,7 +53,6 @@ import {
   Droplet,
   RotateCcw,
   ImagePlus,
-  ChevronDown,
   Search,
 } from "lucide-vue-next";
 import type {
@@ -134,7 +136,7 @@ const isStudyDaysValid = computed(() => computedStudyDays.value >= 1);
 interface NavSection {
   id: string;
   label: string;
-  icon: any;
+  icon: Component;
 }
 
 const navSections: NavSection[] = [
@@ -189,6 +191,59 @@ const { setTheme, setVisualMode, setAccentColor, setBackgroundImage, setBackgrou
 const saving = ref(false);
 const savedFlash = ref(false);
 
+// ── 未保存修改检测 ──
+const savedSnapshot = ref("");
+const showUnsavedModal = ref(false);
+let pendingLeaveResolve: ((ok: boolean) => void) | null = null;
+
+/** 记录当前已保存的缓冲快照（form + 教材），作为「未保存」基准 */
+function syncSavedSnapshot() {
+  savedSnapshot.value = JSON.stringify({
+    form: form.value,
+    textbook: textbookForm.value,
+  });
+}
+
+/** 是否有未保存的修改 */
+const hasUnsavedChanges = computed(() => {
+  if (!form.value) return false;
+  return JSON.stringify({ form: form.value, textbook: textbookForm.value }) !== savedSnapshot.value;
+});
+
+/** 确认离开设置页（有未保存修改时返回弹窗 Promise 拦截） */
+function confirmLeave(): boolean | Promise<boolean> {
+  if (!hasUnsavedChanges.value) return true;
+  showUnsavedModal.value = true;
+  return new Promise<boolean>((resolve) => {
+    pendingLeaveResolve = resolve;
+  });
+}
+
+/** 放弃修改并离开 */
+function discardAndLeave() {
+  showUnsavedModal.value = false;
+  pendingLeaveResolve?.(true);
+  pendingLeaveResolve = null;
+}
+
+/** 取消离开，留在页面继续编辑 */
+function cancelLeave() {
+  showUnsavedModal.value = false;
+  pendingLeaveResolve?.(false);
+  pendingLeaveResolve = null;
+}
+
+// 离开路由守卫：存在未保存修改时弹出确认，避免误触侧边栏等导致改动丢失
+onBeforeRouteLeave(() => confirmLeave());
+
+/**
+ * 弹窗关闭（遮罩/ESC/关闭按钮）视为取消离开，留在页面。
+ * 此时路由守卫的 Promise 需被拒绝，否则导航挂起。
+ */
+function onUnsavedModalClose() {
+  cancelLeave();
+}
+
 // ── 数据目录切换 ──
 const changingDir = ref(false);
 const dirChangeMsg = ref<string | null>(null);
@@ -218,6 +273,7 @@ async function handleChangeDataDir() {
     dirChangeError.value = false;
     await settingsStore.load();
     syncFormFromStore();
+    syncSavedSnapshot();
   } catch (e) {
     dirChangeMsg.value = e instanceof Error ? e.message : String(e);
     dirChangeError.value = true;
@@ -365,9 +421,12 @@ async function saveProvider() {
   if (editingProviderId.value) {
     settingsStore.updateProvider(editingProviderId.value, { ...providerForm.value });
   } else {
+    // 第一个 provider 自动设为默认，避免 default_provider_id 为空导致其他页面显示「未配置」
+    const isFirst = (settingsStore.settings?.ai_providers.length ?? 0) === 0;
     settingsStore.addProvider({
       ...providerForm.value,
       id: `provider-${Date.now()}`,
+      is_default: providerForm.value.is_default || isFirst,
     });
   }
   showProviderForm.value = false;
@@ -485,7 +544,7 @@ function toggleServerEnabled(s: MCPServerConfig) {
 }
 
 // ── 主题 ──
-const themeOptions: { mode: ThemeMode; label: string; icon: any }[] = [
+const themeOptions: { mode: ThemeMode; label: string; icon: Component }[] = [
   { mode: "light", label: "浅色", icon: SunMedium },
   { mode: "dark", label: "深色", icon: Moon },
   { mode: "system", label: "跟随系统", icon: Monitor },
@@ -496,7 +555,7 @@ function handleSetTheme(mode: ThemeMode) {
 }
 
 // ── 视觉模式 ──
-const visualModeOptions: { mode: VisualMode; label: string; desc: string; icon: any; experimental?: boolean }[] = [
+const visualModeOptions: { mode: VisualMode; label: string; desc: string; icon: Component; experimental?: boolean }[] = [
   { mode: "standard", label: "标准", desc: "稳定高性能", icon: Layers },
   { mode: "liquid-glass", label: "液态玻璃", desc: "增强视觉 · 实验性功能", icon: Sparkles, experimental: true },
 ];
@@ -593,6 +652,7 @@ async function saveTextbook(subject: "math" | "english" | "politics" | "professi
     if (studyState.value) {
       studyState.value.subjects[subject].textbook = value || undefined;
     }
+    syncSavedSnapshot();
     textbookSavedFlash.value[subject] = true;
     setTimeout(() => {
       textbookSavedFlash.value[subject] = false;
@@ -684,6 +744,7 @@ async function handleSave() {
     await settingsStore.save();
     await settingsStore.load();
     syncFormFromStore();
+    syncSavedSnapshot();
     savedFlash.value = true;
     setTimeout(() => {
       savedFlash.value = false;
@@ -694,7 +755,7 @@ async function handleSave() {
 }
 
 // ── 检查更新（使用共享 update store，与首页更新弹窗状态同步） ──
-const APP_VERSION = "0.4.2";
+const { version } = useAppVersion();
 
 // 从 store 获取响应式状态与方法（模板中直接引用这些名称，保持兼容）
 const checking = computed(() => updateStore.checking);
@@ -702,14 +763,12 @@ const updateResult = computed(() => updateStore.updateResult);
 const updateError = computed(() => updateStore.updateError);
 const downloadState = computed(() => updateStore.downloadState);
 const downloadProgress = computed(() => updateStore.downloadProgress);
-const downloadedFilePath = computed(() => updateStore.downloadedFilePath);
 const downloadError = computed(() => updateStore.downloadError);
 const selectedAsset = computed({
   get: () => updateStore.selectedAsset,
   set: (v) => { updateStore.selectedAsset = v; },
 });
 const installing = computed(() => updateStore.installing);
-const preferredAsset = computed(() => updateStore.preferredAsset);
 
 // 代理方法
 const assetLabel = (kind: string) => updateStore.assetLabel(kind);
@@ -827,6 +886,7 @@ onMounted(async () => {
   await settingsStore.load();
   syncFormFromStore();
   await loadStudyState();
+  syncSavedSnapshot();
   initSectionObserver();
   void loadGeneralSettings();
 
@@ -1832,7 +1892,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="current-version">
             <span class="version-label-text">当前版本</span>
-            <span class="version-value text-mono">{{ APP_VERSION }}</span>
+            <span class="version-value text-mono">{{ version }}</span>
           </div>
         </div>
 
@@ -1999,6 +2059,10 @@ onBeforeUnmount(() => {
 
       <!-- 悬浮保存按钮 -->
       <div class="save-fab">
+        <span v-if="hasUnsavedChanges" class="unsaved-hint">
+          <AlertCircle :size="13" />
+          有未保存的修改
+        </span>
         <Button
           variant="primary"
           size="lg"
@@ -2019,6 +2083,27 @@ onBeforeUnmount(() => {
       </div>
       </div>
     </div>
+
+      <!-- 未保存修改确认弹窗 -->
+      <Modal
+        :open="showUnsavedModal"
+        title="有未保存的修改"
+        :close-on-overlay="false"
+        :close-on-esc="false"
+        @close="onUnsavedModalClose"
+      >
+        <p class="unsaved-modal-text">
+          当前页面还有未保存的设置修改，离开后将丢失这些改动。确定要离开吗？
+        </p>
+        <template #footer>
+          <Button variant="ghost" size="md" @click="cancelLeave">
+            留在本页
+          </Button>
+          <Button variant="primary" size="md" @click="discardAndLeave">
+            放弃修改并离开
+          </Button>
+        </template>
+      </Modal>
   </div>
 </template>
 
@@ -3056,6 +3141,24 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
+}
+
+/* 未保存修改提示 */
+.unsaved-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--accent, #ea580c);
+  white-space: nowrap;
+}
+
+.unsaved-modal-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
 }
 
 /* 保存按钮内容：固定 min-width，避免内容切换导致按钮尺寸变化 */

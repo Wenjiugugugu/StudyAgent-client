@@ -13,7 +13,6 @@ import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import {
-  Bell,
   Sparkles,
   Power,
   Minimize2,
@@ -140,7 +139,12 @@ async function checkReviewOnStartup() {
 // ── 启动更新检查（结果存入 updateStore，由首页弹窗展示） ──
 async function checkStartupUpdate() {
   if (!isTauri()) return;
-  await updateStore.checkOnStartup();
+  // H28：函数内部兜底 catch，避免调用方 void 导致未处理 Promise 拒绝
+  try {
+    await updateStore.checkOnStartup();
+  } catch (e) {
+    console.error("[Update] 启动更新检查失败:", e);
+  }
 }
 
 // ── 更新日志弹窗（首次启动新版本时显示） ──
@@ -160,7 +164,8 @@ async function checkChangelog() {
     // 首次启动或版本升级时展示对应版本的更新日志
     if (lastSeen !== currentVersion && VERSION_CHANGELOGS[currentVersion]) {
       changelogVersion.value = currentVersion;
-      changelogContent.value = VERSION_CHANGELOGS[currentVersion];
+      const raw = VERSION_CHANGELOGS[currentVersion];
+      changelogContent.value = Array.isArray(raw) ? raw.join("\n") : raw;
       changelogVisible.value = true;
       localStorage.setItem(lastSeenKey, currentVersion);
     } else if (lastSeen !== currentVersion) {

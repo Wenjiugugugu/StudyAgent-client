@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
+import type { Component } from "vue";
 import * as api from "@/api";
 import { isTauri } from "@/api";
 import { todayString, formatDateShanghai } from "@/utils/date";
@@ -25,12 +26,11 @@ import {
   Clock,
   Calendar,
   CheckCircle2,
-  Target,
-  Menu,
   FileCheck,
   Radio,
   Send,
   AlertTriangle,
+  AlertCircle,
   Coins,
 } from "lucide-vue-next";
 import { useAiDebugStore } from "@/stores/aiDebug";
@@ -49,12 +49,13 @@ import type {
   ReviewRecord,
   AiUsageEntry,
 } from "@/types";
+import { useAppVersion } from "@/version";
 
 // ── 系统信息 ──
-const APP_VERSION = "0.4.2";
+const { version } = useAppVersion();
 const TAURI_VERSION = "2.x";
 const sysInfo = computed(() => ({
-  appVersion: APP_VERSION,
+  appVersion: version.value,
   tauriVersion: isTauri() ? TAURI_VERSION : "未运行（浏览器模式）",
   environment: isTauri() ? "Tauri 桌面应用" : "浏览器开发模式",
   dataDirectory: dataDir.value || "未设置",
@@ -67,7 +68,7 @@ let timeTimer: number | undefined;
 interface DebugSection {
   id: string;
   label: string;
-  icon: any;
+  icon: Component;
 }
 
 const debugSections: DebugSection[] = [
@@ -336,9 +337,9 @@ async function testProvider(idx: number) {
 }
 
 async function testAllProviders() {
-  for (let i = 0; i < providerTests.value.length; i++) {
-    await testProvider(i);
-  }
+  // H36：并行测试所有 provider，避免串行 N×latency 阻塞 UI
+  const tests = providerTests.value.map((_, i) => testProvider(i));
+  await Promise.allSettled(tests);
 }
 
 // ── AI 调用记录 ──
@@ -590,6 +591,8 @@ function stringifyArgs(args: unknown[]): string {
 }
 
 function captureConsole() {
+  // H38：重入保护，避免 DebugView 多次挂载（keep-alive/HMR）导致无限递归
+  if (originalConsole) return;
   originalConsole = {
     log: console.log.bind(console),
     warn: console.warn.bind(console),
@@ -603,6 +606,9 @@ function captureConsole() {
       time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
       args: stringifyArgs(args),
     });
+    if (logs.value.length > 1000) {
+      logs.value.splice(0, logs.value.length - 1000);
+    }
   };
   console.log = push("log");
   console.warn = push("warn");
@@ -626,10 +632,24 @@ function clearLogs() {
 
 // ── JSON 格式化 ──
 function formatJson(obj: unknown): string {
+  // L50：用 replacer 跟踪已序列化对象，避免循环引用抛错退化为 "[object Object]"
+  const seen = new WeakSet<object>();
   try {
-    return JSON.stringify(obj, null, 2);
-  } catch {
-    return String(obj);
+    return JSON.stringify(
+      obj,
+      (_key, value: unknown) => {
+        if (value && typeof value === "object") {
+          if (seen.has(value)) {
+            return "[Circular]";
+          }
+          seen.add(value);
+        }
+        return value;
+      },
+      2,
+    );
+  } catch (e) {
+    return `[无法序列化: ${e instanceof Error ? e.message : String(e)}]`;
   }
 }
 
@@ -661,24 +681,32 @@ async function readFileSafe(filePath: string): Promise<string> {
 
 // ── 全局刷新 ──
 const refreshing = ref(false);
+const refreshErrors = ref<string[]>([]);
 async function refreshAll() {
   refreshing.value = true;
-  try {
-    await Promise.all([
-      loadSettingsView().then(() => {
-        dataDir.value = settingsView.value.data?.data_directory ?? "";
-      }),
-      loadProviders(),
-      runStateTest(),
-      runDashboardTest(),
-      runPlanTest(),
-      runReviewTest(),
-      loadAiUsageLog(),
-    ]);
-    await checkDataDirs();
-  } finally {
-    refreshing.value = false;
-  }
+  refreshErrors.value = [];
+  // H42：改用 allSettled 逐项执行，任一失败不阻塞其余调用，
+  // 每个子项自带 try/catch 记录独立错误，dataDir 优雅回退为空串
+  const results = await Promise.allSettled([
+    loadSettingsView().then(() => {
+      dataDir.value = settingsView.value.data?.data_directory ?? "";
+    }),
+    loadProviders(),
+    runStateTest(),
+    runDashboardTest(),
+    runPlanTest(),
+    runReviewTest(),
+    loadAiUsageLog(),
+  ]);
+  results.forEach((r, i) => {
+    if (r.status === "rejected") {
+      refreshErrors.value.push(`第 ${i + 1} 项刷新失败：${String(r.reason)}`);
+    }
+  });
+  await checkDataDirs().catch((e) => {
+    refreshErrors.value.push(`数据目录检查跳过：${String(e)}`);
+  });
+  refreshing.value = false;
 }
 
 function statusBadge(status: TestResult<unknown>["status"] | ProviderTestState["status"]) {
@@ -725,6 +753,17 @@ onUnmounted(() => {
         <span>刷新全部</span>
       </Button>
     </header>
+
+    <!-- H42：刷新失败的逐项错误提示（部分模块失败不阻塞其他模块） -->
+    <div v-if="refreshErrors.length > 0" class="refresh-errors">
+      <div class="refresh-errors-title">
+        <AlertCircle :size="14" />
+        <span>部分模块刷新失败（{{ refreshErrors.length }} 项）</span>
+      </div>
+      <ul class="refresh-errors-list">
+        <li v-for="(err, idx) in refreshErrors" :key="idx">{{ err }}</li>
+      </ul>
+    </div>
 
     <div class="debug-container">
       <!-- 左侧快速导航栏 -->
@@ -1519,6 +1558,37 @@ onUnmounted(() => {
 
 .debug-desc {
   font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* H42：刷新失败的逐项错误提示 */
+.refresh-errors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-danger, #f59e0b);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg, rgba(245, 158, 11, 0.08));
+}
+
+.refresh-errors-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.refresh-errors-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-5);
+  list-style: disc;
+  font-size: var(--text-xs);
   color: var(--text-secondary);
 }
 

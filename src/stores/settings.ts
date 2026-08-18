@@ -32,6 +32,7 @@ const defaultSettings: AppSettings = {
     },
     daily_task_count: 3,
     enable_review_tasks: true,
+    enable_time_tracking: false,
   },
   ai_providers: [],
   default_provider_id: "",

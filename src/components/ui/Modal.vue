@@ -58,7 +58,11 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => document.addEventListener("keydown", onKeydown));
-onBeforeUnmount(() => document.removeEventListener("keydown", onKeydown));
+onBeforeUnmount(() => {
+  document.removeEventListener("keydown", onKeydown);
+  // 组件卸载时恢复 body 滚动，避免 v-if 移除时 watch 未触发导致滚动被锁
+  document.body.style.overflow = "";
+});
 
 // 打开时锁定 body 滚动
 watch(

@@ -25,7 +25,6 @@ import {
   RotateCcw,
   Flag,
   ShieldAlert,
-  ArrowRight,
   Timer,
   Pause,
   Play,
@@ -53,8 +52,7 @@ const canModifyTasks = computed(() =>
 );
 const plan = computed(() => todayStore.plan);
 const planData = computed(() => plan.value?.data ?? null);
-const priorityA = computed(() => todayStore.priorityATasks);
-const priorityB = computed(() => todayStore.priorityBTasks);
+const tasks = computed(() => todayStore.allTasks);
 
 const source = computed(() => route.query.from as string | undefined);
 
@@ -105,12 +103,6 @@ function subjectBadgeVariant(
     professional: "professional",
   };
   return map[subject];
-}
-
-function priorityBadgeVariant(priority: string): "danger" | "warning" | "default" {
-  if (priority === "A") return "danger";
-  if (priority === "B") return "warning";
-  return "default";
 }
 
 async function completeTask(task: PlanTask) {
@@ -538,18 +530,18 @@ onUnmounted(() => {
         />
       </Card>
 
-      <!-- Priority A -->
+      <!-- 今日任务列表 -->
       <div class="section-heading">
         <h2 class="section-title">
           <Flag :size="15" class="title-icon" />
-          Priority A · 核心任务
+          今日任务
         </h2>
-        <span class="section-count">{{ priorityA.length }}</span>
+        <span class="section-count">{{ tasks.length }}</span>
       </div>
 
-      <div v-if="priorityA.length" class="task-list">
+      <div v-if="tasks.length" class="task-list">
         <Card
-          v-for="task in priorityA"
+          v-for="task in tasks"
           :key="task.id"
           padding="md"
           class="task-card"
@@ -566,9 +558,6 @@ onUnmounted(() => {
               <div class="task-badges">
                 <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">
                   {{ task.subject }}
-                </Badge>
-                <Badge :variant="priorityBadgeVariant(task.priority)" size="sm">
-                  P{{ task.priority }}
                 </Badge>
                 <Badge
                   v-if="timeTrackingEnabled && task.estimated_hours > 0"
@@ -693,162 +682,6 @@ onUnmounted(() => {
           </transition>
         </Card>
       </div>
-
-      <!-- Priority B -->
-      <template v-if="priorityB.length">
-        <div class="section-heading">
-          <h2 class="section-title">
-            <Flag :size="15" class="title-icon" />
-            Priority B · 次要任务
-          </h2>
-          <span class="section-count">{{ priorityB.length }}</span>
-        </div>
-
-        <div class="task-list">
-          <Card
-            v-for="task in priorityB"
-            :key="task.id"
-            padding="md"
-            class="task-card"
-            :class="{ done: task.status === 'done', expanded: isExpanded(task.id) }"
-          >
-            <div class="task-header" @click="toggleExpand(task.id)">
-              <div class="task-status-icon" :class="task.status">
-                <CheckCircle2 v-if="task.status === 'done'" :size="18" />
-                <Circle v-else :size="18" />
-              </div>
-
-              <div class="task-main">
-                <div class="task-badges">
-                  <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">
-                    {{ task.subject }}
-                  </Badge>
-                  <Badge :variant="priorityBadgeVariant(task.priority)" size="sm">
-                    P{{ task.priority }}
-                  </Badge>
-                  <Badge
-                    v-if="timeTrackingEnabled && task.estimated_hours > 0"
-                    variant="default"
-                    size="sm"
-                    class="estimate-badge"
-                  >
-                    <Clock :size="12" />
-                    ≈{{ formatHours(task.estimated_hours) }}
-                  </Badge>
-                  <Badge
-                    v-if="timeTrackingEnabled && (taskTimers[task.id]?.accumulated || isTaskRunning(task.id))"
-                    :variant="isTaskRunning(task.id) ? 'info' : 'default'"
-                    size="sm"
-                    class="timer-badge"
-                  >
-                    <Timer :size="12" />
-                    {{ formatMinutes(taskLiveMinutes(task.id)) }}
-                  </Badge>
-                </div>
-                <h3 class="task-title" :class="{ 'done-text': task.status === 'done' }">
-                  {{ task.title }}
-                </h3>
-              </div>
-
-              <div v-if="canModifyTasks" class="task-actions" @click.stop>
-                <template v-if="timeTrackingEnabled && task.status !== 'done'">
-                  <Button
-                    v-if="!isTaskRunning(task.id)"
-                    variant="ghost"
-                    size="sm"
-                    @click="startTimer(task.id)"
-                    title="开始计时"
-                  >
-                    <Play :size="13" />
-                  </Button>
-                  <Button
-                    v-else
-                    variant="ghost"
-                    size="sm"
-                    class="timer-running-btn"
-                    @click="pauseTimer(task.id)"
-                    title="暂停计时"
-                  >
-                    <Pause :size="13" />
-                  </Button>
-                </template>
-                <Button
-                  v-if="task.status !== 'done'"
-                  variant="primary"
-                  size="sm"
-                  @click="completeTask(task)"
-                >
-                  <CheckCircle2 :size="13" />
-                  完成
-                </Button>
-                <Button
-                  v-else
-                  variant="ghost"
-                  size="sm"
-                  @click="reopenTask(task)"
-                >
-                  <RotateCcw :size="13" />
-                  重开
-                </Button>
-              </div>
-              <div v-else class="task-status-text" :class="task.status">
-                {{ task.status === 'done' ? '已完成' : task.status === 'abandoned' ? '已放弃' : '未完成' }}
-              </div>
-
-              <ChevronDown :size="18" class="expand-chevron" :class="{ open: isExpanded(task.id) }" />
-            </div>
-
-            <transition name="expand">
-              <div v-if="isExpanded(task.id)" class="task-detail">
-                <div class="detail-block">
-                  <div class="detail-label">
-                    <Target :size="13" />
-                    目标
-                  </div>
-                  <p class="detail-text">{{ task.goal }}</p>
-                </div>
-
-                <div class="detail-block">
-                  <div class="detail-label">
-                    <ListChecks :size="13" />
-                    完成标准 (DoD)
-                  </div>
-                  <ul class="dod-list">
-                    <li v-for="(c, i) in task.completion_criteria" :key="i" class="dod-item">
-                      <CheckCircle2 :size="14" class="dod-check" />
-                      <span>{{ c }}</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <div v-if="task.textbook" class="detail-block">
-                  <div class="detail-label">
-                    <BookOpen :size="13" />
-                    教材
-                  </div>
-                  <p class="detail-text">{{ task.textbook }}</p>
-                </div>
-
-                <div v-if="task.style_tips" class="detail-block">
-                  <div class="detail-label">
-                    <Lightbulb :size="13" />
-                    风格提示
-                  </div>
-                  <p class="detail-text muted">{{ task.style_tips }}</p>
-                </div>
-
-                <div v-if="task.fallback_plan" class="detail-block fallback">
-                  <div class="detail-label">
-                    <ShieldAlert :size="13" />
-                    失败回退
-                  </div>
-                  <p class="detail-text">{{ task.fallback_plan }}</p>
-                </div>
-              </div>
-            </transition>
-          </Card>
-        </div>
-      </template>
 
       <!-- After today -->
       <Card v-if="planData?.after_today" padding="md" class="after-card">

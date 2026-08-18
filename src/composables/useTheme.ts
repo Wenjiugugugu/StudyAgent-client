@@ -1,4 +1,4 @@
-import { watch, onMounted } from "vue";
+import { watch, onMounted, onUnmounted } from "vue";
 import { useSettingsStore } from "@/stores/settings";
 import { isTauri } from "@/api/tauri";
 import { readBackgroundAsDataUrl } from "@/api";
@@ -153,6 +153,14 @@ export function useTheme() {
     settingsStore.save();
   }
 
+  // 系统主题变化监听：保存引用以便卸载时移除，避免 HMR 或多次调用泄漏监听器
+  let mediaQuery: MediaQueryList | null = null;
+  function onSystemThemeChange() {
+    if (settingsStore.theme === "system") {
+      applyTheme("system");
+    }
+  }
+
   onMounted(() => {
     applyTheme(settingsStore.theme);
     applyVisualMode(settingsStore.visualMode);
@@ -164,12 +172,14 @@ export function useTheme() {
     );
 
     // 监听系统主题变化
-    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    mediaQuery.addEventListener("change", () => {
-      if (settingsStore.theme === "system") {
-        applyTheme("system");
-      }
-    });
+    mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+    mediaQuery.addEventListener("change", onSystemThemeChange);
+  });
+
+  onUnmounted(() => {
+    if (mediaQuery) {
+      mediaQuery.removeEventListener("change", onSystemThemeChange);
+    }
   });
 
   // 监听 store 中主题变化

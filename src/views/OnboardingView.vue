@@ -80,6 +80,8 @@ const currentStep = ref(0);
 const direction = ref<"forward" | "backward">("forward");
 const showApiKey = ref(false);
 const finishing = ref(false);
+// H32：initState 失败时的错误信息（保留用户停留在引导页）
+const errorMessage = ref("");
 
 const step = computed(() => steps[currentStep.value]);
 const isFirstStep = computed(() => currentStep.value === 0);
@@ -118,6 +120,8 @@ const subjectStartDates = ref<{ math: string; english: string; politics: string;
 });
 // 用户期望每日任务数量（默认 3，每科约一条，未开始的科目不安排）
 const dailyTaskCount = ref(3);
+// 每日目标学习时长（小时，默认 5，可在引导中调整）
+const dailyTargetHours = ref(5);
 // 是否允许 AI 安排总结/复习任务（默认 true，关闭时只推进新知识点）
 const enableReviewTasks = ref(true);
 // 是否启用任务计时（默认 false，开启后任务卡显示开始/暂停按钮，记录专注时长）
@@ -140,7 +144,6 @@ const providerTypeOptions: { value: ProviderType; label: string }[] = [
 ];
 
 // ── Helpers ──
-const subjectLabels: Record<string, string> = { math: "数学", english: "英语", politics: "政治", professional: "专业课" };
 const phaseOptions = ["foundation", "strengthen", "sprint", "mock"];
 const phaseLabels: Record<string, string> = { foundation: "基础阶段", strengthen: "强化阶段", sprint: "冲刺阶段", mock: "模拟阶段" };
 
@@ -195,11 +198,26 @@ function persistCurrentStep() {
       break;
     case "exam": s.target_score = targetScore.value ?? 0; break;
     case "date": s.exam_date = `${examYear.value}-12-20`; break;
+    case "subjects":
+      // H40：科目选择持久化到 exam_type，中断引导后不丢失
+      {
+        const examTypeParts: string[] = [];
+        if (mathVersion.value) examTypeParts.push(mathVersion.value);
+        if (englishVersion.value) examTypeParts.push(englishVersion.value);
+        if (hasPolitics.value) examTypeParts.push("政治");
+        if (hasProfessional.value) examTypeParts.push(professionalName.value || "专业课");
+        s.exam_type = examTypeParts.join(" / ");
+      }
+      break;
+    case "progress":
+      // H40：进度/教材选择仅在 finish() 时写入 initState（Settings 无对应字段），
+      // 此处无需持久化，保留选择至 finish 即可。
+      break;
     case "schedule":
       s.study_schedule = {
         ...(s.study_schedule || {}),
         start_time: startTime.value, end_time: endTime.value,
-        daily_target_hours: 5,
+        daily_target_hours: dailyTargetHours.value,
         study_days_per_week: 7 - restDays.value.length,
         rest_days: [...restDays.value],
         review_reminder_time: "23:00",
@@ -234,7 +252,7 @@ async function finish() {
     s.study_schedule = {
       ...(s.study_schedule || {}),
       start_time: startTime.value, end_time: endTime.value,
-      daily_target_hours: s.study_schedule?.daily_target_hours ?? 5,
+      daily_target_hours: dailyTargetHours.value,
       study_days_per_week: studyDaysPerWeek.value,
       rest_days: [...restDays.value],
       review_reminder_time: s.study_schedule?.review_reminder_time ?? "23:00",
@@ -278,9 +296,10 @@ async function finish() {
     router.replace("/dashboard");
   } catch (err) {
     console.error("初始化失败:", err);
-    // 即使 init_state 失败，也允许进入
-    await settingsStore.completeOnboarding();
-    router.replace("/dashboard");
+    // H32：initState 失败时不允许完成引导，用户停留在引导页可重试
+    // 显示错误信息让用户了解问题
+    errorMessage.value = `初始化失败: ${err instanceof Error ? err.message : String(err)}。请检查配置后重试。`;
+    return;
   } finally {
     finishing.value = false;
   }
@@ -299,6 +318,9 @@ function initFormFromSettings() {
     restDays.value = ss.rest_days?.length ? [...ss.rest_days] : ["周日"];
     startTime.value = ss.start_time ?? "09:00";
     endTime.value = ss.end_time ?? "22:00";
+    if (typeof ss.daily_target_hours === "number" && ss.daily_target_hours > 0) {
+      dailyTargetHours.value = ss.daily_target_hours;
+    }
   }
   // Exam type parsing
   if (s.exam_type) {
@@ -644,6 +666,21 @@ onUnmounted(() => {
                   />
                 </div>
                 <div class="field">
+                  <label class="field-label">
+                    每日目标学习时长（小时）
+                    <span class="field-hint">（AI 排计划时会参考此目标安排任务量）</span>
+                  </label>
+                  <input
+                    v-model.number="dailyTargetHours"
+                    type="number"
+                    min="1"
+                    max="16"
+                    step="0.5"
+                    class="field-input"
+                  />
+                  <p class="field-hint">默认 5 小时，可根据实际情况调整，例如在职备考可设为 3 小时。</p>
+                </div>
+                <div class="field">
                   <label class="field-label">每周休息日（可多选）</label>
                   <div class="option-grid">
                     <button
@@ -862,6 +899,9 @@ onUnmounted(() => {
             <ArrowRight :size="16" />
           </Button>
         </div>
+
+        <!-- H32：初始化失败错误提示 -->
+        <p v-if="errorMessage" class="init-error">{{ errorMessage }}</p>
       </div>
     </div>
   </div>
@@ -1384,6 +1424,13 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-2);
   margin-left: auto;
+}
+
+.init-error {
+  margin-top: var(--space-3);
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  text-align: center;
 }
 
 /* Step transitions */

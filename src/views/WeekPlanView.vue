@@ -5,7 +5,6 @@ import * as api from "@/api";
 import { todayString } from "@/utils/date";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
-import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
@@ -25,11 +24,9 @@ import {
   HeartPulse,
   FileText,
   Ban,
-  X,
 } from "lucide-vue-next";
 import type {
   WeekPlan,
-  SubjectKey,
   PlanSummary,
   ExcludedDay,
   ExcludedReasonType,
@@ -317,18 +314,6 @@ const weekTotalHours = computed(() =>
 
 /* ── Subject styling ── */
 
-function subjectBadgeVariant(
-  subject: SubjectKey
-): "math" | "english" | "politics" | "professional" {
-  const map: Record<SubjectKey, "math" | "english" | "politics" | "professional"> = {
-    math: "math",
-    english: "english",
-    politics: "politics",
-    professional: "professional",
-  };
-  return map[subject];
-}
-
 function completionVariant(rate: number): string {
   if (rate >= 100) return "success";
   if (rate >= 50) return "warning";
@@ -515,6 +500,10 @@ async function confirmExclude() {
     regenMessage.value = e instanceof Error ? e.message : String(e);
   } finally {
     regenerating.value = false;
+    // 重置排除表单，避免残留旧值
+    excludeDate.value = "";
+    excludeType.value = "travel";
+    excludeNote.value = "";
   }
 }
 

@@ -8,8 +8,6 @@ import type {
   DailyPlan,
   ReviewRecord,
   DashboardSummary,
-  KnowledgeSubjectIndex,
-  KnowledgeObject,
   AppSettings,
   AIProviderConfig,
   MCPServerConfig,
@@ -364,70 +362,6 @@ export const mockDashboardSummary: DashboardSummary = {
     { subject: "professional", name: "408计算机综合", phase: "基础阶段", weekly_hours: 14, target_score: 110, completion_percentage: 55, current_topic: "数据结构·图" },
     { subject: "politics", name: "政治", phase: "未启动", weekly_hours: 0, target_score: 70, completion_percentage: 0, current_topic: "" },
   ],
-};
-
-/** Mock 知识对象索引 */
-export const mockKnowledgeIndex: KnowledgeSubjectIndex[] = [
-  {
-    subject: "professional",
-    name: "408计算机综合",
-    chapters: [
-      {
-        title: "数据结构",
-        entries: [
-          { id: "408-ds-03-tree-basics", name: "树的基本概念", order: "3.1" },
-          { id: "408-ds-03-bst", name: "二叉搜索树", order: "3.2" },
-          { id: "408-ds-03-avl", name: "AVL树", order: "3.3" },
-          { id: "408-ds-04-bf-match", name: "BF简单匹配", order: "4.1" },
-          { id: "408-ds-04-kmp", name: "KMP字符串匹配", order: "4.2" },
-        ],
-      },
-      {
-        title: "计算机组成原理",
-        entries: [
-          { id: "408-co-03-sram-dram", name: "SRAM/DRAM", order: "3.2" },
-          { id: "408-co-03-cache", name: "Cache存储器", order: "3.5" },
-          { id: "408-co-03-memory-hierarchy", name: "存储器层次结构", order: "3.1" },
-        ],
-      },
-    ],
-  },
-  {
-    subject: "math",
-    name: "数学（数二）",
-    chapters: [
-      {
-        title: "高等数学",
-        entries: [
-          { id: "math-calc-diff-eq", name: "微分方程", order: "8" },
-          { id: "math-calc-multi-diff", name: "多元微分", order: "9" },
-        ],
-      },
-    ],
-  },
-];
-
-/** Mock 知识对象详情 */
-export const mockKnowledgeObject: KnowledgeObject = {
-  id: "408-ds-04-kmp",
-  subject: "professional",
-  title: "KMP字符串匹配",
-  type: "algorithm",
-  status: "mastered",
-  content: "KMP算法是一种改进的字符串匹配算法，通过利用匹配失败后的信息，减少模式串和主串的匹配次数以达到快速匹配的目的。\n\n核心思想：通过预处理模式串，构建 next 数组（部分匹配表），在匹配失败时利用已匹配的信息，将模式串尽可能多地右移。\n\nnext 数组含义：next[j] 表示模式串 P[0..j-1] 的最长相等前后缀长度。\n\n时间复杂度：O(n+m)，其中 n 为主串长度，m 为模式串长度。",
-  prerequisites: ["408-ds-04-bf-match", "408-ds-03-tree-basics"],
-  dependents: [],
-  textbook_ref: {
-    name: "王道数据结构",
-    chapter: "第四章 串",
-    page: "p.120",
-  },
-  exam_ref: {
-    year: "2023",
-    question: "选择题第42题",
-  },
-  notes: "重点理解 next 数组的计算过程和 KMP 匹配的指针移动逻辑。",
-  tags: ["字符串", "匹配算法", "高频考点"],
 };
 
 /** Mock 应用设置 */

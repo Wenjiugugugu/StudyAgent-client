@@ -30,33 +30,79 @@ impl OpenAIProvider {
             .pool_idle_timeout(Some(Duration::from_secs(90)))
             .tcp_keepalive(Some(Duration::from_secs(60)))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+            .unwrap_or_else(|e| {
+                // M23：client 构建失败时明确记录，避免静默回退到无配置的默认 client
+                log::error!(
+                    "[AI-DEBUG] 自定义 reqwest client 构建失败，回退到默认 client（超时/连接池配置将不生效）: {}",
+                    e
+                );
+                reqwest::Client::new()
+            });
 
-        Self { config, client }
+        let provider = Self { config, client };
+        provider.warn_insecure_endpoint();
+        provider
     }
 
-    /// 构建请求 URL
-    fn chat_completions_url(&self) -> String {
+    /// M29：检查 base_url 是否为非 localhost 的明文 HTTP（会明文传输 API Key）
+    fn warn_insecure_endpoint(&self) {
+        let base = self.config.base_url.trim();
+        if !base.starts_with("http://") {
+            return;
+        }
+        let host = base
+            .trim_start_matches("http://")
+            .split(['/', ':'])
+            .next()
+            .unwrap_or("");
+        // localhost / 127.0.0.1 / ::1 等本地端点可接受（如 Ollama），远程 HTTP 需警告
+        let is_local = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "[::1]"
+            || host == "::1"
+            || host.starts_with("127.");
+        if !is_local {
+            log::warn!(
+                "[AI-DEBUG] base_url 使用明文 HTTP 且非本地地址（{}），API Key 将以明文传输，存在被中间人截获的风险",
+                base
+            );
+        }
+    }
+
+    /// 构建 API URL 的通用方法
+    ///
+    /// 根据 `base_url` 和给定后缀（如 `/chat/completions`、`/models`）构建完整 URL。
+    /// 处理以下情况：
+    /// - base_url 已包含后缀：直接使用（避免重复追加）
+    /// - base_url 以版本路径结尾（/v1, /v2, /v3）：直接追加后缀
+    /// - base_url 路径中包含版本段（/v1/, /v2/, /v3/）：直接追加后缀
+    /// - 默认：追加 /v1 + 后缀（适用于仅提供域名的场景）
+    fn build_url(&self, suffix: &str) -> String {
         let base = self.config.base_url.trim().trim_end_matches('/');
 
-        // 如果已包含 /chat/completions，直接使用
-        if base.ends_with("/chat/completions") {
+        // 如果 base 已以 suffix 结尾，直接使用（避免重复追加）
+        if base.ends_with(suffix) {
             return base.to_string();
         }
 
-        // 如果以版本路径结尾（/v1, /v2, /v3 等），直接追加 /chat/completions
+        // 如果以版本路径结尾（/v1, /v2, /v3 等），直接追加 suffix
         // 匹配 /v1, /v2, /v3, /api/v3 等
         if base.ends_with("/v1") || base.ends_with("/v2") || base.ends_with("/v3") {
-            return format!("{}/chat/completions", base);
+            return format!("{}{}", base, suffix);
         }
 
-        // 如果路径中包含版本段（/v1/, /v2/, /v3/），直接追加 /chat/completions
+        // 如果路径中包含版本段（/v1/, /v2/, /v3/），直接追加 suffix
         if base.contains("/v1/") || base.contains("/v2/") || base.contains("/v3/") {
-            return format!("{}/chat/completions", base);
+            return format!("{}{}", base, suffix);
         }
 
-        // 默认追加 /v1/chat/completions（适用于仅提供域名的场景）
-        format!("{}/v1/chat/completions", base)
+        // 默认追加 /v1 + suffix（适用于仅提供域名的场景）
+        format!("{}/v1{}", base, suffix)
+    }
+
+    /// 构建 chat completions 请求 URL
+    fn chat_completions_url(&self) -> String {
+        self.build_url("/chat/completions")
     }
 
     /// 构建请求头
@@ -67,8 +113,14 @@ impl OpenAIProvider {
 
         if !self.config.api_key.is_empty() {
             let auth = format!("Bearer {}", self.config.api_key);
-            if let Ok(val) = HeaderValue::from_str(&auth) {
-                headers.insert(AUTHORIZATION, val);
+            match HeaderValue::from_str(&auth) {
+                Ok(val) => {
+                    headers.insert(AUTHORIZATION, val);
+                }
+                Err(e) => {
+                    // M22：HeaderValue 构造失败时明确记录错误，避免「静默无认证头发送」
+                    log::error!("[AI-DEBUG] API Key 含非法字符，无法构造 Authorization 头: {}", e);
+                }
             }
         }
 
@@ -124,6 +176,11 @@ impl OpenAIProvider {
             body["max_tokens"] = serde_json::Value::Number(max_tokens.into());
         }
 
+        // M17：流式请求启用 usage 统计（OpenAI 协议在最后一个 chunk 返回 usage）
+        if req.stream {
+            body["stream_options"] = serde_json::json!({ "include_usage": true });
+        }
+
         if let Some(ref tools) = req.tools {
             if !tools.is_empty() {
                 body["tools"] = serde_json::Value::Array(
@@ -149,20 +206,7 @@ impl OpenAIProvider {
 
     /// 构建 models API URL
     fn models_url(&self) -> String {
-        let base = self.config.base_url.trim().trim_end_matches('/');
-
-        // 如果以版本路径结尾（/v1, /v2, /v3），追加 /models
-        if base.ends_with("/v1") || base.ends_with("/v2") || base.ends_with("/v3") {
-            return format!("{}/models", base);
-        }
-
-        // 如果路径中包含版本段，追加 /models
-        if base.contains("/v1/") || base.contains("/v2/") || base.contains("/v3/") {
-            return format!("{}/models", base);
-        }
-
-        // 默认追加 /v1/models
-        format!("{}/v1/models", base)
+        self.build_url("/models")
     }
 
     /// 解析 OpenAI API 非流式响应
@@ -207,10 +251,23 @@ impl OpenAIProvider {
     }
 
     /// 解析 SSE 流中的单个 data 行
+    ///
+    /// H7：反序列化失败时记录日志并检测 error 字段，不再静默丢弃
     fn parse_sse_line(&self, line: &str) -> Option<ChatStreamChunk> {
         let line = line.trim();
 
         if line.is_empty() || line.starts_with(':') {
+            return None;
+        }
+
+        if line.starts_with("event: ") {
+            // H7：部分 provider 使用 SSE event 事件（如 event: error）
+            let event = line.trim_start_matches("event: ").trim();
+            if event == "error" {
+                log::warn!("[AI-DEBUG] 收到 SSE error 事件");
+            } else {
+                log::debug!("[AI-DEBUG] SSE 事件: {}", event);
+            }
             return None;
         }
 
@@ -222,28 +279,74 @@ impl OpenAIProvider {
                     content: String::new(),
                     done: true,
                     tool_calls: None,
+                    reset: false,
+                    usage: None,
                 });
             }
 
             // 解析 JSON
-            if let Ok(chunk) = serde_json::from_str::<OpenAIStreamChunk>(data) {
-                let delta = chunk.choices.first();
-
-                if let Some(choice) = delta {
-                    let mut content = choice.delta.content.clone().unwrap_or_default();
-                    if content.is_empty() {
-                        content = choice.delta.reasoning_content.clone().unwrap_or_default();
-                    }
-                    let tool_calls = choice.delta.tool_calls.clone();
-
-                    let done = choice.finish_reason.is_some();
-
-                    return Some(ChatStreamChunk {
-                        content,
-                        done,
-                        // L25：tool_calls 已通过 is_some() 检查，直接移动即可
-                        tool_calls,
+            match serde_json::from_str::<OpenAIStreamChunk>(data) {
+                Ok(chunk) => {
+                    // M17：提取流式 usage（OpenAI 协议在最后一个 chunk 返回）
+                    let usage = chunk.usage.map(|u| TokenUsage {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
                     });
+
+                    let delta = chunk.choices.first();
+
+                    if let Some(choice) = delta {
+                        let mut content = choice.delta.content.clone().unwrap_or_default();
+                        if content.is_empty() {
+                            content = choice.delta.reasoning_content.clone().unwrap_or_default();
+                        }
+                        let tool_calls = choice.delta.tool_calls.clone();
+
+                        let done = choice.finish_reason.is_some();
+
+                        return Some(ChatStreamChunk {
+                            content,
+                            done,
+                            // L25：tool_calls 已通过 is_some() 检查，直接移动即可
+                            tool_calls,
+                            reset: false,
+                            usage,
+                        });
+                    }
+
+                    // 无 choices 但携带 usage 的结束 chunk（M17）
+                    if let Some(u) = usage {
+                        return Some(ChatStreamChunk {
+                            content: String::new(),
+                            done: true,
+                            tool_calls: None,
+                            reset: false,
+                            usage: Some(u),
+                        });
+                    }
+                }
+                Err(_) => {
+                    // H7：反序列化失败。尝试解析 error 字段，区分「错误」与「无法识别行」
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(err) = value.get("error") {
+                            let msg = err.to_string();
+                            log::warn!(
+                                "[AI-DEBUG] 流式响应包含错误: {}",
+                                msg.get(..msg.floor_char_boundary(200)).unwrap_or(&msg)
+                            );
+                        } else {
+                            log::warn!(
+                                "[AI-DEBUG] 无法解析的 SSE data 行: {}",
+                                data.get(..data.floor_char_boundary(200)).unwrap_or(data)
+                            );
+                        }
+                    } else {
+                        log::warn!(
+                            "[AI-DEBUG] 无法解析的 SSE data 行: {}",
+                            data.get(..data.floor_char_boundary(200)).unwrap_or(data)
+                        );
+                    }
                 }
             }
         }
@@ -282,8 +385,8 @@ impl AiProvider for OpenAIProvider {
         let body = self.build_request_body(&req);
         let headers = self.build_headers();
 
-        // 调试日志：完整请求体（脱敏 API Key 后输出）
-        log::info!("[AI-DEBUG] 非流式请求 body: {}", serde_json::to_string(&body).unwrap_or_default());
+        // 调试日志：完整请求体（脱敏 API Key 后输出）。H11：降为 debug 级别避免生产噪音与敏感数据泄露
+        log::debug!("[AI-DEBUG] 非流式请求 body: {}", serde_json::to_string(&body).unwrap_or_default());
         log::info!(
             "[AI-DEBUG] 请求消息数: {}, 工具数: {}",
             req.messages.len(),
@@ -298,8 +401,13 @@ impl AiProvider for OpenAIProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            log::warn!("[AI-DEBUG] AI 请求失败 status={} body={}", status, error_text);
-            return Err(format!("AI 请求返回错误 ({}): {}", status, error_text));
+            // H12：错误信息截断，避免完整 body（可能回显请求头/请求体）泄露到用户界面与日志
+            let truncated = error_text
+                .chars()
+                .take(500)
+                .collect::<String>();
+            log::warn!("[AI-DEBUG] AI 请求失败 status={} body={}", status, truncated);
+            return Err(format!("AI 请求返回错误 ({}): {}", status, truncated));
         }
 
         // 调试日志：原始响应文本（在解析前记录，便于排查 AI 返回格式异常）
@@ -307,7 +415,7 @@ impl AiProvider for OpenAIProvider {
             .text()
             .await
             .map_err(|e| format!("读取 AI 响应失败: {}", e))?;
-        log::info!(
+        log::debug!(
             "[AI-DEBUG] 原始响应长度: {} 字节, 前 500 字符: {}",
             raw_text.len(),
             raw_text.chars().take(500).collect::<String>()
@@ -339,7 +447,8 @@ impl AiProvider for OpenAIProvider {
         let body = self.build_request_body(&req);
         let headers = self.build_headers();
 
-        log::info!("[AI-DEBUG] 流式请求 body: {}", serde_json::to_string(&body).unwrap_or_default());
+        // H11：流式请求 body 也降为 debug 级别
+        log::debug!("[AI-DEBUG] 流式请求 body: {}", serde_json::to_string(&body).unwrap_or_default());
 
         let response = self
             .send_with_retry(&url, headers, &body, req.timeout_override)
@@ -352,8 +461,10 @@ impl AiProvider for OpenAIProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            log::warn!("[AI-DEBUG] 流式请求失败 status={} body={}", status, error_text);
-            return Err(format!("AI 流式请求返回错误 ({}): {}", status, error_text));
+            // H12：错误信息截断，避免完整 body 泄露到用户界面与日志
+            let truncated = error_text.chars().take(500).collect::<String>();
+            log::warn!("[AI-DEBUG] 流式请求失败 status={} body={}", status, truncated);
+            return Err(format!("AI 流式请求返回错误 ({}): {}", status, truncated));
         }
 
         // 读取 SSE 流
@@ -362,13 +473,16 @@ impl AiProvider for OpenAIProvider {
         let mut finish_reason = "stop".to_string();
         let mut model_name = self.config.model.clone();
         let mut response_id = String::new();
+        // M17：流式 usage 累积（最后一个 chunk 携带）
+        let mut stream_usage = TokenUsage::default();
 
         let mut stream = response.bytes_stream();
 
         let mut buffer = String::new();
         let mut sse_line_count: usize = 0;
 
-        while let Some(chunk_result) = stream.next().await {
+        // H8：收到 [DONE] 后通过标签跳出外层循环，避免继续消费流
+        'stream: while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| format!("读取流失败: {}", e))?;
 
             let text = String::from_utf8_lossy(&chunk);
@@ -400,14 +514,30 @@ impl AiProvider for OpenAIProvider {
                         full_content.push_str(&stream_chunk.content);
                     }
 
+                    if let Some(u) = &stream_chunk.usage {
+                        stream_usage = u.clone();
+                    }
+
                     if let Some(ref tc) = stream_chunk.tool_calls {
-                        // 合并 tool_calls
+                        // C5：按 index 合并 tool_calls（OpenAI 规范），而非按 id
+                        // （后续 delta 块可能不携带 id，仅 index + arguments）
                         for new_tc in tc {
-                            // 查找是否已有相同 id 的 tool_call
-                            let existing = tool_calls.iter_mut().find(|t| t.id == new_tc.id);
+                            let existing = tool_calls.iter_mut().find(|t| {
+                                if new_tc.id.is_empty() {
+                                    t.index == new_tc.index
+                                } else {
+                                    t.id == new_tc.id
+                                }
+                            });
                             match existing {
                                 Some(t) => {
-                                    // 追加 arguments
+                                    // 首次增量块带 id/name，后续仅追加 arguments
+                                    if !new_tc.id.is_empty() {
+                                        t.id = new_tc.id.clone();
+                                    }
+                                    if !new_tc.function.name.is_empty() {
+                                        t.function.name = new_tc.function.name.clone();
+                                    }
                                     t.function.arguments.push_str(&new_tc.function.arguments);
                                 }
                                 None => {
@@ -420,8 +550,8 @@ impl AiProvider for OpenAIProvider {
                     on_chunk(stream_chunk.clone());
 
                     if stream_chunk.done {
-                        // 流结束
-                        break;
+                        // 流结束：跳出外层循环，不再从 stream 读取
+                        break 'stream;
                     }
                 }
             }
@@ -435,6 +565,9 @@ impl AiProvider for OpenAIProvider {
                     if !stream_chunk.content.is_empty() {
                         full_content.push_str(&stream_chunk.content);
                     }
+                    if let Some(u) = &stream_chunk.usage {
+                        stream_usage = u.clone();
+                    }
                     on_chunk(stream_chunk);
                 }
             }
@@ -442,11 +575,13 @@ impl AiProvider for OpenAIProvider {
 
         // 调试日志：流式响应汇总
         log::info!(
-            "[AI-DEBUG] 流式响应完成: SSE 行数={}, content_len={}, tool_calls={}, finish_reason={}",
+            "[AI-DEBUG] 流式响应完成: SSE 行数={}, content_len={}, tool_calls={}, finish_reason={}, prompt_tokens={}, completion_tokens={}",
             sse_line_count,
             full_content.len(),
             tool_calls.len(),
-            finish_reason
+            finish_reason,
+            stream_usage.prompt_tokens,
+            stream_usage.completion_tokens
         );
         log::debug!(
             "[AI-DEBUG] 流式响应完整 content (前 1000 字符): {}",
@@ -463,7 +598,8 @@ impl AiProvider for OpenAIProvider {
             } else {
                 Some(tool_calls)
             },
-            usage: TokenUsage::default(),
+            // M17：使用流式累积的 usage，避免恒为 0
+            usage: stream_usage,
             finish_reason,
         })
     }
@@ -585,6 +721,9 @@ struct OpenAIStreamChunk {
     id: String,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// M17：最后一个 chunk 携带 usage（需服务端支持 stream_options.include_usage）
+    #[serde(default)]
+    usage: Option<OpenAIUsage>,
 }
 
 /// OpenAI API 流式选择项

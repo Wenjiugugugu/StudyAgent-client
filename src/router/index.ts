@@ -50,6 +50,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "复盘", icon: "ClipboardCheck" },
   },
   {
+    path: "/doubt",
+    name: "doubt",
+    component: () => import("@/views/DoubtView.vue"),
+    meta: { title: "解惑", icon: "HelpCircle" },
+  },
+  {
     path: "/timeline",
     name: "timeline",
     component: () => import("@/views/TimelineView.vue"),
@@ -72,6 +78,11 @@ const routes: RouteRecordRaw[] = [
     name: "settings",
     component: () => import("@/views/SettingsView.vue"),
     meta: { title: "设置", icon: "Settings" },
+  },
+  // M36：404 兜底路由，避免访问未定义路径时显示空白页
+  {
+    path: "/:pathMatch(.*)*",
+    redirect: "/dashboard",
   },
 ];
 

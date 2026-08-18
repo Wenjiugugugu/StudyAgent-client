@@ -6,14 +6,12 @@
 //! - Scheduler：从周计划生成日计划（无 AI）
 //! - Review Agent：调用 AI Service 生成复盘
 //! - Briefing Agent：调用 AI Service 生成每日简报
-//! - Knowledge：知识对象读取与搜索
 //! - User Model：用户画像读取
 //! - Analytics：学习数据分析聚合
 
 pub mod analytics;
 pub mod briefing;
 pub mod dashboard;
-pub mod knowledge;
 pub mod planner;
 pub mod review;
 pub mod scheduler;
@@ -22,7 +20,6 @@ pub mod user_model;
 pub use analytics::*;
 pub use briefing::*;
 pub use dashboard::*;
-pub use knowledge::*;
 pub use planner::*;
 pub use review::*;
 pub use scheduler::*;

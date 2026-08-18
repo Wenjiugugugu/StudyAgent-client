@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import * as api from "@/api";
-import { todayString } from "@/utils/date";
+import { todayString, weekdayName } from "@/utils/date";
 import { useSettingsStore } from "@/stores/settings";
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
@@ -133,12 +133,6 @@ function monthLabel(monthStr: string): string {
   return `${y}年${parseInt(m, 10)}月`;
 }
 
-function weekday(dateStr: string): string {
-  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  const d = new Date(`${dateStr}T12:00:00`);
-  return weekdays[d.getDay()];
-}
-
 function dayNum(dateStr: string): string {
   return dateStr.split("-")[2]?.replace(/^0/, "") ?? "";
 }
@@ -187,7 +181,7 @@ function reviewStatus(dateStr: string, hasReview: boolean, rate: number): { text
 }
 
 function openPlan(date: string) {
-  router.push({ name: "plan", query: { date, from: "history" } });
+  router.push({ name: "plan", query: { date } });
 }
 
 async function load() {
@@ -280,7 +274,7 @@ onMounted(() => {
 
                   <div class="date-main">
                     <span class="date-day">{{ dayNum(day.date) }}</span>
-                    <span class="date-weekday">{{ weekday(day.date) }}</span>
+                    <span class="date-weekday">{{ weekdayName(day.date) }}</span>
                   </div>
 
                   <div class="date-stats">

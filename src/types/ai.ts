@@ -53,6 +53,8 @@ export interface ChatMessage {
 export interface ToolCall {
   id: string;
   type: "function";
+  /** 流式合并依据（OpenAI 规范） */
+  index?: number;
   function: {
     name: string;
     arguments: string;
@@ -78,7 +80,7 @@ export interface ChatRequest {
   stream?: boolean;
   tools?: ToolDefinition[];
   /** Agent 类型标识，Core 据此选择 system prompt */
-  agent?: "planner" | "teacher" | "reviewer" | "assistant";
+  agent?: "planner" | "teacher" | "reviewer" | "assistant" | "doubt";
   /** 附加上下文（当前页面信息） */
   context?: AgentContext;
 }
@@ -112,6 +114,14 @@ export interface ChatStreamChunk {
   content: string;
   done: boolean;
   tool_calls?: ToolCall[];
+  /** fallback 切换 provider 时置为 true，调用方应清空已显示内容 */
+  reset?: boolean;
+  /** M17：流式 usage（最后一 chunk 携带，可选） */
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
 
 /** AI Provider 能力 */

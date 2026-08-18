@@ -5,7 +5,9 @@
 //! 并提供 fallback 机制（默认 provider 失败时尝试备用 provider）。
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+
+use parking_lot::{Mutex, RwLock};
 
 use super::provider::*;
 
@@ -13,8 +15,6 @@ use super::provider::*;
 pub struct AiService {
     /// Provider 实例缓存（按 provider ID 索引）
     providers: RwLock<HashMap<String, Arc<dyn AiProvider>>>,
-    /// Provider 配置列表
-    configs: RwLock<Vec<AIProviderConfig>>,
     /// 默认 Provider ID
     default_provider_id: RwLock<String>,
     /// 活跃请求的取消令牌（按 agent 键索引）
@@ -29,7 +29,6 @@ impl AiService {
     pub fn new() -> Self {
         Self {
             providers: RwLock::new(HashMap::new()),
-            configs: RwLock::new(Vec::new()),
             default_provider_id: RwLock::new(String::new()),
             cancellations: Mutex::new(HashMap::new()),
         }
@@ -45,21 +44,21 @@ impl AiService {
                 let is_default = config.is_default;
 
                 if let Ok(provider) = create_provider(config) {
-                    service.providers.write().unwrap().insert(id.clone(), provider);
+                    service.providers.write().insert(id.clone(), provider);
 
                     if is_default {
-                        *service.default_provider_id.write().unwrap() = id.clone();
+                        *service.default_provider_id.write() = id.clone();
                     }
                 }
             }
         }
 
         // 如果没有默认 provider，使用第一个
-        let default_id = service.default_provider_id.read().unwrap().clone();
+        let default_id = service.default_provider_id.read().clone();
         if default_id.is_empty() {
-            let providers = service.providers.read().unwrap();
+            let providers = service.providers.read();
             if let Some(first_id) = providers.keys().next() {
-                *service.default_provider_id.write().unwrap() = first_id.clone();
+                *service.default_provider_id.write() = first_id.clone();
             }
         }
 
@@ -74,7 +73,7 @@ impl AiService {
 
         if enabled {
             let provider = create_provider(config)?;
-            self.providers.write().unwrap().insert(id.clone(), provider);
+            self.providers.write().insert(id.clone(), provider);
 
             if is_default {
                 self.set_default_provider(&id)?;
@@ -86,39 +85,39 @@ impl AiService {
 
     /// 移除 Provider
     pub fn remove_provider(&self, provider_id: &str) {
-        self.providers.write().unwrap().remove(provider_id);
+        self.providers.write().remove(provider_id);
 
-        let default_id = self.default_provider_id.read().unwrap().clone();
+        let default_id = self.default_provider_id.read().clone();
         if default_id == provider_id {
             // 如果移除的是默认 provider，选择第一个可用的
-            let providers = self.providers.read().unwrap();
+            let providers = self.providers.read();
             if let Some(first_id) = providers.keys().next() {
-                *self.default_provider_id.write().unwrap() = first_id.clone();
+                *self.default_provider_id.write() = first_id.clone();
             } else {
-                self.default_provider_id.write().unwrap().clear();
+                self.default_provider_id.write().clear();
             }
         }
     }
 
     /// 设置默认 Provider
     pub fn set_default_provider(&self, provider_id: &str) -> Result<(), String> {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read();
         if !providers.contains_key(provider_id) {
             return Err(format!("Provider 不存在: {}", provider_id));
         }
-        *self.default_provider_id.write().unwrap() = provider_id.to_string();
+        *self.default_provider_id.write() = provider_id.to_string();
         Ok(())
     }
 
     /// 获取默认 Provider ID
     pub fn default_provider_id(&self) -> String {
-        self.default_provider_id.read().unwrap().clone()
+        self.default_provider_id.read().clone()
     }
 
     /// 获取默认 Provider
     fn get_default_provider(&self) -> Result<Arc<dyn AiProvider>, String> {
-        let default_id = self.default_provider_id.read().unwrap().clone();
-        let providers = self.providers.read().unwrap();
+        let default_id = self.default_provider_id.read().clone();
+        let providers = self.providers.read();
 
         if default_id.is_empty() {
             return Err("未配置任何 AI Provider".to_string());
@@ -132,7 +131,7 @@ impl AiService {
 
     /// 根据 ID 获取 Provider
     pub fn get_provider(&self, provider_id: &str) -> Result<Arc<dyn AiProvider>, String> {
-        let providers = self.providers.read().unwrap();
+        let providers = self.providers.read();
         providers
             .get(provider_id)
             .cloned()
@@ -141,8 +140,8 @@ impl AiService {
 
     /// 列出所有已注册的 Provider 配置
     pub fn list_providers(&self) -> Vec<AIProviderConfig> {
-        let providers = self.providers.read().unwrap();
-        let default_id = self.default_provider_id.read().unwrap();
+        let providers = self.providers.read();
+        let default_id = self.default_provider_id.read();
 
         providers
             .values()
@@ -159,7 +158,7 @@ impl AiService {
     /// 返回是否找到了对应请求。取消后请求会以 `REQUEST_CANCELLED` 错误提前结束，
     /// 不会触发 fallback provider 切换。
     pub fn cancel_request(&self, key: &str) -> bool {
-        let cancellations = self.cancellations.lock().unwrap();
+        let cancellations = self.cancellations.lock();
         match cancellations.get(key) {
             Some(tx) => {
                 let _ = tx.send(true);
@@ -200,10 +199,13 @@ impl AiService {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         self.cancellations
             .lock()
-            .unwrap()
             .insert(cancel_key.clone(), cancel_tx);
 
         let default_provider = self.get_default_provider()?;
+        let req_model = req
+            .model
+            .clone()
+            .unwrap_or_else(|| default_provider.config().model.clone());
         let started = std::time::Instant::now();
 
         let result = if *cancel_rx.borrow() {
@@ -215,7 +217,7 @@ impl AiService {
             }
         };
 
-        self.cancellations.lock().unwrap().remove(&cancel_key);
+        self.cancellations.lock().remove(&cancel_key);
 
         let result = match result {
             Ok(resp) => Ok(resp),
@@ -236,7 +238,7 @@ impl AiService {
         };
 
         let duration_ms = started.elapsed().as_millis() as u64;
-        log_usage(&agent_tag, &result, duration_ms);
+        log_usage(&agent_tag, &result, duration_ms, &req_model);
 
         result
     }
@@ -245,6 +247,9 @@ impl AiService {
     ///
     /// 通过回调函数返回每个 chunk
     /// 完成后记录 token 用量到持久化日志
+    ///
+    /// H9：默认 provider 失败时尝试备用 provider；
+    /// 若已发出部分 chunk，先发送 reset 标记通知前端清空再切换。
     pub async fn chat_stream(
         &self,
         mut req: ChatRequest,
@@ -265,12 +270,17 @@ impl AiService {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         self.cancellations
             .lock()
-            .unwrap()
             .insert(cancel_key.clone(), cancel_tx);
 
-        let default_provider = self.get_default_provider()?;
         let on_chunk_ref: &(dyn Fn(ChatStreamChunk) + Send + Sync) = &on_chunk;
         let started = std::time::Instant::now();
+
+        let default_provider = self.get_default_provider()?;
+        let req_model = req
+            .model
+            .clone()
+            .unwrap_or_else(|| default_provider.config().model.clone());
+        let default_id = self.default_provider_id.read().clone();
 
         let result = if *cancel_rx.borrow() {
             Err(REQUEST_CANCELLED.to_string())
@@ -281,23 +291,96 @@ impl AiService {
             }
         };
 
-        self.cancellations.lock().unwrap().remove(&cancel_key);
+        let result = match result {
+            Ok(resp) => Ok(resp),
+            Err(e) if e.contains(REQUEST_CANCELLED) => Err(e),
+            Err(e) => {
+                log::warn!("默认 Provider 流式调用失败: {}", e);
+                // 若默认 provider 已发出部分内容，先发 reset 标记通知前端清空，再切换
+                on_chunk(ChatStreamChunk {
+                    content: String::new(),
+                    done: false,
+                    tool_calls: None,
+                    reset: true,
+                    usage: None,
+                });
+
+                // 尝试备用 provider（带取消检测）
+                match self
+                    .fallback_chat_stream(&req, on_chunk_ref, &mut cancel_rx)
+                    .await
+                {
+                    Ok(resp) => Ok(resp),
+                    Err(fb_e) if fb_e.contains(REQUEST_CANCELLED) => Err(fb_e),
+                    Err(_) => Err(format!("Provider 流式调用失败: {}", e)),
+                }
+            }
+        };
+
+        self.cancellations.lock().remove(&cancel_key);
 
         let duration_ms = started.elapsed().as_millis() as u64;
-        log_usage(&agent_tag, &result, duration_ms);
+        log_usage(&agent_tag, &result, duration_ms, &req_model);
 
         result
     }
 
+    /// Fallback 流式聊天：依次尝试备用 provider（跳过默认 provider）
+    ///
+    /// 与 `fallback_chat` 对应，供 `chat_stream` 在默认 provider 失败时使用。
+    async fn fallback_chat_stream(
+        &self,
+        req: &ChatRequest,
+        on_chunk: &(dyn Fn(ChatStreamChunk) + Send + Sync),
+        cancel_rx: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<ChatResponse, String> {
+        let default_id = self.default_provider_id.read().clone();
+
+        // 克隆出 provider 列表后立即释放读锁，避免在 `.await` 期间
+        // 持有 `RwLockReadGuard`（该守卫不是 `Send`）。
+        let providers: Vec<(String, Arc<dyn AiProvider>)> = {
+            let providers = self.providers.read();
+            providers
+                .iter()
+                .map(|(id, provider)| (id.clone(), provider.clone()))
+                .collect()
+        };
+
+        for (id, provider) in &providers {
+            if *id == default_id {
+                continue; // 跳过已失败的默认 provider
+            }
+            log::info!("尝试备用 Provider 流式: {}", id);
+            let r = if *cancel_rx.borrow() {
+                Err(REQUEST_CANCELLED.to_string())
+            } else {
+                tokio::select! {
+                    r = provider.chat_stream(req, on_chunk) => r,
+                    _ = cancel_rx.changed() => Err(REQUEST_CANCELLED.to_string()),
+                }
+            };
+            match r {
+                Ok(resp) => return Ok(resp),
+                Err(fb_e) if fb_e.contains(REQUEST_CANCELLED) => return Err(fb_e),
+                Err(fb_e) => {
+                    log::warn!("备用 Provider {} 流式调用失败: {}", id, fb_e);
+                    continue;
+                }
+            }
+        }
+
+        Err("所有 Provider 均调用失败".to_string())
+    }
+
     /// Fallback 聊天：尝试其他 provider
     async fn fallback_chat(&self, req: &ChatRequest) -> Result<ChatResponse, String> {
-        let default_id = self.default_provider_id.read().unwrap().clone();
+        let default_id = self.default_provider_id.read().clone();
 
         // 克隆出 provider 列表后立即释放读锁，避免在 `.await` 期间持有
-        // `std::sync::RwLockReadGuard`（该守卫不是 `Send`，会导致 future 不满足 `Send`）。
+        // `RwLockReadGuard`（该守卫不是 `Send`，会导致 future 不满足 `Send`）。
         // `Arc<dyn AiProvider>` 的克隆仅增加引用计数，开销很小。
         let providers: Vec<(String, Arc<dyn AiProvider>)> = {
-            let providers = self.providers.read().unwrap();
+            let providers = self.providers.read();
             providers
                 .iter()
                 .map(|(id, provider)| (id.clone(), provider.clone()))
@@ -349,7 +432,7 @@ impl AiService {
 
     /// 检查是否已配置 Provider
     pub fn has_provider(&self) -> bool {
-        !self.providers.read().unwrap().is_empty()
+        !self.providers.read().is_empty()
     }
 
     /// 更新 Provider 配置
@@ -385,7 +468,12 @@ impl Default for AiService {
 // ============================================================================
 
 /// 记录一次 AI 调用的 token 用量到持久化日志
-fn log_usage(agent_tag: &str, result: &Result<ChatResponse, String>, duration_ms: u64) {
+fn log_usage(
+    agent_tag: &str,
+    result: &Result<ChatResponse, String>,
+    duration_ms: u64,
+    req_model: &str,
+) {
     let (status, model, usage, error) = match result {
         Ok(resp) => (
             "success",
@@ -395,7 +483,7 @@ fn log_usage(agent_tag: &str, result: &Result<ChatResponse, String>, duration_ms
         ),
         Err(e) => (
             "error",
-            String::new(),
+            req_model.to_string(),
             TokenUsage::default(),
             Some(e.clone()),
         ),
@@ -454,11 +542,15 @@ impl AiProvider for MockProvider {
             content: "这是一个模拟流式响应。".to_string(),
             done: false,
             tool_calls: None,
+            reset: false,
+            usage: None,
         });
         on_chunk(ChatStreamChunk {
             content: "请配置真实的 AI Provider。".to_string(),
             done: true,
             tool_calls: None,
+            reset: false,
+            usage: None,
         });
 
         Ok(ChatResponse {

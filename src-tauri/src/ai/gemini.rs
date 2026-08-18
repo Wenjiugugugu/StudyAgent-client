@@ -217,6 +217,7 @@ impl GeminiProvider {
                     tool_calls.push(ToolCall {
                         id: format!("fc_{}", tool_calls.len()),
                         r#type: "function".to_string(),
+                        index: 0,
                         function: ToolCallFunction {
                             name: fc.name.clone(),
                             arguments: fc.args.to_string(),
@@ -400,6 +401,8 @@ impl AiProvider for GeminiProvider {
                                     content: text.clone(),
                                     done: false,
                                     tool_calls: None,
+                                    reset: false,
+                                    usage: None,
                                 });
                             }
                         }
@@ -407,6 +410,7 @@ impl AiProvider for GeminiProvider {
                             tool_calls.push(ToolCall {
                                 id: format!("fc_{}", tool_calls.len()),
                                 r#type: "function".to_string(),
+                                index: 0,
                                 function: ToolCallFunction {
                                     name: fc.name.clone(),
                                     arguments: fc.args.to_string(),
@@ -436,6 +440,12 @@ impl AiProvider for GeminiProvider {
                         content: String::new(),
                         done: true,
                         tool_calls: None,
+                        reset: false,
+                        usage: Some(TokenUsage {
+                            prompt_tokens: usage.prompt_token_count,
+                            completion_tokens: usage.candidates_token_count,
+                            total_tokens: usage.total_token_count,
+                        }),
                     });
                 }
             }
@@ -449,6 +459,8 @@ impl AiProvider for GeminiProvider {
             } else {
                 Some(tool_calls.clone())
             },
+            reset: false,
+            usage: None,
         });
 
         Ok(ChatResponse {
@@ -662,6 +674,7 @@ mod tests {
                     tool_calls: Some(vec![ToolCall {
                         id: "fc_1".to_string(),
                         r#type: "function".to_string(),
+                        index: 0,
                         function: ToolCallFunction {
                             name: "read_file".to_string(),
                             arguments: r#"{"path":"a"}"#.to_string(),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onUnmounted } from "vue";
 import Button from "@/components/ui/Button.vue";
 import { Check, Copy } from "lucide-vue-next";
 
@@ -9,6 +9,7 @@ const props = defineProps<{
 }>();
 
 const copied = ref(false);
+let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function copy() {
   try {
@@ -26,13 +27,20 @@ async function copy() {
       document.body.removeChild(textarea);
     }
     copied.value = true;
-    setTimeout(() => {
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
       copied.value = false;
+      copyTimer = null;
     }, 1500);
   } catch (e) {
     console.error("复制失败:", e);
   }
 }
+
+// 组件卸载时清除定时器，避免在已卸载组件上修改 ref
+onUnmounted(() => {
+  if (copyTimer) clearTimeout(copyTimer);
+});
 </script>
 
 <template>

@@ -223,6 +223,7 @@ impl AnthropicProvider {
                         tool_calls.push(ToolCall {
                             id: id.clone(),
                             r#type: "function".to_string(),
+                            index: 0,
                             function: ToolCallFunction {
                                 name: name.clone(),
                                 arguments: block.input.to_string(),
@@ -350,6 +351,7 @@ impl AnthropicProvider {
                                 sb.id.clone()
                             },
                             r#type: "function".to_string(),
+                            index: idx as u32,
                             function: ToolCallFunction {
                                 name: sb.name.clone(),
                                 arguments: sb.input_json.clone(),
@@ -556,6 +558,8 @@ impl AiProvider for AnthropicProvider {
             } else {
                 Some(tool_calls.clone())
             },
+            reset: false,
+            usage: None,
         });
 
         Ok(ChatResponse {
@@ -808,6 +812,7 @@ mod tests {
                 tool_calls: Some(vec![ToolCall {
                     id: "toolu_1".to_string(),
                     r#type: "function".to_string(),
+                    index: 0,
                     function: ToolCallFunction {
                         name: "read_file".to_string(),
                         arguments: r#"{"path":"state/current.state"}"#.to_string(),

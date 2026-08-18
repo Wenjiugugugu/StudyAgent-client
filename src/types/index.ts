@@ -5,7 +5,6 @@
 export * from "./state";
 export * from "./plan";
 export * from "./review";
-export * from "./knowledge";
 export * from "./ai";
 export * from "./mcp";
 export * from "./settings";

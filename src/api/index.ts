@@ -4,35 +4,91 @@
  * Tauri 环境调用 Rust 后端，浏览器环境回退 Mock 数据
  */
 
-import { invoke, invokeWithFallback, invokeDirect, isTauri } from "./tauri";
+import { invokeWithFallback, invokeDirect, isTauri } from "./tauri";
 import {
   mockState,
   mockTodayPlan,
   mockReview,
   mockDashboardSummary,
-  mockKnowledgeIndex,
-  mockKnowledgeObject,
   mockSettings,
   mockMCPServerStatus,
 } from "./mock-data";
 import { useAiDebugStore } from "@/stores/aiDebug";
 
+/** AI 请求取消键（与后端 agent 类型小写对应） */
+export const AI_CANCEL_KEYS = {
+  planner: "planner",
+  reviewer: "reviewer",
+  briefing: "briefing",
+  teacher: "teacher",
+  assistant: "assistant",
+  doubt: "doubt",
+} as const;
+
+export type AiCancelKey = (typeof AI_CANCEL_KEYS)[keyof typeof AI_CANCEL_KEYS];
+
 /**
- * 包装 AI 相关的 invoke 调用，将请求/响应/错误记录到 aiDebug store。
- * 用于在「调试」视图中查看 AI 调用历史与原始返回数据。
+ * AI 调用统一编排入口（状态管理统一化重构，2026-08-04）
+ *
+ * 收敛三个横切关注点：
+ * 1. **trace**：调用前后记录到 aiDebug store（继承原 invokeWithAiTrace 行为）
+ * 2. **超时**：按场景配置 timeoutMs，到点 reject 并**自动触发后端取消**
+ *    （解决 H21：超时后后端 AI 请求仍在执行导致状态不一致）
+ * 3. **取消**：cancelKey 透传，视图层取消按钮用同一 key 即可终止
+ *
+ * 所有 AI 驱动的 API 函数必须走此入口，禁止再手写 withTimeout / Promise.race。
  */
-async function invokeWithAiTrace<T>(
-  command: string,
-  label: string,
-  args: Record<string, unknown>,
-  fallback?: () => Promise<T>,
-): Promise<T> {
+export interface AiInvokeOptions<T = unknown> {
+  command: string;
+  label: string;
+  args: Record<string, unknown>;
+  cancelKey: AiCancelKey;
+  /** 超时毫秒。默认 120s（对齐后端 default_timeout）。到点自动 cancelAiRequest */
+  timeoutMs?: number;
+  timeoutMessage?: string;
+  /** 浏览器环境 mock 回退（仅开发用，生产环境不传） */
+  fallback?: () => Promise<T>;
+}
+
+export async function aiInvoke<T = unknown>(opts: AiInvokeOptions<T>): Promise<T> {
+  const { command, label, args, cancelKey, timeoutMs = 120_000, fallback } = opts;
   const aiDebug = useAiDebugStore();
   const finish = aiDebug.startCall(command, label, args);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
+
+  const cleanup = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+
   try {
-    const result = fallback
-      ? await invokeWithFallback<T>(command, args, fallback)
-      : await invokeDirect<T>(command, args);
+    // 超时计时器：到点 reject，并通知后端取消（避免后台请求继续写文件）
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(async () => {
+        settled = true;
+        cleanup();
+        try {
+          await cancelAiRequest(cancelKey);
+        } catch {
+          // 取消请求失败不阻塞超时错误返回
+        }
+        reject(
+          new Error(opts.timeoutMessage ?? `AI 请求超时（超过 ${Math.round(timeoutMs / 1000)} 秒）`)
+        );
+      }, timeoutMs);
+    });
+
+    const result = await Promise.race([
+      fallback
+        ? invokeWithFallback<T>(command, args, fallback)
+        : invokeDirect<T>(command, args),
+      timeoutPromise,
+    ]);
+
+    if (settled) throw new Error("AI 请求已被取消");
+    cleanup();
     finish("success", result, null);
     return result;
   } catch (e) {
@@ -47,9 +103,6 @@ import type {
   WeekPlan,
   ReviewRecord,
   DashboardSummary,
-  KnowledgeSubjectIndex,
-  KnowledgeObject,
-  KnowledgeGraph,
   AppSettings,
   AIProviderConfig,
   ModelInfo,
@@ -57,13 +110,11 @@ import type {
   ChatRequest,
   ChatResponse,
   ToolCallResult,
-  SubjectKey,
   TextbookInfo,
   TextbookContent,
   TextbookSearchHit,
   PlanSummary,
   UpdateCheckResult,
-  UpdateAsset,
   DownloadProgress,
   AiUsageEntry,
   BriefingFile,
@@ -84,8 +135,8 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
  *  `excludeExemptDates`：是否在分析中排除休息日和特殊情况排除日（默认 true）
  */
 export async function getAnalytics(
-  range?: import("@/types").AnalyticsRange,
-  excludeExemptDates?: boolean,
+  range: import("@/types").AnalyticsRange = "last_30_days",
+  excludeExemptDates: boolean = true,
 ): Promise<import("@/types").AnalyticsSummary> {
   return invokeDirect("get_analytics", {
     range,
@@ -184,15 +235,18 @@ export async function getWeekPlan(weekStart: string): Promise<WeekPlan> {
 }
 
 export async function generateDailyPlan(date: string): Promise<DailyPlan> {
-  return invokeWithAiTrace(
-    "generate_daily_plan",
-    `生成日计划 ${date}`,
-    { date },
-    async () => {
+  return aiInvoke<DailyPlan>({
+    command: "generate_daily_plan",
+    label: `生成日计划 ${date}`,
+    args: { date },
+    cancelKey: AI_CANCEL_KEYS.planner,
+    timeoutMs: 60_000,
+    timeoutMessage: `生成日计划超时（超过 60 秒）。请检查 AI Provider 配置或网络连接。`,
+    fallback: async () => {
       await new Promise((r) => setTimeout(r, 1500));
       return mockTodayPlan;
     },
-  );
+  });
 }
 
 export async function generateWeekPlan(
@@ -200,11 +254,14 @@ export async function generateWeekPlan(
   excludedDays: import("@/types").ExcludedDay[] = [],
   workloadAdjustment?: import("@/types").WorkloadAdjustment,
 ): Promise<WeekPlan> {
-  return invokeWithAiTrace<WeekPlan>(
-    "generate_week_plan",
-    `生成周计划 ${weekStart}`,
-    { weekStart, excludedDays, workloadAdjustment },
-  );
+  return aiInvoke<WeekPlan>({
+    command: "generate_week_plan",
+    label: `生成周计划 ${weekStart}`,
+    args: { weekStart, excludedDays, workloadAdjustment },
+    cancelKey: AI_CANCEL_KEYS.planner,
+    timeoutMs: 290_000,
+    timeoutMessage: `生成周计划超时（超过 290 秒）。可能网络较慢或模型响应过久，可点击「取消」终止。`,
+  });
 }
 
 export async function updateTaskStatus(taskId: string, status: string): Promise<void> {
@@ -257,15 +314,18 @@ export async function listReviewDates(): Promise<string[]> {
 }
 
 export async function generateReview(date: string): Promise<ReviewRecord> {
-  return invokeWithAiTrace(
-    "generate_review",
-    `生成复盘 ${date}`,
-    { date },
-    async () => {
+  return aiInvoke<ReviewRecord>({
+    command: "generate_review",
+    label: `生成复盘 ${date}`,
+    args: { date },
+    cancelKey: AI_CANCEL_KEYS.reviewer,
+    timeoutMs: 300_000,
+    timeoutMessage: `生成复盘超时（超过 300 秒）。请检查 AI Provider 配置或网络连接。`,
+    fallback: async () => {
       await new Promise((r) => setTimeout(r, 2000));
       return mockReview;
     },
-  );
+  });
 }
 
 /** 提交结构化复盘（新版，无需 AI） */
@@ -275,20 +335,14 @@ export async function submitReview(payload: import("@/types").SubmitReviewPayloa
 
 /** 复盘后重新生成本周剩余天数计划（AI 驱动） */
 export async function regenerateRemainingDays(reviewDate: string): Promise<import("@/types").RegenerateResult> {
-  // 前端超时保护：290 秒。后端 timeout 为 300s，让后端先返回明确错误。
-  const TIMEOUT_MS = 290_000;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("AI 调整超时（290 秒），可能网络较慢或模型响应过久")), TIMEOUT_MS);
+  return aiInvoke<import("@/types").RegenerateResult>({
+    command: "regenerate_remaining_days",
+    label: `复盘后重排剩余计划 ${reviewDate}`,
+    args: { reviewDate },
+    cancelKey: AI_CANCEL_KEYS.planner,
+    timeoutMs: 290_000,
+    timeoutMessage: "AI 调整超时（290 秒），可能网络较慢或模型响应过久",
   });
-  try {
-    return await Promise.race([
-      invokeDirect<import("@/types").RegenerateResult>("regenerate_remaining_days", { reviewDate }),
-      timeoutPromise,
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 /** 周中新增排除日并重排剩余天数（AI 驱动） */
@@ -296,23 +350,14 @@ export async function addExcludedDayAndRegenerate(
   weekStart: string,
   excludedDay: import("@/types").ExcludedDay,
 ): Promise<import("@/types").RegenerateResult> {
-  // 前端超时保护：290 秒，与复盘重排保持一致
-  const TIMEOUT_MS = 290_000;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("AI 调整超时（290 秒），可能网络较慢或模型响应过久")), TIMEOUT_MS);
+  return aiInvoke<import("@/types").RegenerateResult>({
+    command: "add_excluded_day_and_regenerate",
+    label: `周中排除日并重排 ${excludedDay.date}`,
+    args: { weekStart, excludedDay },
+    cancelKey: AI_CANCEL_KEYS.planner,
+    timeoutMs: 290_000,
+    timeoutMessage: "AI 调整超时（290 秒），可能网络较慢或模型响应过久",
   });
-  try {
-    return await Promise.race([
-      invokeDirect<import("@/types").RegenerateResult>(
-        "add_excluded_day_and_regenerate",
-        { weekStart, excludedDay },
-      ),
-      timeoutPromise,
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 // ── Briefing ──
@@ -324,11 +369,14 @@ export async function getBriefing(date: string): Promise<GetBriefingResult> {
 
 /** 重新生成指定日期的每日简报（AI 驱动，需存在昨日复盘） */
 export async function regenerateBriefing(date: string): Promise<BriefingFile> {
-  return invokeWithAiTrace<BriefingFile>(
-    "regenerate_briefing",
-    `重新生成简报 ${date}`,
-    { date },
-  );
+  return aiInvoke<BriefingFile>({
+    command: "regenerate_briefing",
+    label: `重新生成简报 ${date}`,
+    args: { date },
+    cancelKey: AI_CANCEL_KEYS.briefing,
+    timeoutMs: 180_000,
+    timeoutMessage: "重新生成简报超时（超过 180 秒）。请检查 AI Provider 配置或网络连接。",
+  });
 }
 
 /** 列出所有简报日期（YYYY-MM-DD，升序） */
@@ -336,56 +384,28 @@ export async function listBriefingDates(): Promise<string[]> {
   return invokeDirect<string[]>("list_briefing_dates");
 }
 
-// ── Knowledge ──
-
-export async function listKnowledge(subject?: string): Promise<KnowledgeSubjectIndex[]> {
-  return invokeWithFallback("list_knowledge", { subject }, async () => mockKnowledgeIndex);
-}
-
-export async function getKnowledge(id: string): Promise<KnowledgeObject> {
-  return invokeWithFallback("get_knowledge", { id }, async () => mockKnowledgeObject);
-}
-
-export async function searchKnowledge(query: string): Promise<KnowledgeObject[]> {
-  return invokeWithFallback("search_knowledge", { query }, async () => [mockKnowledgeObject]);
-}
-
-export async function getKnowledgeGraph(subject: string): Promise<KnowledgeGraph> {
-  return invokeWithFallback("get_knowledge_graph", { subject }, async () => ({
-    nodes: [
-      { id: "408-ds-03-tree-basics", label: "树的基本概念", subject: "professional" as SubjectKey, status: "mastered" },
-      { id: "408-ds-03-bst", label: "二叉搜索树", subject: "professional" as SubjectKey, status: "mastered" },
-      { id: "408-ds-03-avl", label: "AVL树", subject: "professional" as SubjectKey, status: "reviewing" },
-      { id: "408-ds-04-bf-match", label: "BF简单匹配", subject: "professional" as SubjectKey, status: "mastered" },
-      { id: "408-ds-04-kmp", label: "KMP字符串匹配", subject: "professional" as SubjectKey, status: "mastered" },
-    ],
-    edges: [
-      { source: "408-ds-03-tree-basics", target: "408-ds-03-bst", type: "prerequisite" },
-      { source: "408-ds-03-bst", target: "408-ds-03-avl", type: "prerequisite" },
-      { source: "408-ds-04-bf-match", target: "408-ds-04-kmp", type: "prerequisite" },
-    ],
-  }));
-}
-
 // ── AI ──
 
-/** AI 请求取消键（与后端 agent 类型小写对应） */
-export const AI_CANCEL_KEYS = {
-  planner: "planner",
-  reviewer: "reviewer",
-  briefing: "briefing",
-  teacher: "teacher",
-  assistant: "assistant",
-} as const;
-
-export type AiCancelKey = (typeof AI_CANCEL_KEYS)[keyof typeof AI_CANCEL_KEYS];
-
 export async function chat(request: ChatRequest): Promise<ChatResponse> {
-  return invokeWithAiTrace<ChatResponse>(
-    "chat",
-    `AI 对话（${request.messages.length} 条消息）`,
-    { request },
-  );
+  return aiInvoke<ChatResponse>({
+    command: "chat",
+    label: `AI 对话（${request.messages.length} 条消息）`,
+    args: { request },
+    cancelKey: AI_CANCEL_KEYS.assistant,
+    timeoutMs: 120_000,
+    timeoutMessage: "AI 对话超时（超过 120 秒）。请检查 AI Provider 配置或网络连接。",
+  });
+}
+
+export async function chatDoubt(request: ChatRequest): Promise<ChatResponse> {
+  return aiInvoke<ChatResponse>({
+    command: "chat",
+    label: `解惑对话（${request.messages.length} 条消息）`,
+    args: { request },
+    cancelKey: AI_CANCEL_KEYS.doubt,
+    timeoutMs: 120_000,
+    timeoutMessage: "解惑对话超时（超过 120 秒）。请检查 AI Provider 配置或网络连接。",
+  });
 }
 
 /**
@@ -400,20 +420,26 @@ export async function cancelAiRequest(key: AiCancelKey): Promise<boolean> {
 }
 
 export async function testAIProvider(config: AIProviderConfig): Promise<{ success: boolean; message: string }> {
-  return invokeWithAiTrace<{ success: boolean; message: string }>(
-    "test_ai_provider",
-    `测试 Provider ${config.name}`,
-    { config },
-  );
+  return aiInvoke<{ success: boolean; message: string }>({
+    command: "test_ai_provider",
+    label: `测试 Provider ${config.name}`,
+    args: { config },
+    cancelKey: AI_CANCEL_KEYS.teacher,
+    timeoutMs: 30_000,
+    timeoutMessage: `测试 Provider ${config.name} 超时（超过 30 秒）`,
+  });
 }
 
 /** 获取 AI Provider 可用模型列表（传入 config 测试特定配置，不传则从默认 provider 获取） */
 export async function listAIModels(config?: AIProviderConfig): Promise<ModelInfo[]> {
-  return invokeWithAiTrace<ModelInfo[]>(
-    "list_ai_models",
-    "获取模型列表",
-    { config: config ?? null },
-  );
+  return aiInvoke<ModelInfo[]>({
+    command: "list_ai_models",
+    label: "获取模型列表",
+    args: { config: config ?? null },
+    cancelKey: AI_CANCEL_KEYS.teacher,
+    timeoutMs: 60_000,
+    timeoutMessage: "获取模型列表超时（超过 60 秒）",
+  });
 }
 
 // ── AI 用量日志 ──

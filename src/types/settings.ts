@@ -2,7 +2,9 @@
  * StudyAgent Core — Settings Types
  */
 
-import type { AIProviderConfig, MCPServerConfig } from ".";
+// H24：直接导入具体模块，避免与 index.ts barrel 形成循环引用
+import type { AIProviderConfig } from "./ai";
+import type { MCPServerConfig } from "./mcp";
 
 /** 主题模式 */
 export type ThemeMode = "light" | "dark" | "system";

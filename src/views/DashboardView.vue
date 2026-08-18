@@ -59,11 +59,6 @@ const needYesterdayReview = computed(
   () => !yesterdayReviewExists.value && !yesterdayExempt.value,
 );
 
-// 错过补复盘窗口（非今日）：不提供 AI 建议
-const missedMakeupWindow = computed(
-  () => !yesterdayReviewExists.value && !yesterdayExempt.value && !withinMakeupWindow.value,
-);
-
 // 特殊状态：休息日/排除日/开始时间前 — 隐藏侧栏，居中提示
 const isSpecialState = computed(
   () => isBeforeDailyStart.value || isTodayRestDay.value || isTodayExcluded.value,
@@ -136,21 +131,33 @@ async function loadYesterdayReview() {
   }
 }
 
-// ── 简报闪烁提示 + 引入动画 ──
-const showBriefingHint = ref(false);
+// ── 简报提示遮罩（全屏居中弹出 + 背景变暗 + 快速闪烁） ──
+const showBriefingOverlay = ref(false);
+const overlayLeaving = ref(false);
 // 默认显示内容，避免首次加载时卡片 opacity 为 0 导致空白
 const briefingAnimated = ref(true);
 const sidebarAnimated = ref(true);
 let hintTimer: number | undefined;
+let overlayFadeTimer: number | undefined;
+// H30：组件卸载后不再更新 state / 操作 DOM
+let dashboardUnmounted = false;
 
 function triggerBriefingHint() {
   const hintKey = "studyagent.briefing_hint_viewed";
   if (sessionStorage.getItem(hintKey) === todayDateStr) return;
-  showBriefingHint.value = true;
   sessionStorage.setItem(hintKey, todayDateStr);
+  // 全屏遮罩：背景变暗 + 文字闪烁
+  showBriefingOverlay.value = true;
+  overlayLeaving.value = false;
+  // 文字闪烁三次（1 秒）后，遮罩淡出恢复背景
   hintTimer = window.setTimeout(() => {
-    showBriefingHint.value = false;
-  }, 4000);
+    overlayLeaving.value = true;
+    overlayFadeTimer = window.setTimeout(() => {
+      if (dashboardUnmounted) return;
+      showBriefingOverlay.value = false;
+      overlayLeaving.value = false;
+    }, 350);
+  }, 1000);
 }
 
 function playEntranceAnimation() {
@@ -164,9 +171,11 @@ function playEntranceAnimation() {
 }
 
 async function loadBriefing() {
+  if (dashboardUnmounted) return;
   briefingLoading.value = true;
   try {
     briefingResult.value = await api.getBriefing(todayDateStr);
+    if (dashboardUnmounted) return;
     // 加载昨日复盘数据（侧栏用）
     await loadYesterdayReview();
     // 如果简报存在且是今日首次查看，触发闪烁提示
@@ -175,6 +184,7 @@ async function loadBriefing() {
       playEntranceAnimation();
     }
   } catch (e) {
+    if (dashboardUnmounted) return;
     console.warn("[Briefing] 加载简报失败:", e);
     briefingResult.value = null;
   } finally {
@@ -329,12 +339,7 @@ function isDayStudied(dateStr: string): boolean {
 }
 
 // 完成率口径与周计划页保持一致：已复盘日的 completionRate 平均值
-const weekPercent = computed(() => {
-  const reviewed = weekSummaries.value.filter((d) => d.has_review);
-  if (!reviewed.length) return 0;
-  const sum = reviewed.reduce((s, d) => s + d.completion_rate, 0);
-  return Math.round(sum / reviewed.length);
-});
+// （weekPercent 计算已移除，改用下方 weekPlanProgress 口径）
 
 // 整周计划完成进度：已学习天数 / 计划学习天数（推进度）
 const weekPlanProgress = computed(() => {
@@ -383,22 +388,14 @@ async function loadWeekSummaries() {
 }
 
 // ── Current Status ──
-const currentPhase = computed(() => summary.value?.current_phase ?? "—");
 const streakDays = computed(() => summary.value?.streak_days ?? 0);
 const totalStudyDays = computed(() => summary.value?.total_study_days ?? 0);
-const targetScore = computed(() => settingsStore.settings?.target_score ?? 0);
-const subjectProgressList = computed(() => summary.value?.subject_progress ?? []);
 
 // ── Utilities ──
 function weekdayShort(dateStr: string): string {
   const d = new Date(dateStr);
   const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
   return weekdays[d.getDay()];
-}
-
-function dayOfMonth(dateStr: string): string {
-  const d = new Date(dateStr);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 function isToday(dateStr: string): boolean {
@@ -415,12 +412,6 @@ function subjectBadgeVariant(
     professional: "professional",
   };
   return map[subject] ?? "default";
-}
-
-function priorityBadgeVariant(priority: string): "danger" | "warning" | "default" {
-  if (priority === "A") return "danger";
-  if (priority === "B") return "warning";
-  return "default";
 }
 
 function subjectLabel(subject: SubjectKey | string): string {
@@ -479,6 +470,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  dashboardUnmounted = true;
   if (nowTimer !== undefined) {
     clearInterval(nowTimer);
     nowTimer = undefined;
@@ -486,6 +478,10 @@ onBeforeUnmount(() => {
   if (hintTimer !== undefined) {
     clearTimeout(hintTimer);
     hintTimer = undefined;
+  }
+  if (overlayFadeTimer !== undefined) {
+    clearTimeout(overlayFadeTimer);
+    overlayFadeTimer = undefined;
   }
 });
 </script>
@@ -637,11 +633,17 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <!-- 简报闪烁提示 -->
-      <Transition name="hint-fade">
-        <div v-if="showBriefingHint" class="briefing-flash-hint">
-          <Sparkles :size="14" />
-          <span>有新的每日简报可供查看</span>
+      <!-- 简报提示全屏遮罩：背景变暗 + 文字快速闪烁三次 -->
+      <Transition name="overlay-fade">
+        <div
+          v-if="showBriefingOverlay"
+          class="briefing-overlay"
+          :class="{ 'briefing-overlay-leaving': overlayLeaving }"
+        >
+          <div class="briefing-overlay-card">
+            <Sparkles :size="18" />
+            <span>有新的每日简报可供查看</span>
+          </div>
         </div>
       </Transition>
 
@@ -756,9 +758,6 @@ onBeforeUnmount(() => {
                   class="briefing-task-item"
                   :class="{ done: task.status === 'done' }"
                 >
-                  <span class="briefing-task-priority" :class="`prio-${task.priority.toLowerCase()}`">
-                    {{ task.priority }}
-                  </span>
                   <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">
                     {{ subjectLabel(task.subject) }}
                   </Badge>
@@ -969,49 +968,69 @@ onBeforeUnmount(() => {
   width: 100%;
 }
 
-/* ── 闪烁提示 ── */
-.briefing-flash-hint {
+/* ── 简报提示全屏遮罩 ── */
+.briefing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: opacity 0.35s ease;
+}
+
+/* 闪烁完成后遮罩淡出，恢复背景 */
+.briefing-overlay-leaving {
+  opacity: 0;
+}
+
+.briefing-overlay-card {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
-  background: linear-gradient(135deg, var(--accent-subtle) 0%, var(--bg-tertiary) 100%);
+  padding: var(--space-4) var(--space-6);
+  background: linear-gradient(135deg, var(--accent-subtle) 0%, var(--bg-primary) 100%);
   border: 1px solid var(--accent);
-  border-radius: var(--radius-full);
-  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
+  font-size: var(--text-base);
   color: var(--accent);
-  font-weight: var(--font-medium);
-  align-self: flex-start;
-  animation: hint-pulse 1.5s ease-in-out infinite;
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-lg);
+  /* 快速闪烁三次（1 秒内） */
+  animation: hint-flash-3x 1s steps(6, end) 3;
 }
 
-@keyframes hint-pulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-subtle); }
-  50% { opacity: 0.85; box-shadow: 0 0 0 6px transparent; }
+@keyframes hint-flash-3x {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
 }
 
-.hint-fade-enter-active, .hint-fade-leave-active {
-  transition: opacity 0.4s ease, transform 0.4s ease;
+.overlay-fade-enter-active,
+.overlay-fade-leave-active {
+  transition: opacity 0.35s ease;
 }
-.hint-fade-enter-from, .hint-fade-leave-to {
+.overlay-fade-enter-from,
+.overlay-fade-leave-to {
   opacity: 0;
-  transform: translateY(-8px);
 }
 
-/* ── 入场动画 ── */
+/* ── 入场动画：简报左侧滑入，侧栏右侧滑入 ── */
 .briefing-card {
   opacity: 0;
-  transform: translateY(12px);
+  transform: translateX(-16px);
   transition: opacity 0.5s ease, transform 0.5s ease;
 }
 .briefing-card.briefing-enter {
   opacity: 1;
-  transform: translateY(0);
+  transform: translateX(0);
 }
 
 .review-sidebar {
   opacity: 0;
-  transform: translateX(12px);
+  transform: translateX(16px);
   transition: opacity 0.5s ease, transform 0.5s ease;
   display: flex;
   flex-direction: column;

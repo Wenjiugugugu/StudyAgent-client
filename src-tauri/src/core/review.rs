@@ -266,7 +266,7 @@ impl<'a> ReviewAgent<'a> {
 1. 必须包含 data 和 view 两个字段；view 仅用于展示，不会被程序解析。
 2. 复盘原则：只记录事实，不做分析、不评判、不给策略建议。
 3. subject 字段只能是 "math" / "english" / "politics" / "professional"。
-4. priority 字段只能是 "A" 或 "B"。
+4. 任务已不再分级（Priority A/B 已废弃），输入中的 priority 字段仅作兼容保留，不区分优先级。
 5. completed 字段必须如实反映计划任务的完成状态。
 6. completion_rate 使用 0-100 之间的数值。
 7. energy_level 使用 1-5 之间的整数。

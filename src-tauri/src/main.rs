@@ -182,11 +182,6 @@ fn main() {
             get_briefing,
             regenerate_briefing,
             list_briefing_dates,
-            // Knowledge
-            list_knowledge,
-            get_knowledge,
-            search_knowledge,
-            get_knowledge_graph,
             // Textbook
             list_textbooks,
             read_textbook,

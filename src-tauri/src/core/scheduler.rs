@@ -64,9 +64,8 @@ impl DailyScheduler {
         let settings = crate::load_settings(data_dir);
         let subject_start_dates = settings.subject_start_dates();
 
-        let mut tasks = Vec::new();
-        let mut seq = 1i32;
-
+        // 收集（科目，任务模板），统一做「防重复已完成内容 / 确定性排序」后再落 ID
+        let mut pending: Vec<(SubjectKey, &TaskTemplate)> = Vec::new();
         for allocation in &day_plan.subject_allocations {
             // 兜底：若该科目在当天还未到开始学习日期，则跳过
             if subject_not_started(&allocation.subject, date, &subject_start_dates) {
@@ -77,16 +76,77 @@ impl DailyScheduler {
                 );
                 continue;
             }
+            // 排程可行性校验：过滤已完成章节的重复任务（防重复安排已完成内容）
+            // 用边界匹配，避免把"矩阵的特征值"这类新子主题误判为已完成"矩阵"
+            let completed = completed_chapters(&state, &allocation.subject);
             for template in &allocation.task_templates {
-                let task = template_to_task(template, &allocation.subject, date, seq);
-                tasks.push(task);
-                seq += 1;
+                if let Some(finished) = completed
+                    .iter()
+                    .find(|c| !c.is_empty() && matches_completed(&template.title, c.as_str()))
+                {
+                    log::warn!(
+                        "排程校验: 跳过已完成章节任务「{}」（{} 已完成「{}」）",
+                        template.title,
+                        subject_display_name(&allocation.subject),
+                        finished
+                    );
+                    continue;
+                }
+                pending.push((allocation.subject.clone(), template));
             }
         }
 
-        // L1：移除死变量 style_tips（恒为空列表，写入后无任何读取路径）
+        // 排程可行性校验：任务数量告警（不裁剪，避免丢失任务；时长超额由下方预算归一化承担）
+        let max_tasks = settings.daily_task_count() as usize;
+        if pending.len() > max_tasks {
+            log::warn!(
+                "排程校验: {} 计划任务 {} 个，超过用户期望的每日 {} 个（仅提醒，不裁剪以免丢失任务）",
+                date,
+                pending.len(),
+                max_tasks
+            );
+        }
+
+        // 日计划确定性排序（任务分级 A/B 已下线）：大块头优先（防拖延）> 科目 > 标题
+        pending.sort_by(|(sa, ta), (sb, tb)| {
+            tb.estimated_hours
+                .partial_cmp(&ta.estimated_hours)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| subject_ord(sa).cmp(&subject_ord(sb)))
+                .then_with(|| ta.title.cmp(&tb.title))
+        });
+
+        let mut tasks = Vec::new();
+        let mut seq = 1i32;
+        for (subject, template) in pending {
+            let task = template_to_task(template, &subject, date, seq);
+            tasks.push(task);
+            seq += 1;
+        }
+
+        // 每日任务量预算约束：若当日任务预估时长总和超过设置中的每日目标时长，
+        // 按比值归一化所有任务时长，保证当日总时长不超过预算（用户精力可控）。
+        let raw_total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
+        let budget = settings.daily_target_hours();
+        if budget > 0.0 && raw_total_hours > budget && !tasks.is_empty() {
+            let scale = budget / raw_total_hours;
+            for t in tasks.iter_mut() {
+                t.estimated_hours = (t.estimated_hours * scale * 100.0).round() / 100.0;
+            }
+            let scaled: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
+            log::warn!(
+                "每日预算：今日任务原总时长 {:.2}h 超过预算 {:.2}h，已等比归一化到 {:.2}h",
+                raw_total_hours,
+                budget,
+                scaled
+            );
+        }
+
         let total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let total_tasks = tasks.len() as i32;
+
+        // 今日强度预测（E）：把强度建议作为当日的一条学习提示写入 style_tips
+        let intensity_note = today_intensity_note(data_dir);
 
         // 构建策略：拼接当天各科 focus（仅包含未过滤的科目）
         let strategy = day_plan
@@ -97,13 +157,18 @@ impl DailyScheduler {
             .collect::<Vec<_>>()
             .join("；");
 
+        let mut style_tips: Vec<String> = Vec::new();
+        if !intensity_note.is_empty() {
+            style_tips.push(intensity_note);
+        }
+
         let daily_data = DailyPlanData {
             remaining_days,
             target,
             strategy: strategy.clone(),
             tasks: tasks.clone(),
             risks: Vec::new(),
-            style_tips: Vec::new(),
+            style_tips,
             after_today: String::new(),
             reminders: Vec::new(),
             total_hours,
@@ -137,7 +202,7 @@ impl DailyScheduler {
             let state_clean = !state.current_task.tasks.iter().any(|t| {
                 t.task_id
                     .as_ref()
-                    .map(|id| id.get(..id.floor_char_boundary(10)).map(|prefix| prefix != date).unwrap_or(false))
+                    .map(|id| crate::data::task_id_date_prefix(id).map(|prefix| prefix != date).unwrap_or(false))
                     .unwrap_or(false)
             });
 
@@ -202,6 +267,80 @@ fn subject_key_str(subject: &SubjectKey) -> &'static str {
         SubjectKey::English => "english",
         SubjectKey::Politics => "politics",
         SubjectKey::Professional => "professional",
+    }
+}
+
+/// 该科目已完成章节标题（用于防重复安排已完成内容）
+fn completed_chapters(state: &crate::data::state::StudyState, subject: &SubjectKey) -> Vec<String> {
+    let s = match subject {
+        SubjectKey::Math => &state.subjects.math,
+        SubjectKey::English => &state.subjects.english,
+        SubjectKey::Politics => &state.subjects.politics,
+        SubjectKey::Professional => &state.subjects.professional,
+    };
+    s.completed.clone()
+}
+
+/// 今日强度预测注记（E）：读取今天及之前的最近复盘，交给 planner 的强度判定，
+/// 返回一行可写入日计划的学习提示；无复盘数据时返回空串。
+fn today_intensity_note(data_dir: &Path) -> String {
+    let dates = crate::data::records::list_review_dates(data_dir).unwrap_or_default();
+    let today = crate::data::today_string();
+    let mut reviews = Vec::new();
+    for d in dates
+        .into_iter()
+        .filter(|d| d.as_str() <= today.as_str())
+        .rev()
+        .take(7)
+    {
+        if let Ok(r) = crate::data::records::read_review(data_dir, &d) {
+            reviews.push(r);
+        }
+    }
+    if reviews.is_empty() {
+        return String::new();
+    }
+    crate::core::planner::today_intensity_label(&reviews)
+}
+
+/// 判断任务标题是否明确命中已完成章节（边界匹配，避免误杀"矩阵的特征值"这类子主题）。
+///
+/// 命中条件：
+/// - 标题与已完成章节完全相等；
+/// - 标题以章节名开头，且紧随其后为分隔符 / 标点（如"矩阵：性质"、"矩阵、性质"）。
+/// 其余情况（如"矩阵的特征值"中"的"）视为新内容，不命中，保留该任务（不丢任务）。
+fn matches_completed(title: &str, completed: &str) -> bool {
+    let t = title.trim();
+    let c = completed.trim();
+    if t.is_empty() || c.is_empty() {
+        return false;
+    }
+    if t == c {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix(c) {
+        let is_delimiter = rest
+            .chars()
+            .next()
+            .map(|ch| {
+                matches!(
+                    ch,
+                    '：' | ':' | '，' | ',' | '、' | '。' | '；' | ';' | '(' | '（' | '·' | '-' | '—' | ')' | '）'
+                )
+            })
+            .unwrap_or(false);
+        return is_delimiter;
+    }
+    false
+}
+
+/// 稳定的科目排序权重（用于无 AB 分级下的确定性日计划排序）
+fn subject_ord(subject: &SubjectKey) -> i32 {
+    match subject {
+        SubjectKey::Math => 0,
+        SubjectKey::English => 1,
+        SubjectKey::Politics => 2,
+        SubjectKey::Professional => 3,
     }
 }
 
@@ -394,6 +533,82 @@ current_focus = "计组"
         // 休息日应返回错误
         let rest_result = DailyScheduler::generate_daily_plan(&tmp, "2026-07-25", true);
         assert!(rest_result.is_err());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_daily_budget_caps_total_hours() {
+        let tmp = std::env::temp_dir().join(format!(
+            "studyagent_scheduler_budget_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(tmp.join("plan")).unwrap();
+        std::fs::create_dir_all(tmp.join("state")).unwrap();
+
+        let mut sf = std::fs::File::create(tmp.join("state").join("current.state")).unwrap();
+        sf.write_all(sample_state_toml().as_bytes()).unwrap();
+
+        let week_plan = crate::data::plan::WeekPlanFile {
+            version: "1.0.0".to_string(),
+            meta: crate::data::plan::WeekPlanMeta {
+                week_start: "2026-07-20".to_string(),
+                week_end: "2026-07-26".to_string(),
+                week_number: 30,
+                generated_at: "2026-07-20T04:00".to_string(),
+                based_on: crate::data::plan::BasedOn {
+                    state: "state/current.state".to_string(),
+                    user_model: "assets/user_model/_index.md".to_string(),
+                    exam_config: "assets/config/exam-config.md".to_string(),
+                    review_ref: None,
+                    week_plan: None,
+                },
+            },
+            data: crate::data::plan::WeekPlanData {
+                days: vec![crate::data::plan::WeekDayPlan {
+                    date: "2026-07-20".to_string(),
+                    weekday: "周一".to_string(),
+                    is_rest_day: false,
+                    subject_allocations: vec![crate::data::plan::DaySubjectAllocation {
+                        subject: SubjectKey::Math,
+                        hours: 8.0,
+                        focus: "超预算测试".to_string(),
+                        task_templates: vec![crate::data::plan::TaskTemplate {
+                            title: "超长任务".to_string(),
+                            priority: TaskPriority::A,
+                            estimated_hours: 8.0,
+                            goal: String::new(),
+                            completion_criteria: Vec::new(),
+                            textbook: None,
+                            style_tips: None,
+                            fallback_plan: None,
+                        }],
+                    }],
+                }],
+                ..Default::default()
+            },
+            view: None,
+        };
+        crate::data::plan::save_week_plan(&tmp, &week_plan).unwrap();
+
+        let daily = DailyScheduler::generate_daily_plan(&tmp, "2026-07-20", true).unwrap();
+        // 默认每日预算 5.0h，任务原 8.0h 应被归一化到 ≤ 预算
+        let budget = crate::load_settings(&tmp).daily_target_hours();
+        assert!(budget > 0.0);
+        assert!(
+            daily.data.total_hours <= budget,
+            "总时长 {:.2} 应不超过预算 {:.2}",
+            daily.data.total_hours,
+            budget
+        );
+        assert!(daily.data.total_hours > 0.0);
+        // 归一化后 total_hours 仍等于各任务之和
+        let sum: f64 = daily.data.tasks.iter().map(|t| t.estimated_hours).sum();
+        assert!((daily.data.total_hours - sum).abs() < 1e-6);
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

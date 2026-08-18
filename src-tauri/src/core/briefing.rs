@@ -45,15 +45,42 @@ impl<'a> BriefingAgent<'a> {
         source: &str,
     ) -> DataResult<BriefingFile> {
         // 1. 读取昨日复盘（生成依据）
-        let yesterday_review: Option<ReviewFile> =
-            crate::data::records::read_review(data_dir, based_on_review_date).ok();
+        // M10：区分「文件不存在」（正常，简报可基于空依据生成）与「解析失败」（异常，记录日志）
+        let yesterday_review: Option<ReviewFile> = match crate::data::records::read_review(
+            data_dir,
+            based_on_review_date,
+        ) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                if crate::data::records::review_file_path(data_dir, based_on_review_date).exists() {
+                    log::error!(
+                        "[Briefing] 昨日复盘文件存在但解析失败，简报将基于空依据生成: {}",
+                        e
+                    );
+                }
+                None
+            }
+        };
 
         // 2. 读取当前 State
         let state = crate::data::state::read_state_or_default(data_dir);
 
         // 3. 读取目标日期的日计划（用于让 AI 感知今日任务重点）
-        let target_plan =
-            crate::data::plan::read_daily_plan_with_merged_status(data_dir, target_date).ok();
+        let target_plan = match crate::data::plan::read_daily_plan_with_merged_status(
+            data_dir,
+            target_date,
+        ) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                if crate::data::plan::daily_plan_path(data_dir, target_date).exists() {
+                    log::error!(
+                        "[Briefing] 目标日计划文件存在但解析失败，将基于空计划生成: {}",
+                        e
+                    );
+                }
+                None
+            }
+        };
 
         // 4. 读取设置（用于考试日期、每周学习时长等）
         let settings = crate::load_settings(data_dir);

@@ -349,7 +349,7 @@ fn build_learning_trend(
         }
 
         let plan = crate::data::plan::read_daily_plan(data_dir, &current).ok();
-        let review = review_map.get(&current);
+        let review = review_map.get(&current).copied();
 
         let planned_tasks = plan.as_ref().map(|p| p.data.total_tasks).unwrap_or(0);
         let planned_hours = plan.as_ref().map(|p| p.data.total_hours).unwrap_or(0.0);
@@ -402,7 +402,7 @@ fn build_learning_trend(
 }
 
 /// 计算单日完成率（优先 A 级，回退全部）
-fn compute_completion(review: Option<&&ReviewFile>) -> (i32, f64) {
+fn compute_completion(review: Option<&ReviewFile>) -> (i32, f64) {
     match review {
         Some(r) => {
             if !r.task_reviews.is_empty() {

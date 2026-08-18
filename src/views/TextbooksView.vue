@@ -9,8 +9,6 @@ import {
   Search,
   BookOpen,
   List,
-  ChevronRight,
-  ChevronLeft,
   Hash,
   Plus,
   Trash2,
@@ -126,17 +124,28 @@ function jumpToSearchHit(hit: TextbookSearchHit) {
     filename: "",
     file_path: "",
   } as TextbookInfo).then(() => {
-    // 延迟滚动到匹配行
+    // 延迟滚动到匹配行。H39：改用 data-line 属性精确定位，替代脆弱的 DOM 行索引
     nextTick(() => {
       setTimeout(() => {
         const reader = document.querySelector(".textbook-reader");
         if (reader) {
-          const lines = reader.querySelectorAll(".md-p, .md-h, .md-ul li, .md-ol li");
-          if (lines[hit.line_number]) {
-            (lines[hit.line_number] as HTMLElement).scrollIntoView({
+          const target = reader.querySelector(`[data-line="${hit.line_number}"]`);
+          if (target) {
+            (target as HTMLElement).scrollIntoView({
               behavior: "smooth",
               block: "center",
             });
+          } else {
+            // 未找到精确行号时的回退：定位到最近的段落
+            const fallback = reader.querySelector(
+              `[data-line="${hit.line_number - 1}"], [data-line="${hit.line_number + 1}"]`
+            );
+            if (fallback) {
+              (fallback as HTMLElement).scrollIntoView({
+                behavior: "smooth",
+                block: "center",
+              });
+            }
           }
         }
       }, 200);
@@ -293,11 +302,16 @@ function renderInline(text: string): string {
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   // 斜体 *text*（避免与加粗冲突）
   s = s.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
-  // 链接 [text](url)
-  s = s.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener" class="md-link">$1</a>'
-  );
+  // 链接 [text](url)。C8：仅允许 http/https/mailto scheme，拒绝 javascript:/data:/vbscript: 等
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => {
+    const trimmedUrl = url.trim();
+    const allowed = /^(https?:\/\/|mailto:)/i.test(trimmedUrl);
+    if (!allowed) {
+      // 不安全的 URL：渲染为纯文本而非可点击链接
+      return `${label}`;
+    }
+    return `<a href="${trimmedUrl}" target="_blank" rel="noopener" class="md-link">${label}</a>`;
+  });
   return s;
 }
 
@@ -309,6 +323,9 @@ function renderMarkdown(src: string): string {
   let codeLang = "";
   let codeBuffer: string[] = [];
   let listType: "ul" | "ol" | null = null;
+
+  // H39：为每个块元素嵌入源行号（1-based），供搜索命中精确跳转，替代脆弱的 DOM 行索引
+  const lineAttr = () => ` data-line="${i + 1}"`;
 
   const closeList = () => {
     if (listType) {
@@ -331,7 +348,7 @@ function renderMarkdown(src: string): string {
       } else {
         const code = escapeHtml(codeBuffer.join("\n"));
         out.push(
-          `<pre class="md-pre"><code class="md-block-code${codeLang ? ` language-${codeLang}` : ""}">${code}</code></pre>`
+          `<pre${lineAttr()} class="md-pre"><code class="md-block-code${codeLang ? ` language-${codeLang}` : ""}">${code}</code></pre>`
         );
         inCodeBlock = false;
         codeLang = "";
@@ -361,7 +378,7 @@ function renderMarkdown(src: string): string {
       const text = heading[2].trim();
       const id = slugify(text);
       out.push(
-        `<h${level} id="${id}" class="md-h md-h${level}">${renderInline(text)}</h${level}>`
+        `<h${level}${lineAttr()} id="${id}" class="md-h md-h${level}">${renderInline(text)}</h${level}>`
       );
       i++;
       continue;
@@ -371,7 +388,7 @@ function renderMarkdown(src: string): string {
     const blockquote = line.match(/^>\s?(.*)$/);
     if (blockquote) {
       closeList();
-      out.push(`<blockquote class="md-quote">${renderInline(blockquote[1])}</blockquote>`);
+      out.push(`<blockquote${lineAttr()} class="md-quote">${renderInline(blockquote[1])}</blockquote>`);
       i++;
       continue;
     }
@@ -384,7 +401,7 @@ function renderMarkdown(src: string): string {
         out.push('<ul class="md-ul">');
         listType = "ul";
       }
-      out.push(`<li>${renderInline(ulItem[1])}</li>`);
+      out.push(`<li${lineAttr()}>${renderInline(ulItem[1])}</li>`);
       i++;
       continue;
     }
@@ -397,7 +414,7 @@ function renderMarkdown(src: string): string {
         out.push('<ol class="md-ol">');
         listType = "ol";
       }
-      out.push(`<li>${renderInline(olItem[1])}</li>`);
+      out.push(`<li${lineAttr()}>${renderInline(olItem[1])}</li>`);
       i++;
       continue;
     }
@@ -405,14 +422,14 @@ function renderMarkdown(src: string): string {
     // 水平线
     if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
       closeList();
-      out.push('<hr class="md-hr" />');
+      out.push(`<hr${lineAttr()} class="md-hr" />`);
       i++;
       continue;
     }
 
     // 段落（普通文本）
     closeList();
-    out.push(`<p class="md-p">${renderInline(line.trim())}</p>`);
+    out.push(`<p${lineAttr()} class="md-p">${renderInline(line.trim())}</p>`);
     i++;
   }
 

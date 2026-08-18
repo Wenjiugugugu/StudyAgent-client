@@ -17,7 +17,9 @@ import {
   Moon,
   SunMedium,
   Bug,
+  HelpCircle,
 } from "lucide-vue-next";
+import { useAppVersion } from "@/version";
 
 const { theme, toggleTheme } = useTheme();
 const settingsStore = useSettingsStore();
@@ -64,11 +66,12 @@ const navItems: NavItem[] = [
   { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" },
   { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" },
   { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" },
+  { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" },
   { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true },
 ];
 
-// 当前版本号（用于侧边栏底部展示）
-const APP_VERSION = "0.4.2";
+// 当前版本号（统一经 useAppVersion 读取，勿在此写死）
+const { version } = useAppVersion();
 </script>
 
 <template>
@@ -97,6 +100,7 @@ const APP_VERSION = "0.4.2";
       >
         <component :is="item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
         <span class="nav-label">{{ item.label }}</span>
+        <span v-if="item.name === 'doubt'" class="nav-badge">测试版</span>
       </router-link>
     </nav>
 
@@ -130,7 +134,7 @@ const APP_VERSION = "0.4.2";
         class="version-label"
         title="前往设置页检查更新"
       >
-        <span>Beta {{ APP_VERSION }}</span>
+        <span>Beta {{ version }}</span>
       </router-link>
     </div>
   </aside>
@@ -287,6 +291,24 @@ const APP_VERSION = "0.4.2";
 .nav-label {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「测试版」徽标：靠右，小号胶囊，弱化强调 */
+.nav-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: var(--font-medium);
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-soft, var(--border-color));
+  border-radius: 999px;
+  padding: 2px 6px;
+  letter-spacing: 0.02em;
 }
 
 .sidebar-bottom {

@@ -78,11 +78,14 @@ export function nowString(): string {
 
 /**
  * 获取日期的中文星期几名称（周日 至 周六）
+ * M38：从 YYYY-MM-DD 分量直接构造 Date（本地时区无关），避免中午 hack 与文件头时区声明不一致
  */
 export function weekdayName(dateStr: string): string {
-  const d = new Date(`${dateStr}T12:00:00`);
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const dt = new Date(y, m - 1, d, 12, 0, 0);
   const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-  return weekdays[d.getDay()] ?? "";
+  return weekdays[dt.getDay()] ?? "";
 }
 
 /**
@@ -128,7 +131,7 @@ export function getWeekStart(dateStr: string): string {
 export function currentHourShanghai(): number {
   const parts = new Intl.DateTimeFormat("zh-CN", {
     timeZone: "Asia/Shanghai",
-    hour: "numeric",
+    hour: "2-digit",
     hour12: false,
   }).formatToParts(new Date());
   const hour = parts.find((p) => p.type === "hour")?.value ?? "0";

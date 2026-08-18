@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
-import { todayString, yesterdayString, prevDateString, daysBetween, weekdayName, getWeekStart } from "@/utils/date";
+import { todayString, yesterdayString, prevDateString, weekdayName, getWeekStart } from "@/utils/date";
 import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -145,6 +145,7 @@ const initialRegen = loadRegenStatus();
 // 仅当日期匹配且仍在 regenerating 时恢复，避免错误显示历史状态
 const regenerating = ref(initialRegen?.regenerating ?? false);
 const regenMessage = ref(initialRegen?.message ?? "");
+const regenFailed = ref(false);
 
 // 超量完成：用户实际进度领先计划时填写
 const hasOvercompletion = ref(false);
@@ -191,14 +192,11 @@ const canFillReview = computed(() => {
 });
 
 // 是否只读（查看历史复盘）
-const isReadOnly = computed(() =>
-  !!existingReview.value && submitted.value
-);
+// isReadOnly 计算已移除（无引用）
 
 // ── Tasks (from state, for the selected date) ──
 const plan = computed(() => todayStore.plan);
 const allTasks = computed(() => todayStore.allTasks);
-const priorityATasks = computed(() => todayStore.priorityATasks);
 
 // Step 1: task completion (read from state, initialized from task.status)
 const taskCompleted = ref<Record<string, boolean>>({});
@@ -247,13 +245,13 @@ function taskEstimatedHours(taskId: string, tr?: TaskReviewEntry): number {
 }
 
 /** 读取某任务在复盘记录中的实际用时（分钟） */
-function taskActualFromReview(taskId: string, tr?: TaskReviewEntry): number {
+function taskActualFromReview(_taskId: string, tr?: TaskReviewEntry): number {
   return tr?.actual_minutes ?? 0;
 }
 
 // ── Computed ──
-const incompletePriorityA = computed(() => {
-  return priorityATasks.value.filter(t => !taskCompleted.value[t.id]);
+const incompleteTasks = computed(() => {
+  return allTasks.value.filter(t => !taskCompleted.value[t.id]);
 });
 
 const doneTasks = computed(() => {
@@ -309,11 +307,6 @@ function findTaskTitle(taskId: string, tr?: TaskReviewEntry): string {
 function findTaskSubject(taskId: string, tr?: TaskReviewEntry): string {
   if (tr?.subject) return tr.subject;
   return allTasks.value.find(t => t.id === taskId)?.subject ?? "";
-}
-
-function findTaskPriority(taskId: string, tr?: TaskReviewEntry): string {
-  if (tr?.priority) return tr.priority;
-  return allTasks.value.find(t => t.id === taskId)?.priority ?? "";
 }
 
 // 超量完成：可选科目（基于今日计划中出现的科目）
@@ -468,39 +461,7 @@ async function doSubmit() {
 
     // 若需要 AI 重排剩余天数，提示用户并调用
     if (result.needs_regeneration) {
-      regenerating.value = true;
-      regenMessage.value = "正在调整后续计划，请勿关闭应用…";
-      saveRegenStatus({
-        date: selectedDate.value,
-        regenerating: true,
-        message: regenMessage.value,
-        timestamp: Date.now(),
-      });
-      try {
-        const regenResult = await api.regenerateRemainingDays(selectedDate.value);
-        if (regenResult.regenerated) {
-          regenMessage.value = `已调整后续 ${regenResult.affected_dates.length} 天的计划安排`;
-        } else {
-          regenMessage.value = "";
-        }
-      } catch (e) {
-        console.error("调整后续计划失败:", e);
-        const detail = e instanceof Error ? e.message : String(e);
-        regenMessage.value = `调整失败：${detail}（不影响复盘结果）`;
-      } finally {
-        regenerating.value = false;
-        // 保存最终结果（成功或失败消息），切页再回来仍可见
-        if (regenMessage.value) {
-          saveRegenStatus({
-            date: selectedDate.value,
-            regenerating: false,
-            message: regenMessage.value,
-            timestamp: Date.now(),
-          });
-        } else {
-          clearRegenStatus();
-        }
-      }
+      await executeRegeneration();
     }
 
     // 重新加载复盘
@@ -523,6 +484,54 @@ async function cancelRegeneration() {
       : "未找到进行中的 AI 调整请求";
   } catch {
     regenMessage.value = "取消失败，请稍后再试";
+  }
+}
+
+/** 执行 AI 重排剩余天数（doSubmit 和 retry 共用） */
+async function executeRegeneration() {
+  regenFailed.value = false;
+  regenerating.value = true;
+  regenMessage.value = "正在调整后续计划，请勿关闭应用…";
+  saveRegenStatus({
+    date: selectedDate.value,
+    regenerating: true,
+    message: regenMessage.value,
+    timestamp: Date.now(),
+  });
+  try {
+    const regenResult = await api.regenerateRemainingDays(selectedDate.value);
+    if (regenResult.regenerated) {
+      regenMessage.value = `已调整后续 ${regenResult.affected_dates.length} 天的计划安排`;
+    } else {
+      regenMessage.value = "";
+    }
+  } catch (e) {
+    console.error("调整后续计划失败:", e);
+    const detail = e instanceof Error ? e.message : String(e);
+    regenMessage.value = `调整失败：${detail}（不影响复盘结果）`;
+    regenFailed.value = true;
+  } finally {
+    regenerating.value = false;
+    if (regenMessage.value) {
+      saveRegenStatus({
+        date: selectedDate.value,
+        regenerating: false,
+        message: regenMessage.value,
+        timestamp: Date.now(),
+      });
+    } else {
+      clearRegenStatus();
+    }
+  }
+}
+
+/** 重试 AI 重排剩余天数 */
+async function retryRegeneration() {
+  await executeRegeneration();
+  // 重排成功后重新加载复盘数据以同步最新计划
+  if (!regenFailed.value) {
+    await loadReviewData();
+    await loadReviewDates();
   }
 }
 
@@ -804,10 +813,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           <p class="done-desc">{{ isToday ? '今天的结构化复盘已保存。' : '查看历史复盘记录。' }}</p>
 
           <!-- 重排提示 -->
-          <div v-if="regenMessage" class="regen-banner" :class="{ 'regen-loading': regenerating }">
+          <div v-if="regenMessage" class="regen-banner" :class="{ 'regen-loading': regenerating, 'regen-error': regenFailed }">
             <AlertTriangle :size="18" v-if="regenerating" />
-            <CheckCircle2 :size="18" v-else />
+            <CheckCircle2 :size="18" v-else-if="!regenFailed" />
+            <AlertTriangle :size="18" v-else />
             <span>{{ regenMessage }}</span>
+            <Button v-if="regenFailed" variant="primary" size="sm" @click="retryRegeneration" :loading="regenerating" class="regen-retry-btn">
+              重试
+            </Button>
           </div>
 
           <!-- Review summary -->
@@ -958,7 +971,6 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             <div class="tri-left">
               <div class="tri-badges">
                 <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">{{ subjectLabel(task.subject) }}</Badge>
-                <Badge :variant="task.priority === 'A' ? 'danger' : 'warning'" size="sm">P{{ task.priority }}</Badge>
                 <Badge v-if="timeTrackingEnabled && task.estimated_hours > 0" variant="default" size="sm">
                   <Clock :size="12" />
                   ≈{{ formatHours(task.estimated_hours) }}
@@ -981,12 +993,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       </Card>
 
       <!-- Step 2: Blockers -->
-      <Card v-if="step === 1 && incompletePriorityA.length > 0" padding="lg" class="step-card">
+      <Card v-if="step === 1 && incompleteTasks.length > 0" padding="lg" class="step-card">
         <h2 class="step-title">未完成原因</h2>
-        <p class="step-desc">以下 Priority A 任务未能完成，请选择原因</p>
-        <div v-for="task in incompletePriorityA" :key="task.id" class="blocker-item">
+        <p class="step-desc">以下{{ isYesterday ? '昨天' : '今天' }}的任务未能完成，请选择原因</p>
+        <div v-for="task in incompleteTasks" :key="task.id" class="blocker-item">
           <div class="blocker-task">
-            <Badge variant="danger" size="sm">P{{ task.priority }}</Badge>
             <span class="blocker-title">{{ task.title }}</span>
           </div>
           <div class="blocker-chips">
@@ -999,10 +1010,10 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </div>
       </Card>
 
-      <Card v-if="step === 1 && incompletePriorityA.length === 0" padding="lg" class="step-card">
+      <Card v-if="step === 1 && incompleteTasks.length === 0" padding="lg" class="step-card">
         <div class="empty-step">
           <CheckCircle2 :size="32" class="empty-icon" />
-          <p>所有 Priority A 任务均已完成，无需填写原因。</p>
+          <p>所有任务均已完成，无需填写原因。</p>
         </div>
       </Card>
 
@@ -1421,6 +1432,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .regen-banner.regen-loading {
   background: var(--color-warning-subtle, var(--bg-tertiary));
   color: var(--color-warning, var(--text-primary));
+}
+.regen-banner.regen-error {
+  background: var(--color-danger-subtle, var(--bg-tertiary));
+  color: var(--color-danger, var(--text-primary));
+}
+.regen-retry-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .review-summary {

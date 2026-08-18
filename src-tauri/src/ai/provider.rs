@@ -7,6 +7,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// M25：在给定范围内产生一个伪随机数，用于重试退避抖动（无需引入 rand crate）
+fn rand_jitter(range: std::ops::RangeInclusive<u64>) -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // 简单的线性同余，仅用于抖动，不需要密码学强度
+    let mut state = seed ^ (seed >> 16) | 0x9E37_79B9_7F4A_7C15;
+    state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let span = *range.end() - *range.start() + 1;
+    if span == 0 {
+        return *range.start();
+    }
+    range.start() + (state % span)
+}
+
 // ============================================================================
 // 枚举类型
 // ============================================================================
@@ -58,6 +75,8 @@ pub enum AgentType {
     Assistant,
     /// 每日简报生成器：基于昨日复盘与当前进度，生成今日寄语与阶段估时
     Briefing,
+    /// 解惑导师：引导式答疑，结合本地教材与联网能力
+    Doubt,
 }
 
 impl Default for AgentType {
@@ -120,9 +139,16 @@ fn default_true() -> bool {
 /// 工具调用
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// OpenAI 流式场景下，后续 delta 块可能不携带 id（仅 index + arguments），故需 default（C5）
+    #[serde(default)]
     pub id: String,
     #[serde(default = "default_function_type")]
     pub r#type: String,
+    /// 流式合并依据（OpenAI 规范：同一工具调用的增量块 index 相同）
+    #[serde(default)]
+    pub index: u32,
+    /// 流式场景下部分增量块可能仅携带 index（无 function），故需 default（C5）
+    #[serde(default)]
     pub function: ToolCallFunction,
 }
 
@@ -133,7 +159,10 @@ fn default_function_type() -> String {
 /// 工具调用函数
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolCallFunction {
+    /// 流式场景下，后续 delta 块可能不携带 name（仅 arguments），故需 default（C5）
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub arguments: String,
 }
 
@@ -244,6 +273,12 @@ pub struct ChatStreamChunk {
     pub done: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// fallback 切换 provider 时置为 true，通知前端清空已显示内容
+    #[serde(default)]
+    pub reset: bool,
+    /// M17：流式 usage 累积（仅最后一 chunk 有值，前端可忽略）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
 }
 
 /// AI Provider 能力
@@ -361,7 +396,7 @@ pub fn get_system_prompt(agent: &AgentType) -> String {
 
 核心约束：
 - 如实反映今日计划的完成情况，不虚构数据
-- 完成率统计需区分 Priority A 与 Priority B 分别计算
+- 完成率统计按全部任务计算（不区分优先级）
 - 精力评分使用 1-5 星制
 - 复盘原则：只记录事实，不做分析、不评判、不给策略建议
 
@@ -378,7 +413,7 @@ pub fn get_system_prompt(agent: &AgentType) -> String {
 - data: { completed_tasks, unplanned_tasks, difficulties, time_spent, total_hours, completion, energy_level, external_interference, key_achievements, next_steps }
 - view: 可选，用于人类阅读的 Markdown 摘要
 
-subject 只能是 "math" / "english" / "politics" / "professional"；priority 只能是 "A" / "B"。
+subject 只能是 "math" / "english" / "politics" / "professional"（任务已不区分优先级，不输出 priority 字段）。
 复盘文件存储为 records/YYYY-MM-DD_review.json"#.to_string()
         }
         AgentType::Teacher => {
@@ -414,7 +449,6 @@ subject 只能是 "math" / "english" / "politics" / "professional"；priority �
 - 学习状态：state/current.state
 - 计划文件：plan/*_day.json、plan/*_week.json
 - 复盘记录：records/*_review.json
-- 知识库：assets/knowledge/**/*.md
 - 用户画像：assets/user_model/**/*.md
 - 配置文件：assets/config/*.md
 - 教材：assets/resources/textbooks/**/*.md
@@ -473,6 +507,57 @@ subject 只能是 "math" / "english" / "politics" / "professional"；priority �
 subject 只能是 "math" / "english" / "politics" / "professional"。
 简报文件存储为 records/YYYY-MM-DD_briefing.json。"#.to_string()
         }
+        AgentType::Doubt => {
+            // Doubt system prompt — 引导式答疑（解惑），基于 Bloom 2-Sigma 掌握学习法
+            r#"你是一个考研「解惑」导师（Doubt Agent），专为 StudyAgent 桌面应用提供引导式答疑。你采用 Bloom 2-Sigma 掌握学习法：先诊断、再提问、只有当学习者展现出足够理解后才推进。
+
+## 核心原则（不可妥协）
+1. **绝不直接给答案。** 只提问、给最小提示、请求学习者解释/举例/推导。只有学习者明确要求（"讲答案吧/不会了"），或经过 3 轮引导仍卡住时，才给出完整讲解。
+2. **先诊断。** 每次对话开始时，先用 1-2 个探查问题摸清学习者当前的理解程度，再决定从哪里开始引导。
+3. **掌握门槛。** 只有当学习者的回答展现出约 80% 的正确理解时，才推进到下一个知识点。
+4. **每轮 1-2 个问题。** 不超过此数。一次只引导一步，等学习者回应后再继续。
+5. **耐心且严谨。** 鼓励但不空洞，不喊口号，绝不敷衍跳过知识缺口。
+
+## 引导流程
+1. **复述题目**：用一两句话确认你理解的题目与要问的考点；若信息不足（缺条件/选项/卡点），先提问补齐
+2. **诊断定位**：通过提问引导学习者识别题目所属科目、章节与涉及的知识点，同时摸清学习者当前的理解程度，不给结论
+3. **分步引导**：把问题拆成小步骤，一次只引导一步，用提问或提示让学习者自己推进（如「先想一想：这个式子怎么变形才能分离变量？」）
+4. **确认进度**：每步引导后停下来等学习者回应，根据回答调整后续引导，不要一次把所有思路倒完
+5. **收敛讲解**：学习者明确表示「讲答案吧/不会了」或已引导 3 轮仍未突破时，给出完整、规范的讲解，并指出学习者卡住的原因
+
+## 回应策略（根据学习者回答质量）
+- **正确且解释充分**：肯定，追问更深入的后续问题
+- **正确但浅显**：「好的。那你能解释一下为什么吗？」
+- **部分正确**：「你在 [某部分] 的方向是对的。再想想 [提示]…」
+- **错误**：「我们退一步——[更简单的子问题]」
+- **"不知道"**：「没关系。给你一个小提示：[最小提示]」
+
+## 提示升级阶梯
+当学习者卡住时，按以下顺序逐步升级提示，不要跳级：
+复述问题 → 更简单的相关问题 → 具体例子 → 指向具体原理 → 一起走一遍
+
+## 误解追踪
+每次学习者答错时，诊断其背后的根本误解，设计一个反例——让错误模型产生明显荒谬的预测——帮助学习者自己发现矛盾。
+
+## 交错提问
+每 3-4 个问题中，穿插一个将之前已掌握的概念与当前概念混合的问题，强化知识联结与长期记忆。
+
+## 教材与联网
+- 优先结合用户消息中的「【本地教材参考】」片段（来自已导入教材），引用对应章节、定义与例题
+- 引用教材时使用格式：[教材名](file:///绝对路径)
+- **当用户只报章节号或题号（如「第3章」「第2题」）而未粘贴题目**：
+  - 若「【本地教材参考】」片段已包含该章节内容或题目原文，直接基于片段内的题目/定义展开引导，不要反过来要求用户重新粘贴题目文本
+  - 若片段只含章节标题、不含具体题目，先向用户复述找到的章节，再引导用户把该题的关键条件或选项发来（可提示「可以把题目原文粘贴给我」），同时可先就该章节知识点提问
+  - 若该章节在已导入教材中完全找不到，明确告知用户「本地教材中未检索到第 N 章」，然后引导其提供题目或改用关键词提问
+- 允许联网查询（若模型支持）：查证题目来源、考纲范围、历年真题与标准答案；联网结果须与题目条件核对后再使用
+- 对「题目本身查证」类问题（这是什么题、出自哪年真题、考纲是否要求），可直接回答，无需引导
+
+## 风格约束
+- 语言简洁，优先数学与逻辑表达；每次回复控制在 400 字以内（完整讲解时可适当放宽）
+- 鼓励但不空洞，不喊口号，聚焦解题思路本身
+- 引导提问一次只问一个问题，避免让学习者不知所措
+- 每轮对话应感觉自然流畅，而非机械问答"#.to_string()
+        }
     }
 }
 
@@ -496,6 +581,8 @@ pub fn inject_system_prompt(req: &mut ChatRequest, agent: &AgentType) {
                 ..Default::default()
             },
         );
+    } else {
+        log::debug!("inject_system_prompt: system message already exists, skipping injection");
     }
 }
 
@@ -548,8 +635,10 @@ pub async fn send_with_retry(
 
     for attempt in 1..=max_attempts {
         let mut request_builder = client.post(url).headers(headers.clone()).json(body);
+        // M24：timeout_override 限制在 5..=600 秒，避免 0 秒立即超时或超大值无限挂起
         if let Some(secs) = timeout_override {
-            request_builder = request_builder.timeout(Duration::from_secs(secs));
+            request_builder =
+                request_builder.timeout(Duration::from_secs(secs.clamp(5, 600)));
         }
 
         match request_builder.send().await {
@@ -576,7 +665,10 @@ pub async fn send_with_retry(
                         error_text.chars().take(200).collect::<String>()
                     );
 
-                    tokio::time::sleep(Duration::from_secs(backoff)).await;
+                    // M25：指数退避 + 随机抖动（0-50%），避免多客户端同时重试加剧拥塞
+                    let jittered = backoff + (backoff / 2);
+                    let sleep_secs = jittered + rand_jitter(0..=jittered);
+                    tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                     last_err = Some(format!("AI 请求被限流 ({})", status));
                     continue;
                 }
@@ -600,7 +692,9 @@ pub async fn send_with_retry(
 
                 // 连接级错误：指数退避后重试
                 let backoff = 1u64 << (attempt - 1); // 1s, 2s
-                tokio::time::sleep(Duration::from_secs(backoff)).await;
+                // M25：指数退避 + 随机抖动，避免多客户端同时重试加剧拥塞
+                let sleep_secs = backoff + rand_jitter(0..=backoff);
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                 last_err = Some(formatted);
             }
         }

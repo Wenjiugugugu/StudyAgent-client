@@ -19,6 +19,7 @@ withDefaults(defineProps<{
     class="ui-button"
     :class="[variant, size, { 'icon-only': icon, disabled, loading }]"
     :disabled="disabled || loading"
+    :aria-busy="loading"
   >
     <span v-if="loading" class="btn-spinner" />
     <slot />

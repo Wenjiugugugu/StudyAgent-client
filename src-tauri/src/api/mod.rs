@@ -16,10 +16,6 @@
 //! | `update_task_status` | `()` | 更新任务状态 |
 //! | `get_review` | `ReviewRecord` | 读取复盘记录 |
 //! | `generate_review` | `ReviewRecord` | AI 生成复盘 |
-//! | `list_knowledge` | `Vec<KnowledgeSubjectIndex>` | 列出知识对象索引 |
-//! | `get_knowledge` | `KnowledgeObject` | 获取知识对象详情 |
-//! | `search_knowledge` | `Vec<KnowledgeObject>` | 搜索知识对象 |
-//! | `get_knowledge_graph` | `KnowledgeGraph` | 获取知识图谱 |
 //! | `chat` | `ChatResponse` | AI 对话（非流式） |
 //! | `chat_stream` | `()` | AI 对话（流式，通过事件推送） |
 //! | `list_mcp_servers` | `Vec<MCPServerStatus>` | 列出 MCP 服务器状态 |

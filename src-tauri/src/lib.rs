@@ -7,7 +7,7 @@
 //! ┌─────────────────────────────────────────┐
 //! │           API Layer (api/)              │  Tauri 命令，前端调用入口
 //! ├─────────────────────────────────────────┤
-//! │          Core Layer (core/)             │  业务逻辑：Dashboard, Planner, Review, Knowledge
+//! │          Core Layer (core/)             │  业务逻辑：Dashboard, Planner, Review, Briefing
 //! ├──────────────┬──────────────────────────┤
 //! │  AI Layer    │   Tool Layer (tools/)     │  AI Provider + MCP Tool Dispatcher
 //! │  (ai/)       │                          │
@@ -510,7 +510,6 @@ pub fn init_app_state(data_dir: PathBuf) -> Mutex<AppState> {
 /// - plan/
 /// - records/
 /// - logs/
-/// - assets/knowledge/objects/
 /// - assets/user_model/capabilities/
 /// - assets/user_model/observations/
 /// - assets/milestones/
@@ -523,7 +522,6 @@ pub fn ensure_data_directories(data_dir: &Path) {
         "plan",
         "records",
         "logs",
-        "assets/knowledge/objects",
         "assets/user_model/capabilities",
         "assets/user_model/observations",
         "assets/milestones",
