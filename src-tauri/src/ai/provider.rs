@@ -50,13 +50,33 @@ impl Default for ProviderType {
 }
 
 /// 聊天消息角色
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// M27：未知/异常角色值在反序列化时兜底为 `User`，而非解析失败中断流程。
+/// 保留 `Serialize` 派生，但 `Deserialize` 手动实现以实现容错。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,
     User,
     Assistant,
     Tool,
+}
+
+impl<'de> Deserialize<'de> for MessageRole {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // 接受字符串或未知值；未知值/非字符串兜底为 User
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            Some("system") => MessageRole::System,
+            Some("user") => MessageRole::User,
+            Some("assistant") => MessageRole::Assistant,
+            Some("tool") => MessageRole::Tool,
+            _ => MessageRole::User,
+        })
+    }
 }
 
 impl Default for MessageRole {

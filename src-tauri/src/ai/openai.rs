@@ -10,6 +10,11 @@ use tokio_stream::StreamExt;
 
 use super::provider::*;
 
+/// M26：AI 响应体大小上限（8MB）。
+///
+/// 防止异常超大响应在读取/解析时导致内存耗尽（OOM）。
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 /// OpenAI Compatible AI Provider 实现
 pub struct OpenAIProvider {
     config: AIProviderConfig,
@@ -127,8 +132,12 @@ impl OpenAIProvider {
         headers
     }
 
-    /// 构建请求体 JSON
-    fn build_request_body(&self, req: &ChatRequest) -> serde_json::Value {
+    /// 构建请求体 JSON（M30：`stream` 作为显式参数传入）
+    ///
+    /// 将 `stream` 提升为参数后，`chat`/`chat_stream` 就无需先 `req.clone()`
+    /// 再修改 `stream` 字段，从而避免对整个 `ChatRequest`（含 `messages` 数组）
+    /// 的无谓深拷贝——`messages` 只需在此被序列化进 JSON 一次。
+    fn build_request_body(&self, req: &ChatRequest, stream: bool) -> serde_json::Value {
         let model = req
             .model
             .clone()
@@ -169,7 +178,7 @@ impl OpenAIProvider {
                 msg
             }).collect::<Vec<_>>(),
             "temperature": temperature,
-            "stream": req.stream,
+            "stream": stream,
         });
 
         if let Some(max_tokens) = req.max_tokens.or(self.config.max_tokens) {
@@ -177,7 +186,7 @@ impl OpenAIProvider {
         }
 
         // M17：流式请求启用 usage 统计（OpenAI 协议在最后一个 chunk 返回 usage）
-        if req.stream {
+        if stream {
             body["stream_options"] = serde_json::json!({ "include_usage": true });
         }
 
@@ -367,22 +376,61 @@ impl OpenAIProvider {
     ) -> Result<reqwest::Response, String> {
         super::provider::send_with_retry(&self.client, url, headers, body, timeout_override).await
     }
+
+    /// M26：读取响应体并限制大小，防止异常超大响应导致 OOM
+    ///
+    /// 先检查 `Content-Length` 头，再对实际读取的 `Bytes` 长度做二次校验，
+    /// 超过上限 `MAX_RESPONSE_BYTES` 时返回清晰错误并记录 warn，避免把超大
+    /// body 读入内存。
+    async fn read_response_limited(resp: reqwest::Response) -> Result<String, String> {
+        if let Some(len) = resp.content_length() {
+            if len > MAX_RESPONSE_BYTES as u64 {
+                log::warn!(
+                    "[AI-DEBUG] AI 响应体过大（Content-Length={} 字节，上限 {}），拒绝读取",
+                    len,
+                    MAX_RESPONSE_BYTES
+                );
+                return Err(format!(
+                    "AI 响应体过大（{} 字节，上限 {} 字节）",
+                    len, MAX_RESPONSE_BYTES
+                ));
+            }
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("读取 AI 响应失败: {}", e))?;
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            log::warn!(
+                "[AI-DEBUG] AI 响应体过大（实际 {} 字节，上限 {}），丢弃响应",
+                bytes.len(),
+                MAX_RESPONSE_BYTES
+            );
+            return Err(format!(
+                "AI 响应体过大（{} 字节，上限 {} 字节）",
+                bytes.len(),
+                MAX_RESPONSE_BYTES
+            ));
+        }
+
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
 }
 
 #[async_trait::async_trait]
 impl AiProvider for OpenAIProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, String> {
-        // 确保非流式请求
-        let mut req = req.clone();
-        req.stream = false;
-
+        // M30：不再全量 clone req（会深拷贝整份 messages）。
+        // 非流式只需把 stream 强制为 false，直接把显式参数传给
+        // build_request_body 即可，messages 仅被序列化一次。
         let url = self.chat_completions_url();
         log::info!("AI 请求 URL: {}", url);
         log::info!(
             "AI 请求 Model: {}",
             req.model.clone().unwrap_or_else(|| self.config.model.clone())
         );
-        let body = self.build_request_body(&req);
+        let body = self.build_request_body(req, false);
         let headers = self.build_headers();
 
         // 调试日志：完整请求体（脱敏 API Key 后输出）。H11：降为 debug 级别避免生产噪音与敏感数据泄露
@@ -397,8 +445,8 @@ impl AiProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
+            // M26：错误响应体同样限制大小，避免异常超大 body 读入内存
+            let error_text = Self::read_response_limited(response)
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             // H12：错误信息截断，避免完整 body（可能回显请求头/请求体）泄露到用户界面与日志
@@ -410,11 +458,8 @@ impl AiProvider for OpenAIProvider {
             return Err(format!("AI 请求返回错误 ({}): {}", status, truncated));
         }
 
-        // 调试日志：原始响应文本（在解析前记录，便于排查 AI 返回格式异常）
-        let raw_text = response
-            .text()
-            .await
-            .map_err(|e| format!("读取 AI 响应失败: {}", e))?;
+        // M26：读取响应体前先限制大小，防止异常超大响应导致 OOM
+        let raw_text = Self::read_response_limited(response).await?;
         log::debug!(
             "[AI-DEBUG] 原始响应长度: {} 字节, 前 500 字符: {}",
             raw_text.len(),
@@ -435,16 +480,15 @@ impl AiProvider for OpenAIProvider {
         req: &ChatRequest,
         on_chunk: &(dyn Fn(ChatStreamChunk) + Send + Sync),
     ) -> Result<ChatResponse, String> {
-        let mut req = req.clone();
-        req.stream = true;
-
+        // M30：同上，流式只需把 stream 置为 true，直接传给 build_request_body，
+        // 无需 clone 整份 messages。
         let url = self.chat_completions_url();
         log::info!("AI 流式请求 URL: {}", url);
         log::info!(
             "AI 流式请求 Model: {}",
             req.model.clone().unwrap_or_else(|| self.config.model.clone())
         );
-        let body = self.build_request_body(&req);
+        let body = self.build_request_body(req, true);
         let headers = self.build_headers();
 
         // H11：流式请求 body 也降为 debug 级别
@@ -457,8 +501,8 @@ impl AiProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
+            // M26：流式错误响应体同样限制大小
+            let error_text = Self::read_response_limited(response)
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             // H12：错误信息截断，避免完整 body 泄露到用户界面与日志

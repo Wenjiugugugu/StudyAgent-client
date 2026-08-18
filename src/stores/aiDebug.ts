@@ -6,6 +6,8 @@
  *   - 保留最近 50 条记录，避免内存占用过大
  *   - 同时通过 console.info 输出到「日志」面板
  *   - 持久化到 localStorage，重启后不丢失
+ *
+ * 持久化策略：AI 调用记录通过 localStorage 手动持久化（刷新后保留），仅 debug 用途
  */
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";

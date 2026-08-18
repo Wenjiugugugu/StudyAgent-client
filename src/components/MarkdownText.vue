@@ -30,6 +30,9 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** 行内代码占位符：使用 \u0001 控制字符 + 序号，避免被字符串处理过程截断（不依赖 NUL） */
+const CODE_PLACEHOLDER = (idx: number): string => `\u0001CODE_${idx}\u0001`;
+
 /**
  * 渲染行内 Markdown：粗体、斜体、行内代码、链接。
  * 输入应为已转义的 HTML 文本（& < > 已变为实体）。
@@ -41,7 +44,7 @@ function renderInline(s: string): string {
     const idx = codePlaceholders.length;
     // code 已被外部 escapeHtml 转义，直接包标签
     codePlaceholders.push(`<code class="md-inline-code">${code}</code>`);
-    return `\u0000C${idx}\u0000`;
+    return CODE_PLACEHOLDER(idx);
   });
 
   // 链接 [text](url) — label 已转义；url 提取后再转义
@@ -57,7 +60,7 @@ function renderInline(s: string): string {
   text = text.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
 
   // 还原行内代码占位符
-  text = text.replace(/\u0000C(\d+)\u0000/g, (_m, idx: string) =>
+  text = text.replace(/\u0001CODE_(\d+)\u0001/g, (_m, idx: string) =>
     codePlaceholders[parseInt(idx, 10)] ?? "",
   );
 

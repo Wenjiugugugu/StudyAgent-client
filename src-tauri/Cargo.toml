@@ -1,6 +1,6 @@
 [package]
 name = "studyagent-desktop"
-version = "0.4.4"
+version = "0.4.5"
 description = "StudyAgent Learning Workspace"
 authors = ["StudyAgent"]
 edition = "2021"
@@ -32,6 +32,7 @@ tokio-stream = "0.1"
 base64 = "0.22"
 sha2 = "0.10"
 parking_lot = "0.12"
+chrono = "0.4"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

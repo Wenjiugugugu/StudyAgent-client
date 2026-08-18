@@ -153,6 +153,14 @@ impl AiService {
             .collect()
     }
 
+    /// M31：是否存在备用 provider（已注册 provider 数量 > 1）
+    ///
+    /// 仅有一个 provider（即默认 provider 自身）时没有可切换的备用目标，
+    /// 直接据此跳过 fallback 遍历，避免无意义的循环与困惑日志。
+    fn has_backup_provider(&self) -> bool {
+        self.providers.read().len() > 1
+    }
+
     /// 取消指定 agent 键的进行中 AI 请求
     ///
     /// 返回是否找到了对应请求。取消后请求会以 `REQUEST_CANCELLED` 错误提前结束，
@@ -227,12 +235,18 @@ impl AiService {
                     Err(e)
                 } else {
                     log::warn!("默认 Provider 调用失败: {}", e);
-                    // 没有备用 provider 时直接返回原始错误，方便排查
-                    let fallback = self.fallback_chat(&req).await;
-                    if fallback.is_err() {
-                        return Err(format!("Provider 调用失败: {}", e));
+                    // M31：仅有一个 provider（无备用）时，跳过 fallback 遍历，
+                    // 直接返回主调用的原始错误，避免无意义的循环与困惑日志
+                    if !self.has_backup_provider() {
+                        log::debug!("[AI-DEBUG] 无备用 provider，跳过 fallback");
+                        Err(e)
+                    } else {
+                        let fallback = self.fallback_chat(&req).await;
+                        if fallback.is_err() {
+                            return Err(format!("Provider 调用失败: {}", e));
+                        }
+                        fallback
                     }
-                    fallback
                 }
             }
         };
@@ -305,14 +319,21 @@ impl AiService {
                     usage: None,
                 });
 
-                // 尝试备用 provider（带取消检测）
-                match self
-                    .fallback_chat_stream(&req, on_chunk_ref, &mut cancel_rx)
-                    .await
-                {
-                    Ok(resp) => Ok(resp),
-                    Err(fb_e) if fb_e.contains(REQUEST_CANCELLED) => Err(fb_e),
-                    Err(_) => Err(format!("Provider 流式调用失败: {}", e)),
+                // M31：仅有一个 provider（无备用）时，跳过 fallback 遍历，
+                // 直接返回主调用的原始错误，避免无意义的循环与困惑日志
+                if !self.has_backup_provider() {
+                    log::debug!("[AI-DEBUG] 无备用 provider，跳过 fallback");
+                    Err(e)
+                } else {
+                    // 尝试备用 provider（带取消检测）
+                    match self
+                        .fallback_chat_stream(&req, on_chunk_ref, &mut cancel_rx)
+                        .await
+                    {
+                        Ok(resp) => Ok(resp),
+                        Err(fb_e) if fb_e.contains(REQUEST_CANCELLED) => Err(fb_e),
+                        Err(_) => Err(format!("Provider 流式调用失败: {}", e)),
+                    }
                 }
             }
         };

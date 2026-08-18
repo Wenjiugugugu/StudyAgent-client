@@ -1,3 +1,6 @@
+/**
+ * 持久化策略：设置经 save() 调用后端写 config/settings.json，重启保留
+ */
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api";

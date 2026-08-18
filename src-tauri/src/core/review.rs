@@ -17,7 +17,7 @@ use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::data::records::{ReviewData, ReviewFile};
 use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
-use crate::data::{now_string, today_string, DataResult};
+use crate::data::{clean_ai_json, now_string, today_string, DataResult};
 
 /// Review Agent — 复盘生成器
 pub struct ReviewAgent<'a> {
@@ -379,27 +379,6 @@ fn parse_review_json(
     }
 
     Ok(review)
-}
-
-/// 清理 AI 可能包裹的代码块，提取纯 JSON
-fn clean_ai_json(content: &str) -> String {
-    let trimmed = content.trim();
-
-    // 尝试提取 ```json ... ``` 或 ``` ... ``` 包裹的内容
-    if trimmed.starts_with("```") {
-        let start = trimmed.find('\n').map(|p| p + 1).unwrap_or(0);
-        let end = trimmed.rfind("```").unwrap_or(trimmed.len());
-        return trimmed[start..end].trim().to_string();
-    }
-
-    // 尝试找到第一个 '{' 和最后一个 '}'
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            return trimmed[start..=end].to_string();
-        }
-    }
-
-    trimmed.to_string()
 }
 
 #[cfg(test)]

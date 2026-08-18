@@ -14,8 +14,8 @@ use crate::data::plan::{
 };
 use crate::data::state::StudyState;
 use crate::data::{
-    add_days, days_between, get_week_end, get_week_start, iso_week_string, now_string, today_string,
-    weekday_name, DataResult,
+    add_days, clean_ai_json, days_between, get_week_end, get_week_start, iso_week_string, now_string,
+    today_string, weekday_name, DataResult,
 };
 
 /// Planner — 计划生成器
@@ -279,48 +279,7 @@ impl<'a> Planner<'a> {
         );
 
         // 10. 重新生成所有受影响日期的日计划文件
-        let today = today_string();
-        let today_is_excluded = week_plan
-            .data
-            .excluded_days
-            .iter()
-            .any(|d| d.date == today);
-        for date in &regen_dates {
-            // 排除日不生成日计划
-            let is_excluded = week_plan
-                .data
-                .excluded_days
-                .iter()
-                .any(|d| &d.date == date);
-            if is_excluded {
-                log::info!("{} 是排除日，跳过日计划生成", date);
-                continue;
-            }
-            match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
-                Ok(plan) => {
-                    if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
-                        log::warn!("保存 {} 日计划失败: {}", date, e);
-                    } else {
-                        log::info!("已重新生成 {} 的日计划", date);
-                        // 对今天额外执行温和同步
-                        if date == &today && !today_is_excluded {
-                            if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
-                                log::warn!("同步 current_task 失败: {}", e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("重新生成 {} 日计划失败: {}", date, e);
-                }
-            }
-        }
-        crate::data::write_ai_debug_log(
-            data_dir,
-            "regenerate_daily_plans_saved",
-            &format!("已重新生成受影响日期的日计划, 日期列表: {:?}", regen_dates),
-        );
-
+        Self::regenerate_daily_plans_for_dates(data_dir, &week_plan, &regen_dates, "review_regen")?;
         crate::data::write_ai_debug_log(
             data_dir,
             "regenerate_complete",
@@ -562,46 +521,7 @@ impl<'a> Planner<'a> {
         );
 
         // 12. 重新生成所有受影响日期的日计划文件
-        let today_is_excluded = week_plan
-            .data
-            .excluded_days
-            .iter()
-            .any(|d| d.date == today);
-        for date in &regen_dates {
-            // 排除日不生成日计划
-            let is_excluded = week_plan
-                .data
-                .excluded_days
-                .iter()
-                .any(|d| &d.date == date);
-            if is_excluded {
-                log::info!("{} 是排除日，跳过日计划生成", date);
-                continue;
-            }
-            match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
-                Ok(plan) => {
-                    if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
-                        log::warn!("保存 {} 日计划失败: {}", date, e);
-                    } else {
-                        log::info!("已重新生成 {} 的日计划", date);
-                        // 对今天额外执行温和同步
-                        if date == &today && !today_is_excluded {
-                            if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
-                                log::warn!("同步 current_task 失败: {}", e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("重新生成 {} 日计划失败: {}", date, e);
-                }
-            }
-        }
-        crate::data::write_ai_debug_log(
-            data_dir,
-            "exclusion_regen_daily_plans_saved",
-            &format!("已重新生成受影响日期的日计划, 日期列表: {:?}", regen_dates),
-        );
+        Self::regenerate_daily_plans_for_dates(data_dir, &week_plan, &regen_dates, "exclusion_regen")?;
 
         crate::data::write_ai_debug_log(
             data_dir,
@@ -824,6 +744,67 @@ impl<'a> Planner<'a> {
         for (date, err) in &errors {
             log::warn!("生成 {} 日计划失败: {}", date, err);
         }
+
+        Ok(())
+    }
+
+    /// 重新生成指定日期的日计划文件（M8：抽取自重排逻辑，消除重复）
+    ///
+    /// 遍历 `regen_dates`，跳过排除日，对每个非排除日重新生成并保存日计划。
+    /// 仅对今天额外执行温和同步（`sync_current_task`，不覆盖已有完成状态）。
+    ///
+    /// `week_plan` 用于读取排除日列表以跳过对应日期。
+    fn regenerate_daily_plans_for_dates(
+        data_dir: &Path,
+        week_plan: &WeekPlanFile,
+        regen_dates: &[String],
+        tag: &str,
+    ) -> DataResult<()> {
+        let today = today_string();
+        let today_is_excluded = week_plan
+            .data
+            .excluded_days
+            .iter()
+            .any(|d| d.date == today);
+
+        for date in regen_dates {
+            // 排除日不生成日计划
+            let is_excluded = week_plan
+                .data
+                .excluded_days
+                .iter()
+                .any(|d| &d.date == date);
+            if is_excluded {
+                log::info!("{} 是排除日，跳过日计划生成", date);
+                continue;
+            }
+            match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
+                Ok(plan) => {
+                    if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
+                        log::warn!("保存 {} 日计划失败: {}", date, e);
+                    } else {
+                        log::info!("{}: 已重新生成 {} 的日计划", tag, date);
+                        // 对今天额外执行温和同步
+                        if date == &today && !today_is_excluded {
+                            if let Err(e) = Self::sync_current_task(data_dir, &today, &plan) {
+                                log::warn!("同步 current_task 失败: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("重新生成 {} 日计划失败: {}", date, e);
+                }
+            }
+        }
+        crate::data::write_ai_debug_log(
+            data_dir,
+            &format!("{}_daily_plans_saved", tag),
+            &format!(
+                "已重新生成受影响日期的日计划, 日期列表: {:?}",
+                regen_dates
+            ),
+        );
 
         Ok(())
     }
@@ -2174,27 +2155,6 @@ fn parse_week_plan_json(
     }
 
     Ok(plan)
-}
-
-/// 清理 AI 可能包裹的代码块，提取纯 JSON
-fn clean_ai_json(content: &str) -> String {
-    let trimmed = content.trim();
-
-    // 尝试提取 ```json ... ``` 或 ``` ... ``` 包裹的内容
-    if trimmed.starts_with("```") {
-        let start = trimmed.find('\n').map(|p| p + 1).unwrap_or(0);
-        let end = trimmed.rfind("```").unwrap_or(trimmed.len());
-        return trimmed[start..end].trim().to_string();
-    }
-
-    // 尝试找到第一个 '{' 和最后一个 '}'
-    if let Some(start) = trimmed.find('{') {
-        if let Some(end) = trimmed.rfind('}') {
-            return trimmed[start..=end].to_string();
-        }
-    }
-
-    trimmed.to_string()
 }
 
 /// 每周总量自校准（确定性公式）：根据上周复盘的完成率推导本周任务量系数。
