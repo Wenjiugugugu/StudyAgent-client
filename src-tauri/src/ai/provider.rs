@@ -310,6 +310,128 @@ pub struct ProviderCapabilities {
     pub max_context_length: u32,
 }
 
+/// 常见模型 → 上下文长度（token）映射表（按包含匹配，条目顺序：更具体的型号在前）。
+///
+/// 数值取各模型公开的上下文窗口常用档位（保守值）。
+/// 用于 `capabilities().max_context_length` 的优先判断：按模型名命中则用表值，
+/// 否则回退到按 Provider 类型分档（`provider_default_context_length`）。
+const MODEL_CONTEXT_TABLE: &[(&str, u32)] = &[
+    // OpenAI GPT-4.1 / o 系列
+    ("gpt-4.1-mini", 1_048_576),
+    ("gpt-4.1-nano", 1_048_576),
+    ("gpt-4.1", 1_048_576),
+    ("gpt-4o-mini", 128_000),
+    ("gpt-4o", 128_000),
+    ("chatgpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("gpt-4-32k", 32_768),
+    ("gpt-4", 8_192),
+    ("gpt-3.5-turbo", 16_384),
+    ("o4-mini", 200_000),
+    ("o1-mini", 128_000),
+    ("o1", 128_000),
+    ("o3", 200_000),
+    // Anthropic Claude
+    ("claude-opus-4", 1_000_000),
+    ("claude-sonnet-4", 200_000),
+    ("claude-3-7-sonnet", 200_000),
+    ("claude-3-5-sonnet", 200_000),
+    ("claude-3-5-haiku", 200_000),
+    ("claude-3-opus", 200_000),
+    ("claude-3-sonnet", 200_000),
+    ("claude-3-haiku", 200_000),
+    // Google Gemini
+    ("gemini-2.5-pro", 1_048_576),
+    ("gemini-2.5-flash", 1_048_576),
+    ("gemini-2.0-pro", 1_048_576),
+    ("gemini-2.0-flash", 1_048_576),
+    ("gemini-1.5-pro", 1_048_576),
+    ("gemini-1.5-flash", 1_048_576),
+    // DeepSeek / Qwen / Doubao
+    ("deepseek-reasoner", 128_000),
+    ("deepseek-chat", 128_000),
+    ("deepseek", 64_000),
+    ("qwen-max", 32_768),
+    ("qwen-plus", 131_072),
+    ("qwen-turbo", 1_000_000),
+    ("qwen2.5", 131_072),
+    ("qwen", 32_768),
+    ("doubao-pro", 131_072),
+    ("doubao-lite", 131_072),
+    ("doubao", 32_768),
+    // 常见本地/Ollama 模型
+    ("llama3.3", 131_072),
+    ("llama3.1", 131_072),
+    ("llama3", 8_192),
+    ("llama2", 4_096),
+    ("mistral", 32_768),
+    ("mixtral", 32_768),
+    ("phi-3", 128_000),
+    ("phi-2", 2_048),
+    ("codellama", 16_384),
+    ("yi-1.5", 32_768),
+];
+
+/// 判断某个 Provider 配置的上下文长度（token）。
+///
+/// 优先按模型名查 `MODEL_CONTEXT_TABLE`（包含匹配，忽略大小写）；
+/// 查不到时回退到按 Provider 类型分档（`provider_default_context_length`）。
+pub fn max_context_length_for(config: &AIProviderConfig) -> u32 {
+    context_length_for_model(&config.r#type, &config.model)
+}
+
+/// 按模型名（或 Provider 类型兜底）计算上下文长度（token）
+///
+/// 供 `capabilities()` 与 `list_models`（对每个返回模型计算）共用：
+/// 服务商 `/models` 未提供 context_length 时，用内置表按模型名判断。
+pub fn context_length_for_model(provider: &ProviderType, model: &str) -> u32 {
+    let model = model.trim().to_lowercase();
+    if !model.is_empty() {
+        for (pat, len) in MODEL_CONTEXT_TABLE {
+            if model.contains(pat) {
+                return *len;
+            }
+        }
+    }
+    provider_default_context_length(provider)
+}
+
+/// 常见上下文长度字段名（服务商 `/models` 返回时视为"自动获取"成功）
+const CONTEXT_LENGTH_KEYS: [&str; 4] = [
+    "context_length",
+    "context_window",
+    "max_context_length",
+    "max_input_tokens",
+];
+
+/// 若模型元数据未含服务商提供的上下文长度字段，则注入按模型名计算的查表兜底值。
+///
+/// 写入 `extra["_studyagent_ctx_len"]`，供前端模型列表展示 ctx 时最后兜底读取。
+pub fn inject_context_length_fallback(
+    provider: &ProviderType,
+    model: &str,
+    extra: &mut serde_json::Value,
+) {
+    let has_provider_value = CONTEXT_LENGTH_KEYS
+        .iter()
+        .any(|k| extra.get(*k).is_some());
+    if !has_provider_value {
+        extra["_studyagent_ctx_len"] =
+            serde_json::json!(context_length_for_model(provider, model));
+    }
+}
+
+/// Provider 类型级兜底上下文长度（token）
+fn provider_default_context_length(provider: &ProviderType) -> u32 {
+    match provider {
+        ProviderType::Anthropic => 200_000,
+        ProviderType::Gemini => 1_048_576,
+        ProviderType::Ollama => 8_192,
+        // OpenAI / OpenRouter / Siliconflow / Dashscope / Volcengine / Custom
+        _ => 32_768,
+    }
+}
+
 /// 可用模型信息
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -354,7 +476,7 @@ pub trait AiProvider: Send + Sync {
             streaming: true,
             function_calling: true,
             vision: false,
-            max_context_length: 32768,
+            max_context_length: max_context_length_for(self.config()),
         }
     }
 
@@ -725,4 +847,44 @@ pub async fn send_with_retry(
         max_attempts,
         last_err.unwrap_or_default()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(provider: ProviderType, model: &str) -> AIProviderConfig {
+        AIProviderConfig {
+            model: model.to_string(),
+            r#type: provider,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn context_length_prefers_model_name() {
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "gpt-4o-2024-05-13")), 128_000);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "gpt-4o-mini")), 128_000);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "gpt-4")), 8_192);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "o1")), 128_000);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Anthropic, "claude-3-5-sonnet-20241022")), 200_000);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Gemini, "gemini-2.5-pro")), 1_048_576);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Ollama, "llama3.1:8b")), 131_072);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "deepseek-chat")), 128_000);
+    }
+
+    #[test]
+    fn context_length_falls_back_to_provider_type() {
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "some-unknown-model")), 32_768);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Anthropic, "some-unknown-model")), 200_000);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Gemini, "some-unknown-model")), 1_048_576);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Ollama, "some-unknown-model")), 8_192);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Siliconflow, "some-unknown-model")), 32_768);
+    }
+
+    #[test]
+    fn context_length_is_case_insensitive() {
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "GPT-4O")), 128_000);
+        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "")), 32_768);
+    }
 }

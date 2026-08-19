@@ -491,8 +491,8 @@ impl AiProvider for GeminiProvider {
             streaming: true,
             function_calling: true,
             vision: true,
-            // Gemini 1.5 Pro 上下文窗口为 1M
-            max_context_length: 1_048_576,
+            // 优先按模型名查表（Gemini 各型号 1M），查不到回退 Gemini 1M
+            max_context_length: crate::ai::provider::max_context_length_for(&self.config),
         }
     }
 
@@ -542,11 +542,17 @@ impl AiProvider for GeminiProvider {
                             .unwrap_or("unknown")
                             .to_string();
                         let id = name.strip_prefix("models/").unwrap_or(&name).to_string();
+                        let mut extra = m.clone();
+                        crate::ai::provider::inject_context_length_fallback(
+                            &self.config.r#type,
+                            &id,
+                            &mut extra,
+                        );
                         ModelInfo {
                             id,
                             owned_by: "google".to_string(),
                             created: 0,
-                            extra: m.clone(),
+                            extra,
                         }
                     })
                     .collect::<Vec<_>>()

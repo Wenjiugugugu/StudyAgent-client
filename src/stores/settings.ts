@@ -69,7 +69,11 @@ export const useSettingsStore = defineStore("settings", () => {
   const backgroundImage = computed<string>(() => settings.value?.background_image ?? "");
   const backgroundBlur = computed<number>(() => settings.value?.background_blur ?? 0);
   const backgroundOpacity = computed<number>(() => settings.value?.background_opacity ?? 1);
-  const aiProviders = computed<AIProviderConfig[]>(() => settings.value?.ai_providers ?? []);
+  // 默认 Provider 自动置顶展示，其余保持添加顺序（不修改底层数组，持久化顺序不变）
+  const aiProviders = computed<AIProviderConfig[]>(() => {
+    const list = settings.value?.ai_providers ?? [];
+    return [...list].sort((a, b) => Number(b.is_default) - Number(a.is_default));
+  });
   const mcpServers = computed<MCPServerConfig[]>(() => settings.value?.mcp_servers ?? []);
   const defaultProvider = computed(() =>
     aiProviders.value.find((p) => p.id === settings.value?.default_provider_id)

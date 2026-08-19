@@ -285,6 +285,11 @@ pub async fn focus_add_minutes(
 ) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
 
+    // M2：校验专注分钟数范围，防止负值/超大值污染 accumulated_minutes
+    if !(0..=1440).contains(&minutes) {
+        return Err(format!("无效的专注分钟数: {}（允许 0-1440）", minutes));
+    }
+
     // H1 并发保护：串行化 state 写操作
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
@@ -295,6 +300,67 @@ pub async fn focus_add_minutes(
 
     log::info!("番茄钟：任务 {} 累加专注 {} 分钟", task_id, minutes);
     Ok(())
+}
+
+/// 番茄钟：记录一条专注会话（学习/休息/长休息）
+///
+/// 会话按结束日期落盘到 `focus/YYYY-MM-DD_focus.json`。
+/// 前端调用: `invoke('record_focus_session', { session })`
+#[tauri::command]
+pub async fn record_focus_session(
+    session: crate::data::focus::FocusSession,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+
+    // H1 并发保护：append_focus_session 是读-改-写，需与其他写命令串行化
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    crate::data::focus::append_focus_session(&data_dir, session)
+        .map_err(|e| format!("记录专注会话失败: {}", e))?;
+    Ok(())
+}
+
+/// 番茄钟：读取某天的专注会话列表
+///
+/// 前端调用: `invoke('get_focus_sessions', { date })`
+#[tauri::command]
+pub async fn get_focus_sessions(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::data::focus::FocusSession>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    // M1：与其他 date 参数命令保持一致，先校验 YYYY-MM-DD 格式，防止路径穿越
+    crate::data::validate_date(&date)?;
+    crate::data::focus::list_focus_sessions(&data_dir, &date)
+        .map_err(|e| format!("读取专注记录失败: {}", e))
+}
+
+/// 番茄钟：读取 [start, end] 日期区间内的全部专注会话
+///
+/// 前端调用: `invoke('get_focus_sessions_range', { start, end })`
+#[tauri::command]
+pub async fn get_focus_sessions_range(
+    start: String,
+    end: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::data::focus::FocusSession>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    crate::data::focus::list_focus_sessions_in_range(&data_dir, &start, &end)
+        .map_err(|e| format!("读取专注记录失败: {}", e))
+}
+
+/// 番茄钟：今日统计（番茄数 / 专注分钟 / 休息次数）
+///
+/// 前端调用: `invoke('get_focus_today_stats')`
+#[tauri::command]
+pub async fn get_focus_today_stats(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::data::focus::FocusDayStats, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    crate::data::focus::focus_today_stats(&data_dir)
+        .map_err(|e| format!("读取今日专注统计失败: {}", e))
 }
 
 // ============================================================================
@@ -770,13 +836,14 @@ pub async fn add_excluded_day_and_regenerate(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates) = planner
+    let (regenerated, affected_dates, used_fallback) = planner
         .regenerate_after_exclusion(&data_dir, &week_start, excluded_day)
         .await?;
 
     Ok(RegenerateResult {
         regenerated,
         affected_dates,
+        used_fallback,
     })
 }
 
@@ -1088,7 +1155,7 @@ pub async fn submit_review(
             regen_reasons.push("今日学习感受困难".to_string());
         }
         if has_overcompletion {
-            regen_reasons.push("有额外进度需要调整后续计划".to_string());
+            regen_reasons.push("存在计划外学习内容需要修正后续计划".to_string());
         }
 
         log::info!(
@@ -1173,13 +1240,14 @@ pub async fn regenerate_remaining_days(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates) = planner
+    let (regenerated, affected_dates, used_fallback) = planner
         .regenerate_remaining_days_after_review(&data_dir, &review_date)
         .await?;
 
     Ok(RegenerateResult {
         regenerated,
         affected_dates,
+        used_fallback,
     })
 }
 
@@ -1190,6 +1258,9 @@ pub struct RegenerateResult {
     pub regenerated: bool,
     /// 受影响的日期列表
     pub affected_dates: Vec<String>,
+    /// AI 调用失败时是否启用了确定性兜底安排（供前端提示用户）
+    #[serde(default)]
+    pub used_fallback: bool,
 }
 
 // ============================================================================
@@ -1799,6 +1870,9 @@ pub struct TextbookSearchHit {
     /// 该行命中的关键词数量（用于排序，前端可忽略）
     #[serde(default)]
     pub hit_weight: usize,
+    /// 该行实际命中的关键词（供前端高亮片段与正文）
+    #[serde(default)]
+    pub matched_terms: Vec<String>,
 }
 
 /// 在已导入教材中全文搜索
@@ -1883,11 +1957,13 @@ pub async fn search_in_textbook(
                         let lower = line.to_lowercase();
                         let mut matched = 0usize;
                         let mut first_pos: Option<usize> = None;
+                        let mut matched_terms: Vec<String> = Vec::new();
 
                         for term in &terms {
                             let tl = term.to_lowercase();
                             if lower.contains(&tl) {
                                 matched += 1;
+                                matched_terms.push(term.clone());
                                 let pos = lower.find(&tl).unwrap_or(0);
                                 if first_pos.map(|p| pos < p).unwrap_or(true) {
                                     first_pos = Some(pos);
@@ -1946,6 +2022,7 @@ pub async fn search_in_textbook(
                             line_number: idx + 1,
                             snippet: format!("{}{}{}", prefix, snippet, suffix),
                             hit_weight: matched,
+                            matched_terms,
                         });
                     }
                 }
@@ -3662,6 +3739,9 @@ pub async fn set_close_action(
         _ => return Err(format!("无效的关闭动作: {}（支持: ask, tray, quit）", action)),
     };
     let data_dir = get_data_dir(state.inner())?;
+    // M15：settings 写操作与其他写命令串行化，避免与 save_settings 并发丢更新
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let mut settings = load_settings(&data_dir);
     settings.close_action = normalized.clone();
     save_settings_file(&data_dir, &settings)?;

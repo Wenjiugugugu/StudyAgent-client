@@ -590,8 +590,8 @@ impl AiProvider for AnthropicProvider {
             streaming: true,
             function_calling: true,
             vision: true,
-            // Claude 3 系列上下文窗口为 200K
-            max_context_length: 200_000,
+            // 优先按模型名查表（Claude 各型号 200K/1M），查不到回退 Anthropic 200K
+            max_context_length: crate::ai::provider::max_context_length_for(&self.config),
         }
     }
 
@@ -633,14 +633,24 @@ impl AiProvider for AnthropicProvider {
             .and_then(|d| d.as_array())
             .map(|arr| {
                 arr.iter()
-                    .map(|m| ModelInfo {
-                        id: m.get("id")
+                    .map(|m| {
+                        let id = m
+                            .get("id")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
-                            .to_string(),
-                        owned_by: "anthropic".to_string(),
-                        created: m.get("created_at").and_then(|v| v.as_i64()).unwrap_or(0),
-                        extra: m.clone(),
+                            .to_string();
+                        let mut extra = m.clone();
+                        crate::ai::provider::inject_context_length_fallback(
+                            &self.config.r#type,
+                            &id,
+                            &mut extra,
+                        );
+                        ModelInfo {
+                            id,
+                            owned_by: "anthropic".to_string(),
+                            created: m.get("created_at").and_then(|v| v.as_i64()).unwrap_or(0),
+                            extra,
+                        }
                     })
                     .collect::<Vec<_>>()
             })

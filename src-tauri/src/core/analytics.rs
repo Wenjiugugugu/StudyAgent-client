@@ -353,9 +353,13 @@ fn build_learning_trend(
 
         let planned_tasks = plan.as_ref().map(|p| p.data.total_tasks).unwrap_or(0);
         let planned_hours = plan.as_ref().map(|p| p.data.total_hours).unwrap_or(0.0);
-        let actual_hours = review
-            .map(|r| crate::data::records::review_actual_hours(r))
-            .unwrap_or(0.0);
+        // 实际学习时长：优先复盘记录；当天未复盘时，读取任务实际计时（含未完成任务）
+        let actual_hours = match review {
+            Some(r) => crate::data::records::review_actual_hours(r),
+            None => crate::data::state::read_state(data_dir)
+                .map(|state| crate::data::state::day_actual_minutes(&state, &current) as f64 / 60.0)
+                .unwrap_or(0.0),
+        };
 
         // 完成率：优先从 task_reviews 计算
         let (completed_tasks, completion_rate) = compute_completion(review);

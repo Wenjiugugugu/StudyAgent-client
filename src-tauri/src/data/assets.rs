@@ -67,12 +67,17 @@ fn split_frontmatter(content: &str) -> (Option<String>, String) {
 }
 
 /// 在 YAML 内容中查找闭合的 `---` 分隔符位置（行首）
+///
+/// M19：改为按行累积字节偏移定位当前行，避免 `s.find(line)` 命中更早的相同内容
+/// （如 frontmatter 值里出现 `---`）导致 frontmatter/正文切分错误。
 fn find_closing_delimiter(s: &str) -> Option<usize> {
-    for line in s.lines() {
+    let mut offset = 0usize;
+    for line in s.split_inclusive('\n') {
         let trimmed = line.trim();
         if trimmed == "---" || trimmed == "..." {
-            return Some(s.find(line).unwrap_or(0));
+            return Some(offset);
         }
+        offset += line.len();
     }
     // 回退：搜索 "\n---"
     s.find("\n---").map(|p| p + 1)
@@ -551,7 +556,9 @@ pub fn parse_user_model_index(content: &str) -> UserModelIndex {
                         activity: cells.get(4).map(|s| s.to_string()).unwrap_or_default(),
                         created_at: cells.get(6).map(|s| s.to_string()).unwrap_or_default(),
                         updated_at: cells.get(7).map(|s| s.to_string()).unwrap_or_default(),
-                        status: cells.get(4).map(|s| s.to_string()).unwrap_or_default(),
+                        // M18：capabilities 表无 Status 列，不再从 Activity 列重复取值；
+                        // status 由详情文件 frontmatter 填充（read_capability）
+                        status: String::new(),
                         description: String::new(),
                         evidence_refs: Vec::new(),
                         source_observation: None,
@@ -705,7 +712,8 @@ pub fn read_milestones(data_dir: &Path) -> DataResult<Vec<Milestone>> {
 
         let id = name.trim_end_matches(".md").to_string();
 
-        if let Ok(content) = read_file_content(&file) {
+        match read_file_content(&file) {
+            Ok(content) => {
             let (yaml, body) = split_frontmatter(&content);
             let mut milestone = Milestone {
                 id: id.clone(),
@@ -739,6 +747,10 @@ pub fn read_milestones(data_dir: &Path) -> DataResult<Vec<Milestone>> {
             }
 
             milestones.push(milestone);
+            }
+            Err(e) => {
+                log::warn!("读取里程碑文件 {:?} 失败: {}", file, e);
+            }
         }
     }
 

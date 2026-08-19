@@ -341,6 +341,11 @@ async function handleImportBackup() {
   }
   if (!selected) return;
 
+  // M13：覆盖式导入前二次确认（原数据会自动备份到 bak 目录，但需明确提醒）
+  if (!window.confirm("导入备份将覆盖当前全部数据（原数据会自动备份到 bak 目录，可恢复）。确定继续？")) {
+    return;
+  }
+
   importing.value = true;
   try {
     const summary = await api.importBackup(selected);
@@ -395,8 +400,9 @@ const filteredModels = computed(() => {
 /** 从 ModelInfo.extra 中尝试提取上下文长度 */
 function modelContextLength(m: ModelInfo): number | null {
   const extra = m.extra as Record<string, unknown>;
-  // 常见字段名：context_length / context_window / max_context_length / max_input_tokens
-  const candidates = ["context_length", "context_window", "max_context_length", "max_input_tokens", "context"];
+  // 常见字段名：context_length / context_window / max_context_length / max_input_tokens；
+  // _studyagent_ctx_len 为后端在服务商未返回字段时按模型名查表注入的兜底值
+  const candidates = ["context_length", "context_window", "max_context_length", "max_input_tokens", "context", "_studyagent_ctx_len"];
   for (const key of candidates) {
     const v = extra[key];
     if (typeof v === "number" && v > 0) return v;
@@ -490,6 +496,26 @@ function cancelProviderForm() {
 
 async function saveProvider() {
   if (!providerForm.value.name.trim()) return;
+  // 需求：修改 Provider 后必须先测试连接，成功才保存
+  testing.value = true;
+  testResult.value = null;
+  try {
+    const result = await api.testAIProvider(providerForm.value);
+    // aiInvoke 已把 success:false 转为抛错；能走到这说明连接成功
+    if (!result.success) {
+      testResult.value = `测试失败：${result.message}`;
+      return;
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    testResult.value = `测试失败：${msg}`;
+    // 识别上下文超限报错并自动修正 max_tokens
+    applyContextLimitFix(msg);
+    return;
+  } finally {
+    testing.value = false;
+  }
+
   if (editingProviderId.value) {
     settingsStore.updateProvider(editingProviderId.value, { ...providerForm.value });
   } else {
@@ -531,10 +557,49 @@ async function handleTestProvider() {
     const result = await api.testAIProvider(providerForm.value);
     testResult.value = result.success ? (result.message || "连接成功") : `测试失败：${result.message}`;
   } catch (e) {
-    testResult.value = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    testResult.value = msg;
+    // 识别上下文超限报错并自动修正 max_tokens
+    applyContextLimitFix(msg);
   } finally {
     testing.value = false;
   }
+}
+
+/** 从错误信息中解析服务商返回的上下文最大 token 数（识别超限报错） */
+function parseContextLimit(message: string): number | null {
+  const patterns = [
+    /maximum context length is (\d[\d,]*)/i,
+    /maximum context length of (\d[\d,]*)/i,
+    /context length of (\d[\d,]*)/i,
+    /maximum input token count[^\d]*(\d[\d,]*)/i,
+    /max(?:imum)? input tokens?[^\d]*(\d[\d,]*)/i,
+    /context window[^\d]*(\d[\d,]*)/i,
+  ];
+  for (const re of patterns) {
+    const m = message.match(re);
+    if (m) {
+      const n = parseInt(m[1].replace(/,/g, ""), 10);
+      if (!isNaN(n) && n > 0) return n;
+    }
+  }
+  return null;
+}
+
+/** 识别上下文超限报错：自动把 Max Tokens 调整到合理范围，返回是否修正 */
+function applyContextLimitFix(message: string): boolean {
+  const limit = parseContextLimit(message);
+  if (!limit) return false;
+  // 自适应输出预算：窗口越大输出占比越高（大窗口下输入通常占不满）
+  const ratio = limit <= 16_384 ? 0.25 : limit <= 131_072 ? 0.5 : 0.75;
+  const safe = Math.max(1, Math.floor(limit * ratio));
+  const current = providerForm.value.max_tokens ?? 0;
+  if (current === 0 || current > limit) {
+    providerForm.value.max_tokens = safe;
+    testResult.value = `检测到上下文超限（最大 ${limit.toLocaleString()} tokens），已将 Max Tokens 自动调整为 ${safe.toLocaleString()}，请重新测试连接。`;
+    return true;
+  }
+  return false;
 }
 
 // ── MCP Server 表单状态 ──
@@ -1781,9 +1846,9 @@ onBeforeUnmount(() => {
             </Button>
             <div class="form-actions-right">
               <Button variant="ghost" size="sm" @click="cancelProviderForm">取消</Button>
-              <Button variant="primary" size="sm" @click="saveProvider">
+              <Button variant="primary" size="sm" :loading="testing" @click="saveProvider">
                 <Check :size="14" />
-                <span>保存</span>
+                <span>{{ testing ? '测试中…' : '保存' }}</span>
               </Button>
             </div>
           </div>

@@ -303,8 +303,17 @@ impl DashboardAggregator {
                 }
             }
 
-            // 有进行中任务但无完成时长时，给最小占位时长，确保首页"已学习"圆点亮起
-            if hours <= 0.0 && has_in_progress {
+            // 学习时长优先取当天任务的实际累计计时（含进行中时段）。
+            // 任务计时不区分是否完成，即使任务未标记 Done，其计时也应计入学习时间；
+            // 无计时数据时才回退到已完成任务的估时。
+            let actual_minutes = crate::data::state::read_state(data_dir)
+                .map(|state| crate::data::state::day_actual_minutes(&state, date))
+                .unwrap_or(0);
+
+            if actual_minutes > 0 {
+                hours = actual_minutes as f64 / 60.0;
+            } else if hours <= 0.0 && has_in_progress {
+                // 有进行中任务但无完成时长时，给最小占位时长，确保首页"已学习"圆点亮起
                 hours = (daily_target_hours * 0.1).max(0.1);
             }
 

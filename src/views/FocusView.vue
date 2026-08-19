@@ -5,15 +5,15 @@
  * - 支持倒计时 / 正计时两种计时方式
  * - 倒计时：学习 + 休息两段，默认 25 分钟学习 / 5 分钟休息
  * - 学习结束后可手动或自动进入休息；手动模式下先转正计时，等待用户点击开始休息
- * - 休息结束后可选择继续新的一轮或结束
+ * - 长休循环：每 N 个番茄后进入长休息（可配置开关）
+ * - 计时状态由全局 store 管理，离开本页 / 切换页面不中断计时
  * - 可关联今日具体任务：学习番茄完成时把专注分钟累加到任务，勾选完成后同步任务状态
  * - 圆环进度条：中间显示剩余时间，圆环随时间逆时针减少
+ * - 今日番茄数 / 历史记录由后端持久化
  */
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted } from "vue";
 import { useTodayStore } from "@/stores/today";
-import * as api from "@/api";
-import { todayString } from "@/utils/date";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useFocusStore } from "@/stores/focus";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -29,333 +29,58 @@ import {
   ListChecks,
   Timer,
   Hourglass,
+  History,
 } from "lucide-vue-next";
 import type { PlanTask } from "@/types";
 
 const todayStore = useTodayStore();
-
-// ── 配置（localStorage 持久化）──
-interface FocusConfig {
-  focusMinutes: number; // 学习时长（分钟）
-  breakMinutes: number; // 休息时长（分钟）
-  autoBreak: boolean; // 学习结束是否自动进入休息
-}
-const CONFIG_KEY = "focus.config.v1";
-const defaultConfig: FocusConfig = { focusMinutes: 25, breakMinutes: 5, autoBreak: false };
-function loadConfig(): FocusConfig {
-  try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    if (raw) return { ...defaultConfig, ...JSON.parse(raw) };
-  } catch { /* 忽略 */ }
-  return { ...defaultConfig };
-}
-const config = ref<FocusConfig>(loadConfig());
-watch(config, (v) => {
-  try { localStorage.setItem(CONFIG_KEY, JSON.stringify(v)); } catch { /* 忽略 */ }
-}, { deep: true });
-
-// ── 状态 ──
-type Phase = "focus" | "break"; // 学习 / 休息
-type TimerMode = "countdown" | "stopwatch"; // 倒计时 / 正计时
-// 倒计时的子状态：
-// idle(未开始) / running(运行中) / paused(已暂停) /
-// focusEnded(学习结束，等待进入休息：自动则直接转 break；手动则转 stopwatch) /
-// breakEnded(休息结束，等待选择继续或结束)
-type CountdownSub = "idle" | "running" | "paused" | "focusEnded" | "breakEnded";
-
-const mode = ref<TimerMode>("countdown");
-const phase = ref<Phase>("focus");
-const sub = ref<CountdownSub>("idle");
-
-/** 倒计时剩余秒数（学习/休息共用，phase 决定目标时长） */
-const remainingSec = ref(config.value.focusMinutes * 60);
-/** 本轮倒计时总秒数（用于圆环比例） */
-const totalSec = ref(config.value.focusMinutes * 60);
-/** 正计时累计秒数 */
-const stopwatchSec = ref(0);
-
-let interval: ReturnType<typeof setInterval> | undefined;
-
-/** 每秒推进一次：倒计时剩余减 1，正计时累计加 1（setInterval 1000ms） */
-function tick() {
-  if (mode.value === "countdown") {
-    if (sub.value === "running") {
-      if (remainingSec.value > 0) {
-        remainingSec.value -= 1;
-      }
-      if (remainingSec.value <= 0) {
-        remainingSec.value = 0;
-        onCountdownEnd();
-      }
-    }
-  } else {
-    if (sub.value === "running") {
-      stopwatchSec.value += 1;
-    }
-  }
-}
-
-/** 倒计时结束：学习→休息 / 休息→结束 */
-function onCountdownEnd() {
-  if (phase.value === "focus") {
-    // 学习结束：记录一个完整番茄（关联任务累加专注分钟）
-    void recordFocusCompletion(Math.round(totalSec.value / 60));
-    // 结束提醒：提示音 + 窗口不在前台时弹系统通知
-    void notifyPhaseEnd("学习结束", "专注已完成，可以开始休息了。");
-    // 自动休息则直接进入休息倒计时；手动则停在 focusEnded（下方转正计时）
-    if (config.value.autoBreak) {
-      startBreak();
-    } else {
-      sub.value = "focusEnded";
-      // 手动模式：默认进入正计时，直到用户点击「开始休息」
-      mode.value = "stopwatch";
-      stopwatchSec.value = 0;
-      sub.value = "running";
-    }
-  } else {
-    // 休息结束
-    void notifyPhaseEnd("休息结束", "休息时间到，可以开始新一轮学习了。");
-    sub.value = "breakEnded";
-    pauseInterval();
-  }
-}
-
-function startInterval() {
-  if (!interval) {
-    interval = setInterval(tick, 1000);
-  }
-}
-function pauseInterval() {
-  if (interval) { clearInterval(interval); interval = undefined; }
-}
-
-/** 开始正计时 */
-function startStopwatch() {
-  mode.value = "stopwatch";
-  phase.value = "focus";
-  stopwatchSec.value = 0;
-  sub.value = "running";
-  startInterval();
-}
-
-/** 开始倒计时学习 */
-function startFocus() {
-  mode.value = "countdown";
-  phase.value = "focus";
-  totalSec.value = config.value.focusMinutes * 60;
-  remainingSec.value = totalSec.value;
-  sub.value = "running";
-  startInterval();
-}
-
-/** 开始休息倒计时 */
-function startBreak() {
-  mode.value = "countdown";
-  phase.value = "break";
-  totalSec.value = config.value.breakMinutes * 60;
-  remainingSec.value = totalSec.value;
-  sub.value = "running";
-  startInterval();
-}
-
-function togglePause() {
-  if (mode.value === "countdown" && sub.value === "running") {
-    sub.value = "paused";
-    pauseInterval();
-  } else if (mode.value === "countdown" && sub.value === "paused") {
-    sub.value = "running";
-    startInterval();
-  } else if (mode.value === "stopwatch" && sub.value === "running") {
-    sub.value = "paused";
-    pauseInterval();
-  } else if (mode.value === "stopwatch" && sub.value === "paused") {
-    sub.value = "running";
-    startInterval();
-  }
-}
-
-function skipToBreak() {
-  // 手动模式学习结束后（或学习中），点击「开始休息」
-  if (phase.value === "focus") {
-    pauseInterval();
-    startBreak();
-  }
-}
-
-/** 休息结束：继续新的一轮学习 */
-function continueRound() {
-  startFocus();
-}
-
-/** 休息结束：结束番茄钟，回到空闲 */
-function endRound() {
-  mode.value = "countdown";
-  phase.value = "focus";
-  sub.value = "idle";
-  remainingSec.value = config.value.focusMinutes * 60;
-  totalSec.value = config.value.focusMinutes * 60;
-  stopwatchSec.value = 0;
-  pauseInterval();
-}
-
-function resetAll() {
-  pauseInterval();
-  mode.value = "countdown";
-  phase.value = "focus";
-  sub.value = "idle";
-  remainingSec.value = config.value.focusMinutes * 60;
-  totalSec.value = config.value.focusMinutes * 60;
-  stopwatchSec.value = 0;
-}
-
-// ── 结束提醒：提示音 + 窗口不在前台时弹系统通知 ──
-let audioCtx: AudioContext | null = null;
-
-/** 播放两声音阶提示音（Web Audio 合成，无需音频资源） */
-function playChime() {
-  try {
-    const ctx = audioCtx ?? new AudioContext();
-    audioCtx = ctx;
-    // 浏览器自动播放策略下，若上下文被挂起则尝试恢复
-    if (ctx.state === "suspended") {
-      void ctx.resume();
-    }
-    const now = ctx.currentTime;
-    const notes = [880, 1174.66]; // A5 → D6，先低后高
-    for (let i = 0; i < notes.length; i++) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = notes[i];
-      const start = now + i * 0.18;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.5);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.55);
-    }
-  } catch (e) {
-    console.warn("[Focus] 播放提示音失败:", e);
-  }
-}
-
-/** 阶段结束提醒：始终播放提示音；窗口不在前台时才弹系统通知 */
-async function notifyPhaseEnd(title: string, body: string) {
-  playChime();
-  if (!api.isTauri()) return;
-  try {
-    const win = getCurrentWindow();
-    // 窗口在前台时用户已能看到界面状态变化，无需弹系统通知
-    if (await win.isFocused()) return;
-    const { sendNotification, isPermissionGranted, requestPermission } = await import(
-      "@tauri-apps/plugin-notification"
-    );
-    let granted = await isPermissionGranted();
-    if (!granted) {
-      const permission = await requestPermission();
-      granted = permission === "granted";
-    }
-    if (granted) {
-      sendNotification({ title, body });
-    }
-  } catch (e) {
-    console.warn("[Focus] 发送结束通知失败:", e);
-  }
-}
-
-// ── 展示 ──
-const displaySec = computed(() =>
-  mode.value === "countdown" ? remainingSec.value : stopwatchSec.value
-);
-const displayText = computed(() => {
-  const total = displaySec.value;
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-});
-
-/** 圆环进度：倒计时为剩余比例，正计时为已过比例 */
-const progress = computed(() => {
-  if (mode.value === "countdown") {
-    return totalSec.value > 0 ? remainingSec.value / totalSec.value : 0;
-  }
-  // 正计时圆环：按 25 分钟为一段展示
-  const cap = config.value.focusMinutes * 60;
-  return cap > 0 ? (stopwatchSec.value % cap) / cap : 0;
-});
-
-const phaseLabel = computed(() =>
-  mode.value === "stopwatch" && phase.value === "focus"
-    ? "正计时（专注）"
-    : phase.value === "focus" ? "学习" : "休息"
-);
-
-const isRunning = computed(() => sub.value === "running");
-const isPaused = computed(() => sub.value === "paused");
+const focus = useFocusStore();
 
 // ── 今日任务关联 ──
 const todayTasks = computed<PlanTask[]>(() =>
   todayStore.allTasks.filter((t) => t.status !== "done")
 );
-const linkedTaskId = ref<string | null>(null);
 const linkedTask = computed(() =>
-  todayTasks.value.find((t) => t.id === linkedTaskId.value) ?? null
+  todayTasks.value.find((t) => t.id === focus.linkedTaskId) ?? null
 );
-/** 今日已完成的番茄数（学习会话计 1 个） */
-const todayPomodoros = ref(0);
-
-const STATS_KEY = "focus.stats.v1";
-function loadTodayStats() {
-  try {
-    const raw = localStorage.getItem(STATS_KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      if (d.date === todayString()) {
-        todayPomodoros.value = d.count ?? 0;
-        return;
-      }
-    }
-  } catch { /* 忽略 */ }
-  todayPomodoros.value = 0;
-}
-function saveTodayStats() {
-  try {
-    localStorage.setItem(STATS_KEY, JSON.stringify({ date: todayString(), count: todayPomodoros.value }));
-  } catch { /* 忽略 */ }
-}
-
-/** 记录一个完成的专注会话：累加番茄数 + 关联任务分钟数 */
-async function recordFocusCompletion(minutes: number) {
-  todayPomodoros.value += 1;
-  saveTodayStats();
-  if (linkedTaskId.value) {
-    try {
-      await api.focusAddMinutes(linkedTaskId.value, minutes);
-    } catch (e) {
-      console.warn("关联任务累加专注分钟失败", e);
-    }
-  }
-}
 
 /** 关联任务勾选完成：同步任务状态为 done */
 async function completeLinkedTask() {
-  if (!linkedTaskId.value) return;
+  if (!focus.linkedTaskId) return;
   try {
-    await todayStore.updateTaskStatus(linkedTaskId.value, "done");
+    await todayStore.updateTaskStatus(focus.linkedTaskId, "done");
   } catch (e) {
     console.warn("同步任务完成状态失败", e);
   }
 }
 
+// ── 专注记录展示 ──
+const todayRecordList = computed(() =>
+  [...focus.todaySessions].sort((a, b) => (a.ended_at < b.ended_at ? 1 : -1))
+);
+
+function sessionLabel(type: string): string {
+  if (type === "focus") return "学习";
+  if (type === "stopwatch") return "正计时";
+  return type === "long_break" ? "长休息" : "短休息";
+}
+function sessionStatusLabel(status: string): string {
+  return status === "completed" ? "完成" : "打断";
+}
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 // ── 生命周期 ──
 onMounted(async () => {
-  loadTodayStats();
+  await focus.loadStats();
   await todayStore.loadToday();
-});
-
-onUnmounted(() => {
-  pauseInterval();
+  // M9：校验关联任务是否仍存在于今日未完成任务中，失效（已完成/跨天）则清空，
+  // 避免后续番茄继续累加到已失效任务
+  if (focus.linkedTaskId && !todayTasks.value.some((t) => t.id === focus.linkedTaskId)) {
+    focus.linkedTaskId = null;
+  }
 });
 </script>
 
@@ -378,18 +103,18 @@ onUnmounted(() => {
             cy="130"
             r="116"
             :stroke-dasharray="2 * Math.PI * 116"
-            :stroke-dashoffset="(2 * Math.PI * 116) * (1 - progress)"
+            :stroke-dashoffset="(2 * Math.PI * 116) * (1 - focus.progress)"
             transform="rotate(-90 130 130)"
           />
         </svg>
         <div class="ring-center">
-          <Badge :variant="phase === 'focus' ? 'info' : 'success'" class="phase-badge">
-            <component :is="phase === 'focus' ? BookOpen : Coffee" :size="13" />
-            {{ phaseLabel }}
+          <Badge :variant="focus.phase === 'focus' ? 'info' : 'success'" class="phase-badge">
+            <component :is="focus.phase === 'focus' ? BookOpen : Coffee" :size="13" />
+            {{ focus.phaseLabel }}
           </Badge>
-          <span class="ring-time">{{ displayText }}</span>
+          <span class="ring-time">{{ focus.displayText }}</span>
           <span class="ring-status">
-            {{ sub === 'idle' ? "准备开始" : isPaused ? "已暂停" : isRunning ? "进行中" : "" }}
+            {{ focus.sub === 'idle' ? "准备开始" : focus.isPaused ? "已暂停" : focus.isRunning ? "进行中" : "" }}
           </span>
         </div>
       </div>
@@ -397,12 +122,12 @@ onUnmounted(() => {
       <!-- 控制区 -->
       <div class="controls">
         <!-- 未开始（含模式切换） -->
-        <template v-if="sub === 'idle'">
+        <template v-if="focus.sub === 'idle'">
           <Button
-            v-if="mode === 'countdown'"
+            v-if="focus.mode === 'countdown'"
             variant="primary"
             size="lg"
-            @click="startFocus"
+            @click="focus.startFocus"
           >
             <Play :size="18" /> 开始专注
           </Button>
@@ -410,46 +135,55 @@ onUnmounted(() => {
             v-else
             variant="primary"
             size="lg"
-            @click="startStopwatch"
+            @click="focus.startStopwatch"
           >
             <Play :size="18" /> 开始计时
           </Button>
           <div class="mode-switch">
-            <Button :variant="mode === 'countdown' ? 'primary' : 'ghost'" size="sm" @click="mode = 'countdown'">
+            <Button :variant="focus.mode === 'countdown' ? 'primary' : 'ghost'" size="sm" @click="focus.mode = 'countdown'">
               <Timer :size="15" /> 倒计时
             </Button>
-            <Button :variant="mode === 'stopwatch' ? 'primary' : 'ghost'" size="sm" @click="mode = 'stopwatch'">
+            <Button :variant="focus.mode === 'stopwatch' ? 'primary' : 'ghost'" size="sm" @click="focus.mode = 'stopwatch'">
               <Hourglass :size="15" /> 正计时
             </Button>
           </div>
         </template>
 
         <!-- 运行/暂停中 -->
-        <template v-if="isRunning || isPaused">
-          <Button :variant="isRunning ? 'secondary' : 'primary'" size="lg" @click="togglePause">
-            <Pause v-if="isRunning" :size="18" /> <Play v-else :size="18" />
-            {{ isRunning ? "暂停" : "继续" }}
+        <template v-if="focus.isRunning || focus.isPaused">
+          <Button :variant="focus.isRunning ? 'secondary' : 'primary'" size="lg" @click="focus.togglePause">
+            <Pause v-if="focus.isRunning" :size="18" /> <Play v-else :size="18" />
+            {{ focus.isRunning ? "暂停" : "继续" }}
           </Button>
-          <Button variant="ghost" size="lg" @click="resetAll">
+          <Button variant="ghost" size="lg" @click="focus.resetAll">
             <RotateCcw :size="18" /> 重置
           </Button>
-          <!-- 手动模式：学习中（倒计时或学习结束转正计时）可点击「开始休息」 -->
+          <!-- 正计时：随时可结束并计入关联任务时间 -->
           <Button
-            v-if="phase === 'focus' && !config.autoBreak"
+            v-if="focus.mode === 'stopwatch'"
+            variant="primary"
+            size="lg"
+            @click="focus.finishStopwatch"
+          >
+            <Check :size="18" /> 结束
+          </Button>
+          <!-- 手动模式：学习结束转正计时后（非倒计时运行中）可点击「开始休息」（M4） -->
+          <Button
+            v-if="focus.phase === 'focus' && !focus.config.autoBreak && focus.mode === 'stopwatch' && focus.sub === 'running'"
             variant="secondary"
             size="lg"
-            @click="skipToBreak"
+            @click="focus.skipToBreak"
           >
             <SkipForward :size="18" /> 开始休息
           </Button>
         </template>
 
         <!-- 休息结束：继续/结束 -->
-        <template v-if="sub === 'breakEnded'">
-          <Button variant="primary" size="lg" @click="continueRound">
+        <template v-if="focus.sub === 'breakEnded'">
+          <Button variant="primary" size="lg" @click="focus.continueRound">
             <Play :size="18" /> 继续新的一轮
           </Button>
-          <Button variant="ghost" size="lg" @click="endRound">
+          <Button variant="ghost" size="lg" @click="focus.endRound">
             <Check :size="18" /> 结束番茄钟
           </Button>
         </template>
@@ -459,8 +193,12 @@ onUnmounted(() => {
       <div class="focus-footer">
         <div class="stats">
           <span class="stat-item">
-            <span class="stat-num">{{ todayPomodoros }}</span>
+            <span class="stat-num">{{ focus.todayStats.pomodoros }}</span>
             <span class="stat-label">今日番茄</span>
+          </span>
+          <span class="stat-item">
+            <span class="stat-num">{{ focus.todayStats.focus_minutes }}</span>
+            <span class="stat-label">今日专注(分)</span>
           </span>
         </div>
 
@@ -470,7 +208,7 @@ onUnmounted(() => {
             <span>关联今日任务</span>
           </div>
           <Select
-            v-model="linkedTaskId"
+            v-model="focus.linkedTaskId"
             :disabled="todayTasks.length === 0"
             :max-width="'240px'"
           >
@@ -497,42 +235,108 @@ onUnmounted(() => {
         <label class="config-field">
           <span class="config-label">学习时长（分钟）</span>
           <input
-            v-model.number="config.focusMinutes"
+            v-model.number="focus.config.focusMinutes"
             type="number"
             min="1"
             max="180"
             class="config-input"
-            :disabled="isRunning || isPaused"
+            :disabled="focus.isRunning || focus.isPaused"
           />
         </label>
         <label class="config-field">
           <span class="config-label">休息时长（分钟）</span>
           <input
-            v-model.number="config.breakMinutes"
+            v-model.number="focus.config.breakMinutes"
             type="number"
             min="1"
             max="60"
             class="config-input"
-            :disabled="isRunning || isPaused"
+            :disabled="focus.isRunning || focus.isPaused"
           />
         </label>
         <div class="config-field config-toggle">
           <span class="config-label">学习结束后自动进入休息</span>
           <button
             class="toggle-switch"
-            :class="{ on: config.autoBreak }"
+            :class="{ on: focus.config.autoBreak }"
             role="switch"
-            :aria-checked="config.autoBreak"
-            :disabled="isRunning || isPaused"
-            @click="config.autoBreak = !config.autoBreak"
+            :aria-checked="focus.config.autoBreak"
+            :disabled="focus.isRunning || focus.isPaused"
+            @click="focus.config.autoBreak = !focus.config.autoBreak"
           >
             <span class="toggle-thumb" />
           </button>
         </div>
+        <div class="config-field config-toggle">
+          <span class="config-label">长休息（每 N 个番茄后）</span>
+          <button
+            class="toggle-switch"
+            :class="{ on: focus.config.longBreakEnabled }"
+            role="switch"
+            :aria-checked="focus.config.longBreakEnabled"
+            :disabled="focus.isRunning || focus.isPaused"
+            @click="focus.config.longBreakEnabled = !focus.config.longBreakEnabled"
+          >
+            <span class="toggle-thumb" />
+          </button>
+        </div>
+        <label class="config-field">
+          <span class="config-label">长休时长（分钟）</span>
+          <input
+            v-model.number="focus.config.longBreakMinutes"
+            type="number"
+            min="1"
+            max="60"
+            class="config-input"
+            :disabled="!focus.config.longBreakEnabled || focus.isRunning || focus.isPaused"
+          />
+        </label>
+        <label class="config-field">
+          <span class="config-label">长休间隔（每 N 个番茄）</span>
+          <input
+            v-model.number="focus.config.longBreakInterval"
+            type="number"
+            min="2"
+            max="10"
+            class="config-input"
+            :disabled="!focus.config.longBreakEnabled || focus.isRunning || focus.isPaused"
+          />
+        </label>
       </div>
       <p class="config-hint">
-        关闭自动休息时，学习倒计时结束后将进入正计时，直到你点击「开始休息」。
+        关闭自动休息时，学习倒计时结束后将进入正计时，直到你点击「开始休息」。开启长休息后，每完成 N 个番茄会自动进入长休息。
       </p>
+    </Card>
+
+    <!-- 专注记录 -->
+    <Card class="focus-history">
+      <div class="history-head">
+        <History :size="16" />
+        <span>专注记录</span>
+      </div>
+      <div class="week-stats">
+        <span class="week-stat">
+          <b>{{ focus.weekStats.pomodoros }}</b> 近 7 天番茄
+        </span>
+        <span class="week-stat">
+          <b>{{ focus.weekStats.focus_minutes }}</b> 近 7 天专注分钟
+        </span>
+      </div>
+      <div v-if="todayRecordList.length === 0" class="history-empty">
+        今天还没有专注记录，完成第一个番茄后这里会展示。
+      </div>
+      <ul v-else class="session-list">
+        <li v-for="s in todayRecordList" :key="s.id" class="session-item">
+          <span class="session-type" :class="(s.type === 'focus' || s.type === 'stopwatch') ? 'is-focus' : 'is-break'">
+            {{ sessionLabel(s.type) }}
+          </span>
+          <span class="session-time">{{ formatTime(s.started_at) }} - {{ formatTime(s.ended_at) }}</span>
+          <span class="session-duration">{{ s.duration_minutes }} 分钟</span>
+          <span class="session-status" :class="{ interrupted: s.status !== 'completed' }">
+            {{ sessionStatusLabel(s.status) }}
+          </span>
+        </li>
+      </ul>
     </Card>
   </div>
 </template>
@@ -672,6 +476,9 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   color: var(--text-secondary);
   font-weight: var(--font-label);
+  /* 防止 flex 压缩导致标题文字逐个折行 */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .focus-config {
   padding: var(--space-5);
@@ -706,7 +513,7 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-3);
 }
-/* 滑动开关（与设置页一致） */
+/* 滑动开关 */
 .toggle-switch {
   position: relative;
   width: 40px;
@@ -746,5 +553,91 @@ onUnmounted(() => {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
   margin: var(--space-3) 0 0;
+}
+
+/* ── 专注记录 ── */
+.focus-history {
+  padding: var(--space-5);
+}
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-label);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+.week-stats {
+  display: flex;
+  gap: var(--space-6);
+  margin-bottom: var(--space-3);
+}
+.week-stat {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+.week-stat b {
+  color: var(--accent);
+  font-size: var(--text-lg);
+  margin-right: 2px;
+}
+.history-empty {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+.session-type {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-weight: var(--font-medium);
+}
+.session-type.is-focus {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.session-type.is-break {
+  color: var(--color-success);
+  background: var(--color-success-subtle, var(--bg-overlay));
+}
+.session-time {
+  flex: 1;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.session-duration {
+  color: var(--text-secondary);
+}
+.session-status {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--color-success);
+}
+.session-status.interrupted {
+  color: var(--color-warning);
 }
 </style>

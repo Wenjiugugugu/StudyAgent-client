@@ -77,6 +77,28 @@ export function nowString(): string {
 }
 
 /**
+ * 将 Date 格式化为上海时区的 ISO 时间（YYYY-MM-DDTHH:mm:ss+08:00）
+ *
+ * 供专注会话等按"本地日期"落盘的数据使用：后端按字符串前 10 位取日期，
+ * 若用 UTC 的 toISOString()，在 00:00-08:00 之间会落到前一天，导致
+ * 按本地日期读取时查不到记录。
+ */
+export function formatLocalIso(d: Date): string {
+  const date = formatDateShanghai(d);
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  // Intl 在午夜可能返回 "24"，归一为 "00"
+  const hour = get("hour") === "24" ? "00" : get("hour");
+  return `${date}T${hour}:${get("minute")}:${get("second")}+08:00`;
+}
+
+/**
  * 获取日期的中文星期几名称（周日 至 周六）
  * M38：从 YYYY-MM-DD 分量直接构造 Date（本地时区无关），避免中午 hack 与文件头时区声明不一致
  */

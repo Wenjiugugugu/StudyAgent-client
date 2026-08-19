@@ -15,6 +15,7 @@ pub mod ai_usage;
 pub mod assets;
 pub mod backup;
 pub mod briefing;
+pub mod focus;
 pub mod plan;
 pub mod records;
 pub mod state;
@@ -23,6 +24,7 @@ pub use ai_usage::*;
 pub use assets::*;
 pub use backup::*;
 pub use briefing::*;
+pub use focus::*;
 pub use plan::*;
 pub use records::*;
 pub use state::*;
@@ -42,15 +44,19 @@ pub type DataResult<T> = Result<T, String>;
 /// 若写入过程中进程崩溃，临时文件残留但目标文件不受影响。
 pub fn atomic_write(path: &Path, content: &str) -> DataResult<()> {
     let tmp = path.with_extension("tmp");
-    // 确保父目录存在
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("创建目录失败 {:?}: {}", parent, e))?;
         }
     }
-    std::fs::write(&tmp, content)
+    let mut file = std::fs::File::create(&tmp)
+        .map_err(|e| format!("创建临时文件失败 {:?}: {}", tmp, e))?;
+    file.write_all(content.as_bytes())
         .map_err(|e| format!("写入临时文件失败 {:?}: {}", tmp, e))?;
+    file.sync_all()
+        .map_err(|e| format!("同步临时文件失败 {:?}: {}", tmp, e))?;
+    drop(file);
     std::fs::rename(&tmp, path)
         .map_err(|e| format!("原子重命名失败 {:?} -> {:?}: {}", tmp, path, e))?;
     Ok(())
@@ -151,15 +157,6 @@ pub fn today_string() -> String {
 pub fn now_string() -> String {
     let tz = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 偏移有效");
     chrono::Utc::now().with_timezone(&tz).format("%Y-%m-%dT%H:%M").to_string()
-}
-
-/// 将 Unix 时间戳（秒）格式化为 UTC+8 时区的 YYYY-MM-DD
-pub fn format_unix_timestamp(timestamp: i64) -> String {
-    let tz = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 偏移有效");
-    match chrono::DateTime::from_timestamp(timestamp, 0) {
-        Some(dt) => dt.with_timezone(&tz).format("%Y-%m-%d").to_string(),
-        None => String::new(),
-    }
 }
 
 /// 计算两个日期之间的天数差（date1 - date2）
@@ -279,7 +276,10 @@ pub fn clean_ai_json(content: &str) -> String {
     // 尝试提取 ```json ... ``` 或 ``` ... ``` 包裹的内容
     if trimmed.starts_with("```") {
         let start = trimmed.find('\n').map(|p| p + 1).unwrap_or(0);
+        // H1：未闭合围栏时 rfind 会命中开头的 ```（位置 0），导致 start > end 切片 panic。
+        // 此时回退到取开头围栏之后的全部内容。
         let end = trimmed.rfind("```").unwrap_or(trimmed.len());
+        let end = if end < start { trimmed.len() } else { end };
         return trimmed[start..end].trim().to_string();
     }
 

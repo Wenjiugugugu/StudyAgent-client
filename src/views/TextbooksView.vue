@@ -118,6 +118,11 @@ function switchMode(mode: SearchMode) {
 }
 
 function jumpToSearchHit(hit: TextbookSearchHit) {
+  // 记录当前命中（行 + 命中词），正文渲染时高亮该行匹配词
+  activeHit.value = {
+    line: hit.line_number,
+    terms: hit.matched_terms?.length ? hit.matched_terms : searchQuery.value.trim() ? [searchQuery.value.trim()] : [],
+  };
   selectTextbook({
     id: hit.textbook_id,
     subject: hit.subject,
@@ -312,8 +317,17 @@ function escapeHtml(str: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function renderInline(text: string): string {
+function renderInline(text: string, highlightTerms?: string[]): string {
   let s = escapeHtml(text);
+  // 搜索命中行：先用 <mark> 包裹命中词（在转义后进行，中文/ASCII 词转义后保持不变）
+  if (highlightTerms?.length) {
+    for (const term of highlightTerms) {
+      const esc = escapeHtml(term);
+      if (!esc) continue;
+      const re = new RegExp(`(${esc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+      s = s.replace(re, '<mark class="md-hit">$1</mark>');
+    }
+  }
   // 行内代码 `code`
   s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
   // 加粗 **text**
@@ -344,6 +358,12 @@ function renderMarkdown(src: string): string {
 
   // H39：为每个块元素嵌入源行号（1-based），供搜索命中精确跳转，替代脆弱的 DOM 行索引
   const lineAttr = () => ` data-line="${i + 1}"`;
+  // 当前行是否为搜索命中行：若是，返回命中词供 renderInline 高亮
+  const highlightFor = () => {
+    const hit = activeHit.value;
+    if (!hit || hit.line !== i + 1) return undefined;
+    return hit.terms;
+  };
 
   const closeList = () => {
     if (listType) {
@@ -396,7 +416,7 @@ function renderMarkdown(src: string): string {
       const text = heading[2].trim();
       const id = slugify(text);
       out.push(
-        `<h${level}${lineAttr()} id="${id}" class="md-h md-h${level}">${renderInline(text)}</h${level}>`
+        `<h${level}${lineAttr()} id="${id}" class="md-h md-h${level}">${renderInline(text, highlightFor())}</h${level}>`
       );
       i++;
       continue;
@@ -406,7 +426,7 @@ function renderMarkdown(src: string): string {
     const blockquote = line.match(/^>\s?(.*)$/);
     if (blockquote) {
       closeList();
-      out.push(`<blockquote${lineAttr()} class="md-quote">${renderInline(blockquote[1])}</blockquote>`);
+      out.push(`<blockquote${lineAttr()} class="md-quote">${renderInline(blockquote[1], highlightFor())}</blockquote>`);
       i++;
       continue;
     }
@@ -419,7 +439,7 @@ function renderMarkdown(src: string): string {
         out.push('<ul class="md-ul">');
         listType = "ul";
       }
-      out.push(`<li${lineAttr()}>${renderInline(ulItem[1])}</li>`);
+      out.push(`<li${lineAttr()}>${renderInline(ulItem[1], highlightFor())}</li>`);
       i++;
       continue;
     }
@@ -432,7 +452,7 @@ function renderMarkdown(src: string): string {
         out.push('<ol class="md-ol">');
         listType = "ol";
       }
-      out.push(`<li${lineAttr()}>${renderInline(olItem[1])}</li>`);
+      out.push(`<li${lineAttr()}>${renderInline(olItem[1], highlightFor())}</li>`);
       i++;
       continue;
     }
@@ -447,7 +467,7 @@ function renderMarkdown(src: string): string {
 
     // 段落（普通文本）
     closeList();
-    out.push(`<p${lineAttr()} class="md-p">${renderInline(line.trim())}</p>`);
+    out.push(`<p${lineAttr()} class="md-p">${renderInline(line.trim(), highlightFor())}</p>`);
     i++;
   }
 
@@ -546,15 +566,26 @@ function subjectLabel(subject: string): string {
   return map[subject] ?? subject;
 }
 
-/** 高亮搜索命中片段中的查询词 */
-function highlightSnippet(snippet: string): string {
-  const q = searchQuery.value.trim();
-  if (!q) return escapeHtml(snippet);
-  const escaped = escapeHtml(snippet);
-  const qEscaped = escapeHtml(q);
-  const re = new RegExp(`(${qEscaped.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
-  return escaped.replace(re, '<mark class="hit-mark">$1</mark>');
+/** 高亮搜索命中片段中的查询词（用后端返回的实际命中词，逐个高亮） */
+function highlightSnippet(snippet: string, terms?: string[]): string {
+  let escaped = escapeHtml(snippet);
+  const list =
+    terms && terms.length > 0
+      ? terms
+      : searchQuery.value.trim()
+        ? [searchQuery.value.trim()]
+        : [];
+  for (const term of list) {
+    const esc = escapeHtml(term);
+    if (!esc) continue;
+    const re = new RegExp(`(${esc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+    escaped = escaped.replace(re, '<mark class="hit-mark">$1</mark>');
+  }
+  return escaped;
 }
+
+/** 当前正被定位的搜索命中（用于在正文阅读器中高亮匹配行） */
+const activeHit = ref<{ line: number; terms: string[] } | null>(null);
 
 onMounted(() => {
   loadTextbooks();
@@ -636,7 +667,7 @@ onMounted(() => {
               </Badge>
               <span class="hit-line">L{{ hit.line_number }}</span>
             </div>
-            <div class="hit-snippet" v-html="highlightSnippet(hit.snippet)"></div>
+            <div class="hit-snippet" v-html="highlightSnippet(hit.snippet, hit.matched_terms)"></div>
           </button>
         </div>
       </div>
@@ -1083,6 +1114,15 @@ onMounted(() => {
 }
 
 .hit-snippet :deep(mark) {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-radius: var(--radius-xs);
+  padding: 0 2px;
+  font-weight: var(--font-semibold);
+}
+
+/* 正文阅读器中的搜索命中高亮 */
+.textbook-reader :deep(mark.md-hit) {
   background: var(--accent-subtle);
   color: var(--accent);
   border-radius: var(--radius-xs);

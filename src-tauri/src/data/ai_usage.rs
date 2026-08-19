@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex as ParkingMutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 /// 最多保留的记录数
@@ -19,6 +19,9 @@ const MAX_ENTRIES: usize = 500;
 /// H17：用 RwLock 而非 OnceLock，使 `change_data_directory` 切换后
 /// AI 用量日志能写入新数据目录。
 static LOG_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// M20：串行化 append 的读-改-写，防止并发 AI 调用丢记录
+static APPEND_LOCK: ParkingMutex<()> = ParkingMutex::new(());
 
 /// 单条 AI 用量记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +66,9 @@ fn log_path() -> Option<PathBuf> {
 ///
 /// 如果全局日志目录未设置或写入失败，静默忽略（不影响 AI 调用主流程）。
 pub fn append(entry: AiUsageEntry) {
+    // M20：串行化读-改-写，防止并发 AI 调用互相覆盖丢记录
+    let _guard = APPEND_LOCK.lock();
+
     let path = match log_path() {
         Some(p) => p,
         None => return,
@@ -76,9 +82,16 @@ pub fn append(entry: AiUsageEntry) {
         }
     }
 
-    // 读取现有记录
+    // 读取现有记录；文件损坏时备份原文件后从空列表继续，避免静默销毁历史（M20）
     let mut entries: Vec<AiUsageEntry> = match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(list) => list,
+            Err(e) => {
+                log::error!("AI 用量日志解析失败，原文件已备份为 .corrupt: {}", e);
+                let _ = std::fs::rename(&path, path.with_extension("json.corrupt"));
+                Vec::new()
+            }
+        },
         Err(_) => Vec::new(),
     };
 
@@ -106,13 +119,21 @@ pub fn append(entry: AiUsageEntry) {
 
 /// 读取全部用量记录（按时间升序）
 pub fn read_all() -> Vec<AiUsageEntry> {
+    let _guard = APPEND_LOCK.lock();
+
     let path = match log_path() {
         Some(p) => p,
         None => return Vec::new(),
     };
 
     match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(list) => list,
+            Err(e) => {
+                log::error!("AI 用量日志解析失败，返回空列表: {}", e);
+                Vec::new()
+            }
+        },
         Err(_) => Vec::new(),
     }
 }

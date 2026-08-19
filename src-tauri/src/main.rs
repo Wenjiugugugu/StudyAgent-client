@@ -160,6 +160,12 @@ fn main() {
             start_task_timer,
             pause_task_timer,
             get_task_total_minutes,
+            // Focus（番茄钟）
+            focus_add_minutes,
+            record_focus_session,
+            get_focus_sessions,
+            get_focus_sessions_range,
+            get_focus_today_stats,
             // Plan
             get_today_plan,
             get_plan_by_date,
@@ -219,6 +225,9 @@ fn main() {
             get_settings,
             save_settings,
             change_data_directory,
+            // Backup（备份导出 / 导入）
+            export_backup,
+            import_backup,
             // Onboarding
             get_onboarding_status,
             complete_onboarding,

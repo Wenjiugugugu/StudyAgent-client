@@ -657,10 +657,8 @@ impl AiProvider for OpenAIProvider {
             streaming: true,
             function_calling: true,
             vision: false,
-            max_context_length: match self.config.r#type {
-                ProviderType::Ollama => 8192,
-                _ => 32768,
-            },
+            // 优先按模型名查表，查不到再按 Provider 类型兜底
+            max_context_length: crate::ai::provider::max_context_length_for(&self.config),
         }
     }
 
@@ -698,11 +696,25 @@ impl AiProvider for OpenAIProvider {
             .and_then(|d| d.as_array())
             .map(|arr| {
                 arr.iter()
-                    .map(|m| ModelInfo {
-                        id: m.get("id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-                        owned_by: m.get("owned_by").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        created: m.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
-                        extra: m.clone(),
+                    .map(|m| {
+                        let id = m
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let mut extra = m.clone();
+                        // 服务商 /models 未提供上下文长度时，按模型名查内置表兜底
+                        crate::ai::provider::inject_context_length_fallback(
+                            &self.config.r#type,
+                            &id,
+                            &mut extra,
+                        );
+                        ModelInfo {
+                            id,
+                            owned_by: m.get("owned_by").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            created: m.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
+                            extra,
+                        }
                     })
                     .collect::<Vec<_>>()
             })
