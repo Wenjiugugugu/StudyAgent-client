@@ -6,6 +6,7 @@ import { todayString } from "@/utils/date";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
+import Select from "@/components/ui/Select.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import Modal from "@/components/ui/Modal.vue";
@@ -951,15 +952,16 @@ onMounted(async () => {
                 </span>
               </label>
               <template v-if="configExcluded[day.date]">
-                <select
+                <Select
                   v-model="configExcluded[day.date].reason_type"
-                  class="form-select"
+                  class="exclude-reason-select"
+                  :max-width="'120px'"
                 >
                   <option value="travel">外出旅行</option>
                   <option value="sick">生病</option>
                   <option value="exam">考试</option>
                   <option value="other">其他</option>
-                </select>
+                </Select>
                 <input
                   v-model="configExcluded[day.date].note"
                   type="text"

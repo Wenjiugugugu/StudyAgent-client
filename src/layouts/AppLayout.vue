@@ -296,9 +296,7 @@ onMounted(() => {
   height: var(--header-height);
   min-height: var(--header-height);
   padding: 0 0 0 var(--space-4);
-  background: var(--header-bg);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  background: transparent;
   border-bottom: 1px solid var(--divider-color);
   user-select: none;
   -webkit-user-select: none;

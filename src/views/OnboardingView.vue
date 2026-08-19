@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
+import Select from "@/components/ui/Select.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import TimePicker from "@/components/ui/TimePicker.vue";
 import {
@@ -806,11 +807,11 @@ onUnmounted(() => {
 
                 <div class="field">
                   <label class="field-label">Provider 类型</label>
-                  <select v-model="providerForm.type" class="field-input field-select">
+                  <Select v-model="providerForm.type" :max-width="'100%'">
                     <option v-for="opt in providerTypeOptions" :key="opt.value" :value="opt.value">
                       {{ opt.label }}
                     </option>
-                  </select>
+                  </Select>
                 </div>
                 <div class="field">
                   <label class="field-label">Base URL</label>

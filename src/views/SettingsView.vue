@@ -12,6 +12,7 @@ import type { StudyState } from "@/types/state";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import Select from "@/components/ui/Select.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import TimePicker from "@/components/ui/TimePicker.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
@@ -1032,10 +1033,15 @@ onBeforeUnmount(() => {
                 <span class="toggle-title">首页问候显示</span>
                 <span class="toggle-desc">在工作台顶部显示时间问候与称呼</span>
               </div>
-              <label class="toggle-switch">
-                <input v-model="form.show_greeting" type="checkbox" />
-                <span class="toggle-slider" />
-              </label>
+              <button
+                class="toggle-switch"
+                :class="{ on: form.show_greeting }"
+                role="switch"
+                :aria-checked="form.show_greeting"
+                @click="form.show_greeting = !form.show_greeting"
+              >
+                <span class="toggle-thumb" />
+              </button>
             </div>
           </div>
         </div>
@@ -1056,15 +1062,16 @@ onBeforeUnmount(() => {
             <span class="toggle-title">开机启动</span>
             <span class="toggle-desc">登录 Windows 后自动启动 StudyAgent</span>
           </div>
-          <label class="toggle-switch">
-            <input
-              type="checkbox"
-              :checked="autostartEnabled"
-              :disabled="autostartLoading || !isTauriEnv"
-              @change="toggleAutostart(($event.target as HTMLInputElement).checked)"
-            />
-            <span class="toggle-slider" />
-          </label>
+          <button
+            class="toggle-switch"
+            :class="{ on: autostartEnabled }"
+            role="switch"
+            :aria-checked="autostartEnabled"
+            :disabled="autostartLoading || !isTauriEnv"
+            @click="toggleAutostart(!autostartEnabled)"
+          >
+            <span class="toggle-thumb" />
+          </button>
         </div>
 
         <!-- 关闭动作 -->
@@ -1671,11 +1678,11 @@ onBeforeUnmount(() => {
             </div>
             <div class="form-field">
               <label class="form-label">类型</label>
-              <select v-model="providerForm.type" class="form-select">
+              <Select v-model="providerForm.type" :max-width="'220px'">
                 <option v-for="opt in providerTypeOptions" :key="opt.value" :value="opt.value">
                   {{ opt.label }}
                 </option>
-              </select>
+              </Select>
             </div>
             <div class="form-field form-field-full">
               <label class="form-label">Base URL</label>
@@ -1844,19 +1851,19 @@ onBeforeUnmount(() => {
             </div>
             <div class="form-field">
               <label class="form-label">类型</label>
-              <select v-model="serverForm.type" class="form-select">
+              <Select v-model="serverForm.type">
                 <option v-for="opt in mcpTypeOptions" :key="opt.value" :value="opt.value">
                   {{ opt.label }}
                 </option>
-              </select>
+              </Select>
             </div>
             <div class="form-field">
               <label class="form-label">传输方式</label>
-              <select v-model="serverForm.transport" class="form-select">
+              <Select v-model="serverForm.transport">
                 <option v-for="opt in transportOptions" :key="opt.value" :value="opt.value">
                   {{ opt.label }}
                 </option>
-              </select>
+              </Select>
             </div>
             <div class="form-field">
               <label class="form-label">命令 (stdio)</label>
@@ -3109,18 +3116,24 @@ onBeforeUnmount(() => {
 
 .toggle-thumb {
   position: absolute;
-  top: 2px;
+  top: 50%;
   left: 2px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: #fff;
+  transform: translateY(-50%);
   transition: transform var(--transition-fast);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .toggle-switch.on .toggle-thumb {
-  transform: translateX(18px);
+  transform: translateX(18px) translateY(-50%);
+}
+
+.toggle-switch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── 数据目录 ── */

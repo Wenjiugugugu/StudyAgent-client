@@ -3,6 +3,7 @@ import { ref, computed, onMounted, nextTick } from "vue";
 import * as api from "@/api";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import Select from "@/components/ui/Select.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import {
@@ -175,10 +176,19 @@ async function handleImport() {
   }
 }
 
-// ── 删除教材 ──
-async function handleDelete(t: TextbookInfo, e: Event) {
+// ── 删除教材（二次确认 Modal）──
+const deleteTarget = ref<TextbookInfo | null>(null);
+const deleting = ref(false);
+
+function handleDelete(t: TextbookInfo, e: Event) {
   e.stopPropagation();
-  if (!confirm(`确定删除教材《${t.title}》吗？此操作不可恢复。`)) return;
+  deleteTarget.value = t;
+}
+
+async function confirmDelete() {
+  const t = deleteTarget.value;
+  if (!t) return;
+  deleting.value = true;
   try {
     await api.deleteTextbook(t.id);
     if (currentMeta.value?.id === t.id) {
@@ -186,9 +196,17 @@ async function handleDelete(t: TextbookInfo, e: Event) {
       currentMeta.value = null;
     }
     await loadTextbooks();
+    deleteTarget.value = null;
   } catch (err) {
     alert(`删除失败：${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    deleting.value = false;
   }
+}
+
+function cancelDelete() {
+  if (deleting.value) return;
+  deleteTarget.value = null;
 }
 
 // ── 重命名教材 ──
@@ -751,11 +769,11 @@ onMounted(() => {
         <div class="modal-body">
           <div class="form-field">
             <label class="form-label">所属学科</label>
-            <select v-model="importSubject" class="form-select">
+            <Select v-model="importSubject">
               <option v-for="opt in subjectOptions" :key="opt.value" :value="opt.value">
                 {{ opt.label }}
               </option>
-            </select>
+            </Select>
           </div>
           <div class="form-field">
             <label class="form-label">显示标题（可选）</label>
@@ -804,6 +822,27 @@ onMounted(() => {
           <Button variant="ghost" size="sm" @click="closeRenameDialog">取消</Button>
           <Button variant="primary" size="sm" :loading="renaming" @click="handleRename">
             确认重命名
+          </Button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除教材二次确认 -->
+    <div v-if="deleteTarget" class="modal-overlay" @click.self="cancelDelete">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 class="modal-title">删除教材</h3>
+          <button class="modal-close" type="button" @click="cancelDelete" aria-label="关闭">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="form-hint">
+            确定要删除教材《{{ deleteTarget.title }}》吗？此操作不可恢复，已记录的计划/复盘不会改动，但该教材将无法再次检索。
+          </p>
+        </div>
+        <div class="modal-footer">
+          <Button variant="ghost" size="sm" @click="cancelDelete">取消</Button>
+          <Button variant="danger" size="sm" :loading="deleting" @click="confirmDelete">
+            确认删除
           </Button>
         </div>
       </div>

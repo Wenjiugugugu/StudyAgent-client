@@ -8,6 +8,7 @@ import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import Select from "@/components/ui/Select.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import {
@@ -1080,9 +1081,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         <div v-if="hasOvercompletion" class="overcompletion-list">
           <div v-for="(oc, idx) in overcompletions" :key="idx" class="oc-item">
             <div class="oc-row">
-              <select v-model="oc.subject" class="oc-select">
+              <Select v-model="oc.subject" :max-width="'160px'">
                 <option v-for="opt in overcompletionSubjectOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-              </select>
+              </Select>
               <input v-model="oc.chapter_reached" type="text" class="field-input oc-input"
                 placeholder="实际已学习到的章节（如：多元函数微分学）" />
               <Button variant="ghost" size="sm" @click="removeOvercompletion(idx)">

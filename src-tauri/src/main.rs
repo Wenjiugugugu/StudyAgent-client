@@ -206,6 +206,12 @@ fn main() {
             // AI 用量日志
             get_ai_usage_log,
             clear_ai_usage_log,
+            // 应用日志文件
+            read_app_log,
+            clear_app_log,
+            // 调试页：数据文件检查 / 查看
+            debug_list_dir,
+            debug_read_file,
             // MCP / Tool
             list_mcp_servers,
             call_tool,

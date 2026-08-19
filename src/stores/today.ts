@@ -74,6 +74,9 @@ export const useTodayStore = defineStore("today", () => {
       }
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
+      // 加载失败（如访问无日计划文件的日期）时清空缓存的计划，
+      // 避免顶部报错但下方仍显示上一次/其他日期的旧计划。
+      plan.value = null;
     } finally {
       loading.value = false;
     }

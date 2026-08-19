@@ -59,18 +59,47 @@ interface NavItem {
   reserved?: boolean;
 }
 
-const navItems: NavItem[] = [
-  { name: "dashboard", label: "工作台", icon: LayoutDashboard, path: "/dashboard" },
-  { name: "today", label: "计划", icon: Calendar, path: "/today" },
-  { name: "week-plan", label: "周计划", icon: CalendarDays, path: "/week-plan" },
-  { name: "history-plans", label: "历史计划", icon: History, path: "/history-plans" },
-  { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" },
-  { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" },
-  { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" },
-  { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" },
-  { name: "focus", label: "专注", icon: Timer, path: "/focus" },
-  { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true },
+/** 「计划」二级菜单：一级项 + 子项 */
+const planGroup = {
+  name: "plan",
+  label: "计划",
+  path: "/today",
+  children: [
+    { name: "today", label: "今日计划", icon: Calendar, path: "/today" },
+    { name: "week-plan", label: "周计划", icon: CalendarDays, path: "/week-plan" },
+    { name: "history-plans", label: "历史计划", icon: History, path: "/history-plans" },
+  ] as NavItem[],
+};
+
+type MenuEntry = { kind: "item"; item: NavItem } | { kind: "plan" };
+
+/** 侧边栏菜单顺序：工作台 → 计划 → 专注 → 复盘 → 分析 → 教材 → 解惑 → 时间线 */
+const menuEntries: MenuEntry[] = [
+  { kind: "item", item: { name: "dashboard", label: "工作台", icon: LayoutDashboard, path: "/dashboard" } },
+  { kind: "plan" },
+  { kind: "item", item: { name: "focus", label: "专注", icon: Timer, path: "/focus" } },
+  { kind: "item", item: { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" } },
+  { kind: "item", item: { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" } },
+  { kind: "item", item: { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" } },
+  { kind: "item", item: { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" } },
+  { kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } },
 ];
+
+/** 二级菜单是否展开：命中任一子项或一级项时展开 */
+const planOpen = ref(false);
+watch(
+  () => route.path,
+  (p) => {
+    planOpen.value = planGroup.children.some((c) => c.path === p) || p === planGroup.path;
+    nextTick(updateIndicator);
+  },
+  { immediate: true },
+);
+
+/** 是否为「计划」相关路由（用于一级项高亮与 indicator） */
+function isPlanActive(): boolean {
+  return planGroup.children.some((c) => c.path === route.path) || route.path === planGroup.path;
+}
 
 // 当前版本号（统一经 useAppVersion 读取，勿在此写死）
 const { version } = useAppVersion();
@@ -92,18 +121,50 @@ const { version } = useAppVersion();
     <!-- Navigation -->
     <nav ref="navRef" class="nav">
       <div class="nav-indicator" :style="indicatorStyle" aria-hidden="true" />
-      <router-link
-        v-for="item in navItems"
-        :key="item.name"
-        :to="item.path"
-        class="nav-item"
-        :class="{ reserved: item.reserved }"
-        active-class="active"
-      >
-        <component :is="item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
-        <span class="nav-label">{{ item.label }}</span>
-        <span v-if="item.name === 'doubt'" class="nav-badge">测试版</span>
-      </router-link>
+      <template v-for="entry in menuEntries" :key="entry.kind === 'item' ? entry.item.name : 'plan'">
+        <!-- 普通导航项 -->
+        <router-link
+          v-if="entry.kind === 'item'"
+          :to="entry.item.path"
+          class="nav-item"
+          :class="{ reserved: entry.item.reserved }"
+          active-class="active"
+        >
+          <component :is="entry.item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
+          <span class="nav-label">{{ entry.item.label }}</span>
+          <span v-if="entry.item.name === 'doubt'" class="nav-badge">测试版</span>
+        </router-link>
+
+        <!-- 「计划」二级菜单 -->
+        <div v-else class="nav-group">
+          <router-link
+            :to="planGroup.path"
+            class="nav-item"
+            :class="{ active: isPlanActive() }"
+            @click.prevent="planOpen = !planOpen"
+          >
+            <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
+            <span class="nav-label">{{ planGroup.label }}</span>
+            <span
+              class="nav-chevron"
+              :class="{ open: planOpen }"
+              aria-hidden="true"
+            ></span>
+          </router-link>
+          <div v-show="planOpen" class="nav-children">
+            <router-link
+              v-for="c in planGroup.children"
+              :key="c.name"
+              :to="c.path"
+              class="nav-item nav-child"
+              active-class="active"
+            >
+              <component :is="c.icon" :size="17" :stroke-width="1.5" class="nav-icon child-icon" />
+              <span class="nav-label">{{ c.label }}</span>
+            </router-link>
+          </div>
+        </div>
+      </template>
     </nav>
 
     <!-- Bottom Section -->
@@ -311,6 +372,45 @@ const { version } = useAppVersion();
   border-radius: 999px;
   padding: 2px 6px;
   letter-spacing: 0.02em;
+}
+
+/* 「计划」二级菜单 */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-chevron {
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--text-tertiary);
+  border-bottom: 1.5px solid var(--text-tertiary);
+  transform: rotate(45deg);
+  transition: transform var(--transition-fast);
+  flex-shrink: 0;
+}
+.nav-chevron.open {
+  transform: rotate(-135deg);
+}
+.nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: var(--space-3);
+  /* 展开/收起动画：max-height 过渡 */
+  animation: child-in var(--transition-normal);
+}
+@keyframes child-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.nav-child {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+}
+.child-icon {
+  opacity: 0.6;
 }
 
 .sidebar-bottom {

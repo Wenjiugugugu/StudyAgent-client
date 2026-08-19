@@ -15,6 +15,7 @@ import * as api from "@/api";
 import { useSettingsStore } from "@/stores/settings";
 import { useAiRequest } from "@/composables/useAiRequest";
 import { renderMessage } from "@/composables/useRenderLatex";
+import Select from "@/components/ui/Select.vue";
 import {
   HelpCircle,
   Send,
@@ -312,19 +313,21 @@ async function handleSend() {
       <div class="context-item">
         <BookOpen :size="15" :stroke-width="1.5" class="context-icon" />
         <label class="context-label" for="textbook-select">参考教材</label>
-        <select
+        <Select
           id="textbook-select"
           v-model="selectedTextbookId"
-          class="context-select"
           :disabled="textbooksLoading"
+          :max-width="'300px'"
         >
-          <option value="">全部已导入教材（自动检索）</option>
+          <option value="">
+            {{ textbooks.length > 0 ? "全部已导入教材（自动检索）" : "未导入教材（不检索，直接作答）" }}
+          </option>
           <option v-for="t in textbooks" :key="t.id" :value="t.id">{{ t.title }}</option>
-        </select>
+        </Select>
       </div>
       <div class="context-note">
         <FileSearch :size="14" :stroke-width="1.5" />
-        <span>{{ hitNote || "发送题目时自动在教材中检索相关段落" }}</span>
+        <span>{{ hitNote || (textbooks.length > 0 ? "发送题目时自动在教材中检索相关段落" : "未导入教材时可直接解答，前往「教材」页可导入") }}</span>
       </div>
     </div>
 
@@ -621,18 +624,6 @@ async function handleSend() {
   font-size: var(--text-xs);
   color: var(--text-secondary);
   font-weight: var(--font-medium);
-}
-
-.context-select {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: var(--text-xs);
-  padding: var(--space-1) var(--space-2);
-  max-width: 300px;
-  cursor: pointer;
 }
 
 .context-note {

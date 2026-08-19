@@ -5,6 +5,7 @@
 
 use std::sync::Mutex;
 
+use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, State};
 
@@ -2577,9 +2578,135 @@ pub async fn clear_ai_usage_log(
     Ok(())
 }
 
+/// 读取应用日志文件内容（`logs/ai-debug.log`）
+///
+/// 返回日志的原始文本。为避免一次性加载超大文件，仅返回末尾 `max_chars` 字符
+/// （默认 200_000，约 200KB）。文件不存在或为空时返回空字符串。
+///
+/// 前端调用: `invoke('read_app_log', { maxChars })`
+#[tauri::command]
+pub async fn read_app_log(
+    max_chars: Option<usize>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let log_path = crate::data::ai_debug_log_path(&data_dir);
+    if !log_path.exists() {
+        return Ok(String::new());
+    }
+    let content = crate::data::read_file_content(&log_path)
+        .map_err(|e| format!("读取日志文件失败: {}", e))?;
+    let max = max_chars.unwrap_or(200_000);
+    // 取末尾 max 字符，且尽量从字符边界截断
+    if content.chars().count() <= max {
+        Ok(content)
+    } else {
+        let start = content.floor_char_boundary(content.len() - max);
+        Ok(content[start..].to_string())
+    }
+}
+
+/// 清空应用日志文件（`logs/ai-debug.log`）
+///
+/// 前端调用: `invoke('clear_app_log')`
+#[tauri::command]
+pub async fn clear_app_log(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    // H1 并发保护：与日志写入串行化，避免清空与追加竞态
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    let data_dir = get_data_dir(state.inner())?;
+    let log_path = crate::data::ai_debug_log_path(&data_dir);
+    if log_path.exists() {
+        std::fs::write(&log_path, "")
+            .map_err(|e| format!("清空日志文件失败 {:?}: {}", log_path, e))?;
+    }
+    Ok(())
+}
+
 // ============================================================================
-// MCP / Tool 命令
+// 调试页命令（数据文件检查 / 查看）
 // ============================================================================
+
+/// 调试目录条目
+#[derive(Serialize)]
+pub struct DebugDirEntry {
+    pub name: String,
+    pub is_directory: bool,
+}
+
+/// 解析调试路径：确保解析后的路径始终位于 data_dir 内，防止路径穿越
+fn resolve_debug_path(
+    data_dir: &std::path::Path,
+    relative_path: &str,
+) -> Result<std::path::PathBuf, String> {
+    let rel = std::path::Path::new(relative_path);
+    if rel.is_absolute() {
+        return Err(format!("不允许绝对路径: {}", relative_path));
+    }
+    if relative_path.contains("..") {
+        return Err(format!("不允许包含上级目录引用: {}", relative_path));
+    }
+    let resolved = data_dir.join(rel);
+    let data_canon = data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_path_buf());
+    let resolved_canon = resolved
+        .canonicalize()
+        .unwrap_or_else(|_| resolved.clone());
+    if !resolved_canon.starts_with(&data_canon) {
+        return Err(format!("路径越界: {}", relative_path));
+    }
+    Ok(resolved_canon)
+}
+
+/// 调试：列出数据目录下某相对路径的条目（目录不存在时返回空列表）
+///
+/// 前端调用: `invoke('debug_list_dir', { relativePath })`
+#[tauri::command]
+pub async fn debug_list_dir(
+    relative_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<DebugDirEntry>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let dir_path = resolve_debug_path(&data_dir, &relative_path)?;
+    if !dir_path.exists() || !dir_path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&dir_path)
+        .map_err(|e| format!("读取目录失败 {:?}: {}", dir_path, e))?
+    {
+        let entry = entry.map_err(|e| format!("读取目录条目失败: {}", e))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("读取条目类型失败 {}: {}", entry.file_name().to_string_lossy(), e))?;
+        entries.push(DebugDirEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            is_directory: file_type.is_dir(),
+        });
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
+}
+
+/// 调试：读取数据目录下某相对路径的文件文本内容
+///
+/// 前端调用: `invoke('debug_read_file', { relativePath })`
+#[tauri::command]
+pub async fn debug_read_file(
+    relative_path: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let file_path = resolve_debug_path(&data_dir, &relative_path)?;
+    if !file_path.is_file() {
+        return Err(format!("文件不存在: {}", relative_path));
+    }
+    crate::data::read_file_content(&file_path)
+        .map_err(|e| format!("读取文件失败: {}", e))
+}
 
 /// 列出所有 MCP 服务器状态
 ///

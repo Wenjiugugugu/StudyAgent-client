@@ -466,6 +466,33 @@ export async function clearAiUsageLog(): Promise<void> {
   return invokeDirect<void>("clear_ai_usage_log");
 }
 
+/** 读取应用日志文件（logs/ai-debug.log），返回末尾 maxChars 字符的文本 */
+export async function readAppLog(maxChars?: number): Promise<string> {
+  return invokeDirect<string>("read_app_log", { maxChars: maxChars ?? 200_000 });
+}
+
+/** 清空应用日志文件（logs/ai-debug.log，不可恢复） */
+export async function clearAppLog(): Promise<void> {
+  return invokeDirect<void>("clear_app_log");
+}
+
+// ── 调试页：数据文件检查 ──
+
+export interface DebugDirEntry {
+  name: string;
+  is_directory: boolean;
+}
+
+/** 列出数据目录下某相对路径的条目（目录不存在时返回空列表） */
+export async function debugListDir(relativePath: string): Promise<DebugDirEntry[]> {
+  return invokeDirect<DebugDirEntry[]>("debug_list_dir", { relativePath });
+}
+
+/** 读取数据目录下某相对路径的文件文本内容 */
+export async function debugReadFile(relativePath: string): Promise<string> {
+  return invokeDirect<string>("debug_read_file", { relativePath });
+}
+
 // ── MCP / Tools ──
 
 export async function listMCPServers(): Promise<MCPServerStatus[]> {

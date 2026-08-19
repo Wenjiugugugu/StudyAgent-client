@@ -23,7 +23,6 @@ import {
   ChevronRight,
   ChevronDown,
   Trash2,
-  Clock,
   Calendar,
   CheckCircle2,
   FileCheck,
@@ -157,9 +156,14 @@ async function checkDataDirs() {
     dir.loading = true;
     dir.error = null;
     try {
-      const entries = await readDirSafe(joinPath(dataDir.value, dir.name));
+      // 走后端 Rust 命令，绕开前端 fs 插件的作用域限制
+      const entries = await api.debugListDir(joinPath(dataDir.value, dir.name));
       dir.exists = true;
-      dir.entries = entries;
+      dir.entries = entries.map((e) => ({
+        name: e.name,
+        path: joinPath(dataDir.value, dir.name, e.name),
+        isDirectory: e.is_directory,
+      }));
     } catch (e) {
       dir.exists = false;
       dir.error = e instanceof Error ? e.message : String(e);
@@ -179,7 +183,7 @@ async function viewFile(dirName: string, entry: DirEntry) {
   loadingFile.value = true;
   fileContent.value = null;
   try {
-    const content = await readFileSafe(joinPath(dataDir.value, dirName, entry.name));
+    const content = await api.debugReadFile(joinPath(dataDir.value, dirName, entry.name));
     fileContent.value = { dir: dirName, name: entry.name, content, error: null };
   } catch (e) {
     fileContent.value = {
@@ -568,66 +572,33 @@ async function loadSettingsView() {
   }
 }
 
-// ── 日志捕获 ──
-interface LogEntry {
-  level: "log" | "warn" | "error" | "info";
-  time: string;
-  args: string;
-}
-const logs = ref<LogEntry[]>([]);
-let originalConsole: { log: (...a: unknown[]) => void; warn: (...a: unknown[]) => void; error: (...a: unknown[]) => void; info: (...a: unknown[]) => void } | null = null;
+// ── 应用日志（读取 logs/ai-debug.log） ──
+const appLog = ref("");
+const appLogLoading = ref(false);
+const appLogError = ref<string | null>(null);
 
-function stringifyArgs(args: unknown[]): string {
-  return args
-    .map((a) => {
-      if (typeof a === "string") return a;
-      try {
-        return JSON.stringify(a);
-      } catch {
-        return String(a);
-      }
-    })
-    .join(" ");
-}
-
-function captureConsole() {
-  // H38：重入保护，避免 DebugView 多次挂载（keep-alive/HMR）导致无限递归
-  if (originalConsole) return;
-  originalConsole = {
-    log: console.log.bind(console),
-    warn: console.warn.bind(console),
-    error: console.error.bind(console),
-    info: console.info.bind(console),
-  };
-  const push = (level: LogEntry["level"]) => (...args: unknown[]) => {
-    originalConsole?.[level](...args);
-    logs.value.push({
-      level,
-      time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
-      args: stringifyArgs(args),
-    });
-    if (logs.value.length > 1000) {
-      logs.value.splice(0, logs.value.length - 1000);
-    }
-  };
-  console.log = push("log");
-  console.warn = push("warn");
-  console.error = push("error");
-  console.info = push("info");
-}
-
-function restoreConsole() {
-  if (originalConsole) {
-    console.log = originalConsole.log;
-    console.warn = originalConsole.warn;
-    console.error = originalConsole.error;
-    console.info = originalConsole.info;
-    originalConsole = null;
+async function loadAppLog() {
+  appLogLoading.value = true;
+  appLogError.value = null;
+  try {
+    appLog.value = await api.readAppLog(200_000);
+  } catch (e) {
+    appLogError.value = e instanceof Error ? e.message : String(e);
+    appLog.value = "";
+  } finally {
+    appLogLoading.value = false;
   }
 }
 
-function clearLogs() {
-  logs.value = [];
+async function clearLogs() {
+  if (!confirm("确定清空应用日志文件（ai-debug.log）吗？此操作不可恢复。")) return;
+  try {
+    await api.clearAppLog();
+    appLog.value = "";
+    appLogError.value = null;
+  } catch (e) {
+    appLogError.value = e instanceof Error ? e.message : String(e);
+  }
 }
 
 // ── JSON 格式化 ──
@@ -653,30 +624,9 @@ function formatJson(obj: unknown): string {
   }
 }
 
-// ── 文件系统辅助（仅 Tauri 环境） ──
+// ── 文件系统辅助 ──
 function joinPath(...parts: string[]): string {
   return parts.filter(Boolean).join("/").replace(/\\/g, "/").replace(/\/+/g, "/");
-}
-
-async function readDirSafe(dirPath: string): Promise<DirEntry[]> {
-  if (!isTauri()) {
-    throw new Error("需要 Tauri 桌面环境才能读取目录");
-  }
-  const { readDir } = await import("@tauri-apps/plugin-fs");
-  const result = await readDir(dirPath);
-  return result.map((entry) => ({
-    name: entry.name ?? "",
-    path: joinPath(dirPath, entry.name ?? ""),
-    isDirectory: !!entry.isDirectory,
-  }));
-}
-
-async function readFileSafe(filePath: string): Promise<string> {
-  if (!isTauri()) {
-    throw new Error("需要 Tauri 桌面环境才能读取文件");
-  }
-  const { readTextFile } = await import("@tauri-apps/plugin-fs");
-  return await readTextFile(filePath);
 }
 
 // ── 全局刷新 ──
@@ -689,7 +639,9 @@ async function refreshAll() {
   // 每个子项自带 try/catch 记录独立错误，dataDir 优雅回退为空串
   const results = await Promise.allSettled([
     loadSettingsView().then(() => {
-      dataDir.value = settingsView.value.data?.data_directory ?? "";
+      // 后端 Rust 字段名为 data_dir，前端类型为 data_directory，兼容两者
+      const s = settingsView.value.data as (AppSettings & { data_dir?: string }) | null;
+      dataDir.value = s?.data_dir || s?.data_directory || "";
     }),
     loadProviders(),
     runStateTest(),
@@ -729,14 +681,13 @@ function statusLabel(status: TestResult<unknown>["status"] | ProviderTestState["
 onMounted(async () => {
   updateClock();
   timeTimer = window.setInterval(updateClock, 1000);
-  captureConsole();
   await refreshAll();
+  await loadAppLog();
   initSectionObserver();
 });
 
 onUnmounted(() => {
   if (timeTimer) window.clearInterval(timeTimer);
-  restoreConsole();
   // H34：卸载时断开 IntersectionObserver，避免跨路由内存泄漏
   sectionObserver?.disconnect();
   sectionObserver = null;
@@ -1441,30 +1392,25 @@ onUnmounted(() => {
           <ScrollText :size="18" />
           <span>日志查看</span>
         </div>
-        <Button variant="ghost" size="sm" @click="clearLogs">
-          <Trash2 :size="14" />
-          <span>清除</span>
-        </Button>
-      </div>
-
-      <div class="log-toolbar">
-        <Clock :size="13" class="log-toolbar-icon" />
-        <span class="log-count">共 {{ logs.length }} 条</span>
-      </div>
-
-      <div v-if="logs.length === 0" class="empty-inline">暂无日志。</div>
-      <div v-else class="log-list">
-        <div
-          v-for="(log, idx) in logs"
-          :key="idx"
-          class="log-item"
-          :class="log.level"
-        >
-          <span class="log-time text-mono">{{ log.time }}</span>
-          <span class="log-level">{{ log.level.toUpperCase() }}</span>
-          <span class="log-text">{{ log.args }}</span>
+        <div class="section-actions-inline">
+          <Button variant="ghost" size="sm" :loading="appLogLoading" @click="loadAppLog">
+            <RefreshCw :size="14" />
+            <span>刷新</span>
+          </Button>
+          <Button variant="ghost" size="sm" @click="clearLogs">
+            <Trash2 :size="14" />
+            <span>清除</span>
+          </Button>
         </div>
       </div>
+
+      <p class="section-desc">
+        展示 AI 调试日志（logs/ai-debug.log）的末尾内容，包含 AI 请求/响应记录、后端 warn/error 等。结构化调用详情见上方「AI 调用记录」与「AI 用量」模块。
+      </p>
+
+      <div v-if="appLogError" class="error-text">{{ appLogError }}</div>
+      <div v-else-if="!appLog" class="empty-inline">暂无日志。</div>
+      <pre v-else class="app-log-view">{{ appLog }}</pre>
     </Card>
       </div>
     </div>
@@ -2093,6 +2039,28 @@ onUnmounted(() => {
   color: var(--text-tertiary);
   line-height: var(--leading-relaxed);
   margin: 0;
+}
+
+.section-actions-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.app-log-view {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-4);
+  max-height: 480px;
+  overflow: auto;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .usage-filter {
