@@ -164,4 +164,6 @@ export interface RegenerateResult {
   regenerated: boolean;
   /** 受影响的日期列表 */
   affected_dates: string[];
+  /** AI 调用失败时是否启用了确定性兜底安排（用于前端提示用户） */
+  used_fallback?: boolean;
 }

@@ -1,6 +1,6 @@
 //! 数据备份 / 导出 / 导入
 //!
-//! - `export_backup`：把数据目录下允许的子目录（state/plan/records/config/assets，
+//! - `export_backup`：把数据目录下允许的子目录（state/plan/records/config/assets/focus，
 //!   可选 logs/）压缩为 zip 备份文件。
 //! - `import_backup`：校验并解压备份 zip，覆盖前先把现有数据目录备份为 `.bak-{ts}`，
 //!   解压时逐项做路径穿越防护（zip-slip），导入后可重启应用加载。
@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use super::DataResult;
 
 /// 允许导出/导入的子目录（相对于 data_dir）
-const BACKUP_SUBDIRS: [&str; 5] = ["state", "plan", "records", "config", "assets"];
+/// M10：包含 focus（专注记录），避免导入后番茄钟历史丢失
+const BACKUP_SUBDIRS: [&str; 6] = ["state", "plan", "records", "config", "assets", "focus"];
 
 /// 从 data_dir 递归收集待备份的相对路径文件列表（不含目录项）
 ///
@@ -60,7 +61,17 @@ pub fn export_backup(
     dest_zip_path: &Path,
     include_logs: bool,
 ) -> DataResult<usize> {
-    // 准备父目录
+    let canon_dest = std::fs::canonicalize(dest_zip_path.parent().unwrap_or(dest_zip_path))
+        .unwrap_or_else(|_| dest_zip_path.to_path_buf());
+    let canon_data = std::fs::canonicalize(data_dir)
+        .unwrap_or_else(|_| data_dir.to_path_buf());
+    if canon_dest.starts_with(&canon_data) {
+        return Err(format!(
+            "导出目标路径不能位于数据目录内: {:?} (数据目录 {:?})",
+            dest_zip_path, data_dir
+        ));
+    }
+
     if let Some(parent) = dest_zip_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建导出目录失败 {:?}: {}", parent, e))?;
@@ -144,7 +155,11 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
             continue;
         }
         let normalized = name.replace('\\', "/");
-        if normalized.starts_with('/') || normalized.contains("..") {
+        if normalized.starts_with('/')
+            || normalized
+                .split('/')
+                .any(|seg| seg == ".." || seg.is_empty() && !normalized.is_empty())
+        {
             return Err(format!("备份文件包含非法路径，已拒绝导入: {}", name));
         }
         let top = normalized.split('/').next().unwrap_or("");
@@ -170,7 +185,8 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
             .unwrap_or_else(|| "data".to_string()),
         ts
     ));
-    if data_dir.exists() {
+    let had_original = data_dir.exists();
+    if had_original {
         std::fs::rename(data_dir, &backup_dir)
             .map_err(|e| format!("备份现有数据目录失败 {:?} -> {:?}: {}", data_dir, backup_dir, e))?;
         log::warn!("导入前已备份原数据目录到 {:?}", backup_dir);
@@ -178,39 +194,70 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
     std::fs::create_dir_all(data_dir)
         .map_err(|e| format!("重建数据目录失败 {:?}: {}", data_dir, e))?;
 
-    // 第二遍：解压写入
-    let mut restored = 0usize;
-    for (name, is_dir) in entries {
-        if is_dir {
-            continue;
-        }
-        let normalized = name.replace('\\', "/");
-        // 二次防御：相对路径必须仍落在允许的子目录内（第一遍已过滤 ../ 与绝对路径）
-        let top = normalized.split('/').next().unwrap_or("");
-        if !BACKUP_SUBDIRS.contains(&top) {
-            return Err(format!("解压路径越界，已中止导入: {}", name));
-        }
-        let target = data_dir.join(&normalized);
-        if let Some(p) = target.parent() {
-            std::fs::create_dir_all(p)
-                .map_err(|e| format!("创建目录失败 {:?}: {}", p, e))?;
-        }
-        let mut entry = archive
-            .by_name(&name)
-            .map_err(|e| format!("读取 zip 条目失败 {}: {}", name, e))?;
-        let mut content = Vec::new();
-        entry
-            .read_to_end(&mut content)
-            .map_err(|e| format!("读取 zip 内容失败 {}: {}", name, e))?;
-        std::fs::write(&target, &content)
-            .map_err(|e| format!("写入恢复文件失败 {:?}: {}", target, e))?;
-        restored += 1;
-    }
+    // 第二遍：解压写入（带大小上限防 zip 炸弹，M11）；中途失败时回滚恢复原数据目录（M12）
+    const MAX_ENTRY_SIZE: u64 = 64 * 1024 * 1024; // 单条目上限 64MB
+    const MAX_TOTAL_SIZE: u64 = 512 * 1024 * 1024; // 总解压上限 512MB
 
-    Ok(ImportSummary {
-        files_restored: restored,
-        backup_dir: backup_dir.to_string_lossy().to_string(),
-    })
+    let extraction = (|| -> DataResult<usize> {
+        let mut total_size: u64 = 0;
+        let mut restored = 0usize;
+        for (name, is_dir) in entries {
+            if is_dir {
+                continue;
+            }
+            let normalized = name.replace('\\', "/");
+            // 二次防御：相对路径必须仍落在允许的子目录内（第一遍已过滤 ../ 与绝对路径）
+            let top = normalized.split('/').next().unwrap_or("");
+            if !BACKUP_SUBDIRS.contains(&top) {
+                return Err(format!("解压路径越界，已中止导入: {}", name));
+            }
+            let mut entry = archive
+                .by_name(&name)
+                .map_err(|e| format!("读取 zip 条目失败 {}: {}", name, e))?;
+            let entry_size = entry.size();
+            if entry_size > MAX_ENTRY_SIZE {
+                return Err(format!(
+                    "备份条目过大（{:.1}MB，上限 64MB），已中止导入: {}",
+                    entry_size as f64 / 1024.0 / 1024.0,
+                    name
+                ));
+            }
+            total_size += entry_size;
+            if total_size > MAX_TOTAL_SIZE {
+                return Err(format!("备份总大小超过上限（512MB），已中止导入: {}", name));
+            }
+            let target = data_dir.join(&normalized);
+            if let Some(p) = target.parent() {
+                std::fs::create_dir_all(p)
+                    .map_err(|e| format!("创建目录失败 {:?}: {}", p, e))?;
+            }
+            let mut content = Vec::new();
+            entry
+                .read_to_end(&mut content)
+                .map_err(|e| format!("读取 zip 内容失败 {}: {}", name, e))?;
+            std::fs::write(&target, &content)
+                .map_err(|e| format!("写入恢复文件失败 {:?}: {}", target, e))?;
+            restored += 1;
+        }
+        Ok(restored)
+    })();
+
+    let backup_dir_str = backup_dir.to_string_lossy().to_string();
+    match extraction {
+        Ok(restored) => Ok(ImportSummary {
+            files_restored: restored,
+            backup_dir: backup_dir_str,
+        }),
+        Err(e) => {
+            // M12：解压中途失败时回滚——删除残缺的新目录，把备份目录改回原位置
+            let _ = std::fs::remove_dir_all(data_dir);
+            if had_original && std::fs::rename(&backup_dir, data_dir).is_ok() {
+                Err(format!("{e}；已自动回滚，原数据已恢复"))
+            } else {
+                Err(format!("{e}；原数据已备份至 {:?}，可手动恢复", backup_dir))
+            }
+        }
+    }
 }
 
 #[cfg(test)]

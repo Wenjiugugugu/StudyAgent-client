@@ -47,6 +47,8 @@ export interface TextbookSearchHit {
   subject: string;
   line_number: number;
   snippet: string;
+  /** 该行实际命中的关键词（供前端高亮片段与正文） */
+  matched_terms?: string[];
 }
 
 /** 日计划摘要（聚合 plan + review 数据） */

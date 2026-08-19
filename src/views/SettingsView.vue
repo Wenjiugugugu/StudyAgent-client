@@ -341,6 +341,11 @@ async function handleImportBackup() {
   }
   if (!selected) return;
 
+  // M13：覆盖式导入前二次确认（原数据会自动备份到 bak 目录，但需明确提醒）
+  if (!window.confirm("导入备份将覆盖当前全部数据（原数据会自动备份到 bak 目录，可恢复）。确定继续？")) {
+    return;
+  }
+
   importing.value = true;
   try {
     const summary = await api.importBackup(selected);

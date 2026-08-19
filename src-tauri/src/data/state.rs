@@ -426,32 +426,13 @@ pub fn save_state(data_dir: &Path, state: &StudyState) -> DataResult<()> {
 
     // 备份旧文件（若存在）到 .bak，供损坏时恢复
     if state_path.exists() {
-        let _ = std::fs::copy(&state_path, state_path.with_extension("state.bak"));
+        if let Err(e) = std::fs::copy(&state_path, state_path.with_extension("state.bak")) {
+            log::warn!("备份 State 文件失败: {}", e);
+        }
     }
 
     super::atomic_write(&state_path, &full_content)
         .map_err(|e| format!("写入 State 文件失败 {:?}: {}", state_path, e))
-}
-
-/// 更新指定任务的状态（按数组索引匹配）
-///
-/// 在 `current_task.tasks` 中按索引查找并更新状态。
-/// 兼容旧版 state 文件（无 task_id 字段）。
-pub fn update_task_status_in_state(
-    state: &mut StudyState,
-    task_index: usize,
-    new_status: TaskStatus,
-) -> DataResult<()> {
-    if task_index >= state.current_task.tasks.len() {
-        return Err(format!(
-            "任务索引 {} 超出范围（共 {} 个任务）",
-            task_index,
-            state.current_task.tasks.len()
-        ));
-    }
-
-    state.current_task.tasks[task_index].status = new_status;
-    Ok(())
 }
 
 /// 更新指定任务的状态（按 task_id 精确匹配，回退到索引）
@@ -502,41 +483,6 @@ pub fn get_subject_state_mut<'a>(
         "professional" => Some(&mut state.subjects.professional),
         _ => None,
     }
-}
-
-/// 根据科目名获取科目状态的不可变引用
-pub fn get_subject_state<'a>(state: &'a StudyState, subject: &str) -> Option<&'a SubjectState> {
-    match subject {
-        "math" => Some(&state.subjects.math),
-        "english" => Some(&state.subjects.english),
-        "politics" => Some(&state.subjects.politics),
-        "professional" => Some(&state.subjects.professional),
-        _ => None,
-    }
-}
-
-/// 计算所有活跃科目的每周总时长
-pub fn total_weekly_hours(state: &StudyState) -> f64 {
-    let subjects = &state.subjects;
-    let mut total = 0.0;
-    if subjects.math.active {
-        total += subjects.math.weekly_hours;
-    }
-    if subjects.english.active {
-        total += subjects.english.weekly_hours;
-    }
-    if subjects.politics.active {
-        total += subjects.politics.weekly_hours;
-    }
-    if subjects.professional.active {
-        total += subjects.professional.weekly_hours;
-    }
-    total
-}
-
-/// 获取当前日期到考试日期的剩余天数
-pub fn remaining_days_to_exam(state: &StudyState, today: &str) -> DataResult<i64> {
-    super::days_between(&state.meta.exam_date, today)
 }
 
 // ============================================================================
@@ -629,8 +575,7 @@ fn minutes_between_iso(start: &str, end: &str) -> DataResult<i64> {
 
 /// 将 ISO 8601 时间戳转换为相对于 Unix 纪元的总分钟数
 fn iso_to_minutes(iso: &str) -> DataResult<i64> {
-    // 去掉时区后缀，仅取 "YYYY-MM-DDTHH:mm:ss" 或 "YYYY-MM-DDTHH:mm" 部分
-    let to_parse = iso.split('+').next().unwrap_or(iso);
+    let (to_parse, tz_minutes) = extract_timezone(iso)?;
     let parts: Vec<&str> = to_parse.split('T').collect();
     if parts.len() < 2 {
         return Err(format!("无效 ISO 时间: {}", iso));
@@ -642,6 +587,14 @@ fn iso_to_minutes(iso: &str) -> DataResult<i64> {
     let year: i64 = date_parts[0].parse().map_err(|_| format!("无效年份: {}", date_parts[0]))?;
     let month: i64 = date_parts[1].parse().map_err(|_| format!("无效月份: {}", date_parts[1]))?;
     let day: i64 = date_parts[2].parse().map_err(|_| format!("无效日: {}", date_parts[2]))?;
+
+    if !(1..=12).contains(&month) {
+        return Err(format!("月份越界: {}", month));
+    }
+    let days_in_month = days_in_month(year, month);
+    if !(1..=days_in_month).contains(&day) {
+        return Err(format!("日越界: {}-{:02} 只有 {} 天, 传入 {}", year, month, days_in_month, day));
+    }
 
     let time_str = parts[1];
     let time_parts: Vec<&str> = time_str.split(':').collect();
@@ -656,8 +609,16 @@ fn iso_to_minutes(iso: &str) -> DataResult<i64> {
         0
     };
 
-    // 转为儒略日号（简化算法，足够计算时间差）
-    // 使用 days_from_civil 算法（Howard Hinnant）
+    if !(0..=23).contains(&hour) {
+        return Err(format!("小时越界: {}", hour));
+    }
+    if !(0..=59).contains(&minute) {
+        return Err(format!("分钟越界: {}", minute));
+    }
+    if !(0..=59).contains(&second) {
+        return Err(format!("秒越界: {}", second));
+    }
+
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = (y - era * 400) as i64;
@@ -665,6 +626,50 @@ fn iso_to_minutes(iso: &str) -> DataResult<i64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days_since_epoch = era * 146097 + doe - 719468;
 
-    let total_minutes = days_since_epoch * 24 * 60 + hour * 60 + minute + second / 60;
+    let total_minutes = days_since_epoch * 24 * 60 + hour * 60 + minute + second / 60 - tz_minutes;
     Ok(total_minutes)
+}
+
+fn extract_timezone(iso: &str) -> DataResult<(&str, i64)> {
+    // 只在 'T' 之后的时间段查找 '+/-' 时区，避免误判日期中的 '-'（如 2026-08-19）
+    let t_pos = iso.find('T').ok_or_else(|| format!("无效 ISO 时间: {}", iso))?;
+    let rest = &iso[t_pos + 1..];
+    let tz_pos = rest.find('+').or_else(|| rest.find('-'));
+    match tz_pos {
+        Some(pos) => {
+            let tz = &rest[pos + 1..];
+            if tz.contains(':') {
+                let mins = parse_tz_offset(tz)?;
+                let sign = if rest.as_bytes()[pos] == b'+' { 1 } else { -1 };
+                Ok((&iso[..t_pos + 1 + pos], mins * sign))
+            } else {
+                // 无 ':' 的尾缀（如 "+0800"）视为无时区
+                Ok((iso, 0))
+            }
+        }
+        None => Ok((iso, 0)),
+    }
+}
+
+fn parse_tz_offset(tz: &str) -> DataResult<i64> {
+    let parts: Vec<&str> = tz.split(':').collect();
+    if parts.len() < 2 {
+        return Err(format!("无效时区偏移: {}", tz));
+    }
+    let h: i64 = parts[0].parse().map_err(|_| format!("无效时区小时: {}", parts[0]))?;
+    let m: i64 = parts[1].parse().map_err(|_| format!("无效时区分钟: {}", parts[1]))?;
+    Ok(h * 60 + m)
+}
+
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => if is_leap_year(year) { 29 } else { 28 },
+        _ => 0,
+    }
 }

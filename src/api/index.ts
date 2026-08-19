@@ -5,6 +5,7 @@
  */
 
 import { invokeWithFallback, invokeDirect, isTauri } from "./tauri";
+import { todayString } from "@/utils/date";
 import {
   mockState,
   mockTodayPlan,
@@ -89,6 +90,19 @@ export async function aiInvoke<T = unknown>(opts: AiInvokeOptions<T>): Promise<T
 
     if (settled) throw new Error("AI 请求已被取消");
     cleanup();
+    // 修复：后端部分命令（如 test_ai_provider）失败时仍返回 Ok，但带 `success:false` 语义字段。
+    // 不能仅以"是否抛异常"判定成败，否则调试页会把失败误记为成功。
+    if (
+      result &&
+      typeof result === "object" &&
+      "success" in (result as object) &&
+      (result as { success?: unknown }).success === false
+    ) {
+      const msg =
+        (result as { message?: string }).message || "AI 调用失败（未提供错误详情）";
+      finish("error", null, msg);
+      throw new Error(msg);
+    }
     finish("success", result, null);
     return result;
   } catch (e) {
@@ -306,6 +320,56 @@ export async function focusAddMinutes(taskId: string, minutes: number): Promise<
   return invokeWithFallback("focus_add_minutes", { taskId, minutes }, async () => {
     console.log(`[Mock] Focus added ${minutes} min to ${taskId}`);
   });
+}
+
+// ── Focus（番茄钟）会话记录 ──
+
+export type FocusSessionType = "focus" | "short_break" | "long_break" | "stopwatch";
+export type FocusSessionStatus = "completed" | "interrupted";
+
+export interface FocusSession {
+  id: string;
+  type: FocusSessionType;
+  started_at: string;
+  ended_at: string;
+  duration_minutes: number;
+  task_id: string | null;
+  status: FocusSessionStatus;
+}
+
+/** 单日专注统计 */
+export interface FocusDayStats {
+  date: string;
+  pomodoros: number;
+  focus_minutes: number;
+  breaks: number;
+}
+
+/** 记录一条专注会话（学习/休息/长休息） */
+export async function recordFocusSession(session: FocusSession): Promise<void> {
+  return invokeWithFallback("record_focus_session", { session }, async () => {
+    console.log("[Mock] Focus session recorded", session.type);
+  });
+}
+
+/** 读取某天的专注会话列表 */
+export async function getFocusSessions(date: string): Promise<FocusSession[]> {
+  return invokeDirect<FocusSession[]>("get_focus_sessions", { date });
+}
+
+/** 读取 [start, end] 日期区间内的全部专注会话 */
+export async function getFocusSessionsRange(start: string, end: string): Promise<FocusSession[]> {
+  return invokeDirect<FocusSession[]>("get_focus_sessions_range", { start, end });
+}
+
+/** 今日专注统计（番茄数 / 专注分钟 / 休息次数） */
+export async function getFocusTodayStats(): Promise<FocusDayStats> {
+  return invokeWithFallback<FocusDayStats>("get_focus_today_stats", undefined, async () => ({
+    date: todayString(),
+    pomodoros: 0,
+    focus_minutes: 0,
+    breaks: 0,
+  }));
 }
 
 // ── Review ──

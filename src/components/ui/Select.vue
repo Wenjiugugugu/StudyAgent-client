@@ -53,6 +53,11 @@ const emit = defineEmits<{
 const slots = useSlots();
 const open = ref(false);
 const rootRef = ref<HTMLElement | null>(null);
+/** 键盘导航高亮索引（M17） */
+const highlightIndex = ref(-1);
+/** 实例唯一 ID（用于 aria-controls / aria-activedescendant 关联） */
+let uidCounter = 0;
+const uid = `select-${++uidCounter}`;
 
 /** 提取 option 子节点的纯文本 */
 function extractText(children: unknown): string {
@@ -93,9 +98,106 @@ const displayLabel = computed(() => {
   return props.modelValue != null && props.modelValue !== "" ? String(props.modelValue) : "";
 });
 
+function openPanel() {
+  open.value = true;
+  // 打开时高亮当前选中项，无选中则高亮第一个可用项
+  const current = currentKey.value;
+  const idx = options.value.findIndex((o) => o.value === current && !o.disabled);
+  highlightIndex.value =
+    idx >= 0 ? idx : options.value.findIndex((o) => !o.disabled);
+}
+
 function toggle() {
   if (props.disabled) return;
-  open.value = !open.value;
+  if (open.value) {
+    open.value = false;
+  } else {
+    openPanel();
+  }
+}
+
+function moveHighlight(dir: number) {
+  const opts = options.value;
+  if (opts.length === 0) return;
+  let i = highlightIndex.value < 0 ? (dir > 0 ? -1 : 0) : highlightIndex.value;
+  for (let step = 0; step < opts.length; step++) {
+    i = (i + dir + opts.length) % opts.length;
+    if (!opts[i].disabled) {
+      highlightIndex.value = i;
+      return;
+    }
+  }
+}
+
+function moveHighlightTo(index: number) {
+  const opts = options.value;
+  if (opts.length === 0) return;
+  const clamped = Math.max(0, Math.min(index, opts.length - 1));
+  for (let step = 0; step < opts.length; step++) {
+    const i = (clamped + step) % opts.length;
+    if (!opts[i].disabled) {
+      highlightIndex.value = i;
+      return;
+    }
+  }
+}
+
+function chooseHighlighted() {
+  const opt = options.value[highlightIndex.value];
+  if (opt && !opt.disabled) choose(opt);
+}
+
+/** 触发按钮键盘操作（M17）：方向键导航、Enter/Space 选择、Escape 关闭 */
+function onTriggerKeydown(e: KeyboardEvent) {
+  if (props.disabled) return;
+  switch (e.key) {
+    case "ArrowDown":
+    case "ArrowUp":
+      e.preventDefault();
+      if (!open.value) openPanel();
+      moveHighlight(e.key === "ArrowDown" ? 1 : -1);
+      break;
+    case "Enter":
+    case " ":
+      e.preventDefault();
+      if (!open.value) openPanel();
+      else chooseHighlighted();
+      break;
+    case "Escape":
+      open.value = false;
+      break;
+  }
+}
+
+/** 面板键盘操作：方向键/Home/End 导航、Enter/Space 选择、Escape/Tab 关闭 */
+function onPanelKeydown(e: KeyboardEvent) {
+  switch (e.key) {
+    case "ArrowDown":
+      e.preventDefault();
+      moveHighlight(1);
+      break;
+    case "ArrowUp":
+      e.preventDefault();
+      moveHighlight(-1);
+      break;
+    case "Home":
+      e.preventDefault();
+      moveHighlightTo(0);
+      break;
+    case "End":
+      e.preventDefault();
+      moveHighlightTo(options.value.length - 1);
+      break;
+    case "Enter":
+    case " ":
+      e.preventDefault();
+      chooseHighlighted();
+      break;
+    case "Escape":
+    case "Tab":
+      open.value = false;
+      break;
+  }
 }
 
 function choose(opt: SelectOption) {
@@ -128,8 +230,13 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
       :name="name"
       class="select-trigger"
       :disabled="disabled"
+      role="combobox"
+      aria-haspopup="listbox"
       :aria-expanded="open"
+      :aria-controls="`${uid}-panel`"
+      :aria-activedescendant="open && highlightIndex >= 0 ? `${uid}-opt-${highlightIndex}` : undefined"
       @click="toggle"
+      @keydown="onTriggerKeydown"
     >
       <span class="select-value" :class="{ placeholder: !displayLabel }">
         {{ displayLabel || placeholder }}
@@ -138,13 +245,20 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
     </button>
 
     <transition name="select-pop">
-      <div v-if="open" class="select-panel" role="listbox">
+      <div
+        v-if="open"
+        :id="`${uid}-panel`"
+        class="select-panel"
+        role="listbox"
+        @keydown="onPanelKeydown"
+      >
         <button
-          v-for="opt in options"
-          :key="opt.value"
+          v-for="(opt, i) in options"
+          :id="`${uid}-opt-${i}`"
+          :key="`${opt.value}-${i}`"
           type="button"
           class="select-option"
-          :class="{ selected: opt.value === currentKey }"
+          :class="{ selected: opt.value === currentKey, highlighted: i === highlightIndex }"
           :disabled="opt.disabled"
           role="option"
           :aria-selected="opt.value === currentKey"
@@ -256,6 +370,12 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
   background: var(--accent-subtle);
   color: var(--accent);
   font-weight: var(--font-semibold);
+}
+
+/* M17：键盘导航高亮（区别于悬停/选中） */
+.select-option.highlighted:not(:disabled) {
+  background: var(--bg-overlay);
+  color: var(--text-primary);
 }
 
 .select-option:disabled {

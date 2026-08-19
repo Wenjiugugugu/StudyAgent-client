@@ -118,6 +118,7 @@ interface RegenStatus {
   date: string;
   regenerating: boolean;
   message: string;
+  failed: boolean;
   timestamp: number;
 }
 function loadRegenStatus(): RegenStatus | null {
@@ -146,9 +147,10 @@ const initialRegen = loadRegenStatus();
 // 仅当日期匹配且仍在 regenerating 时恢复，避免错误显示历史状态
 const regenerating = ref(initialRegen?.regenerating ?? false);
 const regenMessage = ref(initialRegen?.message ?? "");
-const regenFailed = ref(false);
+// 需求：失败标记同样持久化，切页再回来仍保留重试按钮
+const regenFailed = ref(initialRegen?.failed ?? false);
 
-// 超量完成：用户实际进度领先计划时填写
+// 计划外学习：用户实际进度领先计划或做了计划外学习时填写
 const hasOvercompletion = ref(false);
 const overcompletions = ref<OvercompletionEntry[]>([]);
 
@@ -497,14 +499,20 @@ async function executeRegeneration() {
     date: selectedDate.value,
     regenerating: true,
     message: regenMessage.value,
+    failed: false,
     timestamp: Date.now(),
   });
   try {
     const regenResult = await api.regenerateRemainingDays(selectedDate.value);
-    if (regenResult.regenerated) {
+    if (regenResult.used_fallback) {
+      // AI 调用失败，但兜底安排了未完成任务：告知用户并提供重新生成按钮
+      regenFailed.value = true;
+      regenMessage.value =
+        "AI 调整后续计划失败，已自动按未完成任务做了兜底安排。可点击「重新生成」再次尝试让 AI 调整。";
+    } else if (regenResult.regenerated) {
       regenMessage.value = `已调整后续 ${regenResult.affected_dates.length} 天的计划安排`;
     } else {
-      regenMessage.value = "";
+      regenMessage.value = "本次复盘无需调整后续计划。";
     }
   } catch (e) {
     console.error("调整后续计划失败:", e);
@@ -518,6 +526,7 @@ async function executeRegeneration() {
         date: selectedDate.value,
         regenerating: false,
         message: regenMessage.value,
+        failed: regenFailed.value,
         timestamp: Date.now(),
       });
     } else {
@@ -576,6 +585,7 @@ async function loadReviewData() {
     clearRegenStatus();
     regenerating.value = false;
     regenMessage.value = "";
+    regenFailed.value = false;
   }
 
   try {
@@ -820,7 +830,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             <AlertTriangle :size="18" v-else />
             <span>{{ regenMessage }}</span>
             <Button v-if="regenFailed" variant="primary" size="sm" @click="retryRegeneration" :loading="regenerating" class="regen-retry-btn">
-              重试
+              重新生成
             </Button>
           </div>
 
@@ -1066,16 +1076,16 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </div>
       </Card>
 
-      <!-- Step 6: Overcompletion (extra, optional) -->
+      <!-- Step 6: 计划外学习 (extra, optional) -->
       <Card v-if="step === 5" padding="lg" class="step-card">
-        <h2 class="step-title">超量完成（可选）</h2>
-        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}实际学习进度领先于计划安排，请在此记录实际到达的章节，避免下次生成计划时进度落后于实际。</p>
+        <h2 class="step-title">计划外学习（可选）</h2>
+        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如 AI 安排的任务超前，你已提前学到后面的章节），请在此记录实际进度，AI 会根据它修正后续计划和学习状态。</p>
         <div class="overcompletion-toggle">
           <button type="button" class="oc-switch" :class="{ active: hasOvercompletion }"
             @click="hasOvercompletion = !hasOvercompletion">
             <CheckCircle2 v-if="hasOvercompletion" :size="18" />
             <Circle v-else :size="18" />
-            {{ hasOvercompletion ? '已开启超量完成记录' : '我今天超量完成了任务' }}
+            {{ hasOvercompletion ? '已开启计划外学习记录' : '我今天有计划外的学习' }}
           </button>
         </div>
         <div v-if="hasOvercompletion" class="overcompletion-list">
@@ -1085,7 +1095,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                 <option v-for="opt in overcompletionSubjectOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
               </Select>
               <input v-model="oc.chapter_reached" type="text" class="field-input oc-input"
-                placeholder="实际已学习到的章节（如：多元函数微分学）" />
+                placeholder="实际学到的内容/章节（如：多元函数微分学）" />
               <Button variant="ghost" size="sm" @click="removeOvercompletion(idx)">
                 <AlertTriangle :size="14" />
               </Button>
@@ -1098,7 +1108,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </div>
         <div v-if="hasOvercompletion && overcompletions.length === 0" class="empty-step">
           <Sparkles :size="32" class="empty-icon" />
-          <p>点击「添加一条」记录实际进度领先的科目与章节。</p>
+          <p>点击「添加一条」记录计划外学到的科目与内容。</p>
         </div>
       </Card>
 

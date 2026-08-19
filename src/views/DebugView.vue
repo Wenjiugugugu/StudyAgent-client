@@ -156,8 +156,9 @@ async function checkDataDirs() {
     dir.loading = true;
     dir.error = null;
     try {
-      // 走后端 Rust 命令，绕开前端 fs 插件的作用域限制
-      const entries = await api.debugListDir(joinPath(dataDir.value, dir.name));
+      // 走后端 Rust 命令，绕开前端 fs 插件的作用域限制。
+      // H4：传相对路径（dir.name 即 "state"/"plan" 等），后端 resolve_debug_path 拒绝绝对路径
+      const entries = await api.debugListDir(dir.name);
       dir.exists = true;
       dir.entries = entries.map((e) => ({
         name: e.name,
@@ -183,7 +184,8 @@ async function viewFile(dirName: string, entry: DirEntry) {
   loadingFile.value = true;
   fileContent.value = null;
   try {
-    const content = await api.debugReadFile(joinPath(dataDir.value, dirName, entry.name));
+    // H4：传相对路径（dirName 为 "state"/"plan" 等），避免后端拒绝绝对路径
+    const content = await api.debugReadFile(joinPath(dirName, entry.name));
     fileContent.value = { dir: dirName, name: entry.name, content, error: null };
   } catch (e) {
     fileContent.value = {

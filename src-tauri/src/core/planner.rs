@@ -91,12 +91,12 @@ impl<'a> Planner<'a> {
     /// 如果 review_date 的次日（review_date+1）在剩余天数中且其日计划已存在，
     /// 也会一并重新生成该日的日计划。
     ///
-    /// 返回 (是否实际重排, 重排影响的日期列表)
+    /// 返回 (是否实际重排, 重排影响的日期列表, 是否启用了确定性兜底[AI 失败])
     pub async fn regenerate_remaining_days_after_review(
         &self,
         data_dir: &Path,
         review_date: &str,
-    ) -> DataResult<(bool, Vec<String>)> {
+    ) -> DataResult<(bool, Vec<String>, bool)> {
         crate::data::write_ai_debug_log(
             data_dir,
             "regenerate_start",
@@ -116,7 +116,7 @@ impl<'a> Planner<'a> {
                 "复盘 {} 无需重排剩余天数（无未完成/困难/额外进度）",
                 review_date
             );
-            return Ok((false, Vec::new()));
+            return Ok((false, Vec::new(), false));
         }
 
         // 3. 读取本周周计划
@@ -130,7 +130,7 @@ impl<'a> Planner<'a> {
         let regen_start = add_days(review_date, 1)?;
         if regen_start > week_end {
             log::info!("复盘 {} 之后已无剩余天数需要重排（本周已结束）", review_date);
-            return Ok((false, Vec::new()));
+            return Ok((false, Vec::new(), false));
         }
 
         // 收集需要重排的日期
@@ -286,7 +286,7 @@ impl<'a> Planner<'a> {
             &format!("复盘后重排完成, review_date={}, 影响日期: {:?}", review_date, regen_dates),
         );
 
-        Ok((true, regen_dates))
+        Ok((true, regen_dates, used_fallback))
     }
 
     /// 周中新增排除日后，重新生成本周剩余天数的周计划安排（AI 驱动）
@@ -299,13 +299,13 @@ impl<'a> Planner<'a> {
     /// 重新生成重排范围（excluded_date 至 week_end）的 subject_allocations，
     /// 把原本安排在排除日的任务量分摊到剩余学习日。
     ///
-    /// 返回 (是否实际重排, 重排影响的日期列表)
+    /// 返回 (是否实际重排, 重排影响的日期列表, 是否启用了确定性兜底[AI 失败])
     pub async fn regenerate_after_exclusion(
         &self,
         data_dir: &Path,
         week_start: &str,
         excluded_day: ExcludedDay,
-    ) -> DataResult<(bool, Vec<String>)> {
+    ) -> DataResult<(bool, Vec<String>, bool)> {
         crate::data::write_ai_debug_log(
             data_dir,
             "exclusion_regen_start",
@@ -350,7 +350,7 @@ impl<'a> Planner<'a> {
                 "排除日 {} 已存在，跳过重排",
                 excluded_day.date
             );
-            return Ok((false, Vec::new()));
+            return Ok((false, Vec::new(), false));
         }
 
         // 5. 捕获排除日原有任务量（用于 AI 失败时程序化再分摊兜底，enforce 会清空它）
@@ -505,6 +505,10 @@ impl<'a> Planner<'a> {
             }
         };
 
+        // M14：仅当 AI 重排或兜底分摊实际改动了计划时标记 regenerated=true，
+        // 避免前端误判「重排成功」；fallback 未放置任何任务时返回 false
+        let actually_regenerated = used_fallback || !updated_days.is_empty();
+
         // 更新周计划（兜底路径已直接改写 week_plan，跳过 update）
         if !used_fallback {
             update_week_plan_remaining_days(&mut week_plan, &updated_days);
@@ -529,7 +533,7 @@ impl<'a> Planner<'a> {
             &format!("排除日重排完成, excluded_date={}, 影响日期: {:?}", excluded_day.date, regen_dates),
         );
 
-        Ok((true, regen_dates))
+        Ok((actually_regenerated, regen_dates, used_fallback))
     }
 
     /// 将生成的日计划同步到 State.current_task
@@ -1611,10 +1615,10 @@ impl<'a> Planner<'a> {
             }
         }
 
-        // 额外进度（超量完成）
+        // 计划外学习内容 / 额外进度
         if !review.overcompletion.is_empty() {
-            prompt.push_str("\n### 额外进度（用户实际进度领先计划）\n");
-            prompt.push_str("用户实际已学到的章节（已更新到 State，重排时必须以这些进度为起点）：\n");
+            prompt.push_str("\n### 计划外学习内容（用户实际进度领先或超出计划）\n");
+            prompt.push_str("用户反馈了计划外的实际进度（可能提前完成了后续内容，或做了计划外的学习）。这些内容已更新到 State，重排时必须作为最新起点，据此修正后续计划：\n");
             for oc in &review.overcompletion {
                 let subj_label = match oc.subject.as_str() {
                     "math" => "数学",
@@ -1623,13 +1627,13 @@ impl<'a> Planner<'a> {
                     "professional" => "专业课",
                     _ => "其他",
                 };
-                prompt.push_str(&format!("- {}: 已学到「{}」", subj_label, oc.chapter_reached));
+                prompt.push_str(&format!("- {}: 实际已学到/完成「{}」", subj_label, oc.chapter_reached));
                 if let Some(note) = &oc.note {
                     prompt.push_str(&format!("（备注: {}）", note));
                 }
                 prompt.push('\n');
             }
-            prompt.push_str("\n**重要**: 重排时必须从用户实际到达的章节继续推进，不得回退或重复已学内容。\n");
+            prompt.push_str("\n**重要**: 重排时必须从用户实际到达/完成的进度继续推进，不得回退或重复已学内容，同时删减已被实际进度覆盖的计划任务。\n");
         }
 
         // 未完成任务处理指引
@@ -2145,8 +2149,11 @@ fn parse_week_plan_json(
     expected_week_end: &str,
 ) -> DataResult<WeekPlanFile> {
     let cleaned = clean_ai_json(content);
-    let mut plan: WeekPlanFile = serde_json::from_str(&cleaned)
-        .map_err(|e| format!("解析 AI 返回的周计划 JSON 失败: {}\n内容片段: {}", e, &cleaned[..cleaned.len().min(200)]))?;
+    let mut plan: WeekPlanFile = serde_json::from_str(&cleaned).map_err(|e| {
+        // H2：用 chars().take 截断，避免字节切片在多字节字符处 panic
+        let preview: String = cleaned.chars().take(200).collect();
+        format!("解析 AI 返回的周计划 JSON 失败: {}\n内容片段: {}", e, preview)
+    })?;
 
     // 兜底填充版本与 meta 日期
     if plan.version.is_empty() {
@@ -2998,10 +3005,11 @@ fn parse_regenerate_response(content: &str, data_dir: &Path) -> DataResult<Vec<R
 
     // 两种方式都失败：记录调试日志并返回错误
     let preview: String = cleaned.chars().take(500).collect();
+    let raw_preview: String = content.chars().take(1000).collect();
     crate::data::write_ai_debug_log(data_dir, "regenerate_parse_error", &format!(
         "解析 AI 重排响应失败：无法从响应中提取 days 数组。\n\ncleaned 内容前 500 字符:\n{}\n\n原始响应前 1000 字符:\n{}",
         preview,
-        &content[..content.len().min(1000)],
+        raw_preview,
     ));
     Err(format!(
         "解析 AI 重排响应失败：无法从响应中提取 days 数组。AI 可能返回了非预期格式。详细日志已写入 logs/ai-debug.log"
