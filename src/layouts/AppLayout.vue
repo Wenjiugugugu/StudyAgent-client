@@ -377,7 +377,9 @@ onMounted(() => {
 
 .view-fade-enter-from {
   opacity: 0;
-  transform: translateY(8px);
+  /* 向上轻移：占满视口的页面若向下位移，底部会短暂超出触发滚动条闪现，
+     向上位移只收缩底部、不会产生额外滚动条，避免进入页面时抖动 */
+  transform: translateY(-8px);
 }
 
 .view-fade-leave-to {
