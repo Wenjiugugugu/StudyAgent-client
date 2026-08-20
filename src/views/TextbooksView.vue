@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from "vue";
+import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
 import * as api from "@/api";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -17,6 +17,7 @@ import {
   PanelLeft,
   PanelLeftClose,
   Pencil,
+  X,
 } from "lucide-vue-next";
 import type { TextbookInfo, TextbookContent, TextbookSearchHit } from "@/types";
 
@@ -26,6 +27,13 @@ const loadingList = ref(false);
 const current = ref<TextbookContent | null>(null);
 const loadingContent = ref(false);
 const currentMeta = ref<TextbookInfo | null>(null);
+
+// ── 操作错误提示（列表加载 / 全文搜索 / 正文读取失败时展示） ──
+const errorMessage = ref("");
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 // ── 搜索模式：list（教材列表过滤） / content（全文搜索） ──
 type SearchMode = "list" | "content";
@@ -91,10 +99,12 @@ async function runContentSearch() {
     return;
   }
   searching.value = true;
+  errorMessage.value = "";
   try {
     searchHits.value = await api.searchInTextbook(q);
   } catch (e) {
     searchHits.value = [];
+    errorMessage.value = `全文搜索失败：${errMsg(e)}`;
   } finally {
     searching.value = false;
   }
@@ -332,8 +342,8 @@ function renderInline(text: string, highlightTerms?: string[]): string {
   s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
   // 加粗 **text**
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  // 斜体 *text*（避免与加粗冲突）
-  s = s.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+  // 斜体 *text*（负向后顾避免消耗前置字符导致后续行内元素漏匹配，负向前瞻避免撞上加粗）
+  s = s.replace(/(?<![*])\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>");
   // 链接 [text](url)。C8：仅允许 http/https/mailto scheme，拒绝 javascript:/data:/vbscript: 等
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => {
     const trimmedUrl = url.trim();
@@ -483,10 +493,12 @@ function renderMarkdown(src: string): string {
 // ── 加载 ──
 async function loadTextbooks() {
   loadingList.value = true;
+  errorMessage.value = "";
   try {
     textbooks.value = await api.listTextbooks();
   } catch (e) {
     textbooks.value = [];
+    errorMessage.value = `加载教材列表失败：${errMsg(e)}`;
   } finally {
     loadingList.value = false;
   }
@@ -497,6 +509,7 @@ async function selectTextbook(t: TextbookInfo) {
   loadingContent.value = true;
   current.value = null;
   activeTocId.value = null;
+  errorMessage.value = "";
   try {
     current.value = await api.readTextbook(t.id);
     await nextTick();
@@ -506,6 +519,7 @@ async function selectTextbook(t: TextbookInfo) {
     }
   } catch (e) {
     current.value = null;
+    errorMessage.value = `读取教材内容失败：${errMsg(e)}`;
   } finally {
     loadingContent.value = false;
   }
@@ -524,23 +538,28 @@ function scrollToHeading(item: TocItem) {
   }
 }
 
-// 滚动时更新激活的目录项
+// 滚动时更新激活的目录项（rAF 节流，避免每次滚动事件都做 DOM 遍历）
+let scrollRaf: number | null = null;
 function onReaderScroll() {
-  const reader = document.querySelector(".textbook-reader");
-  if (!reader || toc.value.length === 0) return;
-  const scrollTop = (reader as HTMLElement).scrollTop;
-  let currentId = toc.value[0].id;
-  for (const item of toc.value) {
-    const el = document.getElementById(item.id);
-    if (!el) continue;
-    const offsetTop = el.offsetTop;
-    if (offsetTop - 80 <= scrollTop) {
-      currentId = item.id;
-    } else {
-      break;
+  if (scrollRaf !== null) return;
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = null;
+    const reader = document.querySelector(".textbook-reader");
+    if (!reader || toc.value.length === 0) return;
+    const scrollTop = (reader as HTMLElement).scrollTop;
+    let currentId = toc.value[0].id;
+    for (const item of toc.value) {
+      const el = document.getElementById(item.id);
+      if (!el) continue;
+      const offsetTop = el.offsetTop;
+      if (offsetTop - 80 <= scrollTop) {
+        currentId = item.id;
+      } else {
+        break;
+      }
     }
-  }
-  activeTocId.value = currentId;
+    activeTocId.value = currentId;
+  });
 }
 
 // ── 学科标签颜色 ──
@@ -590,10 +609,30 @@ const activeHit = ref<{ line: number; terms: string[] } | null>(null);
 onMounted(() => {
   loadTextbooks();
 });
+
+onUnmounted(() => {
+  // 清理搜索防抖定时器与滚动 rAF，避免切页后仍触发
+  if (searchDebounce) {
+    clearTimeout(searchDebounce);
+    searchDebounce = null;
+  }
+  if (scrollRaf !== null) {
+    cancelAnimationFrame(scrollRaf);
+    scrollRaf = null;
+  }
+});
 </script>
 
 <template>
   <div class="textbooks-view">
+    <!-- 操作错误提示（列表加载 / 全文搜索 / 正文读取失败） -->
+    <div v-if="errorMessage" class="error-banner" role="alert">
+      <span class="error-text">{{ errorMessage }}</span>
+      <button type="button" class="error-dismiss" aria-label="关闭错误提示" @click="errorMessage = ''">
+        <X :size="14" />
+      </button>
+    </div>
+
     <!-- 左侧：教材列表 -->
     <aside class="list-panel" :class="{ collapsed: listCollapsed }">
       <!-- 顶部操作区 -->
@@ -883,9 +922,53 @@ onMounted(() => {
 
 <style scoped>
 .textbooks-view {
+  position: relative;
   display: flex;
   height: 100%;
   min-height: 0;
+}
+
+/* 操作错误提示横幅 */
+.error-banner {
+  position: absolute;
+  top: var(--space-2);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: calc(100% - 24px);
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--color-danger-subtle);
+  border: 1px solid var(--color-danger);
+  color: var(--color-danger);
+  font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+.error-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.error-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.error-dismiss:hover {
+  background: rgba(0, 0, 0, 0.08);
 }
 
 /* ── 左侧列表 ── */

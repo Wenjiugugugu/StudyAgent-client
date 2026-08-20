@@ -12,6 +12,7 @@
  */
 import { onMounted, onBeforeUnmount, watch } from "vue";
 import { X } from "lucide-vue-next";
+import { registerModal, unregisterModal, isTopModal } from "./modal-stack";
 
 const props = withDefaults(
   defineProps<{
@@ -50,15 +51,25 @@ function onOverlayClick() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (!props.open) return;
-  if (e.key === "Escape" && props.closeOnEsc) {
+  if (e.key !== "Escape") return;
+  // 多个模态叠放时只允许最顶层响应 ESC，避免一次关闭全部；顶层不可关闭时不向下穿透
+  if (!isTopModal(modalKey)) return;
+  if (props.open && props.closeOnEsc) {
     e.preventDefault();
     close();
   }
 }
 
+// 注册到全局模态栈：ESC 仅由最顶层模态消费
+const modalKey = registerModal({
+  isOpen: () => props.open,
+  closeOnEsc: () => props.closeOnEsc,
+  close,
+});
+
 onMounted(() => document.addEventListener("keydown", onKeydown));
 onBeforeUnmount(() => {
+  unregisterModal(modalKey);
   document.removeEventListener("keydown", onKeydown);
   // 组件卸载时恢复 body 滚动，避免 v-if 移除时 watch 未触发导致滚动被锁
   document.body.style.overflow = "";

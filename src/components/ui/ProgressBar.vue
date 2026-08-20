@@ -4,7 +4,7 @@ import { computed } from "vue";
 const props = withDefaults(defineProps<{
   value: number;
   max?: number;
-  variant?: "default" | "success" | "warning" | "danger" | "math" | "english" | "professional";
+  variant?: "default" | "success" | "warning" | "danger" | "math" | "english" | "politics" | "professional";
   size?: "sm" | "md" | "lg";
   showLabel?: boolean;
 }>(), {
@@ -65,6 +65,7 @@ const percentage = computed(() => {
 .progress-fill.danger { background: var(--color-danger); }
 .progress-fill.math { background: var(--color-math); }
 .progress-fill.english { background: var(--color-english); }
+.progress-fill.politics { background: var(--color-politics); }
 .progress-fill.professional { background: var(--color-professional); }
 
 .progress-label {
