@@ -19,12 +19,24 @@ import {
   Bug,
   HelpCircle,
   Timer,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-vue-next";
 import { useAppVersion } from "@/version";
 
 const { theme, toggleTheme } = useTheme();
 const settingsStore = useSettingsStore();
 const route = useRoute();
+
+// ── 侧边栏收展（收起后仅显示图标）──
+const COLLAPSE_KEY = "studyagent.sidebar.collapsed";
+const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === "1");
+
+function toggleCollapse() {
+  collapsed.value = !collapsed.value;
+  localStorage.setItem(COLLAPSE_KEY, collapsed.value ? "1" : "0");
+  nextTick(updateIndicator);
+}
 
 const navRef = ref<HTMLElement | null>(null);
 const indicatorStyle = ref<{ transform: string; height: string; opacity: number }>({
@@ -34,8 +46,10 @@ const indicatorStyle = ref<{ transform: string; height: string; opacity: number 
 });
 
 function updateIndicator() {
-  nextTick(() => {
+  requestAnimationFrame(() => {
     if (!navRef.value) return;
+    // 保持原版语义：指示条固定跟「计划」一级项（取第一个 active），
+    // 命中的二级子项仅文字高亮，避免在收起/展开、切换子项间乱跳
     const active = navRef.value.querySelector(".nav-item.active") as HTMLElement | null;
     if (!active) {
       indicatorStyle.value.opacity = 0;
@@ -47,6 +61,11 @@ function updateIndicator() {
       opacity: 1,
     };
   });
+}
+
+/** 计划组「分裂/融入」动画结束后重算指示条，避免布局变化后位置偏移 */
+function onPlanMorphDone() {
+  updateIndicator();
 }
 
 watch(() => route.path, updateIndicator, { immediate: true });
@@ -85,7 +104,7 @@ const menuEntries: MenuEntry[] = [
   { kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } },
 ];
 
-/** 二级菜单是否展开：命中任一子项或一级项时展开 */
+/** 「计划」二级菜单是否展开：命中任一子项或一级项时展开 */
 const planOpen = ref(false);
 watch(
   () => route.path,
@@ -103,10 +122,15 @@ function isPlanActive(): boolean {
 
 // 当前版本号（统一经 useAppVersion 读取，勿在此写死）
 const { version } = useAppVersion();
+
+/** 「计划」一级项点击：切换二级菜单展开/收起（保持原版行为） */
+function onPlanClick() {
+  planOpen.value = !planOpen.value;
+}
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :class="{ collapsed }">
     <!-- App Brand / Drag Region -->
     <div class="brand" data-tauri-drag-region>
       <div v-if="settingsStore.showLogo" class="brand-icon">
@@ -129,6 +153,7 @@ const { version } = useAppVersion();
           class="nav-item"
           :class="{ reserved: entry.item.reserved }"
           active-class="active"
+          :title="collapsed ? entry.item.label : ''"
         >
           <component :is="entry.item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
           <span class="nav-label">{{ entry.item.label }}</span>
@@ -137,32 +162,52 @@ const { version } = useAppVersion();
 
         <!-- 「计划」二级菜单 -->
         <div v-else class="nav-group">
-          <router-link
-            :to="planGroup.path"
-            class="nav-item"
-            :class="{ active: isPlanActive() }"
-            @click.prevent="planOpen = !planOpen"
-          >
-            <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
-            <span class="nav-label">{{ planGroup.label }}</span>
-            <span
-              class="nav-chevron"
-              :class="{ open: planOpen }"
-              aria-hidden="true"
-            ></span>
-          </router-link>
-          <div v-show="planOpen" class="nav-children">
+          <!-- 收起态：一级「计划」图标分裂为 3 个二级菜单图标 -->
+          <transition name="plan-cols" @after-enter="onPlanMorphDone" @after-leave="onPlanMorphDone">
+            <div v-if="collapsed" class="plan-cols">
+              <router-link
+                v-for="c in planGroup.children"
+                :key="c.name"
+                :to="c.path"
+                class="nav-item"
+                active-class="active"
+                :title="c.label"
+              >
+                <component :is="c.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
+                <span class="nav-label">{{ c.label }}</span>
+              </router-link>
+            </div>
+          </transition>
+
+          <!-- 展开态：一级菜单 + 内联二级菜单（二级图标融入回去） -->
+          <template v-if="!collapsed">
             <router-link
-              v-for="c in planGroup.children"
-              :key="c.name"
-              :to="c.path"
-              class="nav-item nav-child"
-              active-class="active"
+              :to="planGroup.path"
+              class="nav-item"
+              :class="{ active: isPlanActive() }"
+              @click.prevent="onPlanClick"
             >
-              <component :is="c.icon" :size="17" :stroke-width="1.5" class="nav-icon child-icon" />
-              <span class="nav-label">{{ c.label }}</span>
+              <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
+              <span class="nav-label">{{ planGroup.label }}</span>
+              <span
+                class="nav-chevron"
+                :class="{ open: planOpen }"
+                aria-hidden="true"
+              ></span>
             </router-link>
-          </div>
+            <div v-show="planOpen" class="nav-children">
+              <router-link
+                v-for="c in planGroup.children"
+                :key="c.name"
+                :to="c.path"
+                class="nav-item nav-child"
+                active-class="active"
+              >
+                <component :is="c.icon" :size="17" :stroke-width="1.5" class="nav-icon child-icon" />
+                <span class="nav-label">{{ c.label }}</span>
+              </router-link>
+            </div>
+          </template>
         </div>
       </template>
     </nav>
@@ -173,6 +218,7 @@ const { version } = useAppVersion();
         to="/debug"
         class="nav-item bottom-item"
         active-class="active"
+        :title="collapsed ? '调试' : ''"
       >
         <Bug :size="19" :stroke-width="1.5" class="nav-icon" />
         <span class="nav-label">调试</span>
@@ -182,12 +228,13 @@ const { version } = useAppVersion();
         to="/settings"
         class="nav-item bottom-item"
         active-class="active"
+        :title="collapsed ? '设置' : ''"
       >
         <Settings :size="19" :stroke-width="1.5" class="nav-icon" />
         <span class="nav-label">设置</span>
       </router-link>
 
-      <button class="nav-item theme-toggle" @click="toggleTheme">
+      <button class="nav-item theme-toggle" @click="toggleTheme" :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''">
         <component :is="theme === 'dark' ? SunMedium : Moon" :size="19" :stroke-width="1.5" class="nav-icon" />
         <span class="nav-label">{{ theme === "dark" ? "浅色" : "深色" }}</span>
       </button>
@@ -199,6 +246,11 @@ const { version } = useAppVersion();
       >
         <span>Beta {{ version }}</span>
       </router-link>
+
+      <button class="nav-item collapse-toggle" @click="toggleCollapse" :title="collapsed ? '展开侧边栏' : '收起侧边栏'">
+        <component :is="collapsed ? ChevronsRight : ChevronsLeft" :size="19" :stroke-width="1.5" class="nav-icon" />
+        <span class="nav-label">{{ collapsed ? "" : "收起侧边栏" }}</span>
+      </button>
     </div>
   </aside>
 </template>
@@ -220,6 +272,21 @@ const { version } = useAppVersion();
   border-right: 1px solid var(--border-color);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.4);
   user-select: none;
+  transition: width var(--transition-normal), min-width var(--transition-normal);
+}
+
+/* 收起态：仅显示图标 */
+.sidebar.collapsed {
+  width: var(--sidebar-collapsed-width);
+  min-width: var(--sidebar-collapsed-width);
+}
+.sidebar.collapsed .brand-text,
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed .nav-badge,
+.sidebar.collapsed .nav-chevron,
+.sidebar.collapsed .nav-children,
+.sidebar.collapsed .version-label {
+  display: none;
 }
 
 /* Brand */
@@ -379,6 +446,26 @@ const { version } = useAppVersion();
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+/* 收起态：一级图标分裂为 3 个二级图标的过渡 */
+.plan-cols {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan-cols-enter-active {
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.plan-cols-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.plan-cols-enter-from {
+  opacity: 0;
+  transform: translateX(-8px) scale(0.9);
+}
+.plan-cols-leave-to {
+  opacity: 0;
+  transform: translateX(8px) scale(0.9);
 }
 .nav-chevron {
   margin-left: auto;

@@ -272,12 +272,15 @@ async function handleSend() {
             <h1 class="header-title">解惑</h1>
             <span class="header-badge">测试版</span>
           </div>
-          <p class="header-subtitle">{{ modeCopy.subtitle }}</p>
+          <transition name="mode-copy" mode="out-in">
+              <p :key="mode" class="header-subtitle">{{ modeCopy.subtitle }}</p>
+            </transition>
         </div>
       </div>
       <div class="header-actions">
         <!-- 回答方式切换 -->
         <div class="mode-switch">
+          <span class="mode-thumb" :class="{ right: mode === 'direct' }" aria-hidden="true" />
           <button
             type="button"
             class="mode-chip"
@@ -531,26 +534,62 @@ async function handleSend() {
   margin: 0;
 }
 
+/* 模式副标题切换过渡 */
+.mode-copy-enter-active,
+.mode-copy-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.mode-copy-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.mode-copy-leave-to {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+
 .header-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
 
-/* 回答方式切换 */
+/* 回答方式切换：分段控件 + 滑动指示块 */
 .mode-switch {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 2px;
   padding: 2px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-full);
   background: var(--bg-tertiary);
 }
 
+.mode-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc(50% - 2px);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.mode-thumb.right {
+  transform: translateX(100%);
+}
+
 .mode-chip {
+  position: relative;
+  z-index: 1;
+  flex: 1;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-1);
   padding: var(--space-1) var(--space-3);
   border: none;
@@ -561,7 +600,8 @@ async function handleSend() {
   font-weight: var(--font-medium);
   font-family: inherit;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: color var(--transition-fast);
+  white-space: nowrap;
 }
 
 .mode-chip:hover {
@@ -569,7 +609,6 @@ async function handleSend() {
 }
 
 .mode-chip.active {
-  background: var(--accent);
   color: var(--text-on-accent);
 }
 

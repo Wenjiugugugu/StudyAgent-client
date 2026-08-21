@@ -527,6 +527,8 @@ onBeforeUnmount(() => {
             </span>
           </p>
 
+          <p class="update-modal-tip">建议保持应用更新到最新版本，以便第一时间体验新功能与各类修复。</p>
+
           <!-- Release notes -->
           <div v-if="updateStore.updateResult.release_notes" class="update-modal-notes">
             <MarkdownText :content="updateStore.updateResult.release_notes" />
@@ -976,9 +978,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  /* 仅整体压暗，不做全屏模糊（全屏 backdrop-filter 在背景图+动画页面上很吃性能） */
+  background: rgba(0, 0, 0, 0.45);
   transition: opacity 0.35s ease;
 }
 
@@ -992,11 +993,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-4) var(--space-6);
-  background: linear-gradient(135deg, var(--accent-subtle) 0%, var(--bg-primary) 100%);
+  /* 毛玻璃卡片：只在这一小块模糊背景，兼顾视觉与性能 */
+  background: color-mix(in srgb, var(--bg-elevated) 62%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
   border: 1px solid var(--accent);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   font-size: var(--text-base);
-  color: var(--accent);
+  color: var(--text-primary);
   font-weight: var(--font-semibold);
   box-shadow: var(--shadow-lg);
   /* 快速闪烁三次（约 0.75 秒内完成），随后保持显示 */
@@ -1061,6 +1065,16 @@ onBeforeUnmount(() => {
 
 .update-modal-name {
   color: var(--text-secondary);
+}
+
+.update-modal-tip {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-soft, var(--border-color));
+  border-radius: var(--radius-md);
 }
 
 .update-modal-notes {
