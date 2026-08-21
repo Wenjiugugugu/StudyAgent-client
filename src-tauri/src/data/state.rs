@@ -594,102 +594,92 @@ fn minutes_between_iso(start: &str, end: &str) -> DataResult<i64> {
 }
 
 /// 将 ISO 8601 时间戳转换为相对于 Unix 纪元的总分钟数
+///
+/// C7：改用 chrono 替换手写的日/月/闰年/时区解析，消除与项目已有 chrono 依赖的重复。
+/// 兼容两种输入格式（旧数据/ runtime 格式）：
+/// - "YYYY-MM-DDTHH:mm:ss+08:00"（含秒、带时区）
+/// - "YYYY-MM-DDTHH:mm"（now_string 产生的无秒、无时区，视为 UTC+8）
 fn iso_to_minutes(iso: &str) -> DataResult<i64> {
-    let (to_parse, tz_minutes) = extract_timezone(iso)?;
-    let parts: Vec<&str> = to_parse.split('T').collect();
-    if parts.len() < 2 {
-        return Err(format!("无效 ISO 时间: {}", iso));
-    }
-    let date_parts: Vec<&str> = parts[0].split('-').collect();
-    if date_parts.len() < 3 {
-        return Err(format!("无效日期部分: {}", parts[0]));
-    }
-    let year: i64 = date_parts[0].parse().map_err(|_| format!("无效年份: {}", date_parts[0]))?;
-    let month: i64 = date_parts[1].parse().map_err(|_| format!("无效月份: {}", date_parts[1]))?;
-    let day: i64 = date_parts[2].parse().map_err(|_| format!("无效日: {}", date_parts[2]))?;
-
-    if !(1..=12).contains(&month) {
-        return Err(format!("月份越界: {}", month));
-    }
-    let days_in_month = days_in_month(year, month);
-    if !(1..=days_in_month).contains(&day) {
-        return Err(format!("日越界: {}-{:02} 只有 {} 天, 传入 {}", year, month, days_in_month, day));
-    }
-
-    let time_str = parts[1];
-    let time_parts: Vec<&str> = time_str.split(':').collect();
-    if time_parts.len() < 2 {
-        return Err(format!("无效时间部分: {}", time_str));
-    }
-    let hour: i64 = time_parts[0].parse().map_err(|_| format!("无效小时: {}", time_parts[0]))?;
-    let minute: i64 = time_parts[1].parse().map_err(|_| format!("无效分钟: {}", time_parts[1]))?;
-    let second: i64 = if time_parts.len() >= 3 {
-        time_parts[2].parse().unwrap_or(0)
-    } else {
-        0
-    };
-
-    if !(0..=23).contains(&hour) {
-        return Err(format!("小时越界: {}", hour));
-    }
-    if !(0..=59).contains(&minute) {
-        return Err(format!("分钟越界: {}", minute));
-    }
-    if !(0..=59).contains(&second) {
-        return Err(format!("秒越界: {}", second));
-    }
-
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64;
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days_since_epoch = era * 146097 + doe - 719468;
-
-    let total_minutes = days_since_epoch * 24 * 60 + hour * 60 + minute + second / 60 - tz_minutes;
-    Ok(total_minutes)
+    let normalized = normalize_iso(iso);
+    let dt = chrono::DateTime::parse_from_rfc3339(&normalized)
+        .map_err(|e| format!("解析 ISO 时间失败: {} (输入: {})", e, iso))?;
+    Ok(dt.timestamp() / 60)
 }
 
-fn extract_timezone(iso: &str) -> DataResult<(&str, i64)> {
-    // 只在 'T' 之后的时间段查找 '+/-' 时区，避免误判日期中的 '-'（如 2026-08-19）
-    let t_pos = iso.find('T').ok_or_else(|| format!("无效 ISO 时间: {}", iso))?;
-    let rest = &iso[t_pos + 1..];
-    let tz_pos = rest.find('+').or_else(|| rest.find('-'));
-    match tz_pos {
-        Some(pos) => {
-            let tz = &rest[pos + 1..];
-            if tz.contains(':') {
-                let mins = parse_tz_offset(tz)?;
-                let sign = if rest.as_bytes()[pos] == b'+' { 1 } else { -1 };
-                Ok((&iso[..t_pos + 1 + pos], mins * sign))
-            } else {
-                // 无 ':' 的尾缀（如 "+0800"）视为无时区
-                Ok((iso, 0))
+/// 把两种 ISO 变体归一化为 chrono 可解析的 RFC3339：
+/// 无秒补 ":00"，无时区补 "+08:00"（与 `now_string` 的 UTC+8 约定一致）。
+///
+/// 实际输入由 `now_string` 稳定产生 "YYYY-MM-DDTHH:mm"，这里同时兼容可能带秒/时区的旧数据。
+fn normalize_iso(iso: &str) -> String {
+    let mut s = iso.trim().to_string();
+    // 已带时区（时间部分之后出现 + / - / Z）
+    let has_tz = s.find('T').is_some_and(|t| {
+        let rest = &s[t + 1..];
+        rest.contains('+') || rest.contains('-') || rest.contains('Z')
+    });
+    if !has_tz {
+        // 无时区：统一补 UTC+8（首个冒号之后没有第二个冒号 → 缺秒）
+        if s.find('T').is_some_and(|t| {
+            let time = &s[t + 1..];
+            match time.find(':') {
+                Some(c) => !time[c + 1..].contains(':'),
+                None => true,
             }
+        }) {
+            s.push_str(":00+08:00");
+        } else {
+            s.push_str("+08:00");
         }
-        None => Ok((iso, 0)),
+    } else {
+        // 含时区但缺秒（HH:mm+08:00）：在时区标记前插入 :00
+        let t_pos = s.find('T').unwrap_or(0);
+        let time = &s[t_pos + 1..];
+        let end_of_time = time.find(['+', '-', 'Z']).unwrap_or(time.len());
+        let time_part = &time[..end_of_time];
+        if !time_part[time_part.find(':').map_or(0, |c| c + 1)..].contains(':') {
+            s = format!(
+                "{}{}:00{}",
+                &s[..t_pos + 1],
+                time_part,
+                &time[end_of_time..]
+            );
+        }
     }
+    s
 }
 
-fn parse_tz_offset(tz: &str) -> DataResult<i64> {
-    let parts: Vec<&str> = tz.split(':').collect();
-    if parts.len() < 2 {
-        return Err(format!("无效时区偏移: {}", tz));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iso_to_minutes_parses_both_variants_with_equal_elapsed() {
+        // C7：chrono 替换后，两种格式（含秒带时区 / 无秒无时区）都应能解析，
+        // 且同为 UTC+8 时刻时差值一致。
+        let with_tz = "2026-07-30T14:30:00+08:00";
+        let without_tz = "2026-07-30T14:30";
+        let a = iso_to_minutes(with_tz).expect("带时区格式应可解析");
+        let b = iso_to_minutes(without_tz).expect("无时区格式应按 UTC+8 解析");
+        assert_eq!(a, b, "两种表示应指向同一时刻");
     }
-    let h: i64 = parts[0].parse().map_err(|_| format!("无效时区小时: {}", parts[0]))?;
-    let m: i64 = parts[1].parse().map_err(|_| format!("无效时区分钟: {}", parts[1]))?;
-    Ok(h * 60 + m)
-}
 
-fn is_leap_year(year: i64) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-}
+    #[test]
+    fn iso_to_minutes_reflects_timezone_offset() {
+        // TZ 偏移应被计入绝对时刻：同一本地钟面 +00:00 比 +08:00 早 8 小时（480 分钟）
+        let utc_str = "2026-07-30T14:30:00+00:00";
+        let cn_str = "2026-07-30T14:30:00+08:00";
+        let utc = iso_to_minutes(utc_str).expect("+00:00 可解析");
+        let cn = iso_to_minutes(cn_str).expect("+08:00 可解析");
+        assert_eq!(utc - cn, 8 * 60, "时区差 8 小时应差 480 分钟");
+    }
 
-fn days_in_month(year: i64, month: i64) -> i64 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => if is_leap_year(year) { 29 } else { 28 },
-        _ => 0,
+    #[test]
+    fn elapsed_minutes_uses_utc8_consistently() {
+        // 无时区变体（now_string 产出）与显式 +08:00 表示同一 UTC+8 时刻，
+        // 二者之差应为 0
+        let start = "2026-07-30T14:30";
+        let end = "2026-07-30T14:30:00+08:00";
+        let diff = minutes_between_iso(start, end).expect("应可解析并求差");
+        assert_eq!(diff, 0);
     }
 }

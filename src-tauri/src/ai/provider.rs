@@ -7,13 +7,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// M25：在给定范围内产生一个伪随机数，用于重试退避抖动（无需引入 rand crate）
+/// M25：在给定范围内产生一个伪随机数，用于重试退避抖动（无需引入 rand crate）。
+/// C6：原子计数器保证每次调用种子不同，混入时间纳秒，避免同一纳秒窗口内多次/并发
+/// 调用产生相同的 LCG 序列（纯时间种子时抖动会失效）。
 fn rand_jitter(range: std::ops::RangeInclusive<u64>) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now()
+    // 全局递增计数器：线程安全地保证相邻调用种子不同
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
+    // 综合时间纳秒与计数器，得到 64 位种子
+    let seed = now.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ counter ^ (now >> 17);
     // 简单的线性同余，仅用于抖动，不需要密码学强度
     let mut state = seed ^ (seed >> 16) | 0x9E37_79B9_7F4A_7C15;
     state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -248,6 +256,12 @@ pub struct ChatRequest {
     /// Agent 类型标识，Core 据此选择 system prompt
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentType>,
+    /// 用户实际数学卷种（如「数一」「数二」「数三」），用于动态注入考纲约束
+    ///
+    /// 由 Core 层（Planner 等）构造请求时从 `state.subjects.math.version` 读取传入，
+    /// 避免在 system prompt 中硬编码单一卷种。空值/None 表示不考数学或未指定。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub math_version: Option<String>,
     /// 附加上下文
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<AgentContext>,
@@ -506,31 +520,30 @@ pub trait AiProvider: Send + Sync {
 // ============================================================================
 
 /// 根据 Agent 类型获取 system prompt
-pub fn get_system_prompt(agent: &AgentType) -> String {
+///
+/// `math_version` 为可选数学卷种（如「数一」「数二」「数三」），
+/// 仅 Planner 分支用于动态注入考纲约束；其他 Agent 忽略该参数。
+pub fn get_system_prompt(agent: &AgentType, math_version: Option<&str>) -> String {
     match agent {
         AgentType::Planner => {
             // Planner system prompt — 生成周计划 JSON
-            r#"你是一个考研学习计划生成器（Planner Agent），专为 StudyAgent 桌面应用生成学习周计划。
-
-核心约束：
-- 用户考试类型为「数学二」，数学任务必须严格遵循数学二考纲，明确排除：伯努利方程、全微分方程相关内容
-- 优先级映射：Priority A → 必须完成（高优先级），Priority B → 建议完成（中优先级）
-- 每个任务模板必须包含：title、priority、estimated_hours、goal、completion_criteria，可选 textbook、style_tips、fallback_plan
-
-你的职责：
-1. 根据当前学习状态（State）、用户画像（User Model）和最近复盘（Review），生成本周周计划
-2. 周计划包含本周目标、各科安排、每日 subject_allocations、风险项和提醒
-3. 休息日 is_rest_day=true 且 subject_allocations 为空数组
-4. 只给 active=true 的科目安排任务
-5. 任务 estimated_hours 总和应大致等于当天预期学习时长
-
-输出格式：严格输出合法 JSON，不包裹 ```json 代码块。结构为 { version, meta, data, view? }。
-- version: "1.0.0"
-- meta: { week_start, week_end, week_number, generated_at, based_on }
-- data: { goals, subjects, days }
-- view: 可选，用于人类阅读的 Markdown 摘要
-
-文件存储为 plan/YYYY-Www_week.json"#.to_string()
+            // 数学考纲约束按用户实际卷种动态注入，不再硬编码单一卷种
+            let math_rule = match math_version {
+                Some("数一") => "用户考试类型为「数学一」，数学任务必须严格遵循数学一考纲".to_string(),
+                Some("数二") => {
+                    "用户考试类型为「数学二」，数学任务必须严格遵循数学二考纲，明确排除：伯努利方程、全微分方程相关内容".to_string()
+                }
+                Some("数三") => "用户考试类型为「数学三」，数学任务必须严格遵循数学三考纲".to_string(),
+                Some(v) if !v.is_empty() => {
+                    format!("用户考试类型为「{}」，数学任务必须严格遵循{}考纲", v, v)
+                }
+                // 不考数学或未指定卷种：不强制任何数学考纲
+                _ => "用户未考数学或未指定数学卷种，不为数学科目安排任务".to_string(),
+            };
+            format!(
+                "你是一个考研学习计划生成器（Planner Agent），专为 StudyAgent 桌面应用生成学习周计划。\n\n核心约束：\n- {}\n- 优先级映射：Priority A → 必须完成（高优先级），Priority B → 建议完成（中优先级）\n- 每个任务模板必须包含：title、priority、estimated_hours、goal、completion_criteria，可选 textbook、style_tips、fallback_plan\n\n你的职责：\n1. 根据当前学习状态（State）、用户画像（User Model）和最近复盘（Review），生成本周周计划\n2. 周计划包含本周目标、各科安排、每日 subject_allocations、风险项和提醒\n3. 休息日 is_rest_day=true 且 subject_allocations 为空数组\n4. 只给 active=true 的科目安排任务\n5. 任务 estimated_hours 总和应大致等于当天预期学习时长\n\n输出格式：严格输出合法 JSON，不包裹 ```json 代码块。结构为 {{ version, meta, data, view? }}。\n- version: \"1.0.0\"\n- meta: {{ week_start, week_end, week_number, generated_at, based_on }}\n- data: {{ goals, subjects, days }}\n- view: 可选，用于人类阅读的 Markdown 摘要\n\n文件存储为 plan/YYYY-Www_week.json",
+                math_rule
+            )
         }
         AgentType::Reviewer => {
             // Reviewer system prompt — 生成复盘 JSON
@@ -714,7 +727,7 @@ pub fn inject_system_prompt(req: &mut ChatRequest, agent: &AgentType) {
         .any(|m| m.role == MessageRole::System);
 
     if !has_system {
-        let system_prompt = get_system_prompt(agent);
+        let system_prompt = get_system_prompt(agent, req.math_version.as_deref());
         req.messages.insert(
             0,
             ChatMessage {
@@ -795,7 +808,10 @@ pub async fn send_with_retry(
                         .and_then(|v| v.to_str().ok())
                         .and_then(|s| s.parse::<u64>().ok());
 
-                    // 指数退避：1s, 2s, 4s...；若有 Retry-After 则取较大值
+                    // 指数退避：1s, 2s, 4s...；若有 Retry-After 则取较大值。
+                    // C3：Retry-After 设上限 MAX_RETRY_AFTER_SECS，避免服务端返回超大值
+                    // （如 3600s）导致本线程最长挂起数小时。
+                    let retry_after_secs = retry_after_secs.map(|s| s.clamp(0, 60));
                     let backoff = retry_after_secs.unwrap_or(0).max(1u64 << (attempt - 1));
 
                     let error_text = resp.text().await.unwrap_or_default();

@@ -290,8 +290,10 @@ fn parse_review_json(
     plan: Option<&crate::data::plan::DailyPlanFile>,
 ) -> DataResult<ReviewFile> {
     let cleaned = clean_ai_json(content);
-    let mut review: ReviewFile = serde_json::from_str(&cleaned)
-        .map_err(|e| format!("解析 AI 返回的复盘 JSON 失败: {}\n内容片段: {}", e, &cleaned[..cleaned.len().min(200)]))?;
+    let mut review: ReviewFile = serde_json::from_str(&cleaned).map_err(|e| {
+        let preview: String = cleaned.chars().take(200).collect();
+        format!("解析 AI 返回的复盘 JSON 失败: {}\n内容片段: {}", e, preview)
+    })?;
 
     // 兜底填充版本与 meta
     if review.version.is_empty() {

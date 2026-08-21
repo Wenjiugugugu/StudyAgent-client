@@ -140,6 +140,10 @@ pub fn read_all() -> Vec<AiUsageEntry> {
 
 /// 清空全部用量记录
 pub fn clear() {
+    // 与 append 共用同一把锁，避免与并发 AI 调用（append）交错：
+    // 若不加锁，append 的读-改-写与 clear 的写入可能互相覆盖，丢记录或清空后立即写回旧数据
+    let _guard = APPEND_LOCK.lock();
+
     let path = match log_path() {
         Some(p) => p,
         None => return,

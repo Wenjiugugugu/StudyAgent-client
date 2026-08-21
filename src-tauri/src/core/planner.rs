@@ -91,12 +91,12 @@ impl<'a> Planner<'a> {
     /// 如果 review_date 的次日（review_date+1）在剩余天数中且其日计划已存在，
     /// 也会一并重新生成该日的日计划。
     ///
-    /// 返回 (是否实际重排, 重排影响的日期列表, 是否启用了确定性兜底[AI 失败])
+    /// 返回 (是否实际重排, 重排影响的日期列表, 是否启用了确定性兜底[AI 失败], 一致性警告列表)
     pub async fn regenerate_remaining_days_after_review(
         &self,
         data_dir: &Path,
         review_date: &str,
-    ) -> DataResult<(bool, Vec<String>, bool)> {
+    ) -> DataResult<(bool, Vec<String>, bool, Vec<String>)> {
         crate::data::write_ai_debug_log(
             data_dir,
             "regenerate_start",
@@ -115,8 +115,8 @@ impl<'a> Planner<'a> {
             log::info!(
                 "复盘 {} 无需重排剩余天数（无未完成/困难/额外进度）",
                 review_date
-            );
-            return Ok((false, Vec::new(), false));
+                );
+            return Ok((false, Vec::new(), false, Vec::new()));
         }
 
         // 3. 读取本周周计划
@@ -124,13 +124,16 @@ impl<'a> Planner<'a> {
         let mut week_plan = crate::data::plan::read_week_plan(data_dir, &iso_week)
             .map_err(|e| format!("读取周计划失败: {}。请先生成周计划。", e))?;
 
+        // 重排前切片：用于一致性校验比对「超量进度是否生效」
+        let original_before = week_plan.clone();
+
         let week_end = week_plan.meta.week_end.clone();
 
         // 4. 确定需要重排的日期范围：review_date+1 至 week_end
         let regen_start = add_days(review_date, 1)?;
         if regen_start > week_end {
             log::info!("复盘 {} 之后已无剩余天数需要重排（本周已结束）", review_date);
-            return Ok((false, Vec::new(), false));
+            return Ok((false, Vec::new(), false, Vec::new()));
         }
 
         // 收集需要重排的日期
@@ -199,6 +202,7 @@ impl<'a> Planner<'a> {
             temperature: Some(0.6),
             // 重排剩余天数的工作量与生成周计划相当，给足 300s
             timeout_override: Some(300),
+            math_version: state.subjects.math.version.clone(),
             ..Default::default()
         };
 
@@ -278,6 +282,35 @@ impl<'a> Planner<'a> {
             &format!("周计划已保存, 影响日期: {:?}", regen_dates),
         );
 
+        // 9.5 一致性校验与确定性修正：
+        //   - 剔除与新「已完成」重复的计划任务（无论 AI 是否遵守约束都兜底生效）
+        //   - 检测声明了超量进度的科目重排后是否真正生效，未生效则记入警告
+        let declared_subjects: std::collections::HashSet<String> = review
+            .overcompletion
+            .iter()
+            .map(|oc| oc.subject.clone())
+            .collect();
+        let consistency_warnings = consistency_check_and_correct(
+            &mut week_plan,
+            &state,
+            &regen_dates,
+            &original_before,
+            &declared_subjects,
+        );
+        if !consistency_warnings.is_empty() {
+            log::warn!(
+                "一致性校验：超量进度未反映到计划 -> {}",
+                consistency_warnings.join("；")
+            );
+            crate::data::write_ai_debug_log(
+                data_dir,
+                "regenerate_consistency_warning",
+                &format!("超量进度未生效: {}", consistency_warnings.join("；")),
+            );
+        }
+        // 去重可能改写了周计划，需重新保存后再生成日计划
+        crate::data::plan::save_week_plan(data_dir, &week_plan)?;
+
         // 10. 重新生成所有受影响日期的日计划文件
         Self::regenerate_daily_plans_for_dates(data_dir, &week_plan, &regen_dates, "review_regen")?;
         crate::data::write_ai_debug_log(
@@ -286,7 +319,7 @@ impl<'a> Planner<'a> {
             &format!("复盘后重排完成, review_date={}, 影响日期: {:?}", review_date, regen_dates),
         );
 
-        Ok((true, regen_dates, used_fallback))
+        Ok((true, regen_dates, used_fallback, consistency_warnings))
     }
 
     /// 周中新增排除日后，重新生成本周剩余天数的周计划安排（AI 驱动）
@@ -433,6 +466,7 @@ impl<'a> Planner<'a> {
             agent: Some(AgentType::Planner),
             temperature: Some(0.6),
             timeout_override: Some(300),
+            math_version: state.subjects.math.version.clone(),
             ..Default::default()
         };
 
@@ -654,6 +688,7 @@ impl<'a> Planner<'a> {
             // 周计划 JSON 生成可能较慢（大 prompt + 长输出），
             // 覆盖 Provider 默认 timeout 至 300s
             timeout_override: Some(300),
+            math_version: state.subjects.math.version.clone(),
             ..Default::default()
         };
 
@@ -682,6 +717,19 @@ impl<'a> Planner<'a> {
         enforce_excluded_days(&mut week_plan, excluded_days)?;
         // 3.3 后置校验：周中生成时清空已过去日期的任务分配（确定性兜底，避免 AI 补排历史日）
         enforce_past_days_empty(&mut week_plan);
+
+        // 3.4 一致性校验：确定性剔除与各科「已完成」重复的任务（无论 AI 是否遵守约束均兜底）
+        let week_all_dates: Vec<String> =
+            week_plan.data.days.iter().map(|d| d.date.clone()).collect();
+        let empty_declared = std::collections::HashSet::new();
+        let orig_snapshot = week_plan.clone();
+        consistency_check_and_correct(
+            &mut week_plan,
+            &state,
+            &week_all_dates,
+            &orig_snapshot,
+            &empty_declared,
+        );
 
         // 3.3 持久化用户本周配置（排除日 + 任务量调整）
         week_plan.data.excluded_days = excluded_days.to_vec();
@@ -819,6 +867,19 @@ impl<'a> Planner<'a> {
         );
 
         Ok(())
+    }
+
+    /// 生成数学考纲约束文本（按用户实际卷种动态注入，不再硬编码「数学二」）
+    ///
+    /// 返回可直接嵌入 prompt 的一句话约束。数二排除伯努利方程/全微分方程；
+    /// 数一/数三/其他卷种仅要求遵循对应考纲；未考数学或未指定时返回中性提示。
+    fn math_syllabus_constraint(state: &StudyState) -> String {
+        match state.subjects.math.version.as_deref() {
+            Some("数二") => "数学任务必须严格遵循「数学二」考纲，排除伯努利方程、全微分方程相关内容".to_string(),
+            Some(v) if !v.is_empty() => format!("数学任务必须严格遵循「{}」考纲", v),
+            // 未指定卷种或未考数学：不强加任何数学考纲
+            _ => "若用户考数学，数学任务必须遵循其实际考试卷种对应考纲；若不考数学则忽略本条".to_string(),
+        }
     }
 
     /// 构建周计划 prompt
@@ -1080,8 +1141,17 @@ impl<'a> Planner<'a> {
 
         // 各科状态
         prompt.push_str("## 当前各科状态\n\n");
+        let math_label = state
+            .subjects
+            .math
+            .version
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .map(|v| format!("数学（{}）", v))
+            .unwrap_or_else(|| "数学".to_string());
         prompt.push_str(&format!(
-            "### 数学（数二）\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            "### {}\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            math_label,
             state.subjects.math.phase,
             state.subjects.math.weekly_hours,
             state.subjects.math.target_score,
@@ -1423,7 +1493,7 @@ impl<'a> Planner<'a> {
 重要约束：
 1. 必须包含 data 和 view 两个字段；view 仅用于展示，不会被程序解析。
 2. 只给 active=true 的科目安排任务；政治未启动则安排为 rest_day 或空 allocations。
-3. 数学任务必须严格遵循「数学二」考纲，排除伯努利方程、全微分方程相关内容。
+3. {math}
 4. 任务已不再分级（Priority A/B 已废弃）：task_templates 中不要输出 priority 字段，任务不做 A/B 区分，所有任务同等对待。
 5. subject 字段只能是 "math" / "english" / "politics" / "professional" 之一，严禁使用 "general" 或其他值。出现在 data.subjects[].subject、data.days[].subject_allocations[].subject 中的所有取值都必须严格属于这四个枚举值之一。
 6. 休息日 is_rest_day=true，且 subject_allocations 为空数组。
@@ -1434,12 +1504,13 @@ impl<'a> Planner<'a> {
 11. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
 12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
 13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
-14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。
+14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。同时以各科「当前重点」作为实际进度基准：不得在用户尚未到达的章节安排任务，计划的推进顺序必须以教材章节先后为准，不得跳过用户尚未学习的章节跳级到后面（若「当前重点」显示的进度落后于本周计划，以「当前重点」为准相应调整，而非沿用旧计划）。
 15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。**{}应作为本周的起始点**，从各科「已完成」之后的章节开始，逐天分配到剩余学习日（若为周中生成，起点为今天而非周一，已过去的日期不安排任务）。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
 "#,
             week_start, week_end, week_end, daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
-            if today == week_start { "周一" } else { "今天" }
+            if today == week_start { "周一" } else { "今天" },
+            math = Self::math_syllabus_constraint(state),
         ));
 
         prompt
@@ -1617,8 +1688,8 @@ impl<'a> Planner<'a> {
 
         // 计划外学习内容 / 额外进度
         if !review.overcompletion.is_empty() {
-            prompt.push_str("\n### 计划外学习内容（用户实际进度领先或超出计划）\n");
-            prompt.push_str("用户反馈了计划外的实际进度（可能提前完成了后续内容，或做了计划外的学习）。这些内容已更新到 State，重排时必须作为最新起点，据此修正后续计划：\n");
+            prompt.push_str("\n### 用户实际进度声明（作为各科的进度基准）\n");
+            prompt.push_str("用户反馈了各科当前实际学习的位置（可能是超前完成，也可能是对计划的进度修正）。该位置已更新到 State，重排时必须作为对应科目的**实际进度起点**，据此双向调整剩余计划：\n");
             for oc in &review.overcompletion {
                 let subj_label = match oc.subject.as_str() {
                     "math" => "数学",
@@ -1627,13 +1698,13 @@ impl<'a> Planner<'a> {
                     "professional" => "专业课",
                     _ => "其他",
                 };
-                prompt.push_str(&format!("- {}: 实际已学到/完成「{}」", subj_label, oc.chapter_reached));
+                prompt.push_str(&format!("- {}: 实际进度位于「{}」", subj_label, oc.chapter_reached));
                 if let Some(note) = &oc.note {
                     prompt.push_str(&format!("（备注: {}）", note));
                 }
                 prompt.push('\n');
             }
-            prompt.push_str("\n**重要**: 重排时必须从用户实际到达/完成的进度继续推进，不得回退或重复已学内容，同时删减已被实际进度覆盖的计划任务。\n");
+            prompt.push_str("\n**重要**：以用户声明的实际进度作为该科目的起点，剩余计划只能从这个位置之后继续推进，不得重复已学内容。若原计划把任务安排在用户尚未到达的位置，应视为进度修正而非超前，需相应调整。计划的推进顺序必须以教材章节先后为准，既不得跳过用户尚未学习的章节跳级到后面，也不得回退。\n");
         }
 
         // 未完成任务处理指引
@@ -1660,7 +1731,7 @@ impl<'a> Planner<'a> {
                 };
                 prompt.push_str(&format!("- {}「{}」: {}\n", subj_label, tr.title, status_label));
             }
-            prompt.push_str("\n规则：\n1. 未完成任务应尽快安排在剩余天数的开头几天；\n2. 不得跳过未完成任务直接学新内容；\n3. 部分完成的任务继续推进剩余部分，不重复已学内容。\n");
+            prompt.push_str("\n规则：\n1. 未完成任务应尽快安排在剩余天数的开头几天，但**仅限位于用户实际进度起点之后**的任务；\n2. 若某项未完成任务位于用户实际进度起点**之前**（即用户尚未学到那一步，被实际进度声明覆盖），则不重复安排，改排起点之后的后续章节；\n3. 不得跳过用户实际进度之后的未完成任务直接学更新的内容；\n4. 部分完成的任务继续推进剩余部分，不重复已学内容。\n");
         }
 
         // 当前各科状态
@@ -1838,9 +1909,9 @@ impl<'a> Planner<'a> {
 1. 必须覆盖 {} 至 {} 的所有学习日（休息日无需输出 subject_allocations，但 date 必须包含）。
 2. subject 只能是 "math" / "english" / "politics" / "professional" 之一。
 3. 任务已不再分级（Priority A/B 已废弃）：task_templates 中不要输出 priority 字段，任务不做 A/B 区分，所有任务同等对待。
-4. 数学任务必须严格遵循「数学二」考纲，排除伯努利方程、全微分方程。
-5. 未完成任务必须尽快安排在剩余天数的前几天。
-6. 额外进度已更新到 State，重排时必须从实际到达的章节继续，不得回退。
+4. {math}
+5. 未完成任务必须尽快安排在剩余天数的前几天（仅限位于用户实际进度之后的未完成任务；已被实际进度声明覆盖的按已学习处理，不再安排）。
+6. 用户声明的实际进度是各科的进度基准，重排允许双向调整（超前或修正）。所有科目的任务必须从用户实际进度**之后**继续推进，不得在用户尚未到达的章节安排任务；若原计划凌驾于用户实际进度之前，应删除或后置。
 7. 每天的 task_templates 数量约 {} 个，每科约一条。
 8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
 9. 休息日的 subject_allocations 为空数组。
@@ -1848,7 +1919,8 @@ impl<'a> Planner<'a> {
 11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。若存在排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束7）仍须遵守。
 "#,
             regen_start, week_end, daily_task_count,
-            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
+            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            math = Self::math_syllabus_constraint(state),
         ));
 
         prompt
@@ -2124,7 +2196,7 @@ impl<'a> Planner<'a> {
 2. 排除日（{}）的 subject_allocations 必须为空数组。
 3. subject 只能是 "math" / "english" / "politics" / "professional" 之一。
 4. 任务已不再分级（Priority A/B 已废弃）：task_templates 中不要输出 priority 字段，任务不做 A/B 区分，所有任务同等对待。
-5. 数学任务必须严格遵循「数学二」考纲，排除伯努利方程、全微分方程。
+5. {math}
 6. 每天的 task_templates 数量约 {} 个，每科约一条。
 7. 排除日原本的任务量必须分摊到剩余学习日，可通过适当增加每日任务数或难度来实现。
 8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
@@ -2135,7 +2207,8 @@ impl<'a> Planner<'a> {
             regen_start, week_end,
             all_excluded_days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>().join("、"),
             daily_task_count,
-            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" }
+            if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            math = Self::math_syllabus_constraint(state),
         ));
 
         prompt
@@ -2696,6 +2769,134 @@ fn save_week_plan_original(data_dir: &Path, plan: &WeekPlanFile) -> DataResult<(
     Ok(())
 }
 
+/// 该科目「已完成」章节列表
+fn subject_completed_list<'a>(
+    state: &'a StudyState,
+    subject: &crate::data::state::SubjectKey,
+) -> &'a [String] {
+    match subject {
+        crate::data::state::SubjectKey::Math => &state.subjects.math.completed,
+        crate::data::state::SubjectKey::English => &state.subjects.english.completed,
+        crate::data::state::SubjectKey::Politics => &state.subjects.politics.completed,
+        crate::data::state::SubjectKey::Professional => &state.subjects.professional.completed,
+    }
+}
+
+/// 判断任务标题是否命中已完成章节（边界匹配，与 scheduler 一致，避免误杀子主题）
+fn matches_completed(title: &str, completed: &str) -> bool {
+    let t = title.trim();
+    let c = completed.trim();
+    if t.is_empty() || c.is_empty() {
+        return false;
+    }
+    if t == c {
+        return true;
+    }
+    if let Some(rest) = t.strip_prefix(c) {
+        return rest
+            .chars()
+            .next()
+            .map(|ch| {
+                matches!(
+                    ch,
+                    '：' | ':' | '，' | ',' | '、' | '。' | '；' | ';' | '(' | '（' | '·' | '-' | '—' | ')' | '）'
+                )
+            })
+            .unwrap_or(false);
+    }
+    false
+}
+
+/// 一致性校验与确定性修正（重排 / 周计划生成后调用）
+///
+/// 由于本地缺少章节依赖关系图，无法纯确定性地判断「计划章节是否领先于用户实际进度」，
+/// 因此只处理边界内可确定的部分：
+/// 1. 确定性去重：把 `regen_dates` 内剩余计划中与该科「已完成」列表重复的任务模板摘除，
+///    并同步修正 allocation 时长。无论 AI 是否遵守「不得重复已完成内容」，都会兜底生效。
+/// 2. 进度生效检查：对本次复盘声明了实际进度（overcompletion）的科目，若重排后其剩余
+///    安排与重排前完全一致，说明该声明未能反映到计划，学校生成提醒返回（供前端提示）。
+///
+/// 返回一致性警告列表（可空）。
+fn consistency_check_and_correct(
+    week_plan: &mut WeekPlanFile,
+    state: &StudyState,
+    regen_dates: &[String],
+    original_before: &WeekPlanFile,
+    declared_subjects: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+
+    // 1. 确定性去重：剔除与「已完成」重复的 forward 任务
+    let mut removed = false;
+    for day in week_plan.data.days.iter_mut() {
+        if !regen_dates.contains(&day.date) {
+            continue;
+        }
+        for alloc in day.subject_allocations.iter_mut() {
+            let completed = subject_completed_list(state, &alloc.subject);
+            if completed.is_empty() {
+                continue;
+            }
+            let before = alloc.task_templates.len();
+            alloc
+                .task_templates
+                .retain(|t| !completed.iter().any(|c| matches_completed(&t.title, c)));
+            if alloc.task_templates.len() != before {
+                removed = true;
+            }
+        }
+    }
+    if removed {
+        log::info!("一致性校验：已剔除与「已完成」重复的计划任务");
+        // 同步修正 allocation 时长（仅当有剩余模板可求和时）
+        for day in week_plan.data.days.iter_mut() {
+            for alloc in day.subject_allocations.iter_mut() {
+                let sum: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
+                if sum > 0.0 {
+                    alloc.hours = sum;
+                }
+            }
+        }
+    }
+
+    // 2. 进度生效检查（delta）：声明了实际进度的科目，若剩余安排与重排前完全一致 → 警告
+    let mut warned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for day in week_plan.data.days.iter() {
+        if !regen_dates.contains(&day.date) {
+            continue;
+        }
+        let orig_day = original_before
+            .data
+            .days
+            .iter()
+            .find(|d| d.date == day.date);
+        for alloc in &day.subject_allocations {
+            let key = planner_subject_key_str(&alloc.subject);
+            if !declared_subjects.contains(key) || warned.contains(key) {
+                continue;
+            }
+            let unchanged = match orig_day.and_then(|od| {
+                od.subject_allocations
+                    .iter()
+                    .find(|a| a.subject == alloc.subject)
+            }) {
+                // 仅当原日确有该科分配时才比对；否则视为「未改动的新分配」不报警
+                Some(oa) => serde_json::to_value(oa).ok() == serde_json::to_value(alloc).ok(),
+                None => false,
+            };
+            if unchanged {
+                warnings.push(format!(
+                    "{} 的计划外进度（当前重点）未反映到后续计划：重排后该科目剩余安排与重排前一致，请到周计划中手动调整。",
+                    planner_subject_cn(&alloc.subject)
+                ));
+                warned.insert(key.to_string());
+            }
+        }
+    }
+
+    warnings
+}
+
 /// 更新周计划中剩余天数的 subject_allocations
 ///
 /// 用 AI 返回的新安排覆盖对应日期的 subject_allocations。
@@ -3249,5 +3450,102 @@ mod tests {
     #[test]
     fn test_today_intensity_label_empty_when_no_reviews() {
         assert!(today_intensity_label(&[]).is_empty());
+    }
+
+    /// 构造一个仅含 2026-08-21 数学分配（2 条任务）的简化周计划
+    fn week_plan_with_math_day() -> crate::data::plan::WeekPlanFile {
+        crate::data::plan::WeekPlanFile {
+            version: "1.0.0".to_string(),
+            meta: crate::data::plan::WeekPlanMeta {
+                week_start: "2026-08-17".to_string(),
+                week_end: "2026-08-23".to_string(),
+                week_number: 34,
+                generated_at: "x".to_string(),
+                based_on: Default::default(),
+            },
+            data: crate::data::plan::WeekPlanData {
+                days: vec![crate::data::plan::WeekDayPlan {
+                    date: "2026-08-21".to_string(),
+                    weekday: "周五".to_string(),
+                    is_rest_day: false,
+                    subject_allocations: vec![crate::data::plan::DaySubjectAllocation {
+                        subject: SubjectKey::Math,
+                        hours: 4.0,
+                        focus: "线性方程组".to_string(),
+                        task_templates: vec![
+                            crate::data::plan::TaskTemplate {
+                                title: "线性方程组解的存在性判定（数二）".to_string(),
+                                estimated_hours: 2.0,
+                                ..Default::default()
+                            },
+                            crate::data::plan::TaskTemplate {
+                                title: "向量组的线性相关与线性无关（数二）".to_string(),
+                                estimated_hours: 1.0,
+                                ..Default::default()
+                            },
+                        ],
+                    }],
+                }],
+                ..Default::default()
+            },
+            view: None,
+        }
+    }
+
+    #[test]
+    fn test_consistency_dedup_removes_completed_tasks() {
+        let mut state = StudyState::default();
+        state.subjects.math.completed = vec!["向量组的线性相关与线性无关".to_string()];
+
+        let mut after = week_plan_with_math_day();
+        let before = after.clone();
+        let regen_dates = vec!["2026-08-21".to_string()];
+        let empty = std::collections::HashSet::new();
+        let warnings =
+            consistency_check_and_correct(&mut after, &state, &regen_dates, &before, &empty);
+        assert!(warnings.is_empty(), "无超量进度声明不应产生告警");
+
+        let day = after.data.days.iter().find(|d| d.date == "2026-08-21").unwrap();
+        let math = day
+            .subject_allocations
+            .iter()
+            .find(|a| a.subject == SubjectKey::Math)
+            .unwrap();
+        assert_eq!(math.task_templates.len(), 1, "重复已学的向量组任务应被剔除");
+        assert_eq!(math.task_templates[0].title, "线性方程组解的存在性判定（数二）");
+        assert!((math.hours - 2.0).abs() < 1e-9, "hours 应修正为剩余模板预估和");
+    }
+
+    #[test]
+    fn test_consistency_warns_when_overcompletion_not_applied() {
+        let mut state = StudyState::default();
+        // 已完成里不含「线性方程组」，故去重不会误删；重排前后完全一致 → 应告警
+        state.subjects.math.completed = vec!["向量组的线性相关与线性无关".to_string()];
+
+        let mut after = week_plan_with_math_day();
+        // 仅保留「线性方程组」（未命中已完成，去重不会改动它），模拟重排前后一致
+        let tv = after.data.days[0].subject_allocations[0].task_templates.remove(0);
+        after.data.days[0].subject_allocations[0].task_templates = vec![tv];
+        after.data.days[0].subject_allocations[0].hours = 2.0;
+        let before = after.clone(); // 模拟 AI 重排后该科目剩余安排完全未变
+        let regen_dates = vec!["2026-08-21".to_string()];
+        let mut declared = std::collections::HashSet::new();
+        declared.insert("math".to_string()); // 复盘中声明了数学的超量进度
+        let warnings =
+            consistency_check_and_correct(&mut after, &state, &regen_dates, &before, &declared);
+
+        assert!(
+            warnings.iter().any(|w| w.contains("数学")),
+            "应产生「数学计划外进度未生效」告警, 实际: {:?}",
+            warnings
+        );
+        // 去重不应误删未完成的线性方程组
+        let day = after.data.days.iter().find(|d| d.date == "2026-08-21").unwrap();
+        let math = day
+            .subject_allocations
+            .iter()
+            .find(|a| a.subject == SubjectKey::Math)
+            .unwrap();
+        assert_eq!(math.task_templates.len(), 1);
     }
 }

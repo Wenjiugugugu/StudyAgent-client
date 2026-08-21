@@ -514,6 +514,11 @@ async function executeRegeneration() {
     } else {
       regenMessage.value = "本次复盘无需调整后续计划。";
     }
+    // 一致性校验：声明了超量进度的科目未在计划中生效时，追加警告提示
+    if (regenResult.consistency_warnings?.length) {
+      regenMessage.value += `\n${regenResult.consistency_warnings.join("\n")}`;
+      regenFailed.value = true;
+    }
   } catch (e) {
     console.error("调整后续计划失败:", e);
     const detail = e instanceof Error ? e.message : String(e);

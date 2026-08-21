@@ -21,7 +21,10 @@ pub struct AiService {
     ///
     /// 前端通过 `cancel_ai_request` 命令触发取消，`chat`/`chat_stream`
     /// 用 `tokio::select!` 监听取消信号并提前返回，避免用户等待到超时。
-    cancellations: Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>,
+    /// 值改为 Vec（C2）：同一 agent 可能并发发起多个请求，各自 push 自己的
+    /// sender；结束按指针移除自项。key 保持为 agent 键，前端契约不变，取消时
+    /// 对同 agent 的所有并发请求发信号（语义：取消该 agent 的进行中请求）。
+    cancellations: Mutex<HashMap<String, Vec<Arc<tokio::sync::watch::Sender<bool>>>>>,
 }
 
 impl AiService {
@@ -168,9 +171,12 @@ impl AiService {
     pub fn cancel_request(&self, key: &str) -> bool {
         let cancellations = self.cancellations.lock();
         match cancellations.get(key) {
-            Some(tx) => {
-                let _ = tx.send(true);
-                log::info!("已请求取消 AI 请求（agent={}）", key);
+            Some(senders) => {
+                // C2：对同 agent 的所有并发请求发取消信号
+                for tx in senders {
+                    let _ = tx.send(true);
+                }
+                log::info!("已请求取消 AI 请求（agent={}，共 {} 个并发请求）", key, senders.len());
                 true
             }
             None => false,
@@ -183,6 +189,35 @@ impl AiService {
             .as_ref()
             .map(|a| format!("{:?}", a).to_lowercase())
             .unwrap_or_else(|| "assistant".to_string())
+    }
+
+    /// 注册一个取消令牌（C2）：按 agent 键 push 到 Vec，支持同 agent 并发多个请求
+    fn register_cancellation(
+        &self,
+        key: &str,
+        sender: Arc<tokio::sync::watch::Sender<bool>>,
+    ) {
+        self.cancellations
+            .lock()
+            .entry(key.to_string())
+            .or_default()
+            .push(sender);
+    }
+
+    /// 注销一个取消令牌（C2）：按 Arc 指针移除自项，Vec 空则删除 key。
+    /// 避免前一请求结束时把同 agent 后发请求的取消入口一并删除。
+    fn unregister_cancellation(
+        &self,
+        key: &str,
+        sender: &Arc<tokio::sync::watch::Sender<bool>>,
+    ) {
+        let mut cancellations = self.cancellations.lock();
+        if let Some(senders) = cancellations.get_mut(key) {
+            senders.retain(|s| !Arc::ptr_eq(s, sender));
+            if senders.is_empty() {
+                cancellations.remove(key);
+            }
+        }
     }
 
     /// 聊天（非流式）
@@ -205,9 +240,9 @@ impl AiService {
         // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发
         let cancel_key = Self::cancel_key(&req);
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-        self.cancellations
-            .lock()
-            .insert(cancel_key.clone(), cancel_tx);
+        // C2：sender 包成 Arc 存入 Vec，支持同 agent 并发多个请求
+        let cancel_tx = Arc::new(cancel_tx);
+        self.register_cancellation(&cancel_key, Arc::clone(&cancel_tx));
 
         let default_provider = self.get_default_provider()?;
         let req_model = req
@@ -225,7 +260,7 @@ impl AiService {
             }
         };
 
-        self.cancellations.lock().remove(&cancel_key);
+        self.unregister_cancellation(&cancel_key, &cancel_tx);
 
         let result = match result {
             Ok(resp) => Ok(resp),
@@ -282,9 +317,9 @@ impl AiService {
         // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发
         let cancel_key = Self::cancel_key(&req);
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
-        self.cancellations
-            .lock()
-            .insert(cancel_key.clone(), cancel_tx);
+        // C2：sender 包成 Arc 存入 Vec，支持同 agent 并发多个请求
+        let cancel_tx = Arc::new(cancel_tx);
+        self.register_cancellation(&cancel_key, Arc::clone(&cancel_tx));
 
         let on_chunk_ref: &(dyn Fn(ChatStreamChunk) + Send + Sync) = &on_chunk;
         let started = std::time::Instant::now();
@@ -338,7 +373,7 @@ impl AiService {
             }
         };
 
-        self.cancellations.lock().remove(&cancel_key);
+        self.unregister_cancellation(&cancel_key, &cancel_tx);
 
         let duration_ms = started.elapsed().as_millis() as u64;
         log_usage(&agent_tag, &result, duration_ms, &req_model);

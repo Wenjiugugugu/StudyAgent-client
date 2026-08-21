@@ -362,6 +362,9 @@ async function handleImportBackup() {
 // ── Provider 表单状态 ──
 const showProviderForm = ref(false);
 const editingProviderId = ref<string | null>(null);
+// C5：编辑已存在 Provider 时，在内存保留原 api_key（不回显到输入框/表单）。
+// 用户未重新输入 key 时，保存/测试沿用该原 key。
+const editingOriginalKey = ref("");
 const showApiKey = ref(false);
 const testing = ref(false);
 const testResult = ref<string | null>(null);
@@ -420,9 +423,14 @@ function formatContextLength(n: number | null): string {
   return String(n);
 }
 
+/** 当前表单的有效 API Key：优先用户新输入，否则沿用编辑时保留的原 key（C5） */
+function effectiveApiKey(): string {
+  return providerForm.value.api_key || editingOriginalKey.value;
+}
+
 /** 加载模型列表（使用当前表单中的 base_url + api_key） */
 async function loadModelList() {
-  const cfg = providerForm.value;
+  const cfg = { ...providerForm.value, api_key: effectiveApiKey() };
   if (!cfg.base_url.trim()) {
     modelListError.value = "请先填写 Base URL";
     return;
@@ -468,6 +476,7 @@ const providerTypeOptions: { value: ProviderType; label: string }[] = [
 
 function startAddProvider() {
   editingProviderId.value = null;
+  editingOriginalKey.value = "";
   providerForm.value = emptyProvider();
   testResult.value = null;
   modelList.value = [];
@@ -479,7 +488,9 @@ function startAddProvider() {
 
 function editProvider(p: AIProviderConfig) {
   editingProviderId.value = p.id;
-  providerForm.value = { ...p };
+  // C5：不回显原 api_key 到表单；仅在内存保留，供未重输时测试/保存沿用。
+  editingOriginalKey.value = p.api_key || "";
+  providerForm.value = { ...p, api_key: "" };
   testResult.value = null;
   modelList.value = [];
   modelListError.value = null;
@@ -491,6 +502,7 @@ function editProvider(p: AIProviderConfig) {
 function cancelProviderForm() {
   showProviderForm.value = false;
   editingProviderId.value = null;
+  editingOriginalKey.value = "";
   testResult.value = null;
 }
 
@@ -500,7 +512,7 @@ async function saveProvider() {
   testing.value = true;
   testResult.value = null;
   try {
-    const result = await api.testAIProvider(providerForm.value);
+    const result = await api.testAIProvider({ ...providerForm.value, api_key: effectiveApiKey() });
     // aiInvoke 已把 success:false 转为抛错；能走到这说明连接成功
     if (!result.success) {
       testResult.value = `测试失败：${result.message}`;
@@ -516,8 +528,12 @@ async function saveProvider() {
     testing.value = false;
   }
 
+  // C5：保存时若用户未重新输入 key，则沿用原 key（表单留空 → 保留，而非清空）
+  const keyToSave = providerForm.value.api_key || editingOriginalKey.value;
+  const payload = { ...providerForm.value, api_key: keyToSave };
+
   if (editingProviderId.value) {
-    settingsStore.updateProvider(editingProviderId.value, { ...providerForm.value });
+    settingsStore.updateProvider(editingProviderId.value, payload);
   } else {
     // 第一个 provider 自动设为默认，避免 default_provider_id 为空导致其他页面显示「未配置」
     const isFirst = (settingsStore.settings?.ai_providers.length ?? 0) === 0;
@@ -554,7 +570,7 @@ async function handleTestProvider() {
   testing.value = true;
   testResult.value = null;
   try {
-    const result = await api.testAIProvider(providerForm.value);
+    const result = await api.testAIProvider({ ...providerForm.value, api_key: effectiveApiKey() });
     testResult.value = result.success ? (result.message || "连接成功") : `测试失败：${result.message}`;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1760,7 +1776,7 @@ onBeforeUnmount(() => {
                   v-model="providerForm.api_key"
                   :type="showApiKey ? 'text' : 'password'"
                   class="form-input"
-                  placeholder="sk-..."
+                  :placeholder="editingOriginalKey ? '已配置（留空保持不变）' : 'sk-...'"
                 />
                 <button class="input-suffix-btn" type="button" @click="showApiKey = !showApiKey">
                   <component :is="showApiKey ? EyeOff : Eye" :size="15" />

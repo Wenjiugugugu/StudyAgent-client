@@ -264,14 +264,13 @@ impl GeminiProvider {
 #[async_trait::async_trait]
 impl AiProvider for GeminiProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, String> {
-        let mut req = req.clone();
-        req.stream = false;
-
-        let model = self.model(&req);
+        // C4：不再全量 clone req（会深拷贝整份 messages）。stream 由 generate_url 显式指定，
+        // model/build_body 均不读取 req.stream，直接复用传入引用即可。
+        let model = self.model(req);
         let url = self.generate_url(&model, false);
         log::info!("Gemini 请求 URL: {}", url);
 
-        let body = self.build_body(&req);
+        let body = self.build_body(req);
         let headers = self.build_headers();
 
         log::info!(
@@ -332,14 +331,13 @@ impl AiProvider for GeminiProvider {
         req: &ChatRequest,
         on_chunk: &(dyn Fn(ChatStreamChunk) + Send + Sync),
     ) -> Result<ChatResponse, String> {
-        let mut req = req.clone();
-        req.stream = true;
-
-        let model = self.model(&req);
+        // C4：不再全量 clone req。stream 由 generate_url 显式指定，
+        // model/build_body 不读取 req.stream，直接复用传入引用即可。
+        let model = self.model(req);
         let url = self.generate_url(&model, true);
         log::info!("Gemini 流式请求 URL: {}", url);
 
-        let body = self.build_body(&req);
+        let body = self.build_body(req);
         let headers = self.build_headers();
 
         let response = super::provider::send_with_retry(

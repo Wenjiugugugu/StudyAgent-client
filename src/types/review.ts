@@ -166,4 +166,6 @@ export interface RegenerateResult {
   affected_dates: string[];
   /** AI 调用失败时是否启用了确定性兜底安排（用于前端提示用户） */
   used_fallback?: boolean;
+  /** 一致性校验警告：声明了超量进度的科目重排后未生效时给出提示 */
+  consistency_warnings?: string[];
 }

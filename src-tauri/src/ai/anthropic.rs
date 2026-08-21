@@ -93,7 +93,7 @@ impl AnthropicProvider {
     /// - 带 `tool_call_id` 的 user 消息 → `tool_result` content block
     /// - 带 `tool_calls` 的 assistant 消息 → `text` + `tool_use` content blocks
     /// - 其余 user/assistant 消息直接映射 role + 字符串 content
-    fn build_body(&self, req: &ChatRequest) -> Value {
+    fn build_body(&self, req: &ChatRequest, stream: bool) -> Value {
         let model = req
             .model
             .clone()
@@ -172,7 +172,7 @@ impl AnthropicProvider {
             "model": model,
             "max_tokens": max_tokens,
             "messages": messages,
-            "stream": req.stream,
+            "stream": stream,
             "temperature": temperature,
         });
 
@@ -264,7 +264,6 @@ impl AnthropicProvider {
     fn parse_stream_line(
         &self,
         line: &str,
-        current_event: &mut Option<String>,
         full_content: &mut String,
         tool_calls: &mut Vec<ToolCall>,
         blocks: &mut Vec<StreamBlock>,
@@ -276,8 +275,8 @@ impl AnthropicProvider {
     ) -> Result<bool, String> {
         let line = line.trim();
 
-        if let Some(ev) = line.strip_prefix("event: ") {
-            *current_event = Some(ev.trim().to_string());
+        // event: 行仅作控制流标记，实际事件类型已由 data 行内嵌的 type 字段承载
+        if line.starts_with("event: ") {
             return Ok(false);
         }
 
@@ -402,9 +401,8 @@ struct StreamBlock {
 #[async_trait::async_trait]
 impl AiProvider for AnthropicProvider {
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, String> {
-        let mut req = req.clone();
-        req.stream = false;
-
+        // C4：不再全量 clone req（会深拷贝整份 messages）。stream 通过
+        // build_body 显式参数传入，model 从引用直接 clone 取值。
         let url = self.messages_url();
         log::info!("Anthropic 请求 URL: {}", url);
         log::info!(
@@ -412,7 +410,7 @@ impl AiProvider for AnthropicProvider {
             req.model.clone().unwrap_or_else(|| self.config.model.clone())
         );
 
-        let body = self.build_body(&req);
+        let body = self.build_body(req, false);
         let headers = self.build_headers();
 
         log::info!(
@@ -457,7 +455,10 @@ impl AiProvider for AnthropicProvider {
             raw_text.chars().take(500).collect::<String>()
         );
 
-        let model = req.model.unwrap_or_else(|| self.config.model.clone());
+        let model = req
+            .model
+            .clone()
+            .unwrap_or_else(|| self.config.model.clone());
         let api_resp: AnthropicApiResponse = serde_json::from_str(&raw_text).map_err(|e| {
             format!(
                 "解析 Anthropic 响应失败: {} | 原文(前200字符): {}",
@@ -474,13 +475,11 @@ impl AiProvider for AnthropicProvider {
         req: &ChatRequest,
         on_chunk: &(dyn Fn(ChatStreamChunk) + Send + Sync),
     ) -> Result<ChatResponse, String> {
-        let mut req = req.clone();
-        req.stream = true;
-
+        // C4：不再全量 clone req。stream 通过 build_body 显式参数传入。
         let url = self.messages_url();
         log::info!("Anthropic 流式请求 URL: {}", url);
 
-        let body = self.build_body(&req);
+        let body = self.build_body(req, true);
         let headers = self.build_headers();
 
         let response = super::provider::send_with_retry(
@@ -508,7 +507,6 @@ impl AiProvider for AnthropicProvider {
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
-        let mut current_event: Option<String> = None;
 
         let mut full_content = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -529,7 +527,6 @@ impl AiProvider for AnthropicProvider {
                 let line: String = buffer.drain(..=newline_pos).collect();
                 let done = self.parse_stream_line(
                     &line,
-                    &mut current_event,
                     &mut full_content,
                     &mut tool_calls,
                     &mut blocks,
@@ -786,7 +783,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let body = p.build_body(&req);
+        let body = p.build_body(&req, false);
         assert_eq!(body["system"], "你是学习助手");
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"], "你好");
@@ -805,7 +802,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let body = p.build_body(&req);
+        let body = p.build_body(&req, false);
         let content = &body["messages"][0]["content"][0];
         assert_eq!(content["type"], "tool_result");
         assert_eq!(content["tool_use_id"], "toolu_1");
@@ -832,7 +829,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let body = p.build_body(&req);
+        let body = p.build_body(&req, false);
         let content = &body["messages"][0]["content"];
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "tool_use");

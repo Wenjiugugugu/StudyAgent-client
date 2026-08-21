@@ -844,6 +844,8 @@ pub async fn add_excluded_day_and_regenerate(
         regenerated,
         affected_dates,
         used_fallback,
+        // 排除日重排不涉及超量进度，一致性警告为空
+        consistency_warnings: Vec::new(),
     })
 }
 
@@ -1240,7 +1242,7 @@ pub async fn regenerate_remaining_days(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates, used_fallback) = planner
+    let (regenerated, affected_dates, used_fallback, consistency_warnings) = planner
         .regenerate_remaining_days_after_review(&data_dir, &review_date)
         .await?;
 
@@ -1248,6 +1250,7 @@ pub async fn regenerate_remaining_days(
         regenerated,
         affected_dates,
         used_fallback,
+        consistency_warnings,
     })
 }
 
@@ -1261,6 +1264,9 @@ pub struct RegenerateResult {
     /// AI 调用失败时是否启用了确定性兜底安排（供前端提示用户）
     #[serde(default)]
     pub used_fallback: bool,
+    /// 一致性校验警告：声明了超量进度的科目重排后未生效时给出提示
+    #[serde(default)]
+    pub consistency_warnings: Vec<String>,
 }
 
 // ============================================================================

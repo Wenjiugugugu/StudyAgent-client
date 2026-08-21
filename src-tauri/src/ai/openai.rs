@@ -262,7 +262,18 @@ impl OpenAIProvider {
     /// 解析 SSE 流中的单个 data 行
     ///
     /// H7：反序列化失败时记录日志并检测 error 字段，不再静默丢弃
-    fn parse_sse_line(&self, line: &str) -> Option<ChatStreamChunk> {
+    /// 解析单条 SSE 行，并回填流式元数据（model / id / finish_reason）
+    ///
+    /// B2：OpenAI 协议在每个 chunk 的最外层携带 `model` 与 `id`（值恒定），
+    /// 并在最后一个 chunk 的 choice.finish_reason 携带真实结束原因（stop/length/content_filter…）。
+    /// 通过可变引用回填，避免对外部变量初始化值不变。
+    fn parse_sse_line(
+        &self,
+        line: &str,
+        finish_reason: &mut String,
+        model_name: &mut String,
+        response_id: &mut String,
+    ) -> Option<ChatStreamChunk> {
         let line = line.trim();
 
         if line.is_empty() || line.starts_with(':') {
@@ -296,6 +307,14 @@ impl OpenAIProvider {
             // 解析 JSON
             match serde_json::from_str::<OpenAIStreamChunk>(data) {
                 Ok(chunk) => {
+                    // B2：回填流式元数据——chunk 最外层携带的 model/id（值恒定，任取一次即可）
+                    if !chunk.model.is_empty() {
+                        *model_name = chunk.model.clone();
+                    }
+                    if !chunk.id.is_empty() {
+                        *response_id = chunk.id.clone();
+                    }
+
                     // M17：提取流式 usage（OpenAI 协议在最后一个 chunk 返回）
                     let usage = chunk.usage.map(|u| TokenUsage {
                         prompt_tokens: u.prompt_tokens,
@@ -306,6 +325,10 @@ impl OpenAIProvider {
                     let delta = chunk.choices.first();
 
                     if let Some(choice) = delta {
+                        // B2：回填真实结束原因（仅最后一个 chunk 携带，其余为 None 不覆盖）
+                        if let Some(fr) = &choice.finish_reason {
+                            *finish_reason = fr.clone();
+                        }
                         let mut content = choice.delta.content.clone().unwrap_or_default();
                         if content.is_empty() {
                             content = choice.delta.reasoning_content.clone().unwrap_or_default();
@@ -553,7 +576,7 @@ impl AiProvider for OpenAIProvider {
                     log::debug!("[AI-DEBUG] SSE 非 data 行: {}", line);
                 }
 
-                if let Some(stream_chunk) = self.parse_sse_line(line) {
+                if let Some(stream_chunk) = self.parse_sse_line(line, &mut finish_reason, &mut model_name, &mut response_id) {
                     if !stream_chunk.content.is_empty() {
                         full_content.push_str(&stream_chunk.content);
                     }
@@ -605,7 +628,7 @@ impl AiProvider for OpenAIProvider {
         if !buffer.is_empty() {
             let line = buffer.trim();
             if !line.is_empty() {
-                if let Some(stream_chunk) = self.parse_sse_line(line) {
+                if let Some(stream_chunk) = self.parse_sse_line(line, &mut finish_reason, &mut model_name, &mut response_id) {
                     if !stream_chunk.content.is_empty() {
                         full_content.push_str(&stream_chunk.content);
                     }

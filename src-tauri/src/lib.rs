@@ -562,14 +562,29 @@ pub async fn reinitialize_services(
         let s = state.lock().map_err(|e| e.to_string())?;
         s.data_dir.clone()
     };
-    save_settings_file(&data_dir, &settings)?;
+    // C5：合并已存在的 Provider API Key——前端为避免回显明文，编辑时可能传空 api_key。
+    // 读取旧 settings，把传入为空、但旧配置存在非空 key 的 provider 补回原 key，避免误清空。
+    let existing = load_settings(&data_dir);
+    let mut merged = settings;
+    for p in merged.ai_providers.iter_mut() {
+        if p.api_key.is_empty() {
+            if let Some(old) = existing
+                .ai_providers
+                .iter()
+                .find(|o| o.id == p.id && !o.api_key.is_empty())
+            {
+                p.api_key = old.api_key.clone();
+            }
+        }
+    }
+    save_settings_file(&data_dir, &merged)?;
 
     // 创建新的 AI Service
-    let new_ai_service = Arc::new(AiService::from_configs(settings.ai_providers.clone()));
+    let new_ai_service = Arc::new(AiService::from_configs(merged.ai_providers.clone()));
 
     // 创建新的 Tool Dispatcher
     let new_tool_dispatcher = Arc::new(
-        ToolDispatcher::from_configs(settings.mcp_servers.clone()).await,
+        ToolDispatcher::from_configs(merged.mcp_servers.clone()).await,
     );
 
     // 替换 state 中的服务实例
