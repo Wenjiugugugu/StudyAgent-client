@@ -149,7 +149,7 @@ function triggerBriefingHint() {
   // 全屏遮罩：背景变暗 + 文字闪烁
   showBriefingOverlay.value = true;
   overlayLeaving.value = false;
-  // 文字闪烁三次（1 秒）后，遮罩淡出恢复背景
+  // 快速闪烁三次（约 0.75 秒）后停留 1 秒，再淡出恢复背景
   hintTimer = window.setTimeout(() => {
     overlayLeaving.value = true;
     overlayFadeTimer = window.setTimeout(() => {
@@ -157,7 +157,7 @@ function triggerBriefingHint() {
       showBriefingOverlay.value = false;
       overlayLeaving.value = false;
     }, 350);
-  }, 1000);
+  }, 1750);
 }
 
 function playEntranceAnimation() {
@@ -976,9 +976,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   transition: opacity 0.35s ease;
 }
 
@@ -999,8 +999,8 @@ onBeforeUnmount(() => {
   color: var(--accent);
   font-weight: var(--font-semibold);
   box-shadow: var(--shadow-lg);
-  /* 快速闪烁三次（1 秒内） */
-  animation: hint-flash-3x 1s steps(6, end) 3;
+  /* 快速闪烁三次（约 0.75 秒内完成），随后保持显示 */
+  animation: hint-flash-3x 0.25s ease-in-out 3;
 }
 
 @keyframes hint-flash-3x {
