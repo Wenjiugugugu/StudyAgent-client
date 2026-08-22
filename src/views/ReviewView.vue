@@ -312,7 +312,7 @@ function findTaskSubject(taskId: string, tr?: TaskReviewEntry): string {
   return allTasks.value.find(t => t.id === taskId)?.subject ?? "";
 }
 
-// 超量完成：可选科目（基于今日计划中出现的科目）
+// 计划外学习：可选科目（基于今日计划中出现的科目）
 const overcompletionSubjectOptions = computed(() => {
   const subjects = new Set<string>();
   for (const t of allTasks.value) subjects.add(t.subject);
@@ -394,7 +394,7 @@ function initFromReview(review: ReviewRecord) {
     overallFeeling.value = review.daily_review.overall_feeling || "normal";
     mainDifficulty.value = review.daily_review.main_difficulty || "";
   }
-  // 超量完成记录（仅用于只读展示）
+  // 计划外学习记录（仅用于只读展示）
   if (review.overcompletion?.length) {
     hasOvercompletion.value = true;
     overcompletions.value = review.overcompletion.map(oc => ({ ...oc }));
@@ -449,7 +449,7 @@ async function doSubmit() {
       main_difficulty: mainDifficulty.value,
     };
 
-    // 仅在用户勾选超量完成且填写了有效章节时提交
+    // 仅在用户开启计划外学习且填写了有效章节时提交
     const validOvercompletions = hasOvercompletion.value
       ? overcompletions.value.filter(oc => oc.subject && oc.chapter_reached.trim())
       : [];
@@ -514,7 +514,7 @@ async function executeRegeneration() {
     } else {
       regenMessage.value = "本次复盘无需调整后续计划。";
     }
-    // 一致性校验：声明了超量进度的科目未在计划中生效时，追加警告提示
+    // 一致性校验：声明了计划外进度的科目未在计划中生效时，追加警告提示
     if (regenResult.consistency_warnings?.length) {
       regenMessage.value += `\n${regenResult.consistency_warnings.join("\n")}`;
       regenFailed.value = true;
@@ -647,6 +647,10 @@ function initDateFromQuery() {
   const q = route.query.date;
   if (typeof q === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q)) {
     selectedDate.value = q;
+  } else if (beforeStartTimeToday.value) {
+    // 次日凌晨（今天学习开始前）打开复盘：默认进入前一天日期进行复盘。
+    // 复盘对象是「刚结束的那一天」，此时今天的学习尚未开始，不应默认到第二天。
+    selectedDate.value = yesterdayDate.value;
   }
 }
 
@@ -935,7 +939,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
           <!-- Overcompletion records -->
           <div v-if="existingReview.overcompletion?.length" class="task-reviews-list">
-            <div class="task-reviews-title">超量完成记录</div>
+            <div class="task-reviews-title">计划外学习内容</div>
             <div
               v-for="(oc, idx) in existingReview.overcompletion"
               :key="idx"

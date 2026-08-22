@@ -294,6 +294,9 @@ pub struct ChatResponse {
     /// "stop" | "length" | "tool_calls"
     #[serde(default = "default_finish_reason")]
     pub finish_reason: String,
+    /// 推理模型的思考过程（DeepSeek-R1/V4 等的 reasoning_content），供调试记录展示；非推理模型为空
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 fn default_finish_reason() -> String {

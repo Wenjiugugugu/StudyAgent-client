@@ -354,11 +354,19 @@ fn build_learning_trend(
         let planned_tasks = plan.as_ref().map(|p| p.data.total_tasks).unwrap_or(0);
         let planned_hours = plan.as_ref().map(|p| p.data.total_hours).unwrap_or(0.0);
         // 实际学习时长：优先复盘记录；当天未复盘时，读取任务实际计时（含未完成任务）
+        // 与未关联任务的番茄钟专注分钟，保证无论是否关联任务，专注时间都被计入。
         let actual_hours = match review {
             Some(r) => crate::data::records::review_actual_hours(r),
             None => crate::data::state::read_state(data_dir)
-                .map(|state| crate::data::state::day_actual_minutes(&state, &current) as f64 / 60.0)
-                .unwrap_or(0.0),
+                .map(|state| {
+                    (crate::data::state::day_actual_minutes(&state, &current)
+                        + crate::data::focus::day_unlinked_focus_minutes(data_dir, &current))
+                        as f64
+                        / 60.0
+                })
+                .unwrap_or_else(|_| {
+                    crate::data::focus::day_unlinked_focus_minutes(data_dir, &current) as f64 / 60.0
+                }),
         };
 
         // 完成率：优先从 task_reviews 计算

@@ -205,6 +205,60 @@ pub fn focus_today_stats(data_dir: &Path) -> DataResult<FocusDayStats> {
     focus_day_stats(data_dir, &today_string())
 }
 
+/// 为某条专注会话手动绑定任务（在专注记录里把未关联的记录补充归属）
+///
+/// 成功后把该会话的 `task_id` 写入关联任务，并返回该会话的专注分钟数，
+/// 供调用方累加到对应任务的 `accumulated_minutes`。
+/// 仅允许关联学习番茄（focus）与正计时（stopwatch）会话；休息会话不可关联。
+pub fn link_focus_session(
+    data_dir: &Path,
+    date: &str,
+    session_id: &str,
+    task_id: &str,
+) -> DataResult<i64> {
+    let mut day = read_focus_day(data_dir, date)?;
+    let session = day
+        .sessions
+        .iter_mut()
+        .find(|s| s.id == session_id)
+        .ok_or_else(|| format!("未找到专注会话: {}", session_id))?;
+    if !matches!(
+        session.r#type,
+        FocusSessionType::Focus | FocusSessionType::Stopwatch
+    ) {
+        return Err("仅学习 / 正计时会话可关联任务，休息会话不可关联".to_string());
+    }
+    session.task_id = Some(task_id.to_string());
+    let minutes = session.duration_minutes.max(0);
+    drop(session);
+    let path = focus_day_path(data_dir, date);
+    let json = serde_json::to_string_pretty(&day)
+        .map_err(|e| format!("序列化专注记录失败: {}", e))?;
+    atomic_write(&path, &json)?;
+    Ok(minutes)
+}
+
+/// 某日「未关联任务」的专注分钟（学习番茄 + 正计时，仅已完成）
+///
+/// 番茄钟关联任务时，其分钟已累加到任务计时 `accumulated_minutes`，由任务侧统计覆盖；
+/// 未关联任务的专注时间只存在于会话文件，需单独统计，供首页/分析页计入当日实际学习时长，
+/// 且不与已关联任务的专注重复计算。
+pub fn day_unlinked_focus_minutes(data_dir: &Path, date: &str) -> i64 {
+    let sessions = match list_focus_sessions(data_dir, date) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    sessions
+        .iter()
+        .filter(|s| s.status == FocusSessionStatus::Completed)
+        .filter(|s| s.task_id.is_none())
+        .filter(|s| {
+            matches!(s.r#type, FocusSessionType::Focus | FocusSessionType::Stopwatch)
+        })
+        .map(|s| s.duration_minutes.max(0))
+        .sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +353,119 @@ mod tests {
         let mut s = sample_session("f1", "2026-08-19T01:25:00Z");
         s.ended_at = "bad".to_string();
         assert!(append_focus_session(&dir, s).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_link_focus_session() {
+        let dir = tmp_dir("link");
+        // 一条未关联的已完成学习番茄
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "f1".to_string(),
+                r#type: FocusSessionType::Focus,
+                started_at: "2026-08-19T01:00:00Z".to_string(),
+                ended_at: "2026-08-19T01:25:00Z".to_string(),
+                duration_minutes: 25,
+                task_id: None,
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+        // 一条休息会话（不可关联）
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "b1".to_string(),
+                r#type: FocusSessionType::ShortBreak,
+                started_at: "2026-08-19T01:25:00Z".to_string(),
+                ended_at: "2026-08-19T01:30:00Z".to_string(),
+                duration_minutes: 5,
+                task_id: None,
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+
+        // 关联学习番茄：返回分钟数，会话写入 task_id
+        let min = link_focus_session(&dir, "2026-08-19", "f1", "task-9").unwrap();
+        assert_eq!(min, 25);
+        let day = read_focus_day(&dir, "2026-08-19").unwrap();
+        assert_eq!(day.sessions[0].task_id.as_deref(), Some("task-9"));
+
+        // 休息会话不可关联
+        assert!(link_focus_session(&dir, "2026-08-19", "b1", "task-9").is_err());
+
+        // 现在只剩正计时/学习的未关联会话为 0（f1 已关联）
+        assert_eq!(day_unlinked_focus_minutes(&dir, "2026-08-19"), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_day_unlinked_focus_minutes() {
+        let dir = tmp_dir("unlinked");
+        // 关联任务的学习番茄：不计入未关联统计（其时长走任务计时）
+        append_focus_session(&dir, sample_session("f1", "2026-08-19T01:25:00Z")).unwrap();
+        // 未关联任务的学习番茄：计入
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "f2".to_string(),
+                r#type: FocusSessionType::Focus,
+                started_at: "2026-08-19T02:00:00Z".to_string(),
+                ended_at: "2026-08-19T02:30:00Z".to_string(),
+                duration_minutes: 30,
+                task_id: None,
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+        // 未关联任务的正计时（完成）：计入
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "sw1".to_string(),
+                r#type: FocusSessionType::Stopwatch,
+                started_at: "2026-08-19T03:00:00Z".to_string(),
+                ended_at: "2026-08-19T03:12:00Z".to_string(),
+                duration_minutes: 12,
+                task_id: None,
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+        // 未关联任务但被打断的会话：不计入
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "sw2".to_string(),
+                r#type: FocusSessionType::Stopwatch,
+                started_at: "2026-08-19T04:00:00Z".to_string(),
+                ended_at: "2026-08-19T04:05:00Z".to_string(),
+                duration_minutes: 5,
+                task_id: None,
+                status: FocusSessionStatus::Interrupted,
+            },
+        )
+        .unwrap();
+        // 休息会话：不计入
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "b1".to_string(),
+                r#type: FocusSessionType::ShortBreak,
+                started_at: "2026-08-19T02:30:00Z".to_string(),
+                ended_at: "2026-08-19T02:35:00Z".to_string(),
+                duration_minutes: 5,
+                task_id: None,
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+
+        // 30（未关联番茄）+ 12（未关联正计时）
+        assert_eq!(day_unlinked_focus_minutes(&dir, "2026-08-19"), 42);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

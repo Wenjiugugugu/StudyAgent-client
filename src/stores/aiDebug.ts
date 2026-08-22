@@ -37,6 +37,8 @@ export interface AiCallRecord {
   response: unknown;
   /** 错误信息（仅失败时） */
   error: string | null;
+  /** AI 思考过程（推理模型的 reasoning_content，如 DeepSeek-R1/V4）；非推理模型为 null */
+  reasoning: string | null;
 }
 
 /** 最多保留的记录数 */
@@ -139,8 +141,13 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
   /** 当前进行中的调用数（用于显示加载状态） */
   const pendingCount = computed(() => records.value.filter((r) => r.status === "pending").length);
 
-  /** 结束回调的类型：传入状态、响应数据、错误信息 */
-  type FinishFn = (status: "success" | "error", response: unknown, error: string | null) => void;
+  /** 结束回调的类型：传入状态、响应数据、错误信息、可选思考过程 */
+  type FinishFn = (
+    status: "success" | "error",
+    response: unknown,
+    error: string | null,
+    reasoning?: string | null,
+  ) => void;
 
   /** 开始一次 AI 调用记录，返回用于结束记录的回调 */
   function startCall(command: string, label: string, requestArgs: unknown): FinishFn {
@@ -155,6 +162,7 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
       request: safeClone(requestArgs),
       response: null,
       error: null,
+      reasoning: null,
     };
     records.value.unshift(record);
     if (records.value.length > MAX_RECORDS) {
@@ -164,12 +172,13 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
     console.info(`[AI 调用] 开始 ${command} — ${label}`, requestArgs);
 
     const startedAt = performance.now();
-    return (status: "success" | "error", response: unknown, error: string | null) => {
+    return (status: "success" | "error", response: unknown, error: string | null, reasoning?: string | null) => {
       const duration = Math.round(performance.now() - startedAt);
       record.durationMs = duration;
       record.status = status;
       record.response = status === "success" ? safeClone(response) : null;
       record.error = error;
+      record.reasoning = reasoning ?? null;
       // M34：record 为 store 内 reactive 数组元素，直接修改属性已触发响应式更新，
       // 无需通过整体替换数组强制重渲染（原写法会造成全量重渲染）
       if (status === "success") {

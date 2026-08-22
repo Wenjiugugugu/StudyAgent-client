@@ -263,9 +263,9 @@ impl<'a> BriefingAgent<'a> {
                 ));
             }
 
-            // 超量完成
+            // 计划外进展（用户实际进度声明）
             if !review.overcompletion.is_empty() {
-                prompt.push_str("- 超量完成: ");
+                prompt.push_str("- 计划外进展: ");
                 let oc_summary: Vec<String> = review
                     .overcompletion
                     .iter()

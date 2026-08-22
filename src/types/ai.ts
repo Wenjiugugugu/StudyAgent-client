@@ -107,6 +107,8 @@ export interface ChatResponse {
     total_tokens: number;
   };
   finish_reason: "stop" | "length" | "tool_calls";
+  /** 推理模型的思考过程（DeepSeek-R1/V4 等的 reasoning_content），非推理模型不存在 */
+  reasoning?: string;
 }
 
 /** 流式响应块 */

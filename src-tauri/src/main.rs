@@ -163,6 +163,7 @@ fn main() {
             // Focus（番茄钟）
             focus_add_minutes,
             record_focus_session,
+            link_focus_session,
             get_focus_sessions,
             get_focus_sessions_range,
             get_focus_today_stats,

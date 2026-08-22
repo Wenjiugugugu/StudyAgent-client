@@ -322,6 +322,41 @@ pub async fn record_focus_session(
     Ok(())
 }
 
+/// 番茄钟：为某条专注会话手动绑定任务
+///
+/// 在专注记录里把未关联的学习番茄 / 正计时补充归属到今日任务：
+/// 写入会话的 task_id，并把该段专注分钟累加到对应任务计时。
+/// 前端调用: `invoke('link_focus_session', { sessionId, taskId, date })`
+#[tauri::command]
+pub async fn link_focus_session(
+    session_id: String,
+    task_id: String,
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    crate::data::validate_date(&date)?;
+    let data_dir = get_data_dir(state.inner())?;
+
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let minutes = crate::data::focus::link_focus_session(&data_dir, &date, &session_id, &task_id)?;
+
+    // 绑定后把该段沉浸分钟累加到关联任务，使其计入具体任务的学习时长；
+    // 该会话此后带 task_id，不再被「未关联专注」口径重复统计。
+    let mut study_state = crate::data::state::read_state(&data_dir)?;
+    crate::data::state::add_accumulated_minutes(&mut study_state, &task_id, minutes)?;
+    crate::data::state::save_state(&data_dir, &study_state)?;
+
+    log::info!(
+        "番茄钟：会话 {} 关联任务 {}，累加 {} 分钟",
+        session_id,
+        task_id,
+        minutes
+    );
+    Ok(())
+}
+
 /// 番茄钟：读取某天的专注会话列表
 ///
 /// 前端调用: `invoke('get_focus_sessions', { date })`
@@ -844,7 +879,7 @@ pub async fn add_excluded_day_and_regenerate(
         regenerated,
         affected_dates,
         used_fallback,
-        // 排除日重排不涉及超量进度，一致性警告为空
+        // 排除日重排不涉及计划外进度，一致性警告为空
         consistency_warnings: Vec::new(),
     })
 }
@@ -917,7 +952,7 @@ pub struct SubmitReviewPayload {
     pub date: String,
     pub task_reviews: Vec<crate::data::records::TaskReviewEntry>,
     pub daily_review: crate::data::records::DailyReviewInput,
-    /// 超量完成记录（可选）：用户实际进度领先计划时填写
+    /// 计划外学习记录（可选）：用户实际进度领先计划时填写
     #[serde(default)]
     pub overcompletion: Vec<crate::data::records::OvercompletionEntry>,
 }
@@ -1103,7 +1138,7 @@ pub async fn submit_review(
             }
         }
 
-        // 第三阶段：处理超量完成 —— 用用户实际到达的章节覆盖科目 current_focus，
+        // 第三阶段：处理计划外学习 —— 用用户实际到达的章节覆盖科目 current_focus，
         // 避免下一轮计划生成时进度落后于实际。
         if !payload.overcompletion.is_empty() {
             for oc in &payload.overcompletion {
@@ -1115,7 +1150,7 @@ pub async fn submit_review(
                         }
                         changed = true;
                         log::info!(
-                            "超量完成更新：{} 的 current_focus 更新为 {}",
+                            "计划外进展更新：{} 的 current_focus 更新为 {}",
                             oc.subject,
                             oc.chapter_reached
                         );
@@ -1264,7 +1299,7 @@ pub struct RegenerateResult {
     /// AI 调用失败时是否启用了确定性兜底安排（供前端提示用户）
     #[serde(default)]
     pub used_fallback: bool,
-    /// 一致性校验警告：声明了超量进度的科目重排后未生效时给出提示
+    /// 一致性校验警告：声明了计划外进度的科目重排后未生效时给出提示
     #[serde(default)]
     pub consistency_warnings: Vec<String>,
 }

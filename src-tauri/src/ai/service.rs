@@ -586,6 +586,7 @@ impl AiProvider for MockProvider {
                 total_tokens: 20,
             },
             finish_reason: "stop".to_string(),
+            reasoning: None,
         })
     }
 
@@ -617,6 +618,7 @@ impl AiProvider for MockProvider {
             tool_calls: None,
             usage: TokenUsage::default(),
             finish_reason: "stop".to_string(),
+            reasoning: None,
         })
     }
 

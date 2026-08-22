@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import type { Component } from "vue";
 import * as api from "@/api";
 import { isTauri } from "@/api";
@@ -22,12 +22,14 @@ import {
   FileText,
   ChevronRight,
   ChevronDown,
+  ChevronLeft,
   Trash2,
   Calendar,
   CheckCircle2,
   FileCheck,
   Radio,
   Send,
+  Brain,
   AlertTriangle,
   AlertCircle,
   Coins,
@@ -349,9 +351,30 @@ async function testAllProviders() {
 }
 
 // ── AI 调用记录 ──
+/** 每页记录条数 */
+const RECORDS_PAGE_SIZE = 10;
 const aiDebugStore = useAiDebugStore();
 /** 当前展开查看详情的记录 ID（null 表示全部折叠） */
 const expandedAiCallId = ref<number | null>(null);
+/** AI 调用记录分页：当前页码 */
+const recordsPage = ref(1);
+const recordsPageCount = computed(() =>
+  Math.max(1, Math.ceil(aiDebugStore.records.length / RECORDS_PAGE_SIZE)),
+);
+/** 当前页展示的记录（最新在前） */
+const pagedAICalls = computed(() => {
+  const start = (recordsPage.value - 1) * RECORDS_PAGE_SIZE;
+  return aiDebugStore.records.slice(start, start + RECORDS_PAGE_SIZE);
+});
+// 记录数变化（新增/清空）时把页码收敛到有效范围内
+watch(
+  () => aiDebugStore.records.length,
+  () => {
+    if (recordsPage.value > recordsPageCount.value) {
+      recordsPage.value = recordsPageCount.value;
+    }
+  },
+);
 
 function toggleAiCall(id: number) {
   expandedAiCallId.value = expandedAiCallId.value === id ? null : id;
@@ -413,6 +436,30 @@ const filteredUsageLog = computed<AiUsageEntry[]>(() => {
     })
     .reverse();
 });
+
+/** 用量「调用明细」每页条数 */
+const USAGE_PAGE_SIZE = 10;
+/** 用量「调用明细」分页：当前页码 */
+const usagePage = ref(1);
+const usagePageCount = computed(() =>
+  Math.max(1, Math.ceil(filteredUsageLog.value.length / USAGE_PAGE_SIZE)),
+);
+/** 当前页展示的用量明细（最新在前） */
+const pagedUsageLog = computed(() => {
+  const start = (usagePage.value - 1) * USAGE_PAGE_SIZE;
+  return filteredUsageLog.value.slice(start, start + USAGE_PAGE_SIZE);
+});
+/** 当前页首页在完整明细里的下标（用于展开/收起的定位） */
+const usagePageStart = computed(() => (usagePage.value - 1) * USAGE_PAGE_SIZE);
+// 明细条数变化时把页码收敛到有效范围内
+watch(
+  () => filteredUsageLog.value.length,
+  () => {
+    if (usagePage.value > usagePageCount.value) {
+      usagePage.value = usagePageCount.value;
+    }
+  },
+);
 
 /** 单条记录的费用估算（缓存以避免重复计算） */
 const usageCostMap = computed<Map<string, ReturnType<typeof estimateCost>>>(() => {
@@ -578,6 +625,15 @@ async function loadSettingsView() {
 const appLog = ref("");
 const appLogLoading = ref(false);
 const appLogError = ref<string | null>(null);
+
+/** 日志展示内容：倒序（最新一行在最上面，向下越来越旧） */
+const displayAppLog = computed(() => {
+  if (!appLog.value) return "";
+  return appLog.value
+    .split(/\r?\n/)
+    .reverse()
+    .join("\n");
+});
 
 async function loadAppLog() {
   appLogLoading.value = true;
@@ -1081,7 +1137,7 @@ onUnmounted(() => {
       </div>
 
       <p class="section-desc">
-        实时记录所有 AI 调用：请求参数、响应数据、耗时与错误。最多保留 50 条；
+        实时记录所有 AI 调用：请求参数、响应数据、AI 的思考过程（推理模型）、耗时与错误，每 10 条为一页；
         后端原始响应（HTTP body / SSE 行）可在终端日志中查看，前缀为 <code class="text-mono">[AI-DEBUG]</code>。
       </p>
 
@@ -1096,7 +1152,7 @@ onUnmounted(() => {
 
       <div v-else class="ai-call-list">
         <div
-          v-for="rec in aiDebugStore.records"
+          v-for="rec in pagedAICalls"
           :key="rec.id"
           class="ai-call-item"
           :class="{ expanded: expandedAiCallId === rec.id }"
@@ -1129,6 +1185,14 @@ onUnmounted(() => {
               <pre class="code-block">{{ formatJson(rec.response) }}</pre>
             </div>
 
+            <div v-if="rec.status === 'success' && rec.reasoning" class="ai-call-block">
+              <div class="ai-call-block-head">
+                <Brain :size="13" />
+                <span>思考过程（推理模型）</span>
+              </div>
+              <pre class="code-block reasoning-block">{{ rec.reasoning }}</pre>
+            </div>
+
             <div v-if="rec.status === 'error'" class="ai-call-block">
               <div class="ai-call-block-head error-head">
                 <AlertTriangle :size="13" />
@@ -1137,6 +1201,25 @@ onUnmounted(() => {
               <pre class="code-block error-block">{{ rec.error }}</pre>
             </div>
           </div>
+        </div>
+        <div class="pagination">
+          <button
+            class="pagination-btn"
+            :disabled="recordsPage <= 1"
+            title="上一页"
+            @click="recordsPage--"
+          >
+            <ChevronLeft :size="14" />
+          </button>
+          <span class="pagination-info">第 {{ recordsPage }} / {{ recordsPageCount }} 页</span>
+          <button
+            class="pagination-btn"
+            :disabled="recordsPage >= recordsPageCount"
+            title="下一页"
+            @click="recordsPage++"
+          >
+            <ChevronRight :size="14" />
+          </button>
         </div>
       </div>
     </Card>
@@ -1282,13 +1365,13 @@ onUnmounted(() => {
       <div v-if="!aiUsageLoading && filteredUsageLog.length > 0" class="usage-list">
         <div class="usage-list-head">调用明细（{{ filteredUsageLog.length }} 条，最新在前）</div>
         <div
-          v-for="(entry, idx) in filteredUsageLog"
-          :key="idx"
+          v-for="(entry, i) in pagedUsageLog"
+          :key="usagePageStart + i"
           class="usage-item"
-          :class="{ expanded: expandedUsageIdx === idx }"
+          :class="{ expanded: expandedUsageIdx === usagePageStart + i }"
         >
-          <button class="usage-item-header" @click="toggleUsageEntry(idx)">
-            <ChevronRight :size="14" class="ai-call-chevron" :class="{ open: expandedUsageIdx === idx }" />
+          <button class="usage-item-header" @click="toggleUsageEntry(usagePageStart + i)">
+            <ChevronRight :size="14" class="ai-call-chevron" :class="{ open: expandedUsageIdx === usagePageStart + i }" />
             <span class="usage-item-time text-mono">{{ formatUsageTimestamp(entry.timestamp) }}</span>
             <Badge :variant="usageStatusBadge(entry.status)" size="sm">
               {{ usageStatusLabel(entry.status) }}
@@ -1304,7 +1387,7 @@ onUnmounted(() => {
             </span>
           </button>
 
-          <div v-if="expandedUsageIdx === idx" class="usage-item-detail">
+          <div v-if="expandedUsageIdx === usagePageStart + i" class="usage-item-detail">
             <div class="info-row">
               <span class="info-key">时间</span>
               <span class="info-value text-mono">{{ formatUsageTimestamp(entry.timestamp) }}</span>
@@ -1358,6 +1441,25 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <div class="pagination">
+          <button
+            class="pagination-btn"
+            :disabled="usagePage <= 1"
+            title="上一页"
+            @click="usagePage--"
+          >
+            <ChevronLeft :size="14" />
+          </button>
+          <span class="pagination-info">第 {{ usagePage }} / {{ usagePageCount }} 页</span>
+          <button
+            class="pagination-btn"
+            :disabled="usagePage >= usagePageCount"
+            title="下一页"
+            @click="usagePage++"
+          >
+            <ChevronRight :size="14" />
+          </button>
+        </div>
       </div>
 
       <div v-if="!aiUsageLoading && filteredUsageLog.length === 0 && !aiUsageError" class="empty-inline">
@@ -1407,12 +1509,12 @@ onUnmounted(() => {
       </div>
 
       <p class="section-desc">
-        展示 AI 调试日志（logs/ai-debug.log）的末尾内容，包含 AI 请求/响应记录、后端 warn/error 等。结构化调用详情见上方「AI 调用记录」与「AI 用量」模块。
+        展示 AI 调试日志（logs/ai-debug.log）的内容，最新在最上面、向下越旧，包含 AI 请求/响应记录、后端 warn/error 等。结构化调用详情见上方「AI 调用记录」与「AI 用量」模块。
       </p>
 
       <div v-if="appLogError" class="error-text">{{ appLogError }}</div>
       <div v-else-if="!appLog" class="empty-inline">暂无日志。</div>
-      <pre v-else class="app-log-view">{{ appLog }}</pre>
+      <pre v-else class="app-log-view">{{ displayAppLog }}</pre>
     </Card>
       </div>
     </div>
@@ -1922,6 +2024,46 @@ onUnmounted(() => {
   margin-top: var(--space-3);
 }
 
+/** 分页控件 */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.pagination-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-tertiary);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
 .ai-call-item {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -2033,6 +2175,13 @@ onUnmounted(() => {
 .ai-call-detail .error-block {
   color: var(--color-danger);
   white-space: pre-wrap;
+}
+
+.ai-call-detail .reasoning-block {
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  background-color: color-mix(in srgb, var(--text-tertiary) 6%, transparent);
+  border-inline-start: 2px solid var(--text-tertiary);
 }
 
 /* ── AI 用量日志 ── */

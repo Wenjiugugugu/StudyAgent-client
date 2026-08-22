@@ -257,6 +257,7 @@ impl GeminiProvider {
                 total_tokens: usage.total_token_count,
             },
             finish_reason,
+            reasoning: None,
         }
     }
 }
@@ -477,6 +478,7 @@ impl AiProvider for GeminiProvider {
                 total_tokens: usage.total_token_count,
             },
             finish_reason,
+            reasoning: None,
         })
     }
 

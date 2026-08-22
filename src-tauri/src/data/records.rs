@@ -28,7 +28,7 @@ pub struct ReviewFile {
     /// 新版：每日整体回顾（兼容历史数据，默认 None）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_review: Option<DailyReviewInput>,
-    /// 新版：超量完成记录（用户实际进度领先计划时填写，用于校正下一轮计划）
+    /// 计划外学习记录（用户实际进度领先计划时填写，用于校正下一轮计划）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overcompletion: Vec<OvercompletionEntry>,
 }
@@ -167,7 +167,7 @@ pub struct DailyReviewInput {
     pub main_difficulty: String,
 }
 
-/// 超量完成记录（用户实际进度领先于计划进度时填写）
+/// 计划外学习记录条目（用户实际进度领先于计划进度时填写）
 ///
 /// 提交后会更新对应科目的 `current_focus`，避免下一轮计划进度落后于实际进度。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

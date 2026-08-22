@@ -51,6 +51,18 @@ export interface AiInvokeOptions<T = unknown> {
   fallback?: () => Promise<T>;
 }
 
+/**
+ * 从 AI 调用结果中提取推理模型的思考过程（reasoning_content）。
+ * 仅对话类命令（chat / chatDoubt）的返回里带 reasoning 字段。
+ */
+function extractReasoning(result: unknown): string | null {
+  if (result && typeof result === "object" && "reasoning" in result) {
+    const r = (result as { reasoning?: unknown }).reasoning;
+    if (typeof r === "string" && r.length > 0) return r;
+  }
+  return null;
+}
+
 export async function aiInvoke<T = unknown>(opts: AiInvokeOptions<T>): Promise<T> {
   const { command, label, args, cancelKey, timeoutMs = 120_000, fallback } = opts;
   const aiDebug = useAiDebugStore();
@@ -103,7 +115,7 @@ export async function aiInvoke<T = unknown>(opts: AiInvokeOptions<T>): Promise<T
       finish("error", null, msg);
       throw new Error(msg);
     }
-    finish("success", result, null);
+    finish("success", result, null, extractReasoning(result));
     return result;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -349,6 +361,17 @@ export interface FocusDayStats {
 export async function recordFocusSession(session: FocusSession): Promise<void> {
   return invokeWithFallback("record_focus_session", { session }, async () => {
     console.log("[Mock] Focus session recorded", session.type);
+  });
+}
+
+/** 番茄钟：为某条未关联的专注会话手动绑定任务 */
+export async function linkFocusSession(
+  sessionId: string,
+  taskId: string,
+  date: string
+): Promise<void> {
+  return invokeWithFallback("link_focus_session", { sessionId, taskId, date }, async () => {
+    console.log(`[Mock] Focus session ${sessionId} linked to task ${taskId}`);
   });
 }
 

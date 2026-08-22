@@ -309,6 +309,10 @@ impl DashboardAggregator {
             let actual_minutes = crate::data::state::read_state(data_dir)
                 .map(|state| crate::data::state::day_actual_minutes(&state, date))
                 .unwrap_or(0);
+            // 未关联任务的番茄钟专注分钟：已关联的任务其时长已计入任务累计计时，
+            // 未关联的专注只存在于会话文件，需单独计入当日实际学习时长（避免重复）。
+            let actual_minutes =
+                actual_minutes + crate::data::focus::day_unlinked_focus_minutes(data_dir, date);
 
             if actual_minutes > 0 {
                 hours = actual_minutes as f64 / 60.0;
@@ -324,11 +328,24 @@ impl DashboardAggregator {
             };
         }
 
-        // 3. 无计划也无复盘
-        DailyBreakdown {
-            date: date.to_string(),
-            hours: 0.0,
-            tasks_done: 0,
+        // 3. 无计划也无复盘：仍计入明确的番茄钟学习时长（任务累计 + 未关联专注），
+        //    保证正计时/番茄结束自动计入今日学习时长，口径与分析页 build_learning_trend 一致。
+        let actual_minutes = crate::data::state::read_state(data_dir)
+            .map(|state| crate::data::state::day_actual_minutes(&state, date))
+            .unwrap_or(0)
+            + crate::data::focus::day_unlinked_focus_minutes(data_dir, date);
+        if actual_minutes > 0 {
+            DailyBreakdown {
+                date: date.to_string(),
+                hours: actual_minutes as f64 / 60.0,
+                tasks_done: 0,
+            }
+        } else {
+            DailyBreakdown {
+                date: date.to_string(),
+                hours: 0.0,
+                tasks_done: 0,
+            }
         }
     }
 
@@ -541,6 +558,23 @@ fn strip_subject_prefix(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::focus::{
+        FocusSession, FocusSessionStatus, FocusSessionType, append_focus_session,
+    };
+    use crate::data::state::{StateTask, StudyState, save_state};
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent_dashboard_test_{}_{}",
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn strip_subject_prefix_handles_fullwidth_colon() {
@@ -566,5 +600,58 @@ mod tests {
     fn strip_subject_prefix_keeps_long_prefix() {
         // 前缀超过 4 字符不视为科目标签
         assert_eq!(strip_subject_prefix("高等数学复习：微分方程"), "高等数学复习：微分方程");
+    }
+
+    #[test]
+    fn stopwatch_finish_counts_into_daily_study_hours_e2e() {
+        let dir = tmp_dir("stopwatch_count");
+        let date = "2026-08-19";
+
+        // 构造 state：任务 id 前缀匹配当日，已累计 25 分钟（模拟已关联番茄累加）
+        let mut st = StudyState::default();
+        st.current_task.date = date.to_string();
+        let mut task = StateTask::default();
+        task.task_id = Some(format!("{}-01", date));
+        task.subject = "math".to_string();
+        task.task = "测试任务".to_string();
+        task.accumulated_minutes = 25;
+        st.current_task.tasks.push(task);
+        save_state(&dir, &st).unwrap();
+
+        // focus 记录：一条未关联的已完成正计时（25 分钟，即正计时结束后落盘），
+        // 一条已关联番茄（15 分钟，仅元数据，其时间已计入任务累计，不应重复计入）
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "sw1".to_string(),
+                r#type: FocusSessionType::Stopwatch,
+                started_at: format!("{}T09:00:00Z", date),
+                ended_at: format!("{}T09:25:00Z", date),
+                duration_minutes: 25,
+                task_id: None,
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+        append_focus_session(
+            &dir,
+            FocusSession {
+                id: "f1".to_string(),
+                r#type: FocusSessionType::Focus,
+                started_at: format!("{}T08:00:00Z", date),
+                ended_at: format!("{}T08:15:00Z", date),
+                duration_minutes: 15,
+                task_id: Some(format!("{}-01", date)),
+                status: FocusSessionStatus::Completed,
+            },
+        )
+        .unwrap();
+
+        // 无当日复盘、无日计划文件：正计时结束后应自动计入今日学习时长
+        let breakdown = DashboardAggregator::compute_daily_breakdown(&dir, date, 4.0);
+        // 25（已关联番茄累计进任务） + 25（未关联正计时） = 50 分钟
+        assert!((breakdown.hours - 50.0 / 60.0).abs() < 1e-6, "hours = {}", breakdown.hours);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

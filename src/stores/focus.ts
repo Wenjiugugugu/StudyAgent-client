@@ -268,6 +268,14 @@ export const useFocusStore = defineStore("focus", () => {
   function skipToBreak() {
     // M4：仅允许在「学习结束转正计时」时触发；倒计时进行中点按会静默丢弃当前会话
     if (phase.value === "focus" && mode.value === "stopwatch" && sub.value === "running") {
+      // 把「学习倒计时结束 → 点开始休息」之间的正计时记录为一次完成的专注会话，
+      // 并（若关联任务）累加专注分钟：这段仍处于专注等待休息，不应静默丢失、
+      // 不计入今日学习时长。不足 1 分钟按 0 处理，避免产生无效记录。
+      const elapsedMin = Math.max(0, Math.round(stopwatchSec.value / 60));
+      const startedAt = sessionStartedAt.value;
+      if (elapsedMin > 0) {
+        void recordSession("stopwatch", elapsedMin, "completed", startedAt);
+      }
       startBreak();
     }
   }

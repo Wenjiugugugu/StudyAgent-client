@@ -257,6 +257,7 @@ impl AnthropicProvider {
                 total_tokens: resp.usage.input_tokens + resp.usage.output_tokens,
             },
             finish_reason,
+            reasoning: None,
         }
     }
 
@@ -575,6 +576,7 @@ impl AiProvider for AnthropicProvider {
                 total_tokens: input_tokens + output_tokens,
             },
             finish_reason,
+            reasoning: None,
         })
     }
 

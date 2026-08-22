@@ -14,6 +14,8 @@
 import { computed, onMounted } from "vue";
 import { useTodayStore } from "@/stores/today";
 import { useFocusStore } from "@/stores/focus";
+import * as api from "@/api";
+import { todayString } from "@/utils/date";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -55,9 +57,32 @@ async function completeLinkedTask() {
 }
 
 // ── 专注记录展示 ──
+// 只展示学习 / 正计时记录，休息、长休息不计入专注记录列表
 const todayRecordList = computed(() =>
-  [...focus.todaySessions].sort((a, b) => (a.ended_at < b.ended_at ? 1 : -1))
+  focus.todaySessions
+    .filter((s) => s.type === "focus" || s.type === "stopwatch")
+    .sort((a, b) => (a.ended_at < b.ended_at ? 1 : -1))
 );
+
+/** 该记录是未关联的专注类记录，可在记录里手动补充关联任务 */
+function canLink(s: api.FocusSession): boolean {
+  return !s.task_id && todayTasks.value.length > 0;
+}
+/** 已关联记录的任务标题（任务跨天/已删除时回退为 task_id） */
+function linkedTaskTitle(taskId: string): string {
+  return todayTasks.value.find((t) => t.id === taskId)?.title ?? taskId;
+}
+/** 把未关联的专注记录手动关联到某个今日任务 */
+async function linkSession(s: api.FocusSession, taskId: string) {
+  if (!taskId) return;
+  try {
+    await api.linkFocusSession(s.id, taskId, todayString());
+    await focus.loadStats();
+    await todayStore.loadToday();
+  } catch (e) {
+    console.warn("关联专注记录失败", e);
+  }
+}
 
 function sessionLabel(type: string): string {
   if (type === "focus") return "学习";
@@ -335,6 +360,22 @@ onMounted(async () => {
           <span class="session-status" :class="{ interrupted: s.status !== 'completed' }">
             {{ sessionStatusLabel(s.status) }}
           </span>
+          <span v-if="s.task_id" class="session-linked" :title="linkedTaskTitle(s.task_id)">
+            {{ linkedTaskTitle(s.task_id) }}
+          </span>
+          <Select
+            v-else-if="canLink(s)"
+            class="session-link"
+            placeholder="关联任务"
+            :max-width="'150px'"
+            :model-value="''"
+            @update:model-value="(v) => linkSession(s, String(v ?? ''))"
+          >
+            <option value="">关联任务</option>
+            <option v-for="t in todayTasks" :key="t.id" :value="t.id">
+              {{ t.title }}
+            </option>
+          </Select>
         </li>
       </ul>
     </Card>
@@ -639,5 +680,21 @@ onMounted(async () => {
 }
 .session-status.interrupted {
   color: var(--color-warning);
+}
+.session-linked {
+  flex-shrink: 0;
+  max-width: 120px;
+  font-size: var(--text-xs);
+  color: var(--accent);
+  background: var(--accent-subtle);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-link {
+  flex-shrink: 0;
+  width: 150px;
 }
 </style>

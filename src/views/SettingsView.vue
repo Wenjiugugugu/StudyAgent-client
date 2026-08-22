@@ -1105,7 +1105,7 @@ onBeforeUnmount(() => {
               v-model="form.user_name"
               type="text"
               class="form-input"
-              placeholder="如：数二（用于首页问候）"
+              placeholder="如：小明（用于首页问候）"
             />
           </div>
           <div class="form-field form-field-full">

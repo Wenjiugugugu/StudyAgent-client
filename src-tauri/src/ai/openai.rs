@@ -221,25 +221,32 @@ impl OpenAIProvider {
     /// 解析 OpenAI API 非流式响应
     fn parse_response(&self, resp: OpenAIApiResponse) -> ChatResponse {
         let choice = resp.choices.first();
-        let (content, role, tool_calls, finish_reason) = match choice {
+        let (content, role, tool_calls, finish_reason, reasoning) = match choice {
             Some(c) => {
-                // DeepSeek 推理模型会把实际回复放在 reasoning_content，content 可能为空
+                // DeepSeek 推理模型会把思考过程放在 reasoning_content，content 才是最终回复
                 let mut content = c.message.content.clone().unwrap_or_default();
+                // 思考过程单独保留，供调试记录展示（不覆盖最终回复）
+                let mut reasoning: Option<String> = c.message.reasoning_content.clone();
                 if content.is_empty() {
-                    content = c.message.reasoning_content.clone().unwrap_or_default();
+                    // 兜底：部分推理模型在非流式下可能把回复放在 reasoning_content
+                    content = reasoning.clone().unwrap_or_default();
+                }
+                if reasoning.as_ref().map(String::is_empty).unwrap_or(true) {
+                    reasoning = None;
                 }
                 let role = c.message.role.clone();
                 let tool_calls = c.message.tool_calls.clone();
                 let finish_reason = c.finish_reason.clone().unwrap_or_else(|| "stop".to_string());
-                (content, role, tool_calls, finish_reason)
+                (content, role, tool_calls, finish_reason, reasoning)
             }
-            None => (String::new(), MessageRole::Assistant, None, "stop".to_string()),
+            None => (String::new(), MessageRole::Assistant, None, "stop".to_string(), None),
         };
 
         log::info!(
-            "AI 响应: model={}, content_len={}, finish_reason={}",
+            "AI 响应: model={}, content_len={}, reasoning_len={}, finish_reason={}",
             resp.model,
             content.len(),
+            reasoning.as_ref().map(String::len).unwrap_or(0),
             finish_reason
         );
         let usage = resp.usage.unwrap_or_default();
@@ -256,6 +263,7 @@ impl OpenAIProvider {
                 total_tokens: usage.total_tokens,
             },
             finish_reason,
+            reasoning,
         }
     }
 
@@ -668,6 +676,7 @@ impl AiProvider for OpenAIProvider {
             // M17：使用流式累积的 usage，避免恒为 0
             usage: stream_usage,
             finish_reason,
+            reasoning: None,
         })
     }
 

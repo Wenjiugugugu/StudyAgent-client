@@ -85,7 +85,7 @@ export interface ReviewFile {
   task_reviews?: TaskReviewEntry[];
   /** 新版：每日整体回顾 */
   daily_review?: DailyReviewInput;
-  /** 新版：超量完成记录（用户实际进度领先计划时填写） */
+  /** 计划外学习记录（用户实际进度领先计划时填写） */
   overcompletion?: OvercompletionEntry[];
 }
 
@@ -129,7 +129,7 @@ export interface DailyReviewInput {
   main_difficulty: string;
 }
 
-/** 超量完成记录（用户实际进度领先计划时填写） */
+/** 计划外学习记录条目（用户实际进度领先计划时填写） */
 export interface OvercompletionEntry {
   /** 科目：math / english / politics / professional */
   subject: string;
@@ -144,7 +144,7 @@ export interface SubmitReviewPayload {
   date: string;
   task_reviews: TaskReviewEntry[];
   daily_review: DailyReviewInput;
-  /** 超量完成记录（可选） */
+  /** 计划外学习记录（可选） */
   overcompletion?: OvercompletionEntry[];
 }
 
@@ -166,6 +166,6 @@ export interface RegenerateResult {
   affected_dates: string[];
   /** AI 调用失败时是否启用了确定性兜底安排（用于前端提示用户） */
   used_fallback?: boolean;
-  /** 一致性校验警告：声明了超量进度的科目重排后未生效时给出提示 */
+  /** 一致性校验警告：声明了计划外进度的科目重排后未生效时给出提示 */
   consistency_warnings?: string[];
 }

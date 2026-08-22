@@ -29,6 +29,105 @@ impl<'a> Planner<'a> {
         Self { ai_service }
     }
 
+    /// 发送一次「复盘后重排」的 AI 请求并把响应解析为剩余天数安排。
+    ///
+    /// - 失败或解析为空数组时返回 Err（错误已写入 ai-debug.log）。
+    /// - `escalation = true` 表示「进度未生效」时的校正重排，日志使用独立的 tag。
+    async fn chat_regen_pass(
+        &self,
+        data_dir: &Path,
+        review_date: &str,
+        prompt: &str,
+        math_version: Option<String>,
+        escalation: bool,
+    ) -> Result<Vec<RegenDayPlan>, String> {
+        let request = ChatRequest {
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: prompt.to_string(),
+                ..Default::default()
+            }],
+            agent: Some(AgentType::Planner),
+            temperature: Some(0.6),
+            // 重排剩余天数的工作量与生成周计划相当，给足 300s
+            timeout_override: Some(300),
+            math_version: math_version,
+            ..Default::default()
+        };
+        let tag = if escalation {
+            "regenerate_escalated"
+        } else {
+            "regenerate"
+        };
+        crate::data::write_ai_debug_log(
+            data_dir,
+            &format!("{}_ai_request", tag),
+            &format!(
+                "即将发送 AI 请求{}, review_date={}, timeout=300s",
+                if escalation { "(进度校正重试)" } else { "" },
+                review_date
+            ),
+        );
+        self.ai_service
+            .chat(request)
+            .await
+            .map_err(|e| {
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    &format!("{}_ai_call_error", tag),
+                    &format!("AI 调用失败: {}", e),
+                );
+                format!("AI 重排剩余天数失败: {}", e)
+            })
+            .and_then(|response| {
+                let resp_preview: String = response.content.chars().take(500).collect();
+                log::info!(
+                    "[AI-DEBUG] 重排响应长度: {} 字符, 前 500 字符: {}",
+                    response.content.len(),
+                    resp_preview
+                );
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    &format!("{}_ai_response", tag),
+                    &format!(
+                        "AI 响应已返回, 长度={} 字符, 前 500 字符:\n{}",
+                        response.content.len(),
+                        resp_preview
+                    ),
+                );
+                parse_regenerate_response(&response.content, data_dir)
+            })
+    }
+
+    /// 构建「进度未生效」时的校正重排 prompt。
+    ///
+    /// 在基础 prompt 之后追加一段强制指令：让 AI 依据考研/统考教纲章节先后顺序
+    /// （必要时借助自身联网查证能力核对章节顺序），判断并纠正超前于用户实际进度的任务，
+    /// 从用户实际进度之后重新排布剩余天数，从而真正改写周计划文件而非静默通过。
+    ///
+    /// `anchors` 为 (科目 key, 用户声明的实际进度章节) 列表。
+    fn build_escalation_prompt(&self, base: &str, anchors: &[(String, String)]) -> String {
+        let mut p = base.to_string();
+        p.push_str("\n\n### 上次重排未生效，必须按用户实际进度强制校正\n");
+        p.push_str("以下科目声明了用户实际学习进度，但上次重排的剩余安排与重排前完全一致，说明超前于实际进度的任务仍被原样保留，未真正按实际进度调整：\n");
+        for (key, chapter) in anchors {
+            let label = match key.as_str() {
+                "math" => "数学",
+                "english" => "英语",
+                "politics" => "政治",
+                "professional" => "专业课",
+                _ => key.as_str(),
+            };
+            p.push_str(&format!("- {}: 用户实际进度位于「{}」\n", label, chapter));
+        }
+        p.push_str("要求：\n");
+        p.push_str("1. 你应依据该科目考研/统考教纲的章节先后顺序判断这些任务是否超前于用户实际进度（必要时借助自身联网查证能力核对章节顺序）。\n");
+        p.push_str("2. 若原计划把任务排在了用户尚未到达的章节（超前），必须删除或后置这些超前任务，并从用户实际进度【之后】的下一个未学章节开始，重新排布剩余学习日，逐日向前推进。\n");
+        p.push_str("3. 本次输出的每科 subject_allocations 必须与重排前明显不同，严禁再次原样返回未完成的前置任务。\n");
+        p.push_str("4. 保持 JSON 的 days 数组结构不变，仅调整各科任务内容；休息日 subject_allocations 保持空数组。\n");
+        p
+    }
+
     /// 生成日计划
     ///
     /// 流程：
@@ -124,7 +223,7 @@ impl<'a> Planner<'a> {
         let mut week_plan = crate::data::plan::read_week_plan(data_dir, &iso_week)
             .map_err(|e| format!("读取周计划失败: {}。请先生成周计划。", e))?;
 
-        // 重排前切片：用于一致性校验比对「超量进度是否生效」
+        // 重排前切片：用于一致性校验比对「计划外进度是否生效」
         let original_before = week_plan.clone();
 
         let week_end = week_plan.meta.week_end.clone();
@@ -191,64 +290,19 @@ impl<'a> Planner<'a> {
             ),
         );
 
-        // 7. 调用 AI
-        let request = ChatRequest {
-            messages: vec![ChatMessage {
-                role: MessageRole::User,
-                content: prompt,
-                ..Default::default()
-            }],
-            agent: Some(AgentType::Planner),
-            temperature: Some(0.6),
-            // 重排剩余天数的工作量与生成周计划相当，给足 300s
-            timeout_override: Some(300),
-            math_version: state.subjects.math.version.clone(),
-            ..Default::default()
-        };
-
+        // 7. 调用 AI（首次重排）。日志时间线由 chat_regen_pass 统一写入。
         log::info!(
             "[AI-DEBUG] 复盘后重排请求开始, review_date={}, regen范围={}-{}",
             review_date, regen_start, week_end
         );
-        crate::data::write_ai_debug_log(
-            data_dir,
-            "regenerate_ai_request",
-            &format!(
-                "即将发送 AI 请求, review_date={}, regen范围={}-{}, timeout=300s",
-                review_date, regen_start, week_end
-            ),
-        );
+
         // 7-9. 调用 AI 并解析剩余天数安排；若 AI 失败或返回空，启用确定性兜底，
         // 把复盘中标记的「未完成 / 部分完成」任务落到剩余学习日，保证不丢失。
-        let parse_result: Result<Vec<RegenDayPlan>, String> = self
-            .ai_service
-            .chat(request)
-            .await
-            .map_err(|e| {
-                crate::data::write_ai_debug_log(data_dir, "regenerate_ai_call_error", &format!("AI 调用失败: {}", e));
-                format!("AI 重排剩余天数失败: {}", e)
-            })
-            .and_then(|response| {
-                let resp_preview: String = response.content.chars().take(500).collect();
-                log::info!(
-                    "[AI-DEBUG] 重排响应长度: {} 字符, 前 500 字符: {}",
-                    response.content.len(),
-                    resp_preview
-                );
-                crate::data::write_ai_debug_log(
-                    data_dir,
-                    "regenerate_ai_response",
-                    &format!(
-                        "AI 响应已返回, 长度={} 字符, 前 500 字符:\n{}",
-                        response.content.len(),
-                        resp_preview
-                    ),
-                );
-                parse_regenerate_response(&response.content, data_dir)
-            });
-
         let mut used_fallback = false;
-        let updated_days = match parse_result {
+        let updated_days = match self
+            .chat_regen_pass(data_dir, review_date, &prompt, state.subjects.math.version.clone(), false)
+            .await
+        {
             Ok(days) if !days.is_empty() => days,
             other => {
                 let reason = match other {
@@ -274,6 +328,108 @@ impl<'a> Planner<'a> {
         if !used_fallback {
             update_week_plan_remaining_days(&mut week_plan, &updated_days);
         }
+
+        // 9.5 一致性校验与确定性修正：
+        //   - 剔除与新「已完成」重复的计划任务（无论 AI 是否遵守约束都兜底生效）
+        //   - 检测声明了计划外进度的科目重排后是否真正生效，未生效则记入警告
+        let declared_subjects: std::collections::HashSet<String> = review
+            .overcompletion
+            .iter()
+            .map(|oc| oc.subject.clone())
+            .collect();
+        let mut consistency_warnings = consistency_check_and_correct(
+            &mut week_plan,
+            &state,
+            &regen_dates,
+            &original_before,
+            &declared_subjects,
+        );
+
+        // 9.55 确定性超前剔除：按内置章节顺序表，去掉剩余计划中「排在实际进度之前（已学过）」的任务。
+        // 这是不依赖 AI、确定能改写周计划文件的进度锚定兜底。
+        if filter_ahead_of_progress(
+            &mut week_plan,
+            &state,
+            &regen_dates,
+            &review.overcompletion,
+        ) {
+            log::info!("一致性校验：已按内置章节顺序表剔除超前于实际进度的计划任务");
+            crate::data::write_ai_debug_log(
+                data_dir,
+                "regenerate_progress_filter",
+                "已按章节顺序表剔除超前于实际进度的任务",
+            );
+        }
+
+        // 9.6 进度未生效 -> 联网/教纲自查 + 强制按实际进度校正（二次重排）
+        // 若声明了实际进度的科目，重排后剩余安排与重排前完全一致（静默 no-op），
+        // 不当作成功通过：追加一次校正重排，让 AI 依据教纲自查章节顺序，
+        // 删除/后置超前任务，并从用户实际进度之后重新排布（真正改写周计划文件）。
+        if !used_fallback && !declared_subjects.is_empty() {
+            let unchanged = find_declared_subjects_unchanged(
+                &week_plan,
+                &original_before,
+                &regen_dates,
+                &declared_subjects,
+            );
+            if !unchanged.is_empty() {
+                let anchors: Vec<(String, String)> = review
+                    .overcompletion
+                    .iter()
+                    .filter(|oc| unchanged.contains(&oc.subject))
+                    .map(|oc| (oc.subject.clone(), oc.chapter_reached.clone()))
+                    .collect();
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    "regenerate_escalation_start",
+                    &format!("进度未生效({:?})，发起按实际进度校正重排", &anchors),
+                );
+                let escalated_prompt = self.build_escalation_prompt(&prompt, &anchors);
+                match self
+                    .chat_regen_pass(data_dir, review_date, &escalated_prompt, state.subjects.math.version.clone(), true)
+                    .await
+                {
+                    Ok(days) if !days.is_empty() => {
+                        update_week_plan_remaining_days(&mut week_plan, &days);
+                        consistency_warnings = consistency_check_and_correct(
+                            &mut week_plan,
+                            &state,
+                            &regen_dates,
+                            &original_before,
+                            &declared_subjects,
+                        );
+                        let still = find_declared_subjects_unchanged(
+                            &week_plan,
+                            &original_before,
+                            &regen_dates,
+                            &declared_subjects,
+                        );
+                        crate::data::write_ai_debug_log(
+                            data_dir,
+                            "regenerate_escalation_result",
+                            &format!("校正后仍未生效科目: {:?}", still),
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("[AI-DEBUG] 进度校正重排失败: {}", e);
+                        crate::data::write_ai_debug_log(
+                            data_dir,
+                            "regenerate_escalation_error",
+                            &format!("进度校正重排失败: {}", e),
+                        );
+                    }
+                    Ok(_) => {
+                        crate::data::write_ai_debug_log(
+                            data_dir,
+                            "regenerate_escalation_error",
+                            "进度校正重排返回空 days",
+                        );
+                    }
+                }
+            }
+        }
+
+        // 去重/校正可能改写了周计划，持久化后再生成日计划
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
         log::info!("周计划剩余天数已更新, 影响日期: {:?}", regen_dates);
         crate::data::write_ai_debug_log(
@@ -282,34 +438,17 @@ impl<'a> Planner<'a> {
             &format!("周计划已保存, 影响日期: {:?}", regen_dates),
         );
 
-        // 9.5 一致性校验与确定性修正：
-        //   - 剔除与新「已完成」重复的计划任务（无论 AI 是否遵守约束都兜底生效）
-        //   - 检测声明了超量进度的科目重排后是否真正生效，未生效则记入警告
-        let declared_subjects: std::collections::HashSet<String> = review
-            .overcompletion
-            .iter()
-            .map(|oc| oc.subject.clone())
-            .collect();
-        let consistency_warnings = consistency_check_and_correct(
-            &mut week_plan,
-            &state,
-            &regen_dates,
-            &original_before,
-            &declared_subjects,
-        );
         if !consistency_warnings.is_empty() {
             log::warn!(
-                "一致性校验：超量进度未反映到计划 -> {}",
+                "一致性校验：计划外进度未反映到计划 -> {}",
                 consistency_warnings.join("；")
             );
             crate::data::write_ai_debug_log(
                 data_dir,
                 "regenerate_consistency_warning",
-                &format!("超量进度未生效: {}", consistency_warnings.join("；")),
+                &format!("计划外进度未生效: {}", consistency_warnings.join("；")),
             );
         }
-        // 去重可能改写了周计划，需重新保存后再生成日计划
-        crate::data::plan::save_week_plan(data_dir, &week_plan)?;
 
         // 10. 重新生成所有受影响日期的日计划文件
         Self::regenerate_daily_plans_for_dates(data_dir, &week_plan, &regen_dates, "review_regen")?;
@@ -2897,6 +3036,111 @@ fn consistency_check_and_correct(
     warnings
 }
 
+/// 找出声明了实际进度、但重排后剩余安排与重排前完全一致的科目（进度未生效）。
+///
+/// 返回科目 key 列表（math/english/politics/professional）。
+/// 用于驱动「进度未生效 -> 联网/教纲自查 + 按实际进度强制校正重排」。
+fn find_declared_subjects_unchanged(
+    week_plan: &WeekPlanFile,
+    original_before: &WeekPlanFile,
+    regen_dates: &[String],
+    declared_subjects: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut unchanged: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for day in week_plan.data.days.iter() {
+        if !regen_dates.contains(&day.date) {
+            continue;
+        }
+        let orig_day = original_before
+            .data
+            .days
+            .iter()
+            .find(|d| d.date == day.date);
+        for alloc in &day.subject_allocations {
+            let key = planner_subject_key_str(&alloc.subject);
+            if !declared_subjects.contains(key) || seen.contains(key) {
+                continue;
+            }
+            let is_unchanged = match orig_day.and_then(|od| {
+                od.subject_allocations
+                    .iter()
+                    .find(|a| a.subject == alloc.subject)
+            }) {
+                // 仅当原日确有该科分配时才比对；否则视为「未改动的新分配」不算 no-op
+                Some(oa) => serde_json::to_value(oa).ok() == serde_json::to_value(alloc).ok(),
+                None => false,
+            };
+            if is_unchanged {
+                unchanged.push(key.to_string());
+                seen.insert(key.to_string());
+            }
+        }
+    }
+    unchanged
+}
+
+/// 取科目对应的版本标签（用于章节顺序表定位；政治无版本，空串即可）。
+fn subject_version(state: &StudyState, key: &str) -> String {
+    match key {
+        "math" => state.subjects.math.version.clone().unwrap_or_default(),
+        "english" => state.subjects.english.version.clone().unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// 确定性超前剔除：对声明了实际进度的科目，用内置章节顺序表定位，
+/// 把剩余计划中排在实际进度**之前**（用户已学过）的任务模板剔除，并重算对应 allocation 时长。
+///
+/// 已学内容绝不允许再次安排，这是不依赖 AI、确定能落地的进度锚定兜底。
+/// 返回是否剔除了内容。
+fn filter_ahead_of_progress(
+    week_plan: &mut WeekPlanFile,
+    state: &StudyState,
+    regen_dates: &[String],
+    overcompletion: &[crate::data::records::OvercompletionEntry],
+) -> bool {
+    let mut changed = false;
+    for oc in overcompletion {
+        let version = subject_version(state, &oc.subject);
+        let Some(prog_pos) = crate::core::chapter_seq::position(&oc.subject, &version, &oc.chapter_reached)
+        else {
+            continue;
+        };
+        for day in week_plan.data.days.iter_mut() {
+            if !regen_dates.contains(&day.date) {
+                continue;
+            }
+            for alloc in day.subject_allocations.iter_mut() {
+                if planner_subject_key_str(&alloc.subject) != oc.subject {
+                    continue;
+                }
+                let before = alloc.task_templates.len();
+                if before == 0 {
+                    continue;
+                }
+                alloc.task_templates.retain(|t| match crate::core::chapter_seq::position(
+                    &oc.subject,
+                    &version,
+                    &t.title,
+                ) {
+                    // 能定位且位置不晚于实际进度 → 已学过，剔除；定位不到 → 保留
+                    Some(p) => p > prog_pos,
+                    None => true,
+                });
+                if alloc.task_templates.len() != before {
+                    changed = true;
+                    let sum: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
+                    if sum > 0.0 {
+                        alloc.hours = sum;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
 /// 更新周计划中剩余天数的 subject_allocations
 ///
 /// 用 AI 返回的新安排覆盖对应日期的 subject_allocations。
@@ -3503,7 +3747,7 @@ mod tests {
         let empty = std::collections::HashSet::new();
         let warnings =
             consistency_check_and_correct(&mut after, &state, &regen_dates, &before, &empty);
-        assert!(warnings.is_empty(), "无超量进度声明不应产生告警");
+        assert!(warnings.is_empty(), "无计划外进度声明不应产生告警");
 
         let day = after.data.days.iter().find(|d| d.date == "2026-08-21").unwrap();
         let math = day
@@ -3530,7 +3774,7 @@ mod tests {
         let before = after.clone(); // 模拟 AI 重排后该科目剩余安排完全未变
         let regen_dates = vec!["2026-08-21".to_string()];
         let mut declared = std::collections::HashSet::new();
-        declared.insert("math".to_string()); // 复盘中声明了数学的超量进度
+        declared.insert("math".to_string()); // 复盘中声明了数学的计划外进度
         let warnings =
             consistency_check_and_correct(&mut after, &state, &regen_dates, &before, &declared);
 
