@@ -1,4 +1,4 @@
-version: 2
+﻿version: 2
 updates:
   - package-ecosystem: npm
     directory: /
@@ -7,6 +7,9 @@ updates:
     groups:
       frontend:
         patterns: ["*"]
+    ignore:
+      # 前端大版本升级多为破坏性变更，暂不自动跟进；小版本/补丁仍正常更新
+      - update-types: ["version-update:semver-major"]
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
