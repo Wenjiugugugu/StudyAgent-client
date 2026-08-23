@@ -28,5 +28,19 @@ export default defineConfig({
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     // produce sourcemaps for debug builds
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (id.includes("zrender")) return "charts-renderer";
+          if (id.includes("vue-echarts")) return "charts-vue";
+          if (id.includes("echarts")) return "charts-core";
+          if (id.includes("katex")) return "math";
+          if (id.includes("@tauri-apps")) return "tauri";
+          if (id.includes("vue") || id.includes("pinia")) return "vue";
+          return "vendor";
+        },
+      },
+    },
   },
 });

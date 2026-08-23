@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-vue-next";
 import type { TextbookInfo, TextbookContent, TextbookSearchHit } from "@/types";
+import { escapeHtml as escapeSafeHtml } from "@/utils/markdown";
 
 // ── 数据 ──
 const textbooks = ref<TextbookInfo[]>([]);
@@ -321,10 +322,7 @@ function slugify(text: string): string {
  * 支持：标题、段落、有序/无序列表、加粗、行内代码、代码块、链接、引用
  */
 function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return escapeSafeHtml(str);
 }
 
 function renderInline(text: string, highlightTerms?: string[]): string {
@@ -347,12 +345,12 @@ function renderInline(text: string, highlightTerms?: string[]): string {
   // 链接 [text](url)。C8：仅允许 http/https/mailto scheme，拒绝 javascript:/data:/vbscript: 等
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, url: string) => {
     const trimmedUrl = url.trim();
-    const allowed = /^(https?:\/\/|mailto:)/i.test(trimmedUrl);
+    const allowed = /^(https?:\/\/|mailto:)/i.test(trimmedUrl) && !/["'<>\u0000-\u001f]/.test(trimmedUrl);
     if (!allowed) {
       // 不安全的 URL：渲染为纯文本而非可点击链接
       return `${label}`;
     }
-    return `<a href="${trimmedUrl}" target="_blank" rel="noopener" class="md-link">${label}</a>`;
+    return `<a href="${escapeHtml(trimmedUrl)}" target="_blank" rel="noopener noreferrer" class="md-link">${label}</a>`;
   });
   return s;
 }

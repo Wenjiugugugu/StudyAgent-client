@@ -31,6 +31,7 @@ import {
   Clock,
   Coffee,
   Ban,
+  AlertTriangle,
 } from "lucide-vue-next";
 import type { PlanTask, SubjectKey, ExcludedReasonType } from "@/types";
 

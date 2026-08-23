@@ -2637,8 +2637,12 @@ pub struct TestResult {
 /// 前端调用: `invoke('test_ai_provider', { config: { ... } })`
 #[tauri::command]
 pub async fn test_ai_provider(
-    config: AIProviderConfig,
+    mut config: AIProviderConfig,
 ) -> Result<TestResult, String> {
+    if config.api_key == crate::secrets::CONFIGURED_SENTINEL {
+        config.api_key = crate::secrets::get_provider_api_key(&config.id)?
+            .ok_or_else(|| "系统凭据库中未找到该 Provider 的 API Key".to_string())?;
+    }
     match AiService::test_provider(config).await {
         Ok(msg) => Ok(TestResult {
             success: true,
@@ -2661,7 +2665,13 @@ pub async fn list_ai_models(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<Vec<crate::ai::provider::ModelInfo>, String> {
     match config {
-        Some(cfg) => AiService::test_list_models(cfg).await,
+        Some(mut cfg) => {
+            if cfg.api_key == crate::secrets::CONFIGURED_SENTINEL {
+                cfg.api_key = crate::secrets::get_provider_api_key(&cfg.id)?
+                    .ok_or_else(|| "系统凭据库中未找到该 Provider 的 API Key".to_string())?;
+            }
+            AiService::test_list_models(cfg).await
+        }
         None => {
             let ai_service = get_ai_service(state.inner())?;
             ai_service.list_models().await
@@ -2885,7 +2895,16 @@ pub async fn get_settings(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<AppSettings, String> {
     let data_dir = get_data_dir(state.inner())?;
-    Ok(load_settings(&data_dir))
+    let mut settings = load_settings(&data_dir);
+    // 前端只需要知道密钥是否已配置，不应接收可直接复用的明文。
+    for provider in settings.ai_providers.iter_mut() {
+        provider.api_key = if provider.api_key.is_empty() {
+            String::new()
+        } else {
+            crate::secrets::CONFIGURED_SENTINEL.to_string()
+        };
+    }
+    Ok(settings)
 }
 
 /// 保存应用配置
@@ -3202,10 +3221,10 @@ pub struct UpdateAsset {
     pub size: u64,
     /// 资源类型推测：`nsis` / `msi` / `exe` / `unknown`
     pub kind: String,
-    /// 文件 SHA-256（十六进制，来自 GitHub API 的 digest 字段；缺失时为 None）
+    /// 文件 SHA-256（十六进制，来自 GitHub API 的 digest 字段）。
     ///
     /// 用于 `download_update` 下载完成后的完整性校验（L14）。
-    /// 注意：GitHub 对超过 2GB 的资产不提供 digest，此字段可能为 None。
+    /// 缺少有效摘要的资源会在返回前被过滤。
     #[serde(default)]
     pub sha256: Option<String>,
 }
@@ -3298,6 +3317,11 @@ fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
                 .map(|hex| hex.to_lowercase())
                 .filter(|hex| !hex.is_empty());
 
+            if kind == "unknown" || sha256.as_ref().map_or(true, |hex| !is_valid_sha256(hex)) {
+                log::warn!("[Update] 忽略缺少有效 SHA-256 的安装资源: {}", name);
+                return None;
+            }
+
             Some(UpdateAsset {
                 name,
                 download_url,
@@ -3309,20 +3333,20 @@ fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
         .collect()
 }
 
-/// 构造一个「已是最新」的结果（用于错误降级）
+/// 构造一个「暂时无法检查」的结果（用于错误降级）
 ///
 /// 错误原因仅写入日志，不暴露给前端 message。
-fn up_to_date_result(current_version: &str, log_reason: &str) -> UpdateCheckResult {
-    log::info!("[Update] 降级为「已是最新」，原因：{}", log_reason);
+fn unavailable_result(current_version: &str, log_reason: &str) -> UpdateCheckResult {
+    log::warn!("[Update] 暂时无法检查更新，原因：{}", log_reason);
     UpdateCheckResult {
         has_update: false,
         current_version: current_version.to_string(),
-        latest_version: current_version.to_string(),
+        latest_version: String::new(),
         release_name: String::new(),
         published_at: String::new(),
         release_notes: String::new(),
         assets: Vec::new(),
-        message: format!("已是最新版本（{}）", current_version),
+        message: "暂时无法检查更新，请确认网络连接后重试".to_string(),
     }
 }
 
@@ -3346,7 +3370,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         Ok(c) => c,
         Err(e) => {
             log::warn!("[Update] 构造 HTTP 客户端失败: {}", e);
-            return Ok(up_to_date_result(
+            return Ok(unavailable_result(
                 &current_version,
                 &format!("client build failed: {}", e),
             ));
@@ -3364,7 +3388,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         Ok(r) => r,
         Err(e) => {
             log::warn!("[Update] 请求失败: {}", e);
-            return Ok(up_to_date_result(
+            return Ok(unavailable_result(
                 &current_version,
                 &format!("request failed: {}", e),
             ));
@@ -3381,7 +3405,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
             status,
             body.len()
         );
-        return Ok(up_to_date_result(
+        return Ok(unavailable_result(
             &current_version,
             &format!("http status {}", status),
         ));
@@ -3392,7 +3416,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         Ok(v) => v,
         Err(e) => {
             log::warn!("[Update] JSON 解析失败: {}", e);
-            return Ok(up_to_date_result(&current_version, "json parse failed"));
+            return Ok(unavailable_result(&current_version, "json parse failed"));
         }
     };
 
@@ -3405,7 +3429,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 
     if tag_name.is_empty() {
         log::warn!("[Update] Release 不含 tag_name 字段");
-        return Ok(up_to_date_result(&current_version, "missing tag_name"));
+        return Ok(unavailable_result(&current_version, "missing tag_name"));
     }
 
     // 剥离前导 'v' 或 'V'
@@ -3467,7 +3491,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 /// 流式下载安装包到临时目录，并通过 `update-download-progress` 事件
 /// 推送下载进度（payload: `DownloadProgress`）。
 ///
-/// 完整性校验（L14）：若提供 `expected_sha256`，下载完成后计算文件
+/// 完整性校验：`expected_sha256` 必填，下载完成后及安装前都会计算文件
 /// SHA-256 并比对，不匹配则删除文件并返回错误，防止安装被篡改的包。
 /// 此外校验 `filename` 不含路径分隔符，防止路径穿越写出临时目录。
 ///
@@ -3481,10 +3505,22 @@ pub async fn download_update(
 ) -> Result<String, String> {
     log::info!("[Update] 开始下载: {}", url);
 
-    // 防御路径穿越：仅允许安全的文件名（不含路径分隔符与 ..）
+    let parsed_url = reqwest::Url::parse(&url).map_err(|_| "无效的下载地址".to_string())?;
+    if !is_allowed_update_url(&parsed_url, true) {
+        return Err("仅允许从 StudyAgent 官方 GitHub Release 下载更新".to_string());
+    }
+
+    let expected = expected_sha256
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| is_valid_sha256(value))
+        .ok_or_else(|| "该安装包缺少有效的 SHA-256，已拒绝下载".to_string())?;
+
+    // 防御路径穿越：仅允许安全的 Windows 安装包文件名。
+    let lower_filename = filename.to_lowercase();
     if filename.is_empty()
         || filename.contains(['/', '\\'])
-        || filename.split('.').any(|seg| seg.is_empty() || seg == "..")
+        || !filename.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        || !(lower_filename.ends_with(".exe") || lower_filename.ends_with(".msi"))
     {
         return Err("无效的文件名".to_string());
     }
@@ -3500,6 +3536,15 @@ pub async fn download_update(
     // 构造客户端（长超时，下载可能很大）
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3600))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > 5 {
+                attempt.error("更新下载重定向次数过多")
+            } else if is_allowed_update_url(attempt.url(), false) {
+                attempt.follow()
+            } else {
+                attempt.error("更新下载被重定向到不可信主机")
+            }
+        }))
         .user_agent(format!("StudyAgent/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| format!("初始化下载失败: {}", e))?;
@@ -3515,6 +3560,10 @@ pub async fn download_update(
     }
 
     let total = response.content_length().unwrap_or(0);
+    const MAX_UPDATE_BYTES: u64 = 1024 * 1024 * 1024;
+    if total > MAX_UPDATE_BYTES {
+        return Err("安装包超过 1 GiB 安全上限".to_string());
+    }
     log::info!("[Update] 文件大小: {} 字节", total);
 
     let mut file = std::fs::File::create(&file_path)
@@ -3527,11 +3576,24 @@ pub async fn download_update(
         let chunk = match response.chunk().await {
             Ok(Some(c)) => c,
             Ok(None) => break,
-            Err(e) => return Err(format!("下载流读取失败: {}", e)),
+            Err(e) => {
+                drop(file);
+                let _ = std::fs::remove_file(&file_path);
+                return Err(format!("下载流读取失败: {}", e));
+            }
         };
 
-        std::io::Write::write_all(&mut file, &chunk)
-            .map_err(|e| format!("写入文件失败: {}", e))?;
+        if downloaded.saturating_add(chunk.len() as u64) > MAX_UPDATE_BYTES {
+            drop(file);
+            let _ = std::fs::remove_file(&file_path);
+            return Err("安装包超过 1 GiB 安全上限".to_string());
+        }
+
+        if let Err(error) = std::io::Write::write_all(&mut file, &chunk) {
+            drop(file);
+            let _ = std::fs::remove_file(&file_path);
+            return Err(format!("写入文件失败: {error}"));
+        }
 
         downloaded += chunk.len() as u64;
 
@@ -3564,26 +3626,23 @@ pub async fn download_update(
         },
     );
 
-    // 完整性校验（L14）：比对期望 SHA-256，不匹配则删除文件并报错
-    if let Some(expected) = expected_sha256 {
-        let expected = expected.trim().to_lowercase();
-        if !expected.is_empty() {
-            let actual = sha256_hex(&file_path)
-                .map_err(|e| format!("计算下载文件校验和失败: {}", e))?;
-            log::info!(
-                "[Update] 完整性校验: expected={} actual={}",
-                expected,
-                actual
-            );
-            if actual != expected {
-                let _ = std::fs::remove_file(&file_path);
-                return Err(
-                    "下载文件完整性校验失败（SHA-256 不匹配），已删除文件，请重试或稍后再更新".to_string(),
-                );
-            }
-            log::info!("[Update] 文件 SHA-256 校验通过");
-        }
+    // 完整性校验：SHA-256 必填且必须匹配。
+    drop(file);
+    let actual = sha256_hex(&file_path)
+        .map_err(|e| format!("计算下载文件校验和失败: {}", e))?;
+    if actual != expected {
+        let _ = std::fs::remove_file(&file_path);
+        return Err(
+            "下载文件完整性校验失败（SHA-256 不匹配），已删除文件，请重试或稍后再更新".to_string(),
+        );
     }
+    let canonical = std::fs::canonicalize(&file_path)
+        .map_err(|e| format!("确认安装包路径失败: {e}"))?;
+    verified_updates()
+        .lock()
+        .map_err(|_| "更新校验状态不可用".to_string())?
+        .insert(canonical, expected);
+    log::info!("[Update] 文件 SHA-256 校验通过");
 
     let path_str = file_path.to_string_lossy().to_string();
     log::info!("[Update] 下载完成: {} ({} 字节)", path_str, downloaded);
@@ -3611,6 +3670,32 @@ fn sha256_hex(path: &std::path::Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn is_valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_allowed_update_url(url: &reqwest::Url, require_release_path: bool) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if require_release_path {
+        host == "github.com"
+            && url.path().starts_with("/Wenjiugugugu/StudyAgent-client/releases/download/")
+    } else {
+        host == "github.com"
+            || host == "objects.githubusercontent.com"
+            || host == "release-assets.githubusercontent.com"
+    }
+}
+
+fn verified_updates() -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>> {
+    static VERIFIED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>>,
+    > = std::sync::OnceLock::new();
+    VERIFIED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 /// 安装更新
 ///
 /// 启动下载好的安装包并退出当前应用。
@@ -3621,8 +3706,26 @@ pub async fn install_update(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let path = std::path::Path::new(&file_path);
-    if !path.exists() {
+    if !path.is_file() {
         return Err(format!("安装包不存在: {}", file_path));
+    }
+
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("确认安装包路径失败: {e}"))?;
+    let canonical_temp = std::fs::canonicalize(std::env::temp_dir().join("StudyAgent-update"))
+        .map_err(|e| format!("确认更新目录失败: {e}"))?;
+    if !canonical.starts_with(&canonical_temp) {
+        return Err("只能安装由 StudyAgent 下载并校验的更新包".to_string());
+    }
+    let expected = verified_updates()
+        .lock()
+        .map_err(|_| "更新校验状态不可用".to_string())?
+        .remove(&canonical)
+        .ok_or_else(|| "安装包未通过本次运行的完整性校验，请重新下载".to_string())?;
+    let actual = sha256_hex(&canonical)?;
+    if actual != expected {
+        let _ = std::fs::remove_file(&canonical);
+        return Err("安装前完整性复核失败，安装包已删除".to_string());
     }
 
     log::info!("[Update] 启动安装程序: {}", file_path);
@@ -3632,14 +3735,25 @@ pub async fn install_update(
     {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x00000008;
-        std::process::Command::new(&file_path)
+        let is_msi = canonical
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("msi"));
+        let mut command = if is_msi {
+            let mut command = std::process::Command::new("msiexec.exe");
+            command.arg("/i").arg(&canonical);
+            command
+        } else {
+            std::process::Command::new(&canonical)
+        };
+        command
             .creation_flags(DETACHED_PROCESS)
             .spawn()
             .map_err(|e| format!("启动安装程序失败: {}", e))?;
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::process::Command::new(&file_path)
+        std::process::Command::new(&canonical)
             .spawn()
             .map_err(|e| format!("启动安装程序失败: {}", e))?;
     }

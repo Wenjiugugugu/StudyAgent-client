@@ -27,6 +27,7 @@ import { useAppVersion } from "@/version";
 const { theme, toggleTheme } = useTheme();
 const settingsStore = useSettingsStore();
 const route = useRoute();
+const isDev = import.meta.env.DEV;
 
 // ── 侧边栏收展（收起后仅显示图标）──
 const COLLAPSE_KEY = "studyagent.sidebar.collapsed";
@@ -101,7 +102,9 @@ const menuEntries: MenuEntry[] = [
   { kind: "item", item: { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" } },
   { kind: "item", item: { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" } },
   { kind: "item", item: { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" } },
-  { kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } },
+  ...(isDev
+    ? [{ kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } } as MenuEntry]
+    : []),
 ];
 
 /** 「计划」二级菜单是否展开：命中任一子项或一级项时展开 */
@@ -181,11 +184,13 @@ function onPlanClick() {
 
           <!-- 展开态：一级菜单 + 内联二级菜单（二级图标融入回去） -->
           <template v-if="!collapsed">
-            <router-link
-              :to="planGroup.path"
+            <button
+              type="button"
               class="nav-item"
               :class="{ active: isPlanActive() }"
-              @click.prevent="onPlanClick"
+              :aria-expanded="planOpen"
+              aria-controls="plan-subnav"
+              @click="onPlanClick"
             >
               <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
               <span class="nav-label">{{ planGroup.label }}</span>
@@ -194,8 +199,8 @@ function onPlanClick() {
                 :class="{ open: planOpen }"
                 aria-hidden="true"
               ></span>
-            </router-link>
-            <div v-show="planOpen" class="nav-children">
+            </button>
+            <div id="plan-subnav" v-show="planOpen" class="nav-children">
               <router-link
                 v-for="c in planGroup.children"
                 :key="c.name"
@@ -215,6 +220,7 @@ function onPlanClick() {
     <!-- Bottom Section -->
     <div class="sidebar-bottom">
       <router-link
+        v-if="isDev"
         to="/debug"
         class="nav-item bottom-item"
         active-class="active"
@@ -234,7 +240,7 @@ function onPlanClick() {
         <span class="nav-label">设置</span>
       </router-link>
 
-      <button class="nav-item theme-toggle" @click="toggleTheme" :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''">
+      <button type="button" class="nav-item theme-toggle" @click="toggleTheme" :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''">
         <component :is="theme === 'dark' ? SunMedium : Moon" :size="19" :stroke-width="1.5" class="nav-icon" />
         <span class="nav-label">{{ theme === "dark" ? "浅色" : "深色" }}</span>
       </button>
@@ -247,7 +253,7 @@ function onPlanClick() {
         <span>Beta {{ version }}</span>
       </router-link>
 
-      <button class="nav-item collapse-toggle" @click="toggleCollapse" :title="collapsed ? '展开侧边栏' : '收起侧边栏'">
+      <button type="button" class="nav-item collapse-toggle" @click="toggleCollapse" :aria-label="collapsed ? '展开侧边栏' : '收起侧边栏'" :title="collapsed ? '展开侧边栏' : '收起侧边栏'">
         <component :is="collapsed ? ChevronsRight : ChevronsLeft" :size="19" :stroke-width="1.5" class="nav-icon" />
         <span class="nav-label">{{ collapsed ? "" : "收起侧边栏" }}</span>
       </button>
@@ -272,7 +278,6 @@ function onPlanClick() {
   border-right: 1px solid var(--border-color);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.4);
   user-select: none;
-  transition: width var(--transition-normal), min-width var(--transition-normal);
 }
 
 /* 收起态：仅显示图标 */
@@ -353,7 +358,7 @@ function onPlanClick() {
   border-radius: var(--radius-md);
   background: var(--accent-subtle);
   z-index: 0;
-  transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1), height 0.2s ease, opacity 0.2s ease;
+  transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.2s ease;
   pointer-events: none;
 }
 

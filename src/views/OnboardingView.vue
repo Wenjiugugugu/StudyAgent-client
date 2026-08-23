@@ -83,6 +83,7 @@ const showApiKey = ref(false);
 const finishing = ref(false);
 // H32：initState 失败时的错误信息（保留用户停留在引导页）
 const errorMessage = ref("");
+const stepError = ref("");
 
 const step = computed(() => steps[currentStep.value]);
 const isFirstStep = computed(() => currentStep.value === 0);
@@ -169,8 +170,51 @@ const activeSubjects = computed(() => {
   return list;
 });
 
+const validationMessage = computed(() => {
+  switch (step.value.key) {
+    case "name":
+      if (!userName.value.trim()) return "请填写一个称呼。";
+      if (userName.value.trim().length > 40) return "称呼请控制在 40 个字符以内。";
+      break;
+    case "school":
+      if (!targetSchool.value.trim() || !targetMajor.value.trim()) return "请填写目标院校和目标专业。";
+      break;
+    case "subjects":
+    case "progress":
+      if (activeSubjects.value.length === 0) return "请至少选择一个考试科目。";
+      if (hasProfessional.value && !professionalName.value.trim()) return "请填写专业课名称。";
+      break;
+    case "exam":
+      if (!targetScore.value || targetScore.value < 1 || targetScore.value > 500) return "目标分数需在 1–500 之间。";
+      break;
+    case "date": {
+      const year = new Date().getFullYear();
+      if (!Number.isInteger(examYear.value) || examYear.value < year || examYear.value > year + 3) return `请选择 ${year}–${year + 3} 年。`;
+      break;
+    }
+    case "schedule":
+      if (studyDaysPerWeek.value < 1) return "每周至少保留 1 个学习日。";
+      if (startTime.value >= endTime.value) return "每日结束时间必须晚于开始时间。";
+      if (dailyTargetHours.value < 1 || dailyTargetHours.value > 16) return "每日学习时长需在 1–16 小时之间。";
+      if (dailyTaskCount.value < 1 || dailyTaskCount.value > 8) return "每日任务数需在 1–8 之间。";
+      break;
+    case "ai": {
+      const provider = providerForm.value;
+      const started = provider.base_url.trim() || provider.api_key.trim() || provider.model.trim();
+      if (started && (!provider.base_url.trim() || !provider.model.trim())) return "配置 AI 时请至少填写 Base URL 和 Model；也可以直接跳过。";
+      break;
+    }
+  }
+  return "";
+});
+
 // ── 步骤导航 ──
 function next() {
+  if (validationMessage.value) {
+    stepError.value = validationMessage.value;
+    return;
+  }
+  stepError.value = "";
   direction.value = "forward";
   persistCurrentStep();
   if (isLastStep.value) { finish(); return; }
@@ -178,12 +222,14 @@ function next() {
 }
 
 function prev() {
+  stepError.value = "";
   direction.value = "backward";
   if (isFirstStep.value) return;
   currentStep.value = Math.max(currentStep.value - 1, 0);
 }
 
 function skip() {
+  stepError.value = "";
   direction.value = "forward";
   currentStep.value = Math.min(currentStep.value + 1, steps.length - 1);
 }
@@ -243,6 +289,28 @@ function persistCurrentStep() {
 }
 
 async function finish() {
+  const currentYear = new Date().getFullYear();
+  const invalidCore =
+    !userName.value.trim() ||
+    !targetSchool.value.trim() ||
+    !targetMajor.value.trim() ||
+    activeSubjects.value.length === 0 ||
+    (hasProfessional.value && !professionalName.value.trim()) ||
+    !targetScore.value ||
+    targetScore.value < 1 ||
+    targetScore.value > 500 ||
+    examYear.value < currentYear ||
+    examYear.value > currentYear + 3 ||
+    studyDaysPerWeek.value < 1 ||
+    startTime.value >= endTime.value ||
+    dailyTargetHours.value < 1 ||
+    dailyTargetHours.value > 16 ||
+    dailyTaskCount.value < 1 ||
+    dailyTaskCount.value > 8;
+  if (invalidCore) {
+    errorMessage.value = "基础信息不完整，请返回前面的步骤补全后再完成配置。";
+    return;
+  }
   const s = settingsStore.settings;
   if (!s) return;
   finishing.value = true;
@@ -410,7 +478,7 @@ onUnmounted(() => {
       <!-- Step indicator -->
       <div class="step-indicator" v-if="!isFirstStep && !isLastStep">
         <div class="step-track">
-          <div class="step-progress" :style="{ width: `${progress}%` }" />
+          <div class="step-progress" :style="{ transform: `scaleX(${progress / 100})` }" />
         </div>
         <div class="step-dots">
           <button
@@ -481,10 +549,12 @@ onUnmounted(() => {
                 <h2 class="form-title">{{ step.title }}</h2>
                 <p class="form-desc">{{ step.description }}</p>
                 <div class="field">
-                  <label class="field-label">用户称呼</label>
+                  <label class="field-label" for="onboarding-name">用户称呼</label>
                   <input
                     v-model="userName"
+                    id="onboarding-name"
                     type="text"
+                    maxlength="40"
                     class="field-input"
                     placeholder="如：小明"
                     autofocus
@@ -528,34 +598,34 @@ onUnmounted(() => {
                 <div class="subject-block">
                   <label class="field-label">数学</label>
                   <div class="option-grid cols-4">
-                    <button class="option-chip" :class="{ active: mathVersion === '' }" @click="mathVersion = ''">不考</button>
-                    <button class="option-chip" :class="{ active: mathVersion === '数一' }" @click="mathVersion = '数一'">数一</button>
-                    <button class="option-chip" :class="{ active: mathVersion === '数二' }" @click="mathVersion = '数二'">数二</button>
-                    <button class="option-chip" :class="{ active: mathVersion === '数三' }" @click="mathVersion = '数三'">数三</button>
+                    <button type="button" class="option-chip" :aria-pressed="mathVersion === ''" :class="{ active: mathVersion === '' }" @click="mathVersion = ''">不考</button>
+                    <button type="button" class="option-chip" :aria-pressed="mathVersion === '数一'" :class="{ active: mathVersion === '数一' }" @click="mathVersion = '数一'">数一</button>
+                    <button type="button" class="option-chip" :aria-pressed="mathVersion === '数二'" :class="{ active: mathVersion === '数二' }" @click="mathVersion = '数二'">数二</button>
+                    <button type="button" class="option-chip" :aria-pressed="mathVersion === '数三'" :class="{ active: mathVersion === '数三' }" @click="mathVersion = '数三'">数三</button>
                   </div>
                 </div>
                 <!-- 英语 -->
                 <div class="subject-block">
                   <label class="field-label">英语</label>
                   <div class="option-grid cols-4">
-                    <button class="option-chip" :class="{ active: englishVersion === '' }" @click="englishVersion = ''">不考</button>
-                    <button class="option-chip" :class="{ active: englishVersion === '英一' }" @click="englishVersion = '英一'">英一</button>
-                    <button class="option-chip" :class="{ active: englishVersion === '英二' }" @click="englishVersion = '英二'">英二</button>
-                    <button class="option-chip" :class="{ active: englishVersion === '英三' }" @click="englishVersion = '英三'">英三</button>
+                    <button type="button" class="option-chip" :aria-pressed="englishVersion === ''" :class="{ active: englishVersion === '' }" @click="englishVersion = ''">不考</button>
+                    <button type="button" class="option-chip" :aria-pressed="englishVersion === '英一'" :class="{ active: englishVersion === '英一' }" @click="englishVersion = '英一'">英一</button>
+                    <button type="button" class="option-chip" :aria-pressed="englishVersion === '英二'" :class="{ active: englishVersion === '英二' }" @click="englishVersion = '英二'">英二</button>
+                    <button type="button" class="option-chip" :aria-pressed="englishVersion === '英三'" :class="{ active: englishVersion === '英三' }" @click="englishVersion = '英三'">英三</button>
                   </div>
                 </div>
                 <!-- 政治 -->
                 <div class="subject-block">
                   <label class="field-label">政治</label>
                   <div class="option-grid cols-2">
-                    <button class="option-chip" :class="{ active: hasPolitics }" @click="hasPolitics = !hasPolitics">{{ hasPolitics ? '已选择' : '不考' }}</button>
+                    <button type="button" class="option-chip" :aria-pressed="hasPolitics" :class="{ active: hasPolitics }" @click="hasPolitics = !hasPolitics">{{ hasPolitics ? '已选择' : '不考' }}</button>
                   </div>
                 </div>
                 <!-- 专业课 -->
                 <div class="subject-block">
                   <label class="field-label">专业课</label>
                   <div class="option-grid cols-2">
-                    <button class="option-chip" :class="{ active: hasProfessional }" @click="hasProfessional = !hasProfessional">{{ hasProfessional ? '已选择' : '不考' }}</button>
+                    <button type="button" class="option-chip" :aria-pressed="hasProfessional" :class="{ active: hasProfessional }" @click="hasProfessional = !hasProfessional">{{ hasProfessional ? '已选择' : '不考' }}</button>
                   </div>
                   <input v-if="hasProfessional" v-model="professionalName" type="text" class="field-input" placeholder="如：408计算机综合" style="margin-top: var(--space-2)" />
                 </div>
@@ -581,6 +651,8 @@ onUnmounted(() => {
                     <label class="field-label">当前阶段</label>
                     <div class="option-grid cols-4">
                       <button v-for="ph in phaseOptions" :key="ph" class="option-chip"
+                        type="button"
+                        :aria-pressed="(progressPhase[subj.key] || 'foundation') === ph"
                         :class="{ active: (progressPhase[subj.key] || 'foundation') === ph }"
                         @click="progressPhase[subj.key] = ph">
                         {{ phaseLabels[ph] }}
@@ -689,6 +761,7 @@ onUnmounted(() => {
                       :key="day"
                       type="button"
                       class="option-chip"
+                      :aria-pressed="restDays.includes(day)"
                       :class="{ active: restDays.includes(day) }"
                       @click="toggleRestDay(day)"
                     >
@@ -724,16 +797,16 @@ onUnmounted(() => {
                 <div class="field">
                   <label class="field-label">是否安排总结/复习任务</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :class="{ active: enableReviewTasks }" @click="enableReviewTasks = true">安排（推荐）</button>
-                    <button type="button" class="option-chip" :class="{ active: !enableReviewTasks }" @click="enableReviewTasks = false">只推进新知识点</button>
+                    <button type="button" class="option-chip" :aria-pressed="enableReviewTasks" :class="{ active: enableReviewTasks }" @click="enableReviewTasks = true">安排（推荐）</button>
+                    <button type="button" class="option-chip" :aria-pressed="!enableReviewTasks" :class="{ active: !enableReviewTasks }" @click="enableReviewTasks = false">只推进新知识点</button>
                   </div>
                   <p class="field-hint">关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。</p>
                 </div>
                 <div class="field">
                   <label class="field-label">记录学习时长</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :class="{ active: enableTimeTracking }" @click="enableTimeTracking = true">开启</button>
-                    <button type="button" class="option-chip" :class="{ active: !enableTimeTracking }" @click="enableTimeTracking = false">不开启（默认）</button>
+                    <button type="button" class="option-chip" :aria-pressed="enableTimeTracking" :class="{ active: enableTimeTracking }" @click="enableTimeTracking = true">开启</button>
+                    <button type="button" class="option-chip" :aria-pressed="!enableTimeTracking" :class="{ active: !enableTimeTracking }" @click="enableTimeTracking = false">不开启（默认）</button>
                   </div>
                   <p class="field-hint">开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。</p>
                 </div>
@@ -765,8 +838,8 @@ onUnmounted(() => {
                 <div class="field">
                   <label class="field-label">开机启动</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :class="{ active: autostartEnabled }" @click="setAutostart(true)">开机自启</button>
-                    <button type="button" class="option-chip" :class="{ active: !autostartEnabled }" @click="setAutostart(false)">不自启</button>
+                    <button type="button" class="option-chip" :aria-pressed="autostartEnabled" :class="{ active: autostartEnabled }" @click="setAutostart(true)">开机自启</button>
+                    <button type="button" class="option-chip" :aria-pressed="!autostartEnabled" :class="{ active: !autostartEnabled }" @click="setAutostart(false)">不自启</button>
                   </div>
                   <p class="field-hint">开启后开机时自动启动 StudyAgent，可在「设置 → 通用」中修改。</p>
                 </div>
@@ -831,7 +904,7 @@ onUnmounted(() => {
                       class="field-input"
                       placeholder="sk-..."
                     />
-                    <button class="input-suffix-btn" type="button" @click="showApiKey = !showApiKey">
+                    <button class="input-suffix-btn" type="button" :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'" @click="showApiKey = !showApiKey">
                       <component :is="showApiKey ? EyeOff : Eye" :size="15" />
                     </button>
                   </div>
@@ -900,6 +973,8 @@ onUnmounted(() => {
             <ArrowRight :size="16" />
           </Button>
         </div>
+
+        <p v-if="stepError" class="step-error" role="alert">{{ stepError }}</p>
 
         <!-- H32：初始化失败错误提示 -->
         <p v-if="errorMessage" class="init-error">{{ errorMessage }}</p>
@@ -972,10 +1047,12 @@ onUnmounted(() => {
 }
 
 .step-progress {
+  width: 100%;
   height: 100%;
   background: var(--accent);
   border-radius: var(--radius-full);
-  transition: width var(--transition-normal);
+  transform-origin: left center;
+  transition: transform var(--transition-normal);
 }
 
 .step-dots {
@@ -1415,6 +1492,7 @@ onUnmounted(() => {
 /* Footer actions */
 .step-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -1432,6 +1510,13 @@ onUnmounted(() => {
   color: var(--color-danger);
   font-size: var(--font-size-sm);
   text-align: center;
+}
+
+.step-error {
+  flex-basis: 100%;
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  text-align: right;
 }
 
 /* Step transitions */

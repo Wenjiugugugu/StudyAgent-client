@@ -550,6 +550,10 @@ async function saveProvider() {
 }
 
 async function removeProvider(id: string) {
+  const provider = settingsStore.aiProviders.find((item) => item.id === id);
+  if (!provider) return;
+  const defaultWarning = provider.is_default ? " 这是当前默认 Provider，删除后将自动切换到列表中的下一项。" : "";
+  if (!window.confirm(`确定删除 AI Provider「${provider.name}」吗？${defaultWarning}`)) return;
   settingsStore.removeProvider(id);
   // H33：修改后立即持久化，避免刷新丢失
   await settingsStore.save();
@@ -1733,10 +1737,10 @@ onBeforeUnmount(() => {
               >
                 设为默认
               </Button>
-              <Button variant="ghost" size="sm" icon @click="editProvider(provider)">
+              <Button variant="ghost" size="sm" icon :aria-label="`编辑 ${provider.name}`" @click="editProvider(provider)">
                 <Pencil :size="14" />
               </Button>
-              <Button variant="ghost" size="sm" icon @click="removeProvider(provider.id)">
+              <Button variant="ghost" size="sm" icon :aria-label="`删除 ${provider.name}`" @click="removeProvider(provider.id)">
                 <Trash2 :size="14" />
               </Button>
             </div>
@@ -3414,7 +3418,7 @@ onBeforeUnmount(() => {
   /* 用 transform 配合 transform-origin 限制在 icon 自身 */
   transform-box: fill-box;
   transform-origin: center;
-  animation: check-pop var(--transition-bounce);
+  animation: check-pop 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes check-pop {
@@ -3728,7 +3732,6 @@ onBeforeUnmount(() => {
   height: 100%;
   background: var(--accent);
   border-radius: var(--radius-xs);
-  transition: width 0.2s ease;
 }
 
 .progress-detail {

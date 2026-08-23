@@ -27,8 +27,8 @@ body {
   color: var(--text-primary);
   background-color: var(--bg-solid);
   overflow: hidden;
-  user-select: none;
-  -webkit-user-select: none;
+  user-select: text;
+  -webkit-user-select: text;
   letter-spacing: -0.01em;
 }
 
@@ -36,6 +36,11 @@ body {
 input, textarea, .code-block, .debug-view, .copyable, [data-copyable] {
   user-select: text;
   -webkit-user-select: text;
+}
+
+button, [role="button"], .sidebar, [data-tauri-drag-region] {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #app {
@@ -116,6 +121,19 @@ code, pre {
   outline: none;
   box-shadow: 0 0 0 3px var(--accent-subtle), 0 0 0 1.5px var(--accent);
   border-radius: var(--radius-xs);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :focus-visible { outline: 2px solid CanvasText; }
 }
 
 /* ── Utility Classes ── */

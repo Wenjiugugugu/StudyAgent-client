@@ -10,7 +10,7 @@
  *   </template>
  * </Modal>
  */
-import { onMounted, onBeforeUnmount, watch } from "vue";
+import { nextTick, onMounted, onBeforeUnmount, ref, useId, watch } from "vue";
 import { X } from "lucide-vue-next";
 import { registerModal, unregisterModal, isTopModal } from "./modal-stack";
 
@@ -42,6 +42,19 @@ const emit = defineEmits<{
   (e: "close"): void;
 }>();
 
+const dialogRef = ref<HTMLElement | null>(null);
+const titleId = `modal-title-${useId()}`;
+let previouslyFocused: HTMLElement | null = null;
+
+const focusableSelector = [
+  "button:not([disabled])",
+  "[href]",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
 function close() {
   emit("close");
 }
@@ -51,12 +64,29 @@ function onOverlayClick() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key !== "Escape") return;
   // 多个模态叠放时只允许最顶层响应 ESC，避免一次关闭全部；顶层不可关闭时不向下穿透
   if (!isTopModal(modalKey)) return;
-  if (props.open && props.closeOnEsc) {
+  if (e.key === "Escape" && props.open && props.closeOnEsc) {
     e.preventDefault();
     close();
+    return;
+  }
+  if (e.key === "Tab" && props.open && dialogRef.value) {
+    const focusable = Array.from(dialogRef.value.querySelectorAll<HTMLElement>(focusableSelector));
+    if (focusable.length === 0) {
+      e.preventDefault();
+      dialogRef.value.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   }
 }
 
@@ -81,6 +111,16 @@ watch(
   (v) => {
     if (typeof document === "undefined") return;
     document.body.style.overflow = v ? "hidden" : "";
+    if (v) {
+      previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      nextTick(() => {
+        const target = dialogRef.value?.querySelector<HTMLElement>(focusableSelector) ?? dialogRef.value;
+        target?.focus();
+      });
+    } else {
+      previouslyFocused?.focus();
+      previouslyFocused = null;
+    }
   }
 );
 </script>
@@ -89,13 +129,17 @@ watch(
   <transition name="modal-fade">
     <div v-if="open" class="modal-overlay" @click.self="onOverlayClick">
       <div
+        ref="dialogRef"
         class="modal-dialog"
         :style="{ width: `${width}px`, maxWidth: 'calc(100vw - 32px)' }"
         role="dialog"
         aria-modal="true"
+        :aria-labelledby="title ? titleId : undefined"
+        :aria-label="title ? undefined : '对话框'"
+        tabindex="-1"
       >
         <header v-if="title || showClose" class="modal-header">
-          <h3 class="modal-title">{{ title }}</h3>
+          <h3 :id="titleId" class="modal-title">{{ title }}</h3>
           <button v-if="showClose" class="modal-close" type="button" @click="close" aria-label="关闭">
             <X :size="16" />
           </button>
@@ -158,8 +202,8 @@ watch(
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 44px;
+  height: 44px;
   border: none;
   background: transparent;
   color: var(--text-tertiary);

@@ -106,6 +106,7 @@ async function checkSelectedDateExcluded() {
 // ── State ──
 const step = ref(0);
 const totalSteps = 6;
+const quickMode = ref(false);
 const submitting = ref(false);
 const loading = ref(true);
 const existingReview = ref<ReviewRecord | null>(null);
@@ -403,6 +404,7 @@ function initFromReview(review: ReviewRecord) {
 
 function resetForm() {
   step.value = 0;
+  quickMode.value = false;
   taskCompleted.value = {};
   taskBlockers.value = {};
   blockerNotes.value = {};
@@ -422,8 +424,20 @@ function canNext(): boolean {
   }
 }
 
+function startQuickReview() {
+  quickMode.value = true;
+  step.value = 3;
+}
+
 function goNext() { if (step.value < totalSteps - 1) step.value++; }
-function goPrev() { if (step.value > 0) step.value--; }
+function goPrev() {
+  if (quickMode.value && step.value === 3) {
+    quickMode.value = false;
+    step.value = 0;
+  } else if (step.value > 0) {
+    step.value--;
+  }
+}
 
 // ── Submit ──
 async function doSubmit() {
@@ -979,6 +993,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             :class="{ active: i - 1 === step, done: i - 1 < step }" />
         </div>
         <span class="step-label">{{ step + 1 }} / {{ totalSteps }}</span>
+        <Button v-if="step === 0" variant="ghost" size="sm" @click="startQuickReview">
+          <Clock :size="14" /> 快速复盘（约 30 秒）
+        </Button>
       </div>
 
       <!-- Step 1: Task Completion -->
@@ -1003,6 +1020,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
               <span class="tri-title">{{ task.title }}</span>
             </div>
             <button type="button" class="check-btn" :class="{ checked: taskCompleted[task.id] }"
+              :aria-pressed="taskCompleted[task.id]"
               @click="taskCompleted[task.id] = !taskCompleted[task.id]">
               <CheckCircle2 v-if="taskCompleted[task.id]" :size="18" />
               <Circle v-else :size="18" />
@@ -1066,7 +1084,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         <h2 class="step-title">整体学习感受</h2>
         <p class="step-desc">{{ isYesterday ? '昨天' : '今天' }}整体学习感觉如何？</p>
         <div class="feeling-grid">
-          <button v-for="opt in feelingOptions" :key="opt.value" type="button" class="feeling-chip"
+            <button v-for="opt in feelingOptions" :key="opt.value" type="button" class="feeling-chip"
+            :aria-pressed="overallFeeling === opt.value"
             :class="{ active: overallFeeling === opt.value }" @click="overallFeeling = opt.value">
             <span class="feeling-emoji">{{ opt.icon }}</span>
             <span>{{ opt.label }}</span>
@@ -1080,6 +1099,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         <p class="step-desc">{{ isYesterday ? '昨天' : '今天' }}最大的困难是什么？用于 Analytics 分析。</p>
         <div class="difficulty-grid">
           <button v-for="opt in difficultyOptions" :key="opt.value" type="button" class="difficulty-chip"
+            :aria-pressed="mainDifficulty === opt.value"
             :class="{ active: mainDifficulty === opt.value }"
             @click="mainDifficulty = mainDifficulty === opt.value ? '' : opt.value">{{ opt.label }}</button>
         </div>
@@ -1125,7 +1145,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       <div class="step-nav">
         <Button v-if="step > 0" variant="ghost" @click="goPrev"><ArrowLeft :size="16" /> 上一步</Button>
         <div class="nav-right">
-          <Button v-if="step < totalSteps - 1" variant="primary" :disabled="!canNext()" @click="goNext">
+          <Button v-if="step < totalSteps - 1 && !(quickMode && step === 4)" variant="primary" :disabled="!canNext()" @click="goNext">
             下一步 <ArrowRight :size="16" />
           </Button>
           <Button v-else variant="primary" @click="doSubmit" :loading="submitting">

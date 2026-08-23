@@ -50,7 +50,7 @@ const emit = defineEmits<{
   (e: "change", value: string | number | null): void;
 }>();
 
-const slots = useSlots();
+const slots = useSlots() as { default?: () => VNode[] };
 const open = ref(false);
 const rootRef = ref<HTMLElement | null>(null);
 /** 键盘导航高亮索引（M17） */

@@ -44,7 +44,7 @@ const suggestions = computed(() => {
   const view = route.name as string;
   const map: Record<string, string[]> = {
     dashboard: ["本周学习进度如何？", "哪些任务有风险？", "帮我分析学习趋势"],
-    today: ["这个任务的重点是什么？", "帮我规划今天的时间", "解释一下这个知识点"],
+    plan: ["这个任务的重点是什么？", "帮我规划今天的时间", "解释一下这个知识点"],
     "week-plan": ["生成本周计划", "调整本周工作量", "分析本周目标"],
     knowledge: ["解释这个知识点", "这个知识点的依赖关系", "相关真题有哪些"],
     review: ["帮我写复盘总结", "分析今日困难原因", "给出改进建议"],
@@ -67,10 +67,10 @@ const suggestions = computed(() => {
         </div>
       </div>
       <div class="header-actions">
-        <button class="icon-btn" title="清空对话" @click="assistantStore.clearMessages()">
+        <button class="icon-btn" type="button" title="清空对话" aria-label="清空对话" @click="assistantStore.clearMessages()">
           <Trash2 :size="15" :stroke-width="1.5" />
         </button>
-        <button class="icon-btn" title="关闭" @click="assistantStore.closePanel()">
+        <button class="icon-btn" type="button" title="关闭" aria-label="关闭 AI 助手" @click="assistantStore.closePanel()">
           <X :size="16" :stroke-width="1.5" />
         </button>
       </div>
@@ -133,6 +133,8 @@ const suggestions = computed(() => {
         />
         <button
           class="send-btn"
+          type="button"
+          aria-label="发送消息"
           :disabled="!inputText.trim() || assistantStore.loading"
           @click="handleSend"
         >

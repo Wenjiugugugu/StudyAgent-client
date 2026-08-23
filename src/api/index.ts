@@ -758,18 +758,18 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
  *
  * @param url 下载地址（来自 UpdateAsset.download_url）
  * @param filename 保存到本地的文件名（来自 UpdateAsset.name）
- * @param expectedSha256 期望的 SHA-256（来自 UpdateAsset.sha256，可选）。
- *  后端下载完成后校验文件完整性，不匹配则删除文件并报错（L14）。
+ * @param expectedSha256 期望的 SHA-256（来自 UpdateAsset.sha256，必填）。
+ *  后端下载完成后及安装前都会复核完整性。
  */
 export async function downloadUpdate(
   url: string,
   filename: string,
-  expectedSha256?: string,
+  expectedSha256: string,
 ): Promise<string> {
   return invokeDirect<string>("download_update", {
     url,
     filename,
-    expected_sha256: expectedSha256 || null,
+    expected_sha256: expectedSha256,
   });
 }
 

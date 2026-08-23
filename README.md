@@ -13,7 +13,7 @@
 
 ### 学习执行
 - **今日学习** — 任务开始/暂停/完成，每项任务含目标、完成标准、教材、风格提示、备选方案
-- **科目进度追踪** — 数学(蓝)、英语(绿)、政治(橙)、专业课(紫) 分科展示进度
+- **科目进度追踪** — 数学(紫)、英语(橙)、政治(粉)、专业课(蓝) 分科展示进度
 - **知识库** — 搜索知识点、依赖关系、教材、真题，支持 LaTeX 渲染
 - **AI 助手** — 侧边栏 AI 面板，基于当前页面上下文提供答疑
 
@@ -51,7 +51,7 @@
 ### 安装依赖
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### 开发模式 (浏览器 + Mock 数据)
@@ -59,7 +59,7 @@ npm install
 无需 Rust，直接在浏览器中开发，所有 API 返回 Mock 数据：
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
 访问 `http://localhost:1420`
@@ -67,7 +67,7 @@ npm run dev
 ### 类型检查
 
 ```bash
-npm run type-check
+pnpm type-check
 ```
 
 ### Tauri 开发模式
@@ -75,13 +75,13 @@ npm run type-check
 需要安装 Rust toolchain：
 
 ```bash
-npm run tauri:dev
+pnpm tauri:dev
 ```
 
 ### 构建安装包
 
 ```bash
-npm run tauri:build
+pnpm tauri:build
 ```
 
 生成的安装包位于 `src-tauri/target/release/bundle/`。

@@ -23,6 +23,7 @@ pub mod ai;
 pub mod api;
 pub mod core;
 pub mod data;
+pub mod secrets;
 pub mod tools;
 
 use std::path::{Path, PathBuf};
@@ -397,6 +398,33 @@ pub fn load_settings(data_dir: &Path) -> AppSettings {
                     } else {
                         settings.data_dir = data_dir.to_string_lossy().to_string();
                     }
+                    let mut had_legacy_secret = false;
+                    let mut all_legacy_secrets_migrated = true;
+                    for provider in settings.ai_providers.iter_mut() {
+                        if !provider.api_key.is_empty() {
+                            had_legacy_secret = true;
+                            match secrets::set_provider_api_key(&provider.id, &provider.api_key) {
+                                Ok(()) => {}
+                                Err(error) => {
+                                    all_legacy_secrets_migrated = false;
+                                    log::warn!(
+                                        "迁移 Provider {} 的 API Key 到系统凭据库失败: {}",
+                                        provider.id,
+                                        error
+                                    );
+                                }
+                            }
+                        } else if let Ok(Some(api_key)) = secrets::get_provider_api_key(&provider.id) {
+                            provider.api_key = api_key;
+                        }
+                    }
+                    if had_legacy_secret && all_legacy_secrets_migrated {
+                        if let Err(error) = save_settings_file(data_dir, &settings) {
+                            log::warn!("清理 settings.json 中的旧 API Key 失败: {}", error);
+                        } else {
+                            log::info!("已将旧 API Key 迁移到系统凭据库");
+                        }
+                    }
                     log::info!("已加载 Settings: {:?}", path);
                     settings
                 }
@@ -431,7 +459,12 @@ pub fn save_settings_file(data_dir: &Path, settings: &AppSettings) -> Result<(),
         }
     }
 
-    let json = serde_json::to_string_pretty(settings)
+    // API Key 只进入系统凭据库，settings.json 与备份中永不落明文。
+    let mut persisted = settings.clone();
+    for provider in persisted.ai_providers.iter_mut() {
+        provider.api_key.clear();
+    }
+    let json = serde_json::to_string_pretty(&persisted)
         .map_err(|e| format!("序列化 Settings 失败: {}", e))?;
 
     crate::data::atomic_write(&path, &json)
@@ -567,7 +600,7 @@ pub async fn reinitialize_services(
     let existing = load_settings(&data_dir);
     let mut merged = settings;
     for p in merged.ai_providers.iter_mut() {
-        if p.api_key.is_empty() {
+        if p.api_key.is_empty() || p.api_key == secrets::CONFIGURED_SENTINEL {
             if let Some(old) = existing
                 .ai_providers
                 .iter()
@@ -575,6 +608,14 @@ pub async fn reinitialize_services(
             {
                 p.api_key = old.api_key.clone();
             }
+        }
+        if !p.api_key.is_empty() {
+            secrets::set_provider_api_key(&p.id, &p.api_key)?;
+        }
+    }
+    for old in &existing.ai_providers {
+        if !merged.ai_providers.iter().any(|provider| provider.id == old.id) {
+            secrets::delete_provider_api_key(&old.id)?;
         }
     }
     save_settings_file(&data_dir, &merged)?;

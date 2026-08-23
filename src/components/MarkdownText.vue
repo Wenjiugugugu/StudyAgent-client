@@ -16,19 +16,11 @@
  * 不引入第三方依赖。所有文本节点先 HTML 转义，再做 Markdown 替换，避免 XSS。
  */
 import { computed } from "vue";
+import { escapeHtml } from "@/utils/markdown";
 
 const props = defineProps<{
   content: string;
 }>();
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
 /** 行内代码占位符：使用 \u0001 控制字符 + 序号，避免被字符串处理过程截断（不依赖 NUL） */
 const CODE_PLACEHOLDER = (idx: number): string => `\u0001CODE_${idx}\u0001`;
