@@ -1,4 +1,4 @@
-﻿//! Tauri 命令定义 — 所有 `#[tauri::command]` 函数
+//! Tauri 命令定义 — 所有 `#[tauri::command]` 函数
 //!
 //! 前端通过 `@tauri-apps/api` 的 `invoke` 调用这些命令。
 //! 所有命令返回 `Result<T, String>`，Tauri 自动将 `Err` 转为前端 Promise reject。
@@ -3773,7 +3773,11 @@ fn sha256_hex(path: &std::path::Path) -> Result<String, String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    let digest = hasher.finalize();
+    Ok(digest
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>())
 }
 
 fn is_valid_sha256(value: &str) -> bool {
