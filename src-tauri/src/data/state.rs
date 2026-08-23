@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::{DataResult, read_file_content};
+use super::{read_file_content, DataResult};
 
 // ============================================================================
 // 自定义反序列化函数 — 同时接受整数和浮点数，用于 f64 字段
@@ -48,9 +48,9 @@ where
             if s.is_empty() || s == "未记录" {
                 Ok(None)
             } else {
-                s.parse::<f64>()
-                    .map(Some)
-                    .map_err(|e| serde::de::Error::custom(format!("无法将 '{}' 转换为 f64: {}", s, e)))
+                s.parse::<f64>().map(Some).map_err(|e| {
+                    serde::de::Error::custom(format!("无法将 '{}' 转换为 f64: {}", s, e))
+                })
             }
         }
         _ => Ok(None),
@@ -343,10 +343,7 @@ pub fn read_state(data_dir: &Path) -> DataResult<StudyState> {
     let state_path = data_dir.join(STATE_DIR).join(STATE_FILE_NAME);
 
     if !state_path.exists() {
-        return Err(format!(
-            "State 文件不存在: {:?}",
-            state_path
-        ));
+        return Err(format!("State 文件不存在: {:?}", state_path));
     }
 
     let content = read_file_content(&state_path)?;
@@ -358,8 +355,7 @@ pub fn parse_state_toml(content: &str) -> DataResult<StudyState> {
     // toml crate 可能无法处理文件头部的 Markdown 注释行（以 # 开头）
     // 需要先清理 TOML 内容中的 Markdown 标题行
     let cleaned = clean_state_toml(content);
-    toml::from_str::<StudyState>(&cleaned)
-        .map_err(|e| format!("解析 State TOML 失败: {}", e))
+    toml::from_str::<StudyState>(&cleaned).map_err(|e| format!("解析 State TOML 失败: {}", e))
 }
 
 /// 清理 state 文件中的非 TOML 内容（M16：加固）
@@ -494,8 +490,8 @@ pub fn get_subject_state_mut<'a>(
 /// 若该任务已有 started_at（正在计时中），直接返回 Ok（幂等）。
 /// 若其他任务正在计时，不会自动暂停它们（由前端调用 pause 控制单任务计时）。
 pub fn start_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<()> {
-    let task = find_task_by_id_mut(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task =
+        find_task_by_id_mut(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     if task.started_at.is_none() {
         task.started_at = Some(super::now_string());
     }
@@ -506,8 +502,8 @@ pub fn start_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<()>
 ///
 /// 若任务未在计时中（started_at 为 None），直接返回 Ok（幂等）。
 pub fn pause_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<i64> {
-    let task = find_task_by_id_mut(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task =
+        find_task_by_id_mut(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     if let Some(started_at) = task.started_at.take() {
         let minutes = elapsed_minutes(&started_at)?;
         task.accumulated_minutes += minutes;
@@ -521,12 +517,16 @@ pub fn pause_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<i64
 ///
 /// 与 `pause_task_timer` 不同：番茄钟以整段会话为单位，学习会话结束时把时长
 /// 一次性累加，不依赖 started_at 的起止差值。若任务不存在则返回错误。
-pub fn add_accumulated_minutes(state: &mut StudyState, task_id: &str, minutes: i64) -> DataResult<()> {
+pub fn add_accumulated_minutes(
+    state: &mut StudyState,
+    task_id: &str,
+    minutes: i64,
+) -> DataResult<()> {
     if minutes <= 0 {
         return Ok(());
     }
-    let task = find_task_by_id_mut(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task =
+        find_task_by_id_mut(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     task.accumulated_minutes += minutes;
     Ok(())
 }
@@ -535,8 +535,7 @@ pub fn add_accumulated_minutes(state: &mut StudyState, task_id: &str, minutes: i
 ///
 /// 若任务正在计时中（started_at 存在），将 started_at 至今的分钟数累加到 accumulated_minutes 返回。
 pub fn task_total_minutes(state: &StudyState, task_id: &str) -> DataResult<i64> {
-    let task = find_task_by_id(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task = find_task_by_id(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     let mut total = task.accumulated_minutes;
     if let Some(started_at) = &task.started_at {
         total += elapsed_minutes(started_at)?;
@@ -566,12 +565,20 @@ pub fn day_actual_minutes(state: &StudyState, date: &str) -> i64 {
 
 /// 按 task_id 查找任务（不可变引用）
 fn find_task_by_id<'a>(state: &'a StudyState, task_id: &str) -> Option<&'a StateTask> {
-    state.current_task.tasks.iter().find(|t| t.task_id.as_deref() == Some(task_id))
+    state
+        .current_task
+        .tasks
+        .iter()
+        .find(|t| t.task_id.as_deref() == Some(task_id))
 }
 
 /// 按 task_id 查找任务（可变引用）
 fn find_task_by_id_mut<'a>(state: &'a mut StudyState, task_id: &str) -> Option<&'a mut StateTask> {
-    state.current_task.tasks.iter_mut().find(|t| t.task_id.as_deref() == Some(task_id))
+    state
+        .current_task
+        .tasks
+        .iter_mut()
+        .find(|t| t.task_id.as_deref() == Some(task_id))
 }
 
 /// 计算 ISO 时间戳距今的分钟数（整数，向下取整）

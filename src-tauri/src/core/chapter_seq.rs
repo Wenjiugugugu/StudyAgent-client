@@ -378,9 +378,21 @@ static CHAPTER_SEQ: OnceLock<Vec<(String, String, Vec<&'static str>)>> = OnceLoc
 fn tables() -> &'static Vec<(String, String, Vec<&'static str>)> {
     CHAPTER_SEQ.get_or_init(|| {
         vec![
-            ("math".to_string(), "数一".to_string(), concat3(GAODENG_1, LINDAI, PROB)),
-            ("math".to_string(), "数二".to_string(), concat3(GAODENG_2, LINDAI, &[])),
-            ("math".to_string(), "数三".to_string(), concat3(GAODENG_3, LINDAI, PROB)),
+            (
+                "math".to_string(),
+                "数一".to_string(),
+                concat3(GAODENG_1, LINDAI, PROB),
+            ),
+            (
+                "math".to_string(),
+                "数二".to_string(),
+                concat3(GAODENG_2, LINDAI, &[]),
+            ),
+            (
+                "math".to_string(),
+                "数三".to_string(),
+                concat3(GAODENG_3, LINDAI, PROB),
+            ),
             ("politics".to_string(), "".to_string(), POLITICS.to_vec()),
             ("english".to_string(), "".to_string(), ENGLISH.to_vec()),
         ]
@@ -431,7 +443,12 @@ pub fn position(subject: &str, version: &str, text: &str) -> Option<usize> {
 }
 
 /// 判断某任务标题是否**早于**用户实际进度（即已学过、不应再排）。
-pub fn is_ahead_of_progress(subject: &str, version: &str, task_title: &str, progress_chapter: &str) -> Option<bool> {
+pub fn is_ahead_of_progress(
+    subject: &str,
+    version: &str,
+    task_title: &str,
+    progress_chapter: &str,
+) -> Option<bool> {
     let task_pos = position(subject, version, task_title)?;
     let prog_pos = position(subject, version, progress_chapter)?;
     Some(task_pos <= prog_pos)
@@ -468,7 +485,12 @@ mod tests {
     #[test]
     fn linear_equations_after_vector() {
         // 「线性方程组」位于「向量」之后：任务不早于实际进度 → 不判超前
-        let r = is_ahead_of_progress("math", "数二", "线性方程组解的存在性判定", "向量组的线性表示");
+        let r = is_ahead_of_progress(
+            "math",
+            "数二",
+            "线性方程组解的存在性判定",
+            "向量组的线性表示",
+        );
         assert_eq!(r, Some(false));
         // 行列式远早于向量进度 → 判超前（应剔除）
         let r2 = is_ahead_of_progress("math", "数二", "行列式", "极大线性无关组");

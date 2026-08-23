@@ -408,7 +408,9 @@ impl AiProvider for AnthropicProvider {
         log::info!("Anthropic 请求 URL: {}", url);
         log::info!(
             "Anthropic 请求 Model: {}",
-            req.model.clone().unwrap_or_else(|| self.config.model.clone())
+            req.model
+                .clone()
+                .unwrap_or_else(|| self.config.model.clone())
         );
 
         let body = self.build_body(req, false);

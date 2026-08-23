@@ -11,10 +11,8 @@ use std::path::Path;
 use crate::data::plan::DailyPlanData;
 use crate::data::records::ReviewData;
 use crate::data::state::StudyState;
-use crate::data::{
-    add_days, days_between, get_week_end, get_week_start, today_string, DataResult,
-};
 use crate::data::state::TaskStatus;
+use crate::data::{add_days, days_between, get_week_end, get_week_start, today_string, DataResult};
 
 // ============================================================================
 // Dashboard 类型定义
@@ -274,7 +272,11 @@ impl DashboardAggregator {
         if let Ok(review) = crate::data::records::read_review(data_dir, date) {
             // 优先从 task_reviews 统计已完成任务数（兼容旧版 data.completion 全零的复盘文件）
             let tasks_done = if !review.task_reviews.is_empty() {
-                review.task_reviews.iter().filter(|tr| tr.status == "completed").count() as i32
+                review
+                    .task_reviews
+                    .iter()
+                    .filter(|tr| tr.status == "completed")
+                    .count() as i32
             } else {
                 review.data.completion.priority_a_done + review.data.completion.priority_b_done
             };
@@ -399,8 +401,8 @@ impl DashboardAggregator {
         let prev_plan = crate::data::plan::read_daily_plan(data_dir, &prev_day).ok();
 
         // 前一日没有计划时回退到今日计划
-        let plan_for_topics: Option<crate::data::plan::DailyPlanFile> = prev_plan
-            .or_else(|| crate::data::plan::read_daily_plan(data_dir, today).ok());
+        let plan_for_topics: Option<crate::data::plan::DailyPlanFile> =
+            prev_plan.or_else(|| crate::data::plan::read_daily_plan(data_dir, today).ok());
 
         // 按科目收集任务标题，去重保序
         let mut topics_by_subject: HashMap<SubjectKey, Vec<String>> = HashMap::new();
@@ -421,9 +423,9 @@ impl DashboardAggregator {
         let subjects = &state.subjects;
 
         let mut push_progress = |subject_key: &str,
-                              name: Option<&String>,
-                              subj: &crate::data::state::SubjectState,
-                              subj_key: SubjectKey| {
+                                 name: Option<&String>,
+                                 subj: &crate::data::state::SubjectState,
+                                 subj_key: SubjectKey| {
             let completion = if !subj.completed.is_empty() {
                 (subj.completed.len() as f64 / 50.0 * 100.0).min(100.0)
             } else {
@@ -455,16 +457,36 @@ impl DashboardAggregator {
         };
 
         if subjects.math.active {
-            push_progress("math", subjects.math.name.as_ref(), &subjects.math, SubjectKey::Math);
+            push_progress(
+                "math",
+                subjects.math.name.as_ref(),
+                &subjects.math,
+                SubjectKey::Math,
+            );
         }
         if subjects.english.active {
-            push_progress("english", subjects.english.name.as_ref(), &subjects.english, SubjectKey::English);
+            push_progress(
+                "english",
+                subjects.english.name.as_ref(),
+                &subjects.english,
+                SubjectKey::English,
+            );
         }
         if subjects.politics.active {
-            push_progress("politics", subjects.politics.name.as_ref(), &subjects.politics, SubjectKey::Politics);
+            push_progress(
+                "politics",
+                subjects.politics.name.as_ref(),
+                &subjects.politics,
+                SubjectKey::Politics,
+            );
         }
         if subjects.professional.active {
-            push_progress("professional", subjects.professional.name.as_ref(), &subjects.professional, SubjectKey::Professional);
+            push_progress(
+                "professional",
+                subjects.professional.name.as_ref(),
+                &subjects.professional,
+                SubjectKey::Professional,
+            );
         }
 
         result
@@ -559,9 +581,9 @@ fn strip_subject_prefix(title: &str) -> String {
 mod tests {
     use super::*;
     use crate::data::focus::{
-        FocusSession, FocusSessionStatus, FocusSessionType, append_focus_session,
+        append_focus_session, FocusSession, FocusSessionStatus, FocusSessionType,
     };
-    use crate::data::state::{StateTask, StudyState, save_state};
+    use crate::data::state::{save_state, StateTask, StudyState};
 
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -599,7 +621,10 @@ mod tests {
     #[test]
     fn strip_subject_prefix_keeps_long_prefix() {
         // 前缀超过 4 字符不视为科目标签
-        assert_eq!(strip_subject_prefix("高等数学复习：微分方程"), "高等数学复习：微分方程");
+        assert_eq!(
+            strip_subject_prefix("高等数学复习：微分方程"),
+            "高等数学复习：微分方程"
+        );
     }
 
     #[test]
@@ -650,7 +675,11 @@ mod tests {
         // 无当日复盘、无日计划文件：正计时结束后应自动计入今日学习时长
         let breakdown = DashboardAggregator::compute_daily_breakdown(&dir, date, 4.0);
         // 25（已关联番茄累计进任务） + 25（未关联正计时） = 50 分钟
-        assert!((breakdown.hours - 50.0 / 60.0).abs() < 1e-6, "hours = {}", breakdown.hours);
+        assert!(
+            (breakdown.hours - 50.0 / 60.0).abs() < 1e-6,
+            "hours = {}",
+            breakdown.hours
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

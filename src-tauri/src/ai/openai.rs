@@ -124,7 +124,10 @@ impl OpenAIProvider {
                 }
                 Err(e) => {
                     // M22：HeaderValue 构造失败时明确记录错误，避免「静默无认证头发送」
-                    log::error!("[AI-DEBUG] API Key 含非法字符，无法构造 Authorization 头: {}", e);
+                    log::error!(
+                        "[AI-DEBUG] API Key 含非法字符，无法构造 Authorization 头: {}",
+                        e
+                    );
                 }
             }
         }
@@ -236,10 +239,19 @@ impl OpenAIProvider {
                 }
                 let role = c.message.role.clone();
                 let tool_calls = c.message.tool_calls.clone();
-                let finish_reason = c.finish_reason.clone().unwrap_or_else(|| "stop".to_string());
+                let finish_reason = c
+                    .finish_reason
+                    .clone()
+                    .unwrap_or_else(|| "stop".to_string());
                 (content, role, tool_calls, finish_reason, reasoning)
             }
-            None => (String::new(), MessageRole::Assistant, None, "stop".to_string(), None),
+            None => (
+                String::new(),
+                MessageRole::Assistant,
+                None,
+                "stop".to_string(),
+                None,
+            ),
         };
 
         log::info!(
@@ -459,20 +471,27 @@ impl AiProvider for OpenAIProvider {
         log::info!("AI 请求 URL: {}", url);
         log::info!(
             "AI 请求 Model: {}",
-            req.model.clone().unwrap_or_else(|| self.config.model.clone())
+            req.model
+                .clone()
+                .unwrap_or_else(|| self.config.model.clone())
         );
         let body = self.build_request_body(req, false);
         let headers = self.build_headers();
 
         // 调试日志：完整请求体（脱敏 API Key 后输出）。H11：降为 debug 级别避免生产噪音与敏感数据泄露
-        log::debug!("[AI-DEBUG] 非流式请求 body: {}", serde_json::to_string(&body).unwrap_or_default());
+        log::debug!(
+            "[AI-DEBUG] 非流式请求 body: {}",
+            serde_json::to_string(&body).unwrap_or_default()
+        );
         log::info!(
             "[AI-DEBUG] 请求消息数: {}, 工具数: {}",
             req.messages.len(),
             req.tools.as_ref().map(|t| t.len()).unwrap_or(0)
         );
 
-        let response = self.send_with_retry(&url, headers, &body, req.timeout_override).await?;
+        let response = self
+            .send_with_retry(&url, headers, &body, req.timeout_override)
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -481,11 +500,12 @@ impl AiProvider for OpenAIProvider {
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
             // H12：错误信息截断，避免完整 body（可能回显请求头/请求体）泄露到用户界面与日志
-            let truncated = error_text
-                .chars()
-                .take(500)
-                .collect::<String>();
-            log::warn!("[AI-DEBUG] AI 请求失败 status={} body={}", status, truncated);
+            let truncated = error_text.chars().take(500).collect::<String>();
+            log::warn!(
+                "[AI-DEBUG] AI 请求失败 status={} body={}",
+                status,
+                truncated
+            );
             return Err(format!("AI 请求返回错误 ({}): {}", status, truncated));
         }
 
@@ -498,10 +518,13 @@ impl AiProvider for OpenAIProvider {
         );
         log::debug!("[AI-DEBUG] 原始响应全文: {}", raw_text);
 
-        let api_resp: OpenAIApiResponse = serde_json::from_str(&raw_text)
-            .map_err(|e| {
-                format!("解析 AI 响应失败: {} | 原文(前200字符): {}", e, raw_text.chars().take(200).collect::<String>())
-            })?;
+        let api_resp: OpenAIApiResponse = serde_json::from_str(&raw_text).map_err(|e| {
+            format!(
+                "解析 AI 响应失败: {} | 原文(前200字符): {}",
+                e,
+                raw_text.chars().take(200).collect::<String>()
+            )
+        })?;
 
         Ok(self.parse_response(api_resp))
     }
@@ -517,13 +540,18 @@ impl AiProvider for OpenAIProvider {
         log::info!("AI 流式请求 URL: {}", url);
         log::info!(
             "AI 流式请求 Model: {}",
-            req.model.clone().unwrap_or_else(|| self.config.model.clone())
+            req.model
+                .clone()
+                .unwrap_or_else(|| self.config.model.clone())
         );
         let body = self.build_request_body(req, true);
         let headers = self.build_headers();
 
         // H11：流式请求 body 也降为 debug 级别
-        log::debug!("[AI-DEBUG] 流式请求 body: {}", serde_json::to_string(&body).unwrap_or_default());
+        log::debug!(
+            "[AI-DEBUG] 流式请求 body: {}",
+            serde_json::to_string(&body).unwrap_or_default()
+        );
 
         let response = self
             .send_with_retry(&url, headers, &body, req.timeout_override)
@@ -538,7 +566,11 @@ impl AiProvider for OpenAIProvider {
                 .unwrap_or_else(|_| "Unknown error".to_string());
             // H12：错误信息截断，避免完整 body 泄露到用户界面与日志
             let truncated = error_text.chars().take(500).collect::<String>();
-            log::warn!("[AI-DEBUG] 流式请求失败 status={} body={}", status, truncated);
+            log::warn!(
+                "[AI-DEBUG] 流式请求失败 status={} body={}",
+                status,
+                truncated
+            );
             return Err(format!("AI 流式请求返回错误 ({}): {}", status, truncated));
         }
 
@@ -584,7 +616,9 @@ impl AiProvider for OpenAIProvider {
                     log::debug!("[AI-DEBUG] SSE 非 data 行: {}", line);
                 }
 
-                if let Some(stream_chunk) = self.parse_sse_line(line, &mut finish_reason, &mut model_name, &mut response_id) {
+                if let Some(stream_chunk) =
+                    self.parse_sse_line(line, &mut finish_reason, &mut model_name, &mut response_id)
+                {
                     if !stream_chunk.content.is_empty() {
                         full_content.push_str(&stream_chunk.content);
                     }
@@ -636,7 +670,9 @@ impl AiProvider for OpenAIProvider {
         if !buffer.is_empty() {
             let line = buffer.trim();
             if !line.is_empty() {
-                if let Some(stream_chunk) = self.parse_sse_line(line, &mut finish_reason, &mut model_name, &mut response_id) {
+                if let Some(stream_chunk) =
+                    self.parse_sse_line(line, &mut finish_reason, &mut model_name, &mut response_id)
+                {
                     if !stream_chunk.content.is_empty() {
                         full_content.push_str(&stream_chunk.content);
                     }
@@ -743,7 +779,11 @@ impl AiProvider for OpenAIProvider {
                         );
                         ModelInfo {
                             id,
-                            owned_by: m.get("owned_by").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            owned_by: m
+                                .get("owned_by")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                             created: m.get("created").and_then(|v| v.as_i64()).unwrap_or(0),
                             extra,
                         }

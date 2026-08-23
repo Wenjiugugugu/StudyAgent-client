@@ -242,7 +242,7 @@ pub fn week_plan_path(data_dir: &Path, iso_week: &str) -> PathBuf {
 /// 将日期转换为 ISO 8601 周标识（如 2026-W30）
 pub fn iso_week_string(date: &str) -> DataResult<String> {
     let weekday = super::get_weekday(date)?; // 0=周一, 6=周日
-    // 找到本周周四（ISO 周由周四所在年决定）
+                                             // 找到本周周四（ISO 周由周四所在年决定）
     let thursday_offset = 3i64 - weekday as i64;
     let thursday = super::add_days(date, thursday_offset)?;
 
@@ -323,12 +323,11 @@ pub fn save_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> 
     let path = daily_plan_path(data_dir, &plan.meta.date);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 plan 目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建 plan 目录失败: {}", e))?;
         }
     }
-    let json = serde_json::to_string_pretty(plan)
-        .map_err(|e| format!("序列化日计划失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(plan).map_err(|e| format!("序列化日计划失败: {}", e))?;
     super::atomic_write(&path, &json)
         .map_err(|e| format!("写入日计划文件失败 {:?}: {}", path, e))?;
     Ok(())
@@ -350,12 +349,11 @@ pub fn save_week_plan(data_dir: &Path, plan: &WeekPlanFile) -> DataResult<()> {
     let path = week_plan_path(data_dir, &iso_week);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 plan 目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建 plan 目录失败: {}", e))?;
         }
     }
-    let json = serde_json::to_string_pretty(plan)
-        .map_err(|e| format!("序列化周计划失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(plan).map_err(|e| format!("序列化周计划失败: {}", e))?;
     super::atomic_write(&path, &json)
         .map_err(|e| format!("写入周计划文件失败 {:?}: {}", path, e))?;
     Ok(())
@@ -385,7 +383,9 @@ pub fn read_daily_plan_with_merged_status(
         if let Ok(state) = crate::data::state::read_state(data_dir) {
             // 校验 state.current_task.date 与 date 一致，且 state 中任务的 task_id 日期前缀也与 date 一致
             // 防止 state 被污染（task_id 与任务内容错位）导致跨日状态继承
-            if state.current_task.date == date && state_tasks_date_prefix_matches(&state.current_task.tasks, date) {
+            if state.current_task.date == date
+                && state_tasks_date_prefix_matches(&state.current_task.tasks, date)
+            {
                 merge_status_by_task_id(&mut plan.data.tasks, &state.current_task.tasks);
                 true
             } else {
@@ -449,11 +449,7 @@ fn state_has_no_tasks_for_date(data_dir: &Path, date: &str) -> bool {
 }
 
 /// 将 plan 任务同步到 state.current_task
-fn sync_plan_tasks_to_state(
-    data_dir: &Path,
-    date: &str,
-    plan: &DailyPlanFile,
-) -> DataResult<()> {
+fn sync_plan_tasks_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
     let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
 
     // 已有任务时不覆盖（保护已完成状态）
@@ -534,8 +530,8 @@ fn merge_status_from_review(
     plan_tasks: &mut [PlanTask],
     completed_tasks: &[crate::data::records::ReviewCompletedTask],
 ) {
-    use std::collections::HashMap;
     use crate::data::state::TaskStatus;
+    use std::collections::HashMap;
 
     // 第一轮：构建 task_id → completed 映射
     let mut id_to_completed: HashMap<&str, bool> = HashMap::new();
@@ -586,8 +582,8 @@ fn merge_status_from_task_reviews(
     plan_tasks: &mut [PlanTask],
     task_reviews: &[crate::data::records::TaskReviewEntry],
 ) {
-    use std::collections::HashMap;
     use crate::data::state::TaskStatus;
+    use std::collections::HashMap;
 
     // 构建 task_id → status 映射
     let mut id_to_status: HashMap<&str, &str> = HashMap::new();
@@ -664,7 +660,8 @@ fn merge_status_by_task_id(
             // task_id 格式 YYYY-MM-DD-NN，前 10 位为日期
             let plan_date_prefix = pt.id.get(..10);
             let state_date_prefix = status_date_prefix_from_id(pt.id.as_str(), state_tasks);
-            if plan_date_prefix.is_some() && state_date_prefix.is_some()
+            if plan_date_prefix.is_some()
+                && state_date_prefix.is_some()
                 && plan_date_prefix == state_date_prefix
             {
                 pt.status = (*status).clone();
@@ -741,10 +738,7 @@ pub fn calculate_week_number(date: &str) -> DataResult<i32> {
 /// 读取某周所有日计划并聚合为周视图
 ///
 /// 注意：返回的是 DailyPlanFile 列表，调用方可自行汇总。
-pub fn read_week_daily_plans(
-    data_dir: &Path,
-    week_start: &str,
-) -> DataResult<Vec<DailyPlanFile>> {
+pub fn read_week_daily_plans(data_dir: &Path, week_start: &str) -> DataResult<Vec<DailyPlanFile>> {
     let week_end = get_week_end(week_start)?;
     let mut result = Vec::new();
     let mut current_date = week_start.to_string();
@@ -977,9 +971,17 @@ mod tests {
         merge_status_by_task_id(&mut plan_tasks, &state_tasks);
 
         // 验证：每个 plan task 的 status 与对应 task_id 的 state status 一致
-        assert_eq!(plan_tasks[0].status, TaskStatus::InProgress, "task 01 应为 InProgress");
+        assert_eq!(
+            plan_tasks[0].status,
+            TaskStatus::InProgress,
+            "task 01 应为 InProgress"
+        );
         assert_eq!(plan_tasks[1].status, TaskStatus::Done, "task 02 应为 Done");
-        assert_eq!(plan_tasks[2].status, TaskStatus::Pending, "task 03 应为 Pending");
+        assert_eq!(
+            plan_tasks[2].status,
+            TaskStatus::Pending,
+            "task 03 应为 Pending"
+        );
     }
 
     /// 测试 2：旧版 state 文件（task_id=None）回退到按索引匹配
@@ -996,8 +998,16 @@ mod tests {
 
         merge_status_by_task_id(&mut plan_tasks, &state_tasks);
 
-        assert_eq!(plan_tasks[0].status, TaskStatus::Done, "legacy task 0 应为 Done");
-        assert_eq!(plan_tasks[1].status, TaskStatus::Pending, "legacy task 1 应为 Pending");
+        assert_eq!(
+            plan_tasks[0].status,
+            TaskStatus::Done,
+            "legacy task 0 应为 Done"
+        );
+        assert_eq!(
+            plan_tasks[1].status,
+            TaskStatus::Pending,
+            "legacy task 1 应为 Pending"
+        );
     }
 
     /// 测试 3：plan 任务多于 state 任务时，未匹配的保持 Pending
@@ -1021,8 +1031,16 @@ mod tests {
         assert_eq!(plan_tasks[0].status, TaskStatus::InProgress);
         assert_eq!(plan_tasks[1].status, TaskStatus::Done);
         // task 03 和 04 未匹配，保持 Pending（不被错位状态覆盖）
-        assert_eq!(plan_tasks[2].status, TaskStatus::Pending, "未匹配的 task 03 应保持 Pending");
-        assert_eq!(plan_tasks[3].status, TaskStatus::Pending, "未匹配的 task 04 应保持 Pending");
+        assert_eq!(
+            plan_tasks[2].status,
+            TaskStatus::Pending,
+            "未匹配的 task 03 应保持 Pending"
+        );
+        assert_eq!(
+            plan_tasks[3].status,
+            TaskStatus::Pending,
+            "未匹配的 task 04 应保持 Pending"
+        );
     }
 
     /// 测试 4：混合场景（部分有 task_id，部分无）
@@ -1043,11 +1061,23 @@ mod tests {
         merge_status_by_task_id(&mut plan_tasks, &state_tasks);
 
         // task 02 按 task_id 匹配，应为 Done
-        assert_eq!(plan_tasks[1].status, TaskStatus::Done, "task 02 应按 task_id 匹配为 Done");
+        assert_eq!(
+            plan_tasks[1].status,
+            TaskStatus::Done,
+            "task 02 应按 task_id 匹配为 Done"
+        );
         // task 01 和 03 走索引回退（消耗 legacy state 任务）
         // plan[0] 对应 legacy state_tasks[1] (Abandoned)
         // plan[2] 对应 legacy state_tasks[2] (InProgress)
-        assert_eq!(plan_tasks[0].status, TaskStatus::Abandoned, "task 01 走索引回退为 Abandoned");
-        assert_eq!(plan_tasks[2].status, TaskStatus::InProgress, "task 03 走索引回退为 InProgress");
+        assert_eq!(
+            plan_tasks[0].status,
+            TaskStatus::Abandoned,
+            "task 01 走索引回退为 Abandoned"
+        );
+        assert_eq!(
+            plan_tasks[2].status,
+            TaskStatus::InProgress,
+            "task 03 走索引回退为 InProgress"
+        );
     }
 }

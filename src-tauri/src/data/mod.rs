@@ -50,8 +50,8 @@ pub fn atomic_write(path: &Path, content: &str) -> DataResult<()> {
                 .map_err(|e| format!("创建目录失败 {:?}: {}", parent, e))?;
         }
     }
-    let mut file = std::fs::File::create(&tmp)
-        .map_err(|e| format!("创建临时文件失败 {:?}: {}", tmp, e))?;
+    let mut file =
+        std::fs::File::create(&tmp).map_err(|e| format!("创建临时文件失败 {:?}: {}", tmp, e))?;
     file.write_all(content.as_bytes())
         .map_err(|e| format!("写入临时文件失败 {:?}: {}", tmp, e))?;
     file.sync_all()
@@ -124,8 +124,7 @@ pub fn list_dir_files_recursive(dir: &Path) -> DataResult<Vec<std::path::PathBuf
     }
 
     let mut result = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("读取目录失败 {:?}: {}", dir, e))?;
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("读取目录失败 {:?}: {}", dir, e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("读取目录条目失败: {}", e))?;
@@ -148,7 +147,10 @@ pub fn list_dir_files_recursive(dir: &Path) -> DataResult<Vec<std::path::PathBuf
 /// 00:00-08:00 之间因 UTC 时间偏移而得到前一天的日期。
 pub fn today_string() -> String {
     let tz = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 偏移有效");
-    chrono::Utc::now().with_timezone(&tz).format("%Y-%m-%d").to_string()
+    chrono::Utc::now()
+        .with_timezone(&tz)
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// 获取当前时间字符串 (YYYY-MM-DDTHH:mm)
@@ -156,7 +158,10 @@ pub fn today_string() -> String {
 /// 同样使用 UTC+8 时区。
 pub fn now_string() -> String {
     let tz = chrono::FixedOffset::east_opt(8 * 3600).expect("UTC+8 偏移有效");
-    chrono::Utc::now().with_timezone(&tz).format("%Y-%m-%dT%H:%M").to_string()
+    chrono::Utc::now()
+        .with_timezone(&tz)
+        .format("%Y-%m-%dT%H:%M")
+        .to_string()
 }
 
 /// 计算两个日期之间的天数差（date1 - date2）
@@ -260,8 +265,7 @@ fn days_from_epoch_to_date_string(d: chrono::NaiveDate, offset_days: i64) -> Str
 
 /// 从 serde_json::Value 中反序列化为目标类型
 pub fn from_value<T: serde::de::DeserializeOwned>(value: &serde_json::Value) -> DataResult<T> {
-    serde_json::from_value(value.clone())
-        .map_err(|e| format!("反序列化失败: {}", e))
+    serde_json::from_value(value.clone()).map_err(|e| format!("反序列化失败: {}", e))
 }
 
 /// 清理 AI 可能包裹的代码块，提取纯 JSON（M6：统一入口）

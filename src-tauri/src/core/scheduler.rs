@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use crate::data::plan::{
-    BasedOn, DailyPlanData, DailyPlanFile, DailyPlanMeta, PlanTask, TaskTemplate,
-    WeekDayPlan, WeekPlanFile,
+    BasedOn, DailyPlanData, DailyPlanFile, DailyPlanMeta, PlanTask, TaskTemplate, WeekDayPlan,
+    WeekPlanFile,
 };
 use crate::data::state::{CurrentTask, StateTask, SubjectKey, TaskStatus};
 use crate::data::{days_between, iso_week_string, now_string, DataResult};
@@ -186,7 +186,11 @@ impl DailyScheduler {
                     user_model: "assets/user_model/_index.md".to_string(),
                     exam_config: "assets/config/exam-config.md".to_string(),
                     review_ref: None,
-                    week_plan: Some(format!("plan/{}{}", iso_week, crate::data::plan::WEEK_PLAN_FILE_SUFFIX)),
+                    week_plan: Some(format!(
+                        "plan/{}{}",
+                        iso_week,
+                        crate::data::plan::WEEK_PLAN_FILE_SUFFIX
+                    )),
                 },
             },
             data: daily_data,
@@ -202,7 +206,11 @@ impl DailyScheduler {
             let state_clean = !state.current_task.tasks.iter().any(|t| {
                 t.task_id
                     .as_ref()
-                    .map(|id| crate::data::task_id_date_prefix(id).map(|prefix| prefix != date).unwrap_or(false))
+                    .map(|id| {
+                        crate::data::task_id_date_prefix(id)
+                            .map(|prefix| prefix != date)
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false)
             });
 
@@ -248,7 +256,12 @@ fn find_day_plan<'a>(week_plan: &'a WeekPlanFile, date: &str) -> DataResult<&'a 
         .days
         .iter()
         .find(|d| d.date == date)
-        .ok_or_else(|| format!("周计划 {} 中未找到 {} 的日安排", week_plan.meta.week_start, date))
+        .ok_or_else(|| {
+            format!(
+                "周计划 {} 中未找到 {} 的日安排",
+                week_plan.meta.week_start, date
+            )
+        })
 }
 
 fn subject_display_name(subject: &SubjectKey) -> &'static str {
@@ -325,7 +338,20 @@ fn matches_completed(title: &str, completed: &str) -> bool {
             .map(|ch| {
                 matches!(
                     ch,
-                    '：' | ':' | '，' | ',' | '、' | '。' | '；' | ';' | '(' | '（' | '·' | '-' | '—' | ')' | '）'
+                    '：' | ':'
+                        | '，'
+                        | ','
+                        | '、'
+                        | '。'
+                        | '；'
+                        | ';'
+                        | '('
+                        | '（'
+                        | '·'
+                        | '-'
+                        | '—'
+                        | ')'
+                        | '）'
                 )
             })
             .unwrap_or(false);
@@ -459,8 +485,11 @@ current_focus = "计组"
         std::fs::create_dir_all(tmp.join("state")).unwrap();
 
         // 写入 state
-        let mut state_file = std::fs::File::create(tmp.join("state").join("current.state")).unwrap();
-        state_file.write_all(sample_state_toml().as_bytes()).unwrap();
+        let mut state_file =
+            std::fs::File::create(tmp.join("state").join("current.state")).unwrap();
+        state_file
+            .write_all(sample_state_toml().as_bytes())
+            .unwrap();
 
         // 写入周计划
         let week_plan = WeekPlanFile {

@@ -38,11 +38,7 @@ impl<'a> ReviewAgent<'a> {
     /// 3. 调用 AI 生成复盘 JSON
     /// 4. 保存 JSON
     /// 5. 返回 ReviewFile
-    pub async fn generate_review(
-        &self,
-        data_dir: &Path,
-        date: &str,
-    ) -> DataResult<ReviewFile> {
+    pub async fn generate_review(&self, data_dir: &Path, date: &str) -> DataResult<ReviewFile> {
         // 0. 只允许生成今天的复盘
         let today = today_string();
         if date != today {
@@ -62,7 +58,11 @@ impl<'a> ReviewAgent<'a> {
         crate::data::write_ai_debug_log(
             data_dir,
             "review_prompt_ready",
-            &format!("复盘 prompt 已构建, date={}, 长度={} 字符", date, prompt.len()),
+            &format!(
+                "复盘 prompt 已构建, date={}, 长度={} 字符",
+                date,
+                prompt.len()
+            ),
         );
 
         // 4. 调用 AI Service
@@ -84,18 +84,14 @@ impl<'a> ReviewAgent<'a> {
             "review_ai_request",
             &format!("即将发送复盘 AI 请求, date={}, timeout=300s", date),
         );
-        let response = self
-            .ai_service
-            .chat(request)
-            .await
-            .map_err(|e| {
-                crate::data::write_ai_debug_log(
-                    data_dir,
-                    "review_ai_call_error",
-                    &format!("复盘 AI 调用失败: {}", e),
-                );
-                format!("AI 生成复盘失败: {}", e)
-            })?;
+        let response = self.ai_service.chat(request).await.map_err(|e| {
+            crate::data::write_ai_debug_log(
+                data_dir,
+                "review_ai_call_error",
+                &format!("复盘 AI 调用失败: {}", e),
+            );
+            format!("AI 生成复盘失败: {}", e)
+        })?;
 
         // 调试日志：AI 返回的原始复盘 JSON（解析前）
         let resp_preview: String = response.content.chars().take(500).collect();
@@ -144,10 +140,7 @@ impl<'a> ReviewAgent<'a> {
             prompt.push_str("## 今日计划\n");
             prompt.push_str(&format!(
                 "- 总时长: {:.1}h\n- 总任务数: {}\n- 目标: {}\n- 策略: {}\n\n",
-                plan.data.total_hours,
-                plan.data.total_tasks,
-                plan.data.target,
-                plan.data.strategy
+                plan.data.total_hours, plan.data.total_tasks, plan.data.target, plan.data.strategy
             ));
 
             if !plan.data.tasks.is_empty() {
@@ -173,7 +166,9 @@ impl<'a> ReviewAgent<'a> {
                 prompt.push_str("\n");
             }
         } else {
-            prompt.push_str("## 今日计划\n今日无计划文件。请根据 State 中的 current_task 生成复盘。\n\n");
+            prompt.push_str(
+                "## 今日计划\n今日无计划文件。请根据 State 中的 current_task 生成复盘。\n\n",
+            );
             prompt.push_str(&format!(
                 "### State 中的当前任务\n- 日期: {}\n- 重点: {}\n- 预估总时长: {:.1}h\n",
                 state.current_task.date,
@@ -306,7 +301,8 @@ fn parse_review_json(
         review.meta.r#type = "review".to_string();
     }
     if review.meta.plan_ref.is_empty() {
-        review.meta.plan_ref = format!("plan/{}{}", date, crate::data::plan::DAILY_PLAN_FILE_SUFFIX);
+        review.meta.plan_ref =
+            format!("plan/{}{}", date, crate::data::plan::DAILY_PLAN_FILE_SUFFIX);
     }
     if review.meta.generated_at.is_empty() {
         review.meta.generated_at = now_string();
@@ -314,8 +310,10 @@ fn parse_review_json(
 
     // 根据实际计划补齐未填写的 task_id / subject / priority
     if let Some(plan) = plan {
-        let mut task_id_to_plan_task: std::collections::HashMap<&str, &crate::data::plan::PlanTask> =
-            std::collections::HashMap::new();
+        let mut task_id_to_plan_task: std::collections::HashMap<
+            &str,
+            &crate::data::plan::PlanTask,
+        > = std::collections::HashMap::new();
         for task in &plan.data.tasks {
             task_id_to_plan_task.insert(&task.id, task);
         }

@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{DataResult, list_dir_files_recursive, read_file_content};
+use super::{list_dir_files_recursive, read_file_content, DataResult};
 
 // ============================================================================
 // YAML Frontmatter 解析工具（仅用于 Assets 层）
@@ -692,9 +692,7 @@ pub fn read_capability(data_dir: &Path, cap_id: &str) -> DataResult<UserCapabili
 
 /// 读取所有里程碑
 pub fn read_milestones(data_dir: &Path) -> DataResult<Vec<Milestone>> {
-    let milestones_dir = data_dir
-        .join(ASSETS_DIR)
-        .join(MILESTONES_DIR);
+    let milestones_dir = data_dir.join(ASSETS_DIR).join(MILESTONES_DIR);
 
     let files = list_dir_files_recursive(&milestones_dir)?;
 
@@ -714,39 +712,39 @@ pub fn read_milestones(data_dir: &Path) -> DataResult<Vec<Milestone>> {
 
         match read_file_content(&file) {
             Ok(content) => {
-            let (yaml, body) = split_frontmatter(&content);
-            let mut milestone = Milestone {
-                id: id.clone(),
-                content: body,
-                ..Default::default()
-            };
+                let (yaml, body) = split_frontmatter(&content);
+                let mut milestone = Milestone {
+                    id: id.clone(),
+                    content: body,
+                    ..Default::default()
+                };
 
-            if let Some(yaml_str) = yaml {
-                if let Ok(value) = parse_yaml_to_value(&yaml_str) {
-                    milestone.title = value
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    milestone.description = value
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    milestone.target_date = value
-                        .get("target_date")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    milestone.status = value
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("pending")
-                        .to_string();
+                if let Some(yaml_str) = yaml {
+                    if let Ok(value) = parse_yaml_to_value(&yaml_str) {
+                        milestone.title = value
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        milestone.description = value
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        milestone.target_date = value
+                            .get("target_date")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        milestone.status = value
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("pending")
+                            .to_string();
+                    }
                 }
-            }
 
-            milestones.push(milestone);
+                milestones.push(milestone);
             }
             Err(e) => {
                 log::warn!("读取里程碑文件 {:?} 失败: {}", file, e);

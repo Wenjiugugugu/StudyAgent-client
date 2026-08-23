@@ -1,9 +1,6 @@
 allowBuilds:
-  esbuild: set this to true or false
-  vue-demi: set this to true or false
-onlyBuiltDependencies:
-  - esbuild
-  - vue-demi
+  esbuild: true
+  vue-demi: true
 overrides:
   brace-expansion: ">=2.1.4"
   nanoid: ">=3.3.18"

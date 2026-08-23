@@ -41,7 +41,9 @@ impl GeminiProvider {
 
     /// 当前模型名
     fn model(&self, req: &ChatRequest) -> String {
-        req.model.clone().unwrap_or_else(|| self.config.model.clone())
+        req.model
+            .clone()
+            .unwrap_or_else(|| self.config.model.clone())
     }
 
     /// 构建 generateContent / streamGenerateContent URL
@@ -233,9 +235,10 @@ impl GeminiProvider {
             .and_then(|c| c.finish_reason.as_deref())
         {
             Some("MAX_TOKENS") => "length".to_string(),
-            Some("SAFETY") | Some("RECITATION") | Some("BLOCKLIST") | Some("PROHIBITED_CONTENT") => {
-                "content_filter".to_string()
-            }
+            Some("SAFETY")
+            | Some("RECITATION")
+            | Some("BLOCKLIST")
+            | Some("PROHIBITED_CONTENT") => "content_filter".to_string(),
             _ => "stop".to_string(),
         };
 

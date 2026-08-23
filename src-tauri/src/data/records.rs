@@ -321,12 +321,11 @@ pub fn save_review(data_dir: &Path, review: &ReviewFile) -> DataResult<()> {
     let path = review_file_path(data_dir, &review.meta.date);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 records 目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建 records 目录失败: {}", e))?;
         }
     }
-    let json = serde_json::to_string_pretty(review)
-        .map_err(|e| format!("序列化 Review 失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(review).map_err(|e| format!("序列化 Review 失败: {}", e))?;
     super::atomic_write(&path, &json)
         .map_err(|e| format!("写入 Review 文件失败 {:?}: {}", path, e))?;
     Ok(())
