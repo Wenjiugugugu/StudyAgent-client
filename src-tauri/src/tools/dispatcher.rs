@@ -1,4 +1,4 @@
-//! Tool Dispatcher — 统一工具调用入口，路由到对应 MCP server
+﻿//! Tool Dispatcher — 统一工具调用入口，路由到对应 MCP server
 //!
 //! 设计要点：
 //! - 维护多个 MCP Client（每个对应一个 MCP Server）
@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use super::mcp::{McpClient, MCPServerConfig, MCPServerStatus, MCPTool, ToolCallResult};
+use super::mcp::{MCPServerConfig, MCPServerStatus, MCPTool, McpClient, ToolCallResult};
 
 /// Tool Dispatcher — 统一工具调用分发器
 pub struct ToolDispatcher {
@@ -104,7 +104,8 @@ impl ToolDispatcher {
     /// 移除 MCP Server
     pub async fn remove_server(&self, server_id: &str) -> Result<(), String> {
         // 断开连接
-        if let Some(client_arc) = self.clients.write().unwrap().remove(server_id) {
+        let client_arc = self.clients.write().unwrap().remove(server_id);
+        if let Some(client_arc) = client_arc {
             client_arc.disconnect().await?;
         }
 
@@ -132,11 +133,7 @@ impl ToolDispatcher {
     /// 统一工具调用入口
     ///
     /// 根据工具名路由到对应的 MCP Server 执行
-    pub async fn dispatch(
-        &self,
-        tool_name: &str,
-        args: Value,
-    ) -> Result<ToolCallResult, String> {
+    pub async fn dispatch(&self, tool_name: &str, args: Value) -> Result<ToolCallResult, String> {
         // 查找工具对应的 server
         let server_id = {
             let tool_map = self.tool_to_server.read().unwrap();
@@ -267,7 +264,9 @@ pub fn execute_builtin_tool(
     args: &Value,
     data_dir: &std::path::Path,
 ) -> Result<ToolCallResult, String> {
-    let tool = tool_name.strip_prefix(BUILTIN_TOOL_PREFIX).unwrap_or(tool_name);
+    let tool = tool_name
+        .strip_prefix(BUILTIN_TOOL_PREFIX)
+        .unwrap_or(tool_name);
 
     match tool {
         "echo" => {
@@ -292,7 +291,9 @@ pub fn execute_builtin_tool(
             // 内置工具：读取学习状态摘要
             Ok(ToolCallResult {
                 success: true,
-                data: Some(Value::String("请使用 get_state 命令获取完整状态".to_string())),
+                data: Some(Value::String(
+                    "请使用 get_state 命令获取完整状态".to_string(),
+                )),
                 error: None,
             })
         }
@@ -319,26 +320,27 @@ pub fn execute_builtin_tool(
 }
 
 /// 将相对路径解析为项目内的绝对路径，并确保不会越界到项目目录之外
-fn resolve_project_path(data_dir: &std::path::Path, rel_path: &str) -> Result<std::path::PathBuf, String> {
+fn resolve_project_path(
+    data_dir: &std::path::Path,
+    rel_path: &str,
+) -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
 
     let cleaned = rel_path.replace('\\', "/");
-    let normalized = cleaned
-        .split('/')
-        .fold(PathBuf::new(), |mut acc, part| {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    acc.pop();
-                }
-                _ => acc.push(part),
+    let normalized = cleaned.split('/').fold(PathBuf::new(), |mut acc, part| {
+        match part {
+            "" | "." => {}
+            ".." => {
+                acc.pop();
             }
-            acc
-        });
+            _ => acc.push(part),
+        }
+        acc
+    });
 
     let target = data_dir.join(normalized);
-    let canonical_data_dir = std::fs::canonicalize(data_dir)
-        .unwrap_or_else(|_| data_dir.to_path_buf());
+    let canonical_data_dir =
+        std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
     let canonical_target = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
 
     if !canonical_target.starts_with(&canonical_data_dir) {

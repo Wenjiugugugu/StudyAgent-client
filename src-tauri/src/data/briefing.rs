@@ -123,8 +123,7 @@ pub fn save_briefing(data_dir: &Path, briefing: &BriefingFile) -> DataResult<()>
     let path = briefing_file_path(data_dir, &briefing.meta.date);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 records 目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建 records 目录失败: {}", e))?;
         }
     }
     let json = serde_json::to_string_pretty(briefing)

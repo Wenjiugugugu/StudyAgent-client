@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 on:
   push:
@@ -12,11 +12,11 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -31,10 +31,14 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Prepare dist for tauri generate_context
+        run: |
+          New-Item -ItemType Directory -Force ../dist | Out-Null
+          Set-Content -Path ../dist/index.html -Value "<!doctype html><html><body></body></html>" -Encoding utf8
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features

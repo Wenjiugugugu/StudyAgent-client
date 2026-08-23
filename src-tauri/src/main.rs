@@ -14,15 +14,15 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use studyagent_desktop_lib::api::commands::*;
+use studyagent_desktop_lib::get_default_data_dir;
+use studyagent_desktop_lib::init_app_state;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
-use studyagent_desktop_lib::init_app_state;
-use studyagent_desktop_lib::api::commands::*;
-use studyagent_desktop_lib::get_default_data_dir;
 
 fn main() {
     // 初始化日志
@@ -37,10 +37,7 @@ fn main() {
 
     // 检查数据目录是否存在
     if !default_data_dir.exists() {
-        log::warn!(
-            "数据目录不存在: {:?}, 将在启动时自动创建",
-            default_data_dir
-        );
+        log::warn!("数据目录不存在: {:?}, 将在启动时自动创建", default_data_dir);
     }
 
     // 初始化 AppState

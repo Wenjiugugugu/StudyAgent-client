@@ -1,4 +1,4 @@
-//! Tauri 命令定义 — 所有 `#[tauri::command]` 函数
+﻿//! Tauri 命令定义 — 所有 `#[tauri::command]` 函数
 //!
 //! 前端通过 `@tauri-apps/api` 的 `invoke` 调用这些命令。
 //! 所有命令返回 `Result<T, String>`，Tauri 自动将 `Err` 转为前端 Promise reject。
@@ -11,24 +11,24 @@ use tauri::{Emitter, State};
 
 use crate::ai::provider::{AIProviderConfig, ChatRequest, ChatResponse};
 use crate::ai::service::AiService;
-use crate::core::analytics::{AnalyticsRange, AnalyticsSummary, build_analytics};
-use crate::core::briefing::{BriefingAgent, yesterday_of};
+use crate::core::analytics::{build_analytics, AnalyticsRange, AnalyticsSummary};
+use crate::core::briefing::{yesterday_of, BriefingAgent};
 use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
 use crate::core::planner::Planner;
 use crate::core::review::ReviewAgent;
 use crate::core::user_model::UserModelService;
-use crate::data::assets::{
-    UserCapability, UserObservation,
+use crate::data::assets::{UserCapability, UserObservation};
+use crate::data::plan::{
+    iso_week_string, DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment,
 };
-use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment, iso_week_string};
 use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, TaskStatus};
-use crate::tools::dispatcher::{is_builtin_tool, execute_builtin_tool};
+use crate::tools::dispatcher::{execute_builtin_tool, is_builtin_tool};
 use crate::tools::mcp::{MCPServerStatus, ToolCallResult};
 use crate::{
-    AppSettings, AppState, get_ai_service, get_data_dir, get_data_dir_and_ai,
-    get_data_dir_and_dispatcher, get_tool_dispatcher, load_settings, reinitialize_services,
-    save_settings_file,
+    get_ai_service, get_data_dir, get_data_dir_and_ai, get_data_dir_and_dispatcher,
+    get_tool_dispatcher, load_settings, reinitialize_services, save_settings_file, AppSettings,
+    AppState,
 };
 
 // ============================================================================
@@ -56,9 +56,7 @@ pub async fn get_dashboard_summary(
 /// 读取 `state/current.state` (TOML) 并解析为 StudyState。
 /// 前端调用: `invoke('get_state')`
 #[tauri::command]
-pub async fn get_state(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<StudyState, String> {
+pub async fn get_state(state: State<'_, Mutex<AppState>>) -> Result<StudyState, String> {
     let data_dir = get_data_dir(state.inner())?;
     crate::data::state::read_state(&data_dir)
 }
@@ -112,15 +110,12 @@ pub async fn update_task_status(
         );
         study_state.current_task.date = date.clone();
         // 清空错位任务：只保留 task_id 日期前缀与 date 一致的任务，其余丢弃
-        study_state
-            .current_task
-            .tasks
-            .retain(|t| match &t.task_id {
-                Some(id) => crate::data::task_id_date_prefix(id)
-                    .map(|prefix| prefix == date)
-                    .unwrap_or(false),
-                None => false, // 旧任务无 task_id 且日期不匹配，丢弃
-            });
+        study_state.current_task.tasks.retain(|t| match &t.task_id {
+            Some(id) => crate::data::task_id_date_prefix(id)
+                .map(|prefix| prefix == date)
+                .unwrap_or(false),
+            None => false, // 旧任务无 task_id 且日期不匹配，丢弃
+        });
     }
 
     // 找到对应任务的 subject（用于更新科目进度）
@@ -155,7 +150,9 @@ pub async fn update_task_status(
 
             // 更新科目的 completed 列表（去重）
             if !task_title.is_empty() {
-                if let Some(subj_state) = crate::data::state::get_subject_state_mut(&mut study_state, subject_key) {
+                if let Some(subj_state) =
+                    crate::data::state::get_subject_state_mut(&mut study_state, subject_key)
+                {
                     if !subj_state.completed.contains(&task_title) {
                         subj_state.completed.push(task_title);
                     }
@@ -175,7 +172,8 @@ pub async fn update_task_status(
             progress.total_study_days += 1;
 
             if !progress.last_study_date.is_empty() {
-                let days_diff = crate::data::days_between(&date, &progress.last_study_date).unwrap_or(0);
+                let days_diff =
+                    crate::data::days_between(&date, &progress.last_study_date).unwrap_or(0);
                 if days_diff == 1 {
                     progress.streak_days += 1;
                 } else {
@@ -441,9 +439,7 @@ pub async fn get_analytics(
 /// 读取今天的 `plan/YYYY-MM-DD_day.json` 文件。
 /// 前端调用: `invoke('get_today_plan')`
 #[tauri::command]
-pub async fn get_today_plan(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<DailyPlanFile, String> {
+pub async fn get_today_plan(state: State<'_, Mutex<AppState>>) -> Result<DailyPlanFile, String> {
     let data_dir = get_data_dir(state.inner())?;
     let today = crate::data::today_string();
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &today)
@@ -483,9 +479,7 @@ pub async fn get_week_plan(
 /// 返回 plan/ 目录下所有 `YYYY-MM-DD_day.json` 文件对应的日期列表，按升序排列。
 /// 前端调用: `invoke('list_plan_dates')`
 #[tauri::command]
-pub async fn list_plan_dates(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Vec<String>, String> {
+pub async fn list_plan_dates(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
     let data_dir = get_data_dir(state.inner())?;
     crate::data::plan::list_daily_plan_dates(&data_dir)
 }
@@ -528,10 +522,13 @@ pub async fn list_plan_summaries(
     let dates = crate::data::plan::list_daily_plan_dates(&data_dir)?;
 
     // 收集所有周计划中标记为休息日的日期（持久化记录，不受后期设置调整影响）
-    let mut rest_days_from_week_plans: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut rest_days_from_week_plans: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     // 收集所有周计划中手动添加的特殊情况排除日：date -> (type, note)
-    let mut excluded_days_from_week_plans: std::collections::HashMap<String, (String, Option<String>)> =
-        std::collections::HashMap::new();
+    let mut excluded_days_from_week_plans: std::collections::HashMap<
+        String,
+        (String, Option<String>),
+    > = std::collections::HashMap::new();
     if let Ok(week_dates) = crate::data::plan::list_week_plan_dates(&data_dir) {
         for iso_week in &week_dates {
             if let Ok(wp) = crate::data::plan::read_week_plan(&data_dir, iso_week) {
@@ -541,10 +538,8 @@ pub async fn list_plan_summaries(
                     }
                 }
                 for ex in &wp.data.excluded_days {
-                    excluded_days_from_week_plans.insert(
-                        ex.date.clone(),
-                        (ex.reason_type.clone(), ex.note.clone()),
-                    );
+                    excluded_days_from_week_plans
+                        .insert(ex.date.clone(), (ex.reason_type.clone(), ex.note.clone()));
                 }
             }
         }
@@ -578,7 +573,7 @@ pub async fn list_plan_summaries(
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
         let actual_hours = review
             .as_ref()
-            .map(|r| crate::data::records::review_actual_hours(r))
+            .map(crate::data::records::review_actual_hours)
             .unwrap_or(0.0);
 
         summaries.push(PlanSummary {
@@ -649,9 +644,7 @@ pub async fn list_plan_summaries(
 /// - 优先统计 A 级任务完成率；若无 A 级任务，则统计全部任务完成率
 /// - completion_rate = done / total * 100
 /// - completed_tasks 返回已完成任务数（所有级别）
-fn compute_priority_a_completion(
-    review: &Option<crate::data::records::ReviewFile>,
-) -> (i32, f64) {
+fn compute_priority_a_completion(review: &Option<crate::data::records::ReviewFile>) -> (i32, f64) {
     match review {
         Some(r) => {
             // 新版：优先从 task_reviews 聚合
@@ -765,7 +758,7 @@ pub async fn get_week_summaries(
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
         let actual_hours = review
             .as_ref()
-            .map(|r| crate::data::records::review_actual_hours(r))
+            .map(crate::data::records::review_actual_hours)
             .unwrap_or(0.0);
 
         summaries.push(PlanSummary {
@@ -805,7 +798,8 @@ pub async fn generate_daily_plan(
 
     if !ai_service.has_provider() {
         return Err(
-            "未配置 AI Provider，无法生成计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
+            "未配置 AI Provider，无法生成计划。请先在「设置」中添加并启用 AI Provider。"
+                .to_string(),
         );
     }
 
@@ -833,13 +827,19 @@ pub async fn generate_week_plan(
 
     if !ai_service.has_provider() {
         return Err(
-            "未配置 AI Provider，无法生成周计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
+            "未配置 AI Provider，无法生成周计划。请先在「设置」中添加并启用 AI Provider。"
+                .to_string(),
         );
     }
 
     let planner = Planner::new(&ai_service);
     planner
-        .generate_week_plan(&data_dir, &week_start, &excluded_days, workload_adjustment.as_ref())
+        .generate_week_plan(
+            &data_dir,
+            &week_start,
+            &excluded_days,
+            workload_adjustment.as_ref(),
+        )
         .await
 }
 
@@ -866,7 +866,8 @@ pub async fn add_excluded_day_and_regenerate(
 
     if !ai_service.has_provider() {
         return Err(
-            "未配置 AI Provider，无法重新生成计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
+            "未配置 AI Provider，无法重新生成计划。请先在「设置」中添加并启用 AI Provider。"
+                .to_string(),
         );
     }
 
@@ -907,9 +908,7 @@ pub async fn get_review(
 /// 返回 records/ 目录下所有 `YYYY-MM-DD_review.json` 对应的日期列表，按升序排列。
 /// 前端调用: `invoke('list_review_dates')`
 #[tauri::command]
-pub async fn list_review_dates(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Vec<String>, String> {
+pub async fn list_review_dates(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
     let data_dir = get_data_dir(state.inner())?;
     crate::data::records::list_review_dates(&data_dir)
 }
@@ -933,7 +932,8 @@ pub async fn generate_review(
 
     if !ai_service.has_provider() {
         return Err(
-            "未配置 AI Provider，无法生成复盘。请先在「设置」中添加并启用 AI Provider。".to_string(),
+            "未配置 AI Provider，无法生成复盘。请先在「设置」中添加并启用 AI Provider。"
+                .to_string(),
         );
     }
 
@@ -1041,7 +1041,11 @@ pub async fn submit_review(
         meta: crate::data::records::ReviewMeta {
             date: payload.date.clone(),
             r#type: "structured_review".to_string(),
-            plan_ref: format!("plan/{}{}", payload.date, crate::data::plan::DAILY_PLAN_FILE_SUFFIX),
+            plan_ref: format!(
+                "plan/{}{}",
+                payload.date,
+                crate::data::plan::DAILY_PLAN_FILE_SUFFIX
+            ),
             generated_at: now,
         },
         data: crate::data::records::ReviewData {
@@ -1096,12 +1100,16 @@ pub async fn submit_review(
 
             // 收集 subject key 和任务标题（稍后用于更新科目进度）
             if tr.status == "completed" || tr.status == "partial" {
-                let subj_key = state.current_task.tasks
+                let subj_key = state
+                    .current_task
+                    .tasks
                     .iter()
                     .find(|t| t.task_id.as_deref() == Some(&tr.task_id))
                     .map(|t| t.subject.clone());
 
-                let task_label = state.current_task.tasks
+                let task_label = state
+                    .current_task
+                    .tasks
                     .iter()
                     .find(|t| t.task_id.as_deref() == Some(&tr.task_id))
                     .map(|t| t.task.clone())
@@ -1133,7 +1141,9 @@ pub async fn submit_review(
                 }
 
                 if !mastery_label.is_empty() && !subj.current_focus.contains(mastery_label) {
-                    subj.current_focus = format!("{} {}", subj.current_focus, mastery_label).trim().to_string();
+                    subj.current_focus = format!("{} {}", subj.current_focus, mastery_label)
+                        .trim()
+                        .to_string();
                 }
             }
         }
@@ -1142,7 +1152,9 @@ pub async fn submit_review(
         // 避免下一轮计划生成时进度落后于实际。
         if !payload.overcompletion.is_empty() {
             for oc in &payload.overcompletion {
-                if let Some(subj) = crate::data::state::get_subject_state_mut(&mut state, &oc.subject) {
+                if let Some(subj) =
+                    crate::data::state::get_subject_state_mut(&mut state, &oc.subject)
+                {
                     if !oc.chapter_reached.is_empty() {
                         subj.current_focus = oc.chapter_reached.clone();
                         if !subj.completed.contains(&oc.chapter_reached) {
@@ -1272,7 +1284,8 @@ pub async fn regenerate_remaining_days(
 
     if !ai_service.has_provider() {
         return Err(
-            "未配置 AI Provider，无法重新生成计划。请先在「设置」中添加并启用 AI Provider。".to_string(),
+            "未配置 AI Provider，无法重新生成计划。请先在「设置」中添加并启用 AI Provider。"
+                .to_string(),
         );
     }
 
@@ -1416,7 +1429,8 @@ pub async fn regenerate_briefing(
 
     if !ai_service.has_provider() {
         return Err(
-            "未配置 AI Provider，无法生成简报。请先在「设置」中添加并启用 AI Provider。".to_string(),
+            "未配置 AI Provider，无法生成简报。请先在「设置」中添加并启用 AI Provider。"
+                .to_string(),
         );
     }
 
@@ -1444,9 +1458,7 @@ pub async fn regenerate_briefing(
 ///
 /// 前端调用: `invoke('list_briefing_dates')`
 #[tauri::command]
-pub async fn list_briefing_dates(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Vec<String>, String> {
+pub async fn list_briefing_dates(state: State<'_, Mutex<AppState>>) -> Result<Vec<String>, String> {
     let data_dir = get_data_dir(state.inner())?;
     crate::data::briefing::list_briefing_dates(&data_dir)
 }
@@ -1495,7 +1507,11 @@ pub async fn list_textbooks(
                     for file in files.flatten() {
                         let path = file.path();
                         if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                            let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                            let filename = path
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
                             let id = format!("{}-{}", subject, filename);
                             let title = filename.replace('-', " ");
                             result.push(TextbookInfo {
@@ -1535,7 +1551,11 @@ pub async fn read_textbook(
                 if let Ok(files) = std::fs::read_dir(subject_dir.path()) {
                     for file in files.flatten() {
                         let path = file.path();
-                        let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                        let filename = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         let subject = subject_dir.file_name().to_string_lossy().to_string();
                         let file_id = format!("{}-{}", subject, filename);
                         if file_id == id {
@@ -1549,8 +1569,7 @@ pub async fn read_textbook(
     }
 
     let path = found_path.ok_or_else(|| format!("教材不存在: {}", id))?;
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取教材失败: {}", e))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取教材失败: {}", e))?;
 
     Ok(TextbookContent {
         id,
@@ -1587,8 +1606,7 @@ pub async fn import_textbook(
     let subject_dir = textbooks_dir.join(&subject);
 
     // 创建学科目录
-    std::fs::create_dir_all(&subject_dir)
-        .map_err(|e| format!("创建教材目录失败: {}", e))?;
+    std::fs::create_dir_all(&subject_dir).map_err(|e| format!("创建教材目录失败: {}", e))?;
 
     let src_path = std::path::Path::new(&file_path);
 
@@ -1625,8 +1643,7 @@ pub async fn import_textbook(
     let dest_path = subject_dir.join(&dest_filename);
 
     // 复制文件
-    std::fs::copy(src_path, &dest_path)
-        .map_err(|e| format!("复制教材文件失败: {}", e))?;
+    std::fs::copy(src_path, &dest_path).map_err(|e| format!("复制教材文件失败: {}", e))?;
 
     let id = format!("{}-{}", subject, filename);
 
@@ -1651,8 +1668,7 @@ pub async fn save_background_image(
 ) -> Result<String, String> {
     let dir = get_data_dir(state.inner())?;
     let backgrounds_dir = dir.join("assets").join("backgrounds");
-    std::fs::create_dir_all(&backgrounds_dir)
-        .map_err(|e| format!("创建背景图目录失败: {}", e))?;
+    std::fs::create_dir_all(&backgrounds_dir).map_err(|e| format!("创建背景图目录失败: {}", e))?;
 
     let src_path = std::path::Path::new(&file_path);
     let extension = src_path
@@ -1669,8 +1685,7 @@ pub async fn save_background_image(
     let dest_filename = format!("bg_{}.{}", timestamp, extension);
     let dest_path = backgrounds_dir.join(&dest_filename);
 
-    std::fs::copy(src_path, &dest_path)
-        .map_err(|e| format!("复制背景图失败: {}", e))?;
+    std::fs::copy(src_path, &dest_path).map_err(|e| format!("复制背景图失败: {}", e))?;
 
     // 返回相对路径（使用 / 作为分隔符，便于跨平台拼接）
     let relative = format!("assets/backgrounds/{}", dest_filename);
@@ -1681,25 +1696,27 @@ pub async fn save_background_image(
 ///
 /// 规范化 `..` / `.` / 反斜杠，并校验结果路径仍位于 data_dir 内，
 /// 防止通过 `../../config/settings` 之类参数读取或删除 data_dir 之外的任意文件（C4-b）。
-fn resolve_relative_path(data_dir: &std::path::Path, relative_path: &str) -> Result<std::path::PathBuf, String> {
+fn resolve_relative_path(
+    data_dir: &std::path::Path,
+    relative_path: &str,
+) -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
 
     let cleaned = relative_path.replace('\\', "/");
-    let normalized = cleaned
-        .split('/')
-        .fold(PathBuf::new(), |mut acc, part| {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    acc.pop();
-                }
-                _ => acc.push(part),
+    let normalized = cleaned.split('/').fold(PathBuf::new(), |mut acc, part| {
+        match part {
+            "" | "." => {}
+            ".." => {
+                acc.pop();
             }
-            acc
-        });
+            _ => acc.push(part),
+        }
+        acc
+    });
 
     let target = data_dir.join(normalized);
-    let canonical_data_dir = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    let canonical_data_dir =
+        std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
     let canonical_target = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
 
     if !canonical_target.starts_with(&canonical_data_dir) {
@@ -1723,8 +1740,7 @@ pub async fn delete_background_image(
     let dir = get_data_dir(state.inner())?;
     let full_path = resolve_relative_path(&dir, &relative_path)?;
     if full_path.exists() {
-        std::fs::remove_file(&full_path)
-            .map_err(|e| format!("删除背景图失败: {}", e))?;
+        std::fs::remove_file(&full_path).map_err(|e| format!("删除背景图失败: {}", e))?;
     }
     Ok(())
 }
@@ -1745,8 +1761,7 @@ pub async fn read_background_as_data_url(
     }
 
     // 读取文件字节
-    let bytes = std::fs::read(&full_path)
-        .map_err(|e| format!("读取背景图失败: {}", e))?;
+    let bytes = std::fs::read(&full_path).map_err(|e| format!("读取背景图失败: {}", e))?;
 
     // 根据扩展名推断 MIME 类型
     let extension = full_path
@@ -1774,10 +1789,7 @@ pub async fn read_background_as_data_url(
 ///
 /// 前端调用: `invoke('delete_textbook', { id: 'math-同济线代' })`
 #[tauri::command]
-pub async fn delete_textbook(
-    id: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+pub async fn delete_textbook(id: String, state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     let dir = get_data_dir(state.inner())?;
     let textbooks_dir = dir.join("assets").join("resources").join("textbooks");
 
@@ -1788,7 +1800,11 @@ pub async fn delete_textbook(
                 if let Ok(files) = std::fs::read_dir(subject_dir.path()) {
                     for file in files.flatten() {
                         let path = file.path();
-                        let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                        let filename = path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
                         let subject = subject_dir.file_name().to_string_lossy().to_string();
                         let file_id = format!("{}-{}", subject, filename);
                         if file_id == id {
@@ -1926,6 +1942,7 @@ pub struct TextbookSearchHit {
 /// 同时解析「第N章 / 第N题」式章节引用做定向检索，命中章节标题与题目行
 /// 可获得额外加权，确保用户只报章节/题号时也能定位到教材内容。
 #[tauri::command]
+#[allow(clippy::needless_range_loop)]
 pub async fn search_in_textbook(
     query: String,
     state: State<'_, Mutex<AppState>>,
@@ -1952,7 +1969,11 @@ pub async fn search_in_textbook(
                     if path.extension().and_then(|e| e.to_str()) != Some("md") {
                         continue;
                     }
-                    let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                    let filename = path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let textbook_id = format!("{}-{}", subject, filename);
                     let textbook_title = filename.replace('-', " ");
 
@@ -2042,7 +2063,11 @@ pub async fn search_in_textbook(
                             }
                         }
                         // 单独报章节（无关键词）时，也要把该章标题带出来
-                        if matched == 0 && chapter_ref.is_some() && idx == start && is_chapter_heading(line) {
+                        if matched == 0
+                            && chapter_ref.is_some()
+                            && idx == start
+                            && is_chapter_heading(line)
+                        {
                             matched = 1;
                         }
 
@@ -2131,15 +2156,98 @@ fn is_cjk(c: char) -> bool {
 fn is_stop_char(c: char) -> bool {
     matches!(
         c,
-        '的' | '了' | '是' | '我' | '你' | '他' | '她' | '它' | '这' | '那' | '就' | '都'
-            | '也' | '在' | '有' | '和' | '与' | '及' | '把' | '被' | '让' | '帮' | '请'
-            | '问' | '题' | '道' | '下' | '么' | '什' | '怎' | '吗' | '呢' | '呀' | '啊'
-            | '吧' | '个' | '种' | '讲' | '解' | '答' | '方' | '法' | '一' | '不' | '要'
-            | '会' | '能' | '可' | '以' | '到' | '里' | '之' | '后' | '前' | '上' | '中'
-            | '或' | '于' | '而' | '并' | '且' | '对' | '为' | '从' | '叫' | '给'
-            | '过' | '来' | '去' | '起' | '张' | '章' | '节' | '本' | '出'
-            | '面' | '路' | '程' | '点' | '想' | '看' | '试' | '列' | '好'
-            | '很' | '太' | '更' | '最' | '紧' | '关' | '键' | '核' | '心'
+        '的' | '了'
+            | '是'
+            | '我'
+            | '你'
+            | '他'
+            | '她'
+            | '它'
+            | '这'
+            | '那'
+            | '就'
+            | '都'
+            | '也'
+            | '在'
+            | '有'
+            | '和'
+            | '与'
+            | '及'
+            | '把'
+            | '被'
+            | '让'
+            | '帮'
+            | '请'
+            | '问'
+            | '题'
+            | '道'
+            | '下'
+            | '么'
+            | '什'
+            | '怎'
+            | '吗'
+            | '呢'
+            | '呀'
+            | '啊'
+            | '吧'
+            | '个'
+            | '种'
+            | '讲'
+            | '解'
+            | '答'
+            | '方'
+            | '法'
+            | '一'
+            | '不'
+            | '要'
+            | '会'
+            | '能'
+            | '可'
+            | '以'
+            | '到'
+            | '里'
+            | '之'
+            | '后'
+            | '前'
+            | '上'
+            | '中'
+            | '或'
+            | '于'
+            | '而'
+            | '并'
+            | '且'
+            | '对'
+            | '为'
+            | '从'
+            | '叫'
+            | '给'
+            | '过'
+            | '来'
+            | '去'
+            | '起'
+            | '张'
+            | '章'
+            | '节'
+            | '本'
+            | '出'
+            | '面'
+            | '路'
+            | '程'
+            | '点'
+            | '想'
+            | '看'
+            | '试'
+            | '列'
+            | '好'
+            | '很'
+            | '太'
+            | '更'
+            | '最'
+            | '紧'
+            | '关'
+            | '键'
+            | '核'
+            | '心'
     )
 }
 
@@ -2165,10 +2273,9 @@ fn chinese_num_to_arabic(s: &str) -> Option<u32> {
             }
             total += cur * 10;
             cur = 0;
-        } else if let Some(v) = single_num(c) {
-            cur = v;
         } else {
-            return None;
+            let v = single_num(c)?;
+            cur = v;
         }
     }
     total += cur;
@@ -2363,8 +2470,16 @@ fn extract_leading_number(s: &str) -> Option<u32> {
     // 含逗号（`,`/`，`）：OCR 常把题号后的 `.` 识别成 `,`（如 `05, 若…`）
     if matches!(
         it.peek(),
-        Some('.') | Some('、') | Some(')') | Some('）') | Some(':') | Some('：')
-            | Some('-') | Some(' ') | Some(',') | Some('，')
+        Some('.')
+            | Some('、')
+            | Some(')')
+            | Some('）')
+            | Some(':')
+            | Some('：')
+            | Some('-')
+            | Some(' ')
+            | Some(',')
+            | Some('，')
     ) {
         num.parse().ok()
     } else {
@@ -2374,7 +2489,10 @@ fn extract_leading_number(s: &str) -> Option<u32> {
 
 /// 是否为全角数字
 fn is_fullwidth_digit(c: char) -> bool {
-    matches!(c, '０' | '１' | '２' | '３' | '４' | '５' | '６' | '７' | '８' | '９')
+    matches!(
+        c,
+        '０' | '１' | '２' | '３' | '４' | '５' | '６' | '７' | '８' | '９'
+    )
 }
 
 /// 全角数字 → 半角
@@ -2450,7 +2568,11 @@ fn find_content_start(lines: &[&str]) -> usize {
     for (i, l) in lines.iter().enumerate() {
         let t = l.trim();
         if t.contains('【')
-            && (t.contains("考纲") || t.contains("复习") || t.contains("考点") || t.contains("本节") || t.contains("答案"))
+            && (t.contains("考纲")
+                || t.contains("复习")
+                || t.contains("考点")
+                || t.contains("本节")
+                || t.contains("答案"))
         {
             return i;
         }
@@ -2526,9 +2648,7 @@ pub async fn get_observations(
 /// 返回用于 AI prompt 注入的摘要文本。
 /// 前端调用: `invoke('get_user_model_summary')`
 #[tauri::command]
-pub async fn get_user_model_summary(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<String, String> {
+pub async fn get_user_model_summary(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
     let data_dir = get_data_dir(state.inner())?;
     UserModelService::get_user_model_summary(&data_dir)
 }
@@ -2549,9 +2669,7 @@ pub async fn chat(
     let ai_service = get_ai_service(state.inner())?;
 
     if !ai_service.has_provider() {
-        return Err(
-            "未配置任何 AI Provider，请在设置中添加 AI Provider 配置".to_string()
-        );
+        return Err("未配置任何 AI Provider，请在设置中添加 AI Provider 配置".to_string());
     }
 
     ai_service.chat(request).await
@@ -2578,9 +2696,7 @@ pub async fn chat_stream(
     let ai_service = get_ai_service(state.inner())?;
 
     if !ai_service.has_provider() {
-        return Err(
-            "未配置任何 AI Provider，请在设置中添加 AI Provider 配置".to_string()
-        );
+        return Err("未配置任何 AI Provider，请在设置中添加 AI Provider 配置".to_string());
     }
 
     // 克隆 AppHandle 用于在回调中发送事件
@@ -2615,10 +2731,7 @@ pub async fn chat_stream(
 /// 返回是否找到了对应请求并已发送取消信号。
 /// 前端调用: `invoke('cancel_ai_request', { key: 'planner' })`
 #[tauri::command]
-pub fn cancel_ai_request(
-    key: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<bool, String> {
+pub fn cancel_ai_request(key: String, state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
     let ai_service = get_ai_service(state.inner())?;
     Ok(ai_service.cancel_request(&key))
 }
@@ -2636,9 +2749,7 @@ pub struct TestResult {
 /// 不需要 AppState，直接用传入的配置测试。
 /// 前端调用: `invoke('test_ai_provider', { config: { ... } })`
 #[tauri::command]
-pub async fn test_ai_provider(
-    mut config: AIProviderConfig,
-) -> Result<TestResult, String> {
+pub async fn test_ai_provider(mut config: AIProviderConfig) -> Result<TestResult, String> {
     if config.api_key == crate::secrets::CONFIGURED_SENTINEL {
         config.api_key = crate::secrets::get_provider_api_key(&config.id)?
             .ok_or_else(|| "系统凭据库中未找到该 Provider 的 API Key".to_string())?;
@@ -2696,9 +2807,7 @@ pub async fn get_ai_usage_log() -> Result<Vec<crate::data::ai_usage::AiUsageEntr
 ///
 /// 前端调用: `invoke('clear_ai_usage_log')`
 #[tauri::command]
-pub async fn clear_ai_usage_log(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+pub async fn clear_ai_usage_log(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     // H1 并发保护：与 AI 调用后的用量日志 append 串行化，避免清空与追加竞态
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
@@ -2738,9 +2847,7 @@ pub async fn read_app_log(
 ///
 /// 前端调用: `invoke('clear_app_log')`
 #[tauri::command]
-pub async fn clear_app_log(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+pub async fn clear_app_log(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     // H1 并发保护：与日志写入串行化，避免清空与追加竞态
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
@@ -2780,9 +2887,7 @@ fn resolve_debug_path(
     let data_canon = data_dir
         .canonicalize()
         .unwrap_or_else(|_| data_dir.to_path_buf());
-    let resolved_canon = resolved
-        .canonicalize()
-        .unwrap_or_else(|_| resolved.clone());
+    let resolved_canon = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
     if !resolved_canon.starts_with(&data_canon) {
         return Err(format!("路径越界: {}", relative_path));
     }
@@ -2803,13 +2908,17 @@ pub async fn debug_list_dir(
         return Ok(Vec::new());
     }
     let mut entries = Vec::new();
-    for entry in std::fs::read_dir(&dir_path)
-        .map_err(|e| format!("读取目录失败 {:?}: {}", dir_path, e))?
+    for entry in
+        std::fs::read_dir(&dir_path).map_err(|e| format!("读取目录失败 {:?}: {}", dir_path, e))?
     {
         let entry = entry.map_err(|e| format!("读取目录条目失败: {}", e))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("读取条目类型失败 {}: {}", entry.file_name().to_string_lossy(), e))?;
+        let file_type = entry.file_type().map_err(|e| {
+            format!(
+                "读取条目类型失败 {}: {}",
+                entry.file_name().to_string_lossy(),
+                e
+            )
+        })?;
         entries.push(DebugDirEntry {
             name: entry.file_name().to_string_lossy().to_string(),
             is_directory: file_type.is_dir(),
@@ -2832,8 +2941,7 @@ pub async fn debug_read_file(
     if !file_path.is_file() {
         return Err(format!("文件不存在: {}", relative_path));
     }
-    crate::data::read_file_content(&file_path)
-        .map_err(|e| format!("读取文件失败: {}", e))
+    crate::data::read_file_content(&file_path).map_err(|e| format!("读取文件失败: {}", e))
 }
 
 /// 列出所有 MCP 服务器状态
@@ -2891,9 +2999,7 @@ pub async fn call_tool(
 /// 读取 `config/settings.json` 文件。
 /// 前端调用: `invoke('get_settings')`
 #[tauri::command]
-pub async fn get_settings(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<AppSettings, String> {
+pub async fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<AppSettings, String> {
     let data_dir = get_data_dir(state.inner())?;
     let mut settings = load_settings(&data_dir);
     // 前端只需要知道密钥是否已配置，不应接收可直接复用的明文。
@@ -3087,7 +3193,9 @@ pub async fn init_state(
         ("sprint", crate::data::state::StudyPhase::Sprint),
         ("mock", crate::data::state::StudyPhase::Mock),
         ("complete", crate::data::state::StudyPhase::Complete),
-    ].into_iter().collect();
+    ]
+    .into_iter()
+    .collect();
 
     let mut study_state = crate::data::state::StudyState {
         meta: crate::data::state::StateMeta {
@@ -3100,7 +3208,10 @@ pub async fn init_state(
     };
 
     for subj in &payload.subjects {
-        let phase = phase_map.get(subj.phase.as_str()).cloned().unwrap_or_default();
+        let phase = phase_map
+            .get(subj.phase.as_str())
+            .cloned()
+            .unwrap_or_default();
         let mut subject_state = crate::data::state::SubjectState {
             active: subj.active,
             phase,
@@ -3135,9 +3246,7 @@ pub async fn init_state(
 ///
 /// 前端调用: `invoke('get_onboarding_status')`
 #[tauri::command]
-pub async fn get_onboarding_status(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<bool, String> {
+pub async fn get_onboarding_status(state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
     let data_dir = get_data_dir(state.inner())?;
     let settings = load_settings(&data_dir);
     Ok(settings.onboarding_completed)
@@ -3147,9 +3256,7 @@ pub async fn get_onboarding_status(
 ///
 /// 前端调用: `invoke('complete_onboarding')`
 #[tauri::command]
-pub async fn complete_onboarding(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+pub async fn complete_onboarding(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
 
     // H1 并发保护：串行化 settings 写入
@@ -3180,15 +3287,20 @@ pub async fn update_subject_textbook(
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
 
-    let mut study_state = crate::data::state::read_state(&data_dir)
-        .map_err(|e| format!("读取 State 失败: {}", e))?;
+    let mut study_state =
+        crate::data::state::read_state(&data_dir).map_err(|e| format!("读取 State 失败: {}", e))?;
 
     let target = match subject.as_str() {
         "math" => &mut study_state.subjects.math,
         "english" => &mut study_state.subjects.english,
         "politics" => &mut study_state.subjects.politics,
         "professional" => &mut study_state.subjects.professional,
-        other => return Err(format!("不支持的科目: {}（仅支持 math/english/politics/professional）", other)),
+        other => {
+            return Err(format!(
+                "不支持的科目: {}（仅支持 math/english/politics/professional）",
+                other
+            ))
+        }
     };
 
     // 空字符串视为 None
@@ -3302,10 +3414,7 @@ fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
                 return None;
             }
 
-            let download_url = asset
-                .get("browser_download_url")?
-                .as_str()?
-                .to_string();
+            let download_url = asset.get("browser_download_url")?.as_str()?.to_string();
             let size = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
             let kind = detect_asset_kind(&name);
 
@@ -3317,7 +3426,7 @@ fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
                 .map(|hex| hex.to_lowercase())
                 .filter(|hex| !hex.is_empty());
 
-            if kind == "unknown" || sha256.as_ref().map_or(true, |hex| !is_valid_sha256(hex)) {
+            if kind == "unknown" || sha256.as_ref().is_none_or(|hex| !is_valid_sha256(hex)) {
                 log::warn!("[Update] 忽略缺少有效 SHA-256 的安装资源: {}", name);
                 return None;
             }
@@ -3462,14 +3571,13 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         .unwrap_or("")
         .to_string();
     let assets = extract_install_assets(
-        release_json.get("assets").unwrap_or(&serde_json::Value::Null),
+        release_json
+            .get("assets")
+            .unwrap_or(&serde_json::Value::Null),
     );
 
     let message = if has_update {
-        format!(
-            "发现新版本 {}（当前 {}）",
-            latest_version, current_version
-        )
+        format!("发现新版本 {}（当前 {}）", latest_version, current_version)
     } else {
         format!("已是最新版本（{}）", current_version)
     };
@@ -3519,7 +3627,9 @@ pub async fn download_update(
     let lower_filename = filename.to_lowercase();
     if filename.is_empty()
         || filename.contains(['/', '\\'])
-        || !filename.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        || !filename
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
         || !(lower_filename.ends_with(".exe") || lower_filename.ends_with(".msi"))
     {
         return Err("无效的文件名".to_string());
@@ -3527,8 +3637,7 @@ pub async fn download_update(
 
     // 临时目录：%TEMP%\StudyAgent-update\
     let temp_dir = std::env::temp_dir().join("StudyAgent-update");
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
     let file_path = temp_dir.join(&filename);
     log::info!("[Update] 保存路径: {}", file_path.display());
@@ -3566,8 +3675,7 @@ pub async fn download_update(
     }
     log::info!("[Update] 文件大小: {} 字节", total);
 
-    let mut file = std::fs::File::create(&file_path)
-        .map_err(|e| format!("创建文件失败: {}", e))?;
+    let mut file = std::fs::File::create(&file_path).map_err(|e| format!("创建文件失败: {}", e))?;
 
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
@@ -3628,16 +3736,15 @@ pub async fn download_update(
 
     // 完整性校验：SHA-256 必填且必须匹配。
     drop(file);
-    let actual = sha256_hex(&file_path)
-        .map_err(|e| format!("计算下载文件校验和失败: {}", e))?;
+    let actual = sha256_hex(&file_path).map_err(|e| format!("计算下载文件校验和失败: {}", e))?;
     if actual != expected {
         let _ = std::fs::remove_file(&file_path);
         return Err(
             "下载文件完整性校验失败（SHA-256 不匹配），已删除文件，请重试或稍后再更新".to_string(),
         );
     }
-    let canonical = std::fs::canonicalize(&file_path)
-        .map_err(|e| format!("确认安装包路径失败: {e}"))?;
+    let canonical =
+        std::fs::canonicalize(&file_path).map_err(|e| format!("确认安装包路径失败: {e}"))?;
     verified_updates()
         .lock()
         .map_err(|_| "更新校验状态不可用".to_string())?
@@ -3653,8 +3760,7 @@ pub async fn download_update(
 fn sha256_hex(path: &std::path::Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
 
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("打开文件失败: {}", e))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("打开文件失败: {}", e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -3681,7 +3787,9 @@ fn is_allowed_update_url(url: &reqwest::Url, require_release_path: bool) -> bool
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     if require_release_path {
         host == "github.com"
-            && url.path().starts_with("/Wenjiugugugu/StudyAgent-client/releases/download/")
+            && url
+                .path()
+                .starts_with("/Wenjiugugugu/StudyAgent-client/releases/download/")
     } else {
         host == "github.com"
             || host == "objects.githubusercontent.com"
@@ -3689,7 +3797,8 @@ fn is_allowed_update_url(url: &reqwest::Url, require_release_path: bool) -> bool
     }
 }
 
-fn verified_updates() -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>> {
+fn verified_updates(
+) -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>> {
     static VERIFIED: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>>,
     > = std::sync::OnceLock::new();
@@ -3701,17 +3810,13 @@ fn verified_updates() -> &'static std::sync::Mutex<std::collections::HashMap<std
 /// 启动下载好的安装包并退出当前应用。
 /// Windows 上使用 DETACHED_PROCESS 让子进程独立运行。
 #[tauri::command]
-pub async fn install_update(
-    file_path: String,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let path = std::path::Path::new(&file_path);
     if !path.is_file() {
         return Err(format!("安装包不存在: {}", file_path));
     }
 
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|e| format!("确认安装包路径失败: {e}"))?;
+    let canonical = std::fs::canonicalize(path).map_err(|e| format!("确认安装包路径失败: {e}"))?;
     let canonical_temp = std::fs::canonicalize(std::env::temp_dir().join("StudyAgent-update"))
         .map_err(|e| format!("确认更新目录失败: {e}"))?;
     if !canonical.starts_with(&canonical_temp) {
@@ -3792,7 +3897,7 @@ fn is_newer_version(remote: &str, current: &str) -> bool {
 
     // 主版本号相同：有预发布后缀的版本比无后缀的版本更旧
     match (remote_pre, current_pre) {
-        (None, None) => false, // 完全相同
+        (None, None) => false,    // 完全相同
         (Some(_), None) => false, // remote 是预发布，current 是正式版 → remote 更旧
         (None, Some(_)) => true,  // remote 是正式版，current 是预发布 → remote 更新
         (Some(r), Some(c)) => compare_prerelease(&r, &c) > 0,
@@ -3872,9 +3977,7 @@ fn parse_task_status(status: &str) -> Result<TaskStatus, String> {
 /// 返回值: "ask" | "tray" | "quit"
 /// 前端调用: `invoke('get_close_action')`
 #[tauri::command]
-pub async fn get_close_action(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<String, String> {
+pub async fn get_close_action(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
     let data_dir = get_data_dir(state.inner())?;
     let settings = load_settings(&data_dir);
     Ok(settings.close_action)
@@ -3891,7 +3994,12 @@ pub async fn set_close_action(
 ) -> Result<(), String> {
     let normalized = match action.as_str() {
         "ask" | "tray" | "quit" => action,
-        _ => return Err(format!("无效的关闭动作: {}（支持: ask, tray, quit）", action)),
+        _ => {
+            return Err(format!(
+                "无效的关闭动作: {}（支持: ask, tray, quit）",
+                action
+            ))
+        }
     };
     let data_dir = get_data_dir(state.inner())?;
     // M15：settings 写操作与其他写命令串行化，避免与 save_settings 并发丢更新
@@ -3921,9 +4029,7 @@ pub async fn quit_app(app: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 前端调用: `invoke('get_autostart')`
 #[tauri::command]
-pub async fn get_autostart(
-    app: tauri::AppHandle,
-) -> Result<bool, String> {
+pub async fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     match manager.is_enabled() {
@@ -3939,10 +4045,7 @@ pub async fn get_autostart(
 ///
 /// 前端调用: `invoke('set_autostart', { enabled: true })`
 #[tauri::command]
-pub async fn set_autostart(
-    enabled: bool,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     if enabled {
@@ -4093,12 +4196,12 @@ mod tests {
         let exercise: Vec<&str> = vec![
             "2.1.5 本节习题精选",
             "单项选择题",
-            "01. 若十进制数为 137.5",   // 第1题
+            "01. 若十进制数为 137.5", // 第1题
             "A 89.8 B 211.4",
-            "02, 一个 16 位无符号",      // 第2题（OCR 逗号）
+            "02, 一个 16 位无符号", // 第2题（OCR 逗号）
             "A 0 一 63536",
-            "03、下列说法有误的是",      // 第3题（OCR 顿号）
-            "04 若叉为负数",            // 第4题（OCR 空格）
+            "03、下列说法有误的是", // 第3题（OCR 顿号）
+            "04 若叉为负数",        // 第4题（OCR 空格）
             "2.1.6 答案与解析",
         ];
         // 模拟主循环的 ordinal 计数逻辑

@@ -1,4 +1,4 @@
-//! Assets 数据层 — 读取 `assets/` 下的知识对象、用户画像、里程碑等
+﻿//! Assets 数据层 — 读取 `assets/` 下的知识对象、用户画像、里程碑等
 //!
 //! 对应前端 TypeScript 类型: `types/knowledge.ts`
 //!
@@ -7,9 +7,9 @@
 //! （Week Plan / Today Plan / Review 已迁移为结构化 JSON）。
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use super::{DataResult, list_dir_files_recursive, read_file_content};
+use super::{list_dir_files_recursive, read_file_content, DataResult};
 
 // ============================================================================
 // YAML Frontmatter 解析工具（仅用于 Assets 层）
@@ -31,13 +31,10 @@ fn split_frontmatter(content: &str) -> (Option<String>, String) {
     let after_delim = &content[3..];
 
     // 跳过 "---" 后面的换行
-    let after_delim = if after_delim.starts_with('\n') {
-        &after_delim[1..]
-    } else if after_delim.starts_with("\r\n") {
-        &after_delim[2..]
-    } else {
-        after_delim
-    };
+    let after_delim = after_delim
+        .strip_prefix('\n')
+        .or_else(|| after_delim.strip_prefix("\r\n"))
+        .unwrap_or(after_delim);
 
     // 查找闭合的 "---"
     if let Some(end_pos) = find_closing_delimiter(after_delim) {
@@ -47,13 +44,10 @@ fn split_frontmatter(content: &str) -> (Option<String>, String) {
         let body_start = end_pos + 3;
         let body = if body_start < after_delim.len() {
             let rest = &after_delim[body_start..];
-            let rest = if rest.starts_with('\n') {
-                &rest[1..]
-            } else if rest.starts_with("\r\n") {
-                &rest[2..]
-            } else {
-                rest
-            };
+            let rest = rest
+                .strip_prefix('\n')
+                .or_else(|| rest.strip_prefix("\r\n"))
+                .unwrap_or(rest);
             rest.trim_start().to_string()
         } else {
             String::new()
@@ -277,10 +271,8 @@ fn find_colon_separator(s: &str) -> Option<usize> {
             in_quotes = false;
         }
 
-        if !in_quotes && c == b':' {
-            if i + 1 >= bytes.len() || bytes[i + 1] == b' ' {
-                return Some(i);
-            }
+        if !in_quotes && c == b':' && (i + 1 >= bytes.len() || bytes[i + 1] == b' ') {
+            return Some(i);
         }
     }
 
@@ -624,64 +616,65 @@ pub fn read_capability(data_dir: &Path, cap_id: &str) -> DataResult<UserCapabili
         }
     };
 
-    let mut cap = UserCapability::default();
-    cap.id = frontmatter_value
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or(cap_id)
-        .to_string();
-    cap.title = frontmatter_value
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.category = frontmatter_value
-        .get("category")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.description = frontmatter_value
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.confidence = frontmatter_value
-        .get("confidence")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    cap.activity = frontmatter_value
-        .get("activity")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.evidence_refs = frontmatter_value
-        .get("evidence_refs")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-    cap.created_at = frontmatter_value
-        .get("created_at")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.updated_at = frontmatter_value
-        .get("updated_at")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.status = frontmatter_value
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    cap.source_observation = frontmatter_value
-        .get("source_observation")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let cap = UserCapability {
+        id: frontmatter_value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(cap_id)
+            .to_string(),
+        title: frontmatter_value
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        category: frontmatter_value
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        description: frontmatter_value
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        confidence: frontmatter_value
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        activity: frontmatter_value
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        evidence_refs: frontmatter_value
+            .get("evidence_refs")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        created_at: frontmatter_value
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        updated_at: frontmatter_value
+            .get("updated_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        status: frontmatter_value
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        source_observation: frontmatter_value
+            .get("source_observation")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    };
 
     Ok(cap)
 }
@@ -692,9 +685,7 @@ pub fn read_capability(data_dir: &Path, cap_id: &str) -> DataResult<UserCapabili
 
 /// 读取所有里程碑
 pub fn read_milestones(data_dir: &Path) -> DataResult<Vec<Milestone>> {
-    let milestones_dir = data_dir
-        .join(ASSETS_DIR)
-        .join(MILESTONES_DIR);
+    let milestones_dir = data_dir.join(ASSETS_DIR).join(MILESTONES_DIR);
 
     let files = list_dir_files_recursive(&milestones_dir)?;
 
@@ -714,39 +705,39 @@ pub fn read_milestones(data_dir: &Path) -> DataResult<Vec<Milestone>> {
 
         match read_file_content(&file) {
             Ok(content) => {
-            let (yaml, body) = split_frontmatter(&content);
-            let mut milestone = Milestone {
-                id: id.clone(),
-                content: body,
-                ..Default::default()
-            };
+                let (yaml, body) = split_frontmatter(&content);
+                let mut milestone = Milestone {
+                    id: id.clone(),
+                    content: body,
+                    ..Default::default()
+                };
 
-            if let Some(yaml_str) = yaml {
-                if let Ok(value) = parse_yaml_to_value(&yaml_str) {
-                    milestone.title = value
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    milestone.description = value
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    milestone.target_date = value
-                        .get("target_date")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    milestone.status = value
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("pending")
-                        .to_string();
+                if let Some(yaml_str) = yaml {
+                    if let Ok(value) = parse_yaml_to_value(&yaml_str) {
+                        milestone.title = value
+                            .get("title")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        milestone.description = value
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        milestone.target_date = value
+                            .get("target_date")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        milestone.status = value
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("pending")
+                            .to_string();
+                    }
                 }
-            }
 
-            milestones.push(milestone);
+                milestones.push(milestone);
             }
             Err(e) => {
                 log::warn!("读取里程碑文件 {:?} 失败: {}", file, e);

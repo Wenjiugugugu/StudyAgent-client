@@ -142,8 +142,8 @@ impl AnthropicProvider {
                     }
                     if let Some(ref tool_calls) = m.tool_calls {
                         for tc in tool_calls {
-                            let input: Value = serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or_else(|_| Value::Null);
+                            let input: Value =
+                                serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
                             content.push(json!({
                                 "type": "tool_use",
                                 "id": tc.id,
@@ -262,6 +262,7 @@ impl AnthropicProvider {
     }
 
     /// 解析 Anthropic SSE 流，返回（是否已结束, 可选错误）
+    #[allow(clippy::too_many_arguments)]
     fn parse_stream_line(
         &self,
         line: &str,
@@ -408,7 +409,9 @@ impl AiProvider for AnthropicProvider {
         log::info!("Anthropic 请求 URL: {}", url);
         log::info!(
             "Anthropic 请求 Model: {}",
-            req.model.clone().unwrap_or_else(|| self.config.model.clone())
+            req.model
+                .clone()
+                .unwrap_or_else(|| self.config.model.clone())
         );
 
         let body = self.build_body(req, false);

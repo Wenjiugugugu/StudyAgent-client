@@ -11,8 +11,7 @@ fn entry(provider_id: &str) -> Result<keyring::Entry, String> {
     if id.is_empty() || id.len() > 128 {
         return Err("Provider ID 无效".to_string());
     }
-    keyring::Entry::new(SERVICE_NAME, id)
-        .map_err(|error| format!("无法访问系统凭据库: {error}"))
+    keyring::Entry::new(SERVICE_NAME, id).map_err(|error| format!("无法访问系统凭据库: {error}"))
 }
 
 pub fn set_provider_api_key(provider_id: &str, api_key: &str) -> Result<(), String> {

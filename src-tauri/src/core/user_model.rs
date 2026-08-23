@@ -1,4 +1,4 @@
-//! User Model — 用户画像读取
+﻿//! User Model — 用户画像读取
 //!
 //! 提供用户能力（Capability）和观察（Observation）的读取功能。
 //! 底层调用 data::assets 层读取 Markdown 文件。
@@ -124,7 +124,7 @@ impl UserModelService {
                     cap.description.lines().next().map(str::trim).unwrap_or("")
                 ));
             }
-            summary.push_str("\n");
+            summary.push('\n');
         }
 
         // 观察记录

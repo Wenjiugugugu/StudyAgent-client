@@ -176,7 +176,11 @@ impl AiService {
                 for tx in senders {
                     let _ = tx.send(true);
                 }
-                log::info!("已请求取消 AI 请求（agent={}，共 {} 个并发请求）", key, senders.len());
+                log::info!(
+                    "已请求取消 AI 请求（agent={}，共 {} 个并发请求）",
+                    key,
+                    senders.len()
+                );
                 true
             }
             None => false,
@@ -192,11 +196,7 @@ impl AiService {
     }
 
     /// 注册一个取消令牌（C2）：按 agent 键 push 到 Vec，支持同 agent 并发多个请求
-    fn register_cancellation(
-        &self,
-        key: &str,
-        sender: Arc<tokio::sync::watch::Sender<bool>>,
-    ) {
+    fn register_cancellation(&self, key: &str, sender: Arc<tokio::sync::watch::Sender<bool>>) {
         self.cancellations
             .lock()
             .entry(key.to_string())
@@ -206,11 +206,7 @@ impl AiService {
 
     /// 注销一个取消令牌（C2）：按 Arc 指针移除自项，Vec 空则删除 key。
     /// 避免前一请求结束时把同 agent 后发请求的取消入口一并删除。
-    fn unregister_cancellation(
-        &self,
-        key: &str,
-        sender: &Arc<tokio::sync::watch::Sender<bool>>,
-    ) {
+    fn unregister_cancellation(&self, key: &str, sender: &Arc<tokio::sync::watch::Sender<bool>>) {
         let mut cancellations = self.cancellations.lock();
         if let Some(senders) = cancellations.get_mut(key) {
             senders.retain(|s| !Arc::ptr_eq(s, sender));
@@ -329,7 +325,6 @@ impl AiService {
             .model
             .clone()
             .unwrap_or_else(|| default_provider.config().model.clone());
-        let default_id = self.default_provider_id.read().clone();
 
         let result = if *cancel_rx.borrow() {
             Err(REQUEST_CANCELLED.to_string())
@@ -478,7 +473,10 @@ impl AiService {
     }
 
     /// 获取 Provider 能力
-    pub fn get_capabilities(&self, provider_id: Option<&str>) -> Result<ProviderCapabilities, String> {
+    pub fn get_capabilities(
+        &self,
+        provider_id: Option<&str>,
+    ) -> Result<ProviderCapabilities, String> {
         let provider = match provider_id {
             Some(id) => self.get_provider(id)?,
             None => self.get_default_provider()?,
@@ -531,12 +529,7 @@ fn log_usage(
     req_model: &str,
 ) {
     let (status, model, usage, error) = match result {
-        Ok(resp) => (
-            "success",
-            resp.model.clone(),
-            resp.usage.clone(),
-            None,
-        ),
+        Ok(resp) => ("success", resp.model.clone(), resp.usage.clone(), None),
         Err(e) => (
             "error",
             req_model.to_string(),

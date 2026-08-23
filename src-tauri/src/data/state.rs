@@ -1,11 +1,11 @@
-//! State 数据层 — 读取/解析 `state/current.state` (TOML)
+﻿//! State 数据层 — 读取/解析 `state/current.state` (TOML)
 //!
 //! 对应前端 TypeScript 类型: `types/state.ts`
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::{DataResult, read_file_content};
+use super::{read_file_content, DataResult};
 
 // ============================================================================
 // 自定义反序列化函数 — 同时接受整数和浮点数，用于 f64 字段
@@ -48,9 +48,9 @@ where
             if s.is_empty() || s == "未记录" {
                 Ok(None)
             } else {
-                s.parse::<f64>()
-                    .map(Some)
-                    .map_err(|e| serde::de::Error::custom(format!("无法将 '{}' 转换为 f64: {}", s, e)))
+                s.parse::<f64>().map(Some).map_err(|e| {
+                    serde::de::Error::custom(format!("无法将 '{}' 转换为 f64: {}", s, e))
+                })
             }
         }
         _ => Ok(None),
@@ -65,25 +65,21 @@ where
 ///
 /// 反序列化保持严格：AI 应在 prompt 中被明确约束只能使用 `math`/`english`/`politics`/`professional`，
 /// 出现未知值时直接报错（解析失败），便于发现 prompt 失效。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectKey {
+    #[default]
     Math,
     English,
     Politics,
     Professional,
 }
 
-impl Default for SubjectKey {
-    fn default() -> Self {
-        SubjectKey::Math
-    }
-}
-
 /// 学习阶段
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StudyPhase {
+    #[default]
     Foundation,
     Strengthen,
     Sprint,
@@ -91,57 +87,36 @@ pub enum StudyPhase {
     Complete,
 }
 
-impl Default for StudyPhase {
-    fn default() -> Self {
-        StudyPhase::Foundation
-    }
-}
-
 /// 任务状态
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    #[default]
     Pending,
     InProgress,
     Done,
     Abandoned,
 }
 
-impl Default for TaskStatus {
-    fn default() -> Self {
-        TaskStatus::Pending
-    }
-}
-
 /// 任务优先级
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum TaskPriority {
+    #[default]
     A,
     B,
     C,
 }
 
-impl Default for TaskPriority {
-    fn default() -> Self {
-        TaskPriority::A
-    }
-}
-
 /// 风险等级
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
     Low,
+    #[default]
     Medium,
     High,
     Critical,
-}
-
-impl Default for RiskLevel {
-    fn default() -> Self {
-        RiskLevel::Medium
-    }
 }
 
 /// 风险主体（SubjectKey 或 "overall"）
@@ -343,10 +318,7 @@ pub fn read_state(data_dir: &Path) -> DataResult<StudyState> {
     let state_path = data_dir.join(STATE_DIR).join(STATE_FILE_NAME);
 
     if !state_path.exists() {
-        return Err(format!(
-            "State 文件不存在: {:?}",
-            state_path
-        ));
+        return Err(format!("State 文件不存在: {:?}", state_path));
     }
 
     let content = read_file_content(&state_path)?;
@@ -358,8 +330,7 @@ pub fn parse_state_toml(content: &str) -> DataResult<StudyState> {
     // toml crate 可能无法处理文件头部的 Markdown 注释行（以 # 开头）
     // 需要先清理 TOML 内容中的 Markdown 标题行
     let cleaned = clean_state_toml(content);
-    toml::from_str::<StudyState>(&cleaned)
-        .map_err(|e| format!("解析 State TOML 失败: {}", e))
+    toml::from_str::<StudyState>(&cleaned).map_err(|e| format!("解析 State TOML 失败: {}", e))
 }
 
 /// 清理 state 文件中的非 TOML 内容（M16：加固）
@@ -494,8 +465,8 @@ pub fn get_subject_state_mut<'a>(
 /// 若该任务已有 started_at（正在计时中），直接返回 Ok（幂等）。
 /// 若其他任务正在计时，不会自动暂停它们（由前端调用 pause 控制单任务计时）。
 pub fn start_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<()> {
-    let task = find_task_by_id_mut(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task =
+        find_task_by_id_mut(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     if task.started_at.is_none() {
         task.started_at = Some(super::now_string());
     }
@@ -506,8 +477,8 @@ pub fn start_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<()>
 ///
 /// 若任务未在计时中（started_at 为 None），直接返回 Ok（幂等）。
 pub fn pause_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<i64> {
-    let task = find_task_by_id_mut(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task =
+        find_task_by_id_mut(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     if let Some(started_at) = task.started_at.take() {
         let minutes = elapsed_minutes(&started_at)?;
         task.accumulated_minutes += minutes;
@@ -521,12 +492,16 @@ pub fn pause_task_timer(state: &mut StudyState, task_id: &str) -> DataResult<i64
 ///
 /// 与 `pause_task_timer` 不同：番茄钟以整段会话为单位，学习会话结束时把时长
 /// 一次性累加，不依赖 started_at 的起止差值。若任务不存在则返回错误。
-pub fn add_accumulated_minutes(state: &mut StudyState, task_id: &str, minutes: i64) -> DataResult<()> {
+pub fn add_accumulated_minutes(
+    state: &mut StudyState,
+    task_id: &str,
+    minutes: i64,
+) -> DataResult<()> {
     if minutes <= 0 {
         return Ok(());
     }
-    let task = find_task_by_id_mut(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task =
+        find_task_by_id_mut(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     task.accumulated_minutes += minutes;
     Ok(())
 }
@@ -535,8 +510,7 @@ pub fn add_accumulated_minutes(state: &mut StudyState, task_id: &str, minutes: i
 ///
 /// 若任务正在计时中（started_at 存在），将 started_at 至今的分钟数累加到 accumulated_minutes 返回。
 pub fn task_total_minutes(state: &StudyState, task_id: &str) -> DataResult<i64> {
-    let task = find_task_by_id(state, task_id)
-        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    let task = find_task_by_id(state, task_id).ok_or_else(|| format!("未找到任务: {}", task_id))?;
     let mut total = task.accumulated_minutes;
     if let Some(started_at) = &task.started_at {
         total += elapsed_minutes(started_at)?;
@@ -566,12 +540,20 @@ pub fn day_actual_minutes(state: &StudyState, date: &str) -> i64 {
 
 /// 按 task_id 查找任务（不可变引用）
 fn find_task_by_id<'a>(state: &'a StudyState, task_id: &str) -> Option<&'a StateTask> {
-    state.current_task.tasks.iter().find(|t| t.task_id.as_deref() == Some(task_id))
+    state
+        .current_task
+        .tasks
+        .iter()
+        .find(|t| t.task_id.as_deref() == Some(task_id))
 }
 
 /// 按 task_id 查找任务（可变引用）
 fn find_task_by_id_mut<'a>(state: &'a mut StudyState, task_id: &str) -> Option<&'a mut StateTask> {
-    state.current_task.tasks.iter_mut().find(|t| t.task_id.as_deref() == Some(task_id))
+    state
+        .current_task
+        .tasks
+        .iter_mut()
+        .find(|t| t.task_id.as_deref() == Some(task_id))
 }
 
 /// 计算 ISO 时间戳距今的分钟数（整数，向下取整）
@@ -581,7 +563,7 @@ fn elapsed_minutes(started_at: &str) -> DataResult<i64> {
     // 简化实现：解析两个 ISO 时间戳并计算差值
     // 这里复用 data 层的时间解析（如果存在 chrono 会更简洁，但项目暂未引入）
     let now = super::now_string();
-    minutes_between_iso(&started_at, &now)
+    minutes_between_iso(started_at, &now)
 }
 
 /// 计算两个 ISO 8601 时间戳之间的分钟差（end - start）

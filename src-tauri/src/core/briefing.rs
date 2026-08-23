@@ -46,41 +46,39 @@ impl<'a> BriefingAgent<'a> {
     ) -> DataResult<BriefingFile> {
         // 1. 读取昨日复盘（生成依据）
         // M10：区分「文件不存在」（正常，简报可基于空依据生成）与「解析失败」（异常，记录日志）
-        let yesterday_review: Option<ReviewFile> = match crate::data::records::read_review(
-            data_dir,
-            based_on_review_date,
-        ) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                if crate::data::records::review_file_path(data_dir, based_on_review_date).exists() {
-                    log::error!(
-                        "[Briefing] 昨日复盘文件存在但解析失败，简报将基于空依据生成: {}",
-                        e
-                    );
+        let yesterday_review: Option<ReviewFile> =
+            match crate::data::records::read_review(data_dir, based_on_review_date) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    if crate::data::records::review_file_path(data_dir, based_on_review_date)
+                        .exists()
+                    {
+                        log::error!(
+                            "[Briefing] 昨日复盘文件存在但解析失败，简报将基于空依据生成: {}",
+                            e
+                        );
+                    }
+                    None
                 }
-                None
-            }
-        };
+            };
 
         // 2. 读取当前 State
         let state = crate::data::state::read_state_or_default(data_dir);
 
         // 3. 读取目标日期的日计划（用于让 AI 感知今日任务重点）
-        let target_plan = match crate::data::plan::read_daily_plan_with_merged_status(
-            data_dir,
-            target_date,
-        ) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                if crate::data::plan::daily_plan_path(data_dir, target_date).exists() {
-                    log::error!(
-                        "[Briefing] 目标日计划文件存在但解析失败，将基于空计划生成: {}",
-                        e
-                    );
+        let target_plan =
+            match crate::data::plan::read_daily_plan_with_merged_status(data_dir, target_date) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    if crate::data::plan::daily_plan_path(data_dir, target_date).exists() {
+                        log::error!(
+                            "[Briefing] 目标日计划文件存在但解析失败，将基于空计划生成: {}",
+                            e
+                        );
+                    }
+                    None
                 }
-                None
-            }
-        };
+            };
 
         // 4. 读取设置（用于考试日期、每周学习时长等）
         let settings = crate::load_settings(data_dir);
@@ -129,18 +127,14 @@ impl<'a> BriefingAgent<'a> {
             ),
         );
 
-        let response = self
-            .ai_service
-            .chat(request)
-            .await
-            .map_err(|e| {
-                crate::data::write_ai_debug_log(
-                    data_dir,
-                    "briefing_ai_call_error",
-                    &format!("简报 AI 调用失败: {}", e),
-                );
-                format!("AI 生成简报失败: {}", e)
-            })?;
+        let response = self.ai_service.chat(request).await.map_err(|e| {
+            crate::data::write_ai_debug_log(
+                data_dir,
+                "briefing_ai_call_error",
+                &format!("简报 AI 调用失败: {}", e),
+            );
+            format!("AI 生成简报失败: {}", e)
+        })?;
 
         crate::data::write_ai_debug_log(
             data_dir,
@@ -313,44 +307,32 @@ impl<'a> BriefingAgent<'a> {
         let daily_target_hours = settings.daily_target_hours();
         let study_days_per_week = settings.study_days_per_week();
 
-        let push_subject = |key: &str,
-                            name: &str,
-                            subj: &crate::data::state::SubjectState,
-                            p: &mut String| {
-            if !subj.active {
-                return;
-            }
-            p.push_str(&format!("### {}（{}）\n", name, key));
-            p.push_str(&format!("- 阶段: {:?}\n", subj.phase));
-            p.push_str(&format!("- 每周时长: {}h\n", subj.weekly_hours));
-            p.push_str(&format!("- 当前重点: {}\n", subj.current_focus));
-            p.push_str(&format!(
-                "- 已完成章节 ({}): {:?}\n",
-                subj.completed.len(),
-                subj.completed
-            ));
-            if !subj.weak_chapters.is_empty() {
-                p.push_str(&format!("- 薄弱章节: {:?}\n", subj.weak_chapters));
-            }
-            p.push_str(&format!(
-                "- 教材: {}\n\n",
-                subj.textbook.as_deref().unwrap_or("未指定")
-            ));
-        };
+        let push_subject =
+            |key: &str, name: &str, subj: &crate::data::state::SubjectState, p: &mut String| {
+                if !subj.active {
+                    return;
+                }
+                p.push_str(&format!("### {}（{}）\n", name, key));
+                p.push_str(&format!("- 阶段: {:?}\n", subj.phase));
+                p.push_str(&format!("- 每周时长: {}h\n", subj.weekly_hours));
+                p.push_str(&format!("- 当前重点: {}\n", subj.current_focus));
+                p.push_str(&format!(
+                    "- 已完成章节 ({}): {:?}\n",
+                    subj.completed.len(),
+                    subj.completed
+                ));
+                if !subj.weak_chapters.is_empty() {
+                    p.push_str(&format!("- 薄弱章节: {:?}\n", subj.weak_chapters));
+                }
+                p.push_str(&format!(
+                    "- 教材: {}\n\n",
+                    subj.textbook.as_deref().unwrap_or("未指定")
+                ));
+            };
 
         push_subject("math", "数学", &state.subjects.math, &mut prompt);
-        push_subject(
-            "english",
-            "英语",
-            &state.subjects.english,
-            &mut prompt,
-        );
-        push_subject(
-            "politics",
-            "政治",
-            &state.subjects.politics,
-            &mut prompt,
-        );
+        push_subject("english", "英语", &state.subjects.english, &mut prompt);
+        push_subject("politics", "政治", &state.subjects.politics, &mut prompt);
         push_subject(
             "professional",
             "专业课",
@@ -370,7 +352,9 @@ impl<'a> BriefingAgent<'a> {
         prompt.push_str("1. **greeting**：2-3 句的今日寄语，理性策略型文风。");
         if yesterday_review.is_some() {
             prompt.push_str("前句客观点出昨日情况（用完成率/困难类型/亮点等具体数据，不用「加油」「你可以的」等空泛口号），");
-            prompt.push_str("中句给出今日具体策略（先做什么、再做什么、注意什么，含章节名或动作动词），");
+            prompt.push_str(
+                "中句给出今日具体策略（先做什么、再做什么、注意什么，含章节名或动作动词），",
+            );
             prompt.push_str("末句可给一句简短方向性提示（如剩余天数、节奏建议）。\n");
         } else {
             prompt.push_str("用户昨日未提交复盘，前句客观说明未复盘这一事实（不虚构数据），");
@@ -433,7 +417,10 @@ fn parse_briefing_json(content: &str) -> DataResult<BriefingData> {
     // 解析失败：返回错误，避免保存无效的空简报文件
     let preview = content.chars().take(500).collect::<String>();
     log::warn!("简报 JSON 解析失败。原始内容前 500 字符: {}", preview);
-    Err(format!("简报 JSON 解析失败，AI 返回内容无法识别。前 500 字符: {}", preview))
+    Err(format!(
+        "简报 JSON 解析失败，AI 返回内容无法识别。前 500 字符: {}",
+        preview
+    ))
 }
 
 /// 计算目标日期的「昨日」日期（用于读取复盘）

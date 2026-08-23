@@ -33,13 +33,8 @@ fn collect_files(data_dir: &Path) -> DataResult<Vec<(PathBuf, PathBuf)>> {
 }
 
 /// 递归收集 dir 下的文件，rel 为 dir 相对 root 的路径前缀
-fn collect_dir(
-    dir: &Path,
-    root: &Path,
-    out: &mut Vec<(PathBuf, PathBuf)>,
-) -> DataResult<()> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("读取目录失败 {:?}: {}", dir, e))?;
+fn collect_dir(dir: &Path, root: &Path, out: &mut Vec<(PathBuf, PathBuf)>) -> DataResult<()> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("读取目录失败 {:?}: {}", dir, e))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("读取目录条目失败: {}", e))?;
         let path = entry.path();
@@ -63,8 +58,7 @@ pub fn export_backup(
 ) -> DataResult<usize> {
     let canon_dest = std::fs::canonicalize(dest_zip_path.parent().unwrap_or(dest_zip_path))
         .unwrap_or_else(|_| dest_zip_path.to_path_buf());
-    let canon_data = std::fs::canonicalize(data_dir)
-        .unwrap_or_else(|_| data_dir.to_path_buf());
+    let canon_data = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
     if canon_dest.starts_with(&canon_data) {
         return Err(format!(
             "导出目标路径不能位于数据目录内: {:?} (数据目录 {:?})",
@@ -187,8 +181,12 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
     ));
     let had_original = data_dir.exists();
     if had_original {
-        std::fs::rename(data_dir, &backup_dir)
-            .map_err(|e| format!("备份现有数据目录失败 {:?} -> {:?}: {}", data_dir, backup_dir, e))?;
+        std::fs::rename(data_dir, &backup_dir).map_err(|e| {
+            format!(
+                "备份现有数据目录失败 {:?} -> {:?}: {}",
+                data_dir, backup_dir, e
+            )
+        })?;
         log::warn!("导入前已备份原数据目录到 {:?}", backup_dir);
     }
     std::fs::create_dir_all(data_dir)
@@ -228,8 +226,7 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
             }
             let target = data_dir.join(&normalized);
             if let Some(p) = target.parent() {
-                std::fs::create_dir_all(p)
-                    .map_err(|e| format!("创建目录失败 {:?}: {}", p, e))?;
+                std::fs::create_dir_all(p).map_err(|e| format!("创建目录失败 {:?}: {}", p, e))?;
             }
             let mut content = Vec::new();
             entry
@@ -283,7 +280,11 @@ mod tests {
         // 构造数据目录
         std::fs::create_dir_all(data_dir.join("plan")).unwrap();
         std::fs::create_dir_all(data_dir.join("state")).unwrap();
-        std::fs::write(data_dir.join("plan").join("2026-08-18_day.json"), r#"{"a":1}"#).unwrap();
+        std::fs::write(
+            data_dir.join("plan").join("2026-08-18_day.json"),
+            r#"{"a":1}"#,
+        )
+        .unwrap();
         std::fs::write(data_dir.join("state").join("current.state"), "[meta]\n").unwrap();
 
         // 导出

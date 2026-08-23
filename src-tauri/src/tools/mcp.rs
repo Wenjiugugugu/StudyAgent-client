@@ -1,4 +1,4 @@
-//! MCP Client — 连接 MCP Server，列出工具，调用工具
+﻿//! MCP Client — 连接 MCP Server，列出工具，调用工具
 //!
 //! 对应前端 TypeScript 类型: `types/mcp.ts`
 //!
@@ -19,20 +19,15 @@ use tokio::sync::oneshot;
 // ============================================================================
 
 /// MCP Server 类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum MCPServerType {
     Ticktick,
     Filesystem,
     Browser,
     Obsidian,
+    #[default]
     Custom,
-}
-
-impl Default for MCPServerType {
-    fn default() -> Self {
-        MCPServerType::Custom
-    }
 }
 
 /// MCP Server 配置
@@ -185,6 +180,7 @@ struct JsonRpcError {
     code: i32,
     message: String,
     #[serde(default)]
+    #[allow(dead_code)]
     data: Option<Value>,
 }
 
@@ -268,7 +264,9 @@ impl McpClient {
 
         // 启动 stdout 读取任务
         if let Some(stdout) = child.stdout.take() {
-            let pending = Arc::new(Mutex::new(HashMap::<u64, oneshot::Sender<JsonRpcResponse>>::new()));
+            let pending = Arc::new(Mutex::new(
+                HashMap::<u64, oneshot::Sender<JsonRpcResponse>>::new(),
+            ));
             let pending_clone = pending.clone();
 
             tokio::spawn(async move {
@@ -311,11 +309,7 @@ impl McpClient {
 
     /// SSE 模式连接
     async fn connect_sse(&mut self) -> Result<(), String> {
-        let url = self
-            .config
-            .url
-            .as_ref()
-            .ok_or("SSE 模式需要指定 url")?;
+        let url = self.config.url.as_ref().ok_or("SSE 模式需要指定 url")?;
 
         // SSE 模式下，初始化和工具列表通过 HTTP 请求获取
         // 简化实现：直接标记为已初始化
@@ -362,14 +356,18 @@ impl McpClient {
     async fn initialize_http(&self, url: &str) -> Result<(), String> {
         let client = reqwest::Client::new();
 
-        let req = JsonRpcRequest::new(1, "initialize", Some(serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "StudyAgent",
-                "version": "0.1.0"
-            }
-        })));
+        let req = JsonRpcRequest::new(
+            1,
+            "initialize",
+            Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "StudyAgent",
+                    "version": "0.1.0"
+                }
+            })),
+        );
 
         let _resp = client
             .post(url)
@@ -390,8 +388,8 @@ impl McpClient {
 
         let tools: Vec<MCPTool> = if let Some(result) = resp.result {
             if let Some(tools_value) = result.get("tools") {
-                let mut tools: Vec<MCPTool> = serde_json::from_value(tools_value.clone())
-                    .unwrap_or_default();
+                let mut tools: Vec<MCPTool> =
+                    serde_json::from_value(tools_value.clone()).unwrap_or_default();
 
                 // 标记 server_id
                 for tool in &mut tools {
@@ -485,11 +483,7 @@ impl McpClient {
                 })
             }
             "sse" | "websocket" => {
-                let url = self
-                    .config
-                    .url
-                    .as_ref()
-                    .ok_or("HTTP 模式需要指定 url")?;
+                let url = self.config.url.as_ref().ok_or("HTTP 模式需要指定 url")?;
 
                 let client = reqwest::Client::new();
 
@@ -563,7 +557,10 @@ impl McpClient {
         {
             let mut child_guard = self.child.lock().await;
             if let Some(mut child) = child_guard.take() {
-                child.kill().await.map_err(|e| format!("终止子进程失败: {}", e))?;
+                child
+                    .kill()
+                    .await
+                    .map_err(|e| format!("终止子进程失败: {}", e))?;
             }
         }
         *self.initialized.write().unwrap() = false;
@@ -624,19 +621,15 @@ impl McpClient {
     }
 
     /// 发送 JSON-RPC 通知（不等待响应）
-    async fn send_notification(
-        &self,
-        method: &str,
-        params: Option<Value>,
-    ) -> Result<(), String> {
+    async fn send_notification(&self, method: &str, params: Option<Value>) -> Result<(), String> {
         let notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
         });
 
-        let notif_str = serde_json::to_string(&notification)
-            .map_err(|e| format!("序列化通知失败: {}", e))?;
+        let notif_str =
+            serde_json::to_string(&notification).map_err(|e| format!("序列化通知失败: {}", e))?;
 
         let mut child_guard = self.child.lock().await;
         let child = match child_guard.as_mut() {
