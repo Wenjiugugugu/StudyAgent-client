@@ -1,4 +1,4 @@
-//! State 数据层 — 读取/解析 `state/current.state` (TOML)
+﻿//! State 数据层 — 读取/解析 `state/current.state` (TOML)
 //!
 //! 对应前端 TypeScript 类型: `types/state.ts`
 
@@ -65,25 +65,21 @@ where
 ///
 /// 反序列化保持严格：AI 应在 prompt 中被明确约束只能使用 `math`/`english`/`politics`/`professional`，
 /// 出现未知值时直接报错（解析失败），便于发现 prompt 失效。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SubjectKey {
+    #[default]
     Math,
     English,
     Politics,
     Professional,
 }
 
-impl Default for SubjectKey {
-    fn default() -> Self {
-        SubjectKey::Math
-    }
-}
-
 /// 学习阶段
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StudyPhase {
+    #[default]
     Foundation,
     Strengthen,
     Sprint,
@@ -91,57 +87,36 @@ pub enum StudyPhase {
     Complete,
 }
 
-impl Default for StudyPhase {
-    fn default() -> Self {
-        StudyPhase::Foundation
-    }
-}
-
 /// 任务状态
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    #[default]
     Pending,
     InProgress,
     Done,
     Abandoned,
 }
 
-impl Default for TaskStatus {
-    fn default() -> Self {
-        TaskStatus::Pending
-    }
-}
-
 /// 任务优先级
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum TaskPriority {
+    #[default]
     A,
     B,
     C,
 }
 
-impl Default for TaskPriority {
-    fn default() -> Self {
-        TaskPriority::A
-    }
-}
-
 /// 风险等级
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
     Low,
+    #[default]
     Medium,
     High,
     Critical,
-}
-
-impl Default for RiskLevel {
-    fn default() -> Self {
-        RiskLevel::Medium
-    }
 }
 
 /// 风险主体（SubjectKey 或 "overall"）
@@ -588,7 +563,7 @@ fn elapsed_minutes(started_at: &str) -> DataResult<i64> {
     // 简化实现：解析两个 ISO 时间戳并计算差值
     // 这里复用 data 层的时间解析（如果存在 chrono 会更简洁，但项目暂未引入）
     let now = super::now_string();
-    minutes_between_iso(&started_at, &now)
+    minutes_between_iso(started_at, &now)
 }
 
 /// 计算两个 ISO 8601 时间戳之间的分钟差（end - start）

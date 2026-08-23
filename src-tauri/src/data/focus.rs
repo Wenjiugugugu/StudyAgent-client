@@ -1,4 +1,4 @@
-//! Focus（番茄钟）数据层 — 读取/写入 `focus/YYYY-MM-DD_focus.json`
+﻿//! Focus（番茄钟）数据层 — 读取/写入 `focus/YYYY-MM-DD_focus.json`
 //!
 //! 记录一次专注会话（学习/休息/长休息），供专注页展示今日统计与历史记录。
 //! 沿用结构化 JSON 契约：{ version, meta, sessions: [...] }。
@@ -223,7 +223,7 @@ pub fn link_focus_session(
     }
     session.task_id = Some(task_id.to_string());
     let minutes = session.duration_minutes.max(0);
-    drop(session);
+    let _ = session;
     let path = focus_day_path(data_dir, date);
     let json =
         serde_json::to_string_pretty(&day).map_err(|e| format!("序列化专注记录失败: {}", e))?;

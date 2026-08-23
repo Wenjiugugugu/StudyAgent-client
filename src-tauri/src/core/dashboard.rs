@@ -493,25 +493,24 @@ impl DashboardAggregator {
     }
 
     /// 从里程碑和风险中提取即将到来的截止日期
-    fn extract_upcoming_deadlines(data_dir: &Path, state: &StudyState) -> Vec<UpcomingDeadline> {
+    fn extract_upcoming_deadlines(data_dir: &Path, _state: &StudyState) -> Vec<UpcomingDeadline> {
         let mut deadlines = Vec::new();
 
         // 从里程碑提取
         if let Ok(milestones) = crate::data::assets::read_milestones(data_dir) {
             for m in &milestones {
-                if m.status == "pending" || m.status == "in_progress" {
-                    if !m.target_date.is_empty() {
-                        deadlines.push(UpcomingDeadline {
-                            date: m.target_date.clone(),
-                            title: m.title.clone(),
-                            subject: "overall".to_string(),
-                            priority: if m.status == "in_progress" {
-                                "high".to_string()
-                            } else {
-                                "medium".to_string()
-                            },
-                        });
-                    }
+                if (m.status == "pending" || m.status == "in_progress") && !m.target_date.is_empty()
+                {
+                    deadlines.push(UpcomingDeadline {
+                        date: m.target_date.clone(),
+                        title: m.title.clone(),
+                        subject: "overall".to_string(),
+                        priority: if m.status == "in_progress" {
+                            "high".to_string()
+                        } else {
+                            "medium".to_string()
+                        },
+                    });
                 }
             }
         }
@@ -552,7 +551,7 @@ fn phase_to_chinese(phase: &crate::data::state::StudyPhase) -> String {
 /// - "数学：微分方程练习" → "微分方程练习"
 /// - "英语: 阅读理解训练" → "阅读理解训练"
 /// - "政治 - 马原精讲"   → "马原精讲"
-/// 无前缀时原样返回。
+///   无前缀时原样返回。
 fn strip_subject_prefix(title: &str) -> String {
     let trimmed = title.trim();
     // 支持全角/半角冒号、连字符分隔
@@ -635,11 +634,13 @@ mod tests {
         // 构造 state：任务 id 前缀匹配当日，已累计 25 分钟（模拟已关联番茄累加）
         let mut st = StudyState::default();
         st.current_task.date = date.to_string();
-        let mut task = StateTask::default();
-        task.task_id = Some(format!("{}-01", date));
-        task.subject = "math".to_string();
-        task.task = "测试任务".to_string();
-        task.accumulated_minutes = 25;
+        let task = StateTask {
+            task_id: Some(format!("{}-01", date)),
+            subject: "math".to_string(),
+            task: "测试任务".to_string(),
+            accumulated_minutes: 25,
+            ..Default::default()
+        };
         st.current_task.tasks.push(task);
         save_state(&dir, &st).unwrap();
 

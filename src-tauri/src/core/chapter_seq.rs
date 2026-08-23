@@ -1,4 +1,4 @@
-//! chapter_seq — 内置「科目章节·知识点先后顺序表」（按官方考纲，随包编译分发）
+﻿//! chapter_seq — 内置「科目章节·知识点先后顺序表」（按官方考纲，随包编译分发）
 //!
 //! 用途：复盘声明「实际进度」后，确定性判断剩余计划任务是否超前于用户实际进度，
 //! 并把超前（排在用户实际进度之前 / 已学过的内容）剔除/后置，真正改写周计划文件。
@@ -430,7 +430,7 @@ pub fn position(subject: &str, version: &str, text: &str) -> Option<usize> {
         if ent.is_empty() {
             continue;
         }
-        if norm.contains(&ent) && best.map_or(true, |(_, blen)| ent.len() > blen) {
+        if norm.contains(&ent) && best.is_none_or(|(_, blen)| ent.len() > blen) {
             best = Some((idx, ent.len()));
         }
         // 文本是单个条目的子串（如进度就填「线性表示」→ 命中「向量组的线性表示」）

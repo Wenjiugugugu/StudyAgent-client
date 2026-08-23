@@ -11,27 +11,20 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::data::records::{self, ReviewFile};
-use crate::data::{
-    add_days, days_between, get_week_end, get_week_start, today_string, weekday_name, DataResult,
-};
+use crate::data::{add_days, get_week_end, get_week_start, today_string, weekday_name, DataResult};
 
 // ============================================================================
 // 类型定义
 // ============================================================================
 
 /// 分析时间范围
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalyticsRange {
     Last7Days,
+    #[default]
     Last30Days,
     All,
-}
-
-impl Default for AnalyticsRange {
-    fn default() -> Self {
-        AnalyticsRange::Last30Days
-    }
 }
 
 /// 每日学习量数据点
@@ -529,7 +522,7 @@ fn build_review_quality(reviews: &[ReviewFile]) -> ReviewQuality {
             count: *v,
         })
         .collect();
-    blockers.sort_by(|a, b| b.count.cmp(&a.count));
+    blockers.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     // 困难类型转中文标签
     let mut difficulties: Vec<DifficultyItem> = difficulty_counts
@@ -540,7 +533,7 @@ fn build_review_quality(reviews: &[ReviewFile]) -> ReviewQuality {
             count: *v,
         })
         .collect();
-    difficulties.sort_by(|a, b| b.count.cmp(&a.count));
+    difficulties.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     ReviewQuality {
         mastery,
@@ -790,7 +783,7 @@ fn find_earliest_date(data_dir: &Path) -> DataResult<String> {
 
     let earliest = review_dates.iter().chain(plan_dates.iter()).min().cloned();
 
-    Ok(earliest.unwrap_or_else(|| today_string()))
+    Ok(earliest.unwrap_or_else(today_string))
 }
 
 /// 收集指定日期范围内的所有复盘

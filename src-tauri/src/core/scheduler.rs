@@ -1,4 +1,4 @@
-//! DailyScheduler — 从周计划 JSON 生成日计划 JSON
+﻿//! DailyScheduler — 从周计划 JSON 生成日计划 JSON
 //!
 //! 原则：
 //! - 不调用 AI
@@ -117,11 +117,9 @@ impl DailyScheduler {
         });
 
         let mut tasks = Vec::new();
-        let mut seq = 1i32;
-        for (subject, template) in pending {
+        for (seq, (subject, template)) in (1i32..).zip(pending) {
             let task = template_to_task(template, &subject, date, seq);
             tasks.push(task);
-            seq += 1;
         }
 
         // 每日任务量预算约束：若当日任务预估时长总和超过设置中的每日目标时长，
@@ -321,7 +319,7 @@ fn today_intensity_note(data_dir: &Path) -> String {
 /// 命中条件：
 /// - 标题与已完成章节完全相等；
 /// - 标题以章节名开头，且紧随其后为分隔符 / 标点（如"矩阵：性质"、"矩阵、性质"）。
-/// 其余情况（如"矩阵的特征值"中"的"）视为新内容，不命中，保留该任务（不丢任务）。
+///   其余情况（如"矩阵的特征值"中"的"）视为新内容，不命中，保留该任务（不丢任务）。
 fn matches_completed(title: &str, completed: &str) -> bool {
     let t = title.trim();
     let c = completed.trim();

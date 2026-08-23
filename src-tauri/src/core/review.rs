@@ -1,4 +1,4 @@
-//! Review Agent — 调用 AI Service 生成复盘
+﻿//! Review Agent — 调用 AI Service 生成复盘
 //!
 //! 数据契约：统一 JSON 格式 { version, meta, data, view? }
 //! - 复盘：records/YYYY-MM-DD_review.json
@@ -15,7 +15,7 @@ use std::path::Path;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
-use crate::data::records::{ReviewData, ReviewFile};
+use crate::data::records::ReviewFile;
 use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
 use crate::data::{clean_ai_json, now_string, today_string, DataResult};
 
@@ -163,7 +163,7 @@ impl<'a> ReviewAgent<'a> {
                         task.completion_criteria.join("；")
                     ));
                 }
-                prompt.push_str("\n");
+                prompt.push('\n');
             }
         } else {
             prompt.push_str(
@@ -181,7 +181,7 @@ impl<'a> ReviewAgent<'a> {
                     task.priority, task.subject, task.task, task.status
                 ));
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // 全局进度

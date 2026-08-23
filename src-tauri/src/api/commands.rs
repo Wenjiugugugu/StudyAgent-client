@@ -1,4 +1,4 @@
-//! Tauri 命令定义 — 所有 `#[tauri::command]` 函数
+﻿//! Tauri 命令定义 — 所有 `#[tauri::command]` 函数
 //!
 //! 前端通过 `@tauri-apps/api` 的 `invoke` 调用这些命令。
 //! 所有命令返回 `Result<T, String>`，Tauri 自动将 `Err` 转为前端 Promise reject。
@@ -573,7 +573,7 @@ pub async fn list_plan_summaries(
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
         let actual_hours = review
             .as_ref()
-            .map(|r| crate::data::records::review_actual_hours(r))
+            .map(crate::data::records::review_actual_hours)
             .unwrap_or(0.0);
 
         summaries.push(PlanSummary {
@@ -758,7 +758,7 @@ pub async fn get_week_summaries(
         let (completed_tasks, completion_rate) = compute_priority_a_completion(&review);
         let actual_hours = review
             .as_ref()
-            .map(|r| crate::data::records::review_actual_hours(r))
+            .map(crate::data::records::review_actual_hours)
             .unwrap_or(0.0);
 
         summaries.push(PlanSummary {
@@ -1942,6 +1942,7 @@ pub struct TextbookSearchHit {
 /// 同时解析「第N章 / 第N题」式章节引用做定向检索，命中章节标题与题目行
 /// 可获得额外加权，确保用户只报章节/题号时也能定位到教材内容。
 #[tauri::command]
+#[allow(clippy::needless_range_loop)]
 pub async fn search_in_textbook(
     query: String,
     state: State<'_, Mutex<AppState>>,
@@ -2272,10 +2273,9 @@ fn chinese_num_to_arabic(s: &str) -> Option<u32> {
             }
             total += cur * 10;
             cur = 0;
-        } else if let Some(v) = single_num(c) {
-            cur = v;
         } else {
-            return None;
+            let v = single_num(c)?;
+            cur = v;
         }
     }
     total += cur;
@@ -3426,7 +3426,7 @@ fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
                 .map(|hex| hex.to_lowercase())
                 .filter(|hex| !hex.is_empty());
 
-            if kind == "unknown" || sha256.as_ref().map_or(true, |hex| !is_valid_sha256(hex)) {
+            if kind == "unknown" || sha256.as_ref().is_none_or(|hex| !is_valid_sha256(hex)) {
                 log::warn!("[Update] 忽略缺少有效 SHA-256 的安装资源: {}", name);
                 return None;
             }

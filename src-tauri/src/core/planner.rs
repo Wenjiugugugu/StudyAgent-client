@@ -1,4 +1,4 @@
-//! Planner — 调用 AI Service 生成周计划，再通过 DailyScheduler 生成日计划
+﻿//! Planner — 调用 AI Service 生成周计划，再通过 DailyScheduler 生成日计划
 //!
 //! 数据契约：统一 JSON 格式 { version, meta, data, view? }
 //! - 周计划：plan/YYYY-Www_week.json
@@ -10,8 +10,7 @@ use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::core::scheduler::DailyScheduler;
 use crate::data::plan::{
-    BasedOn, DailyPlanFile, ExcludedDay, WeekDayPlan, WeekPlanData, WeekPlanFile,
-    WorkloadAdjustment,
+    BasedOn, DailyPlanFile, ExcludedDay, WeekDayPlan, WeekPlanFile, WorkloadAdjustment,
 };
 use crate::data::state::StudyState;
 use crate::data::{
@@ -52,7 +51,7 @@ impl<'a> Planner<'a> {
             temperature: Some(0.6),
             // 重排剩余天数的工作量与生成周计划相当，给足 300s
             timeout_override: Some(300),
-            math_version: math_version,
+            math_version,
             ..Default::default()
         };
         let tag = if escalation {
@@ -190,7 +189,7 @@ impl<'a> Planner<'a> {
     /// - 昨日复盘（未完成/困难/额外进度）
     /// - 当前 State 进度
     /// - 周计划剩余天数的原安排
-    /// 重新生成剩余天数（review_date+1 至 week_end）的 subject_allocations。
+    ///   重新生成剩余天数（review_date+1 至 week_end）的 subject_allocations。
     ///
     /// 如果 review_date 的次日（review_date+1）在剩余天数中且其日计划已存在，
     /// 也会一并重新生成该日的日计划。
@@ -393,7 +392,7 @@ impl<'a> Planner<'a> {
                 crate::data::write_ai_debug_log(
                     data_dir,
                     "regenerate_escalation_start",
-                    &format!("进度未生效({:?})，发起按实际进度校正重排", &anchors),
+                    &format!("进度未生效({:?})，发起按实际进度校正重排", anchors),
                 );
                 let escalated_prompt = self.build_escalation_prompt(&prompt, &anchors);
                 match self
@@ -488,8 +487,8 @@ impl<'a> Planner<'a> {
     /// - 新增的排除日（该日不排任务）
     /// - 当前 State 进度
     /// - 周计划剩余天数的原安排
-    /// 重新生成重排范围（excluded_date 至 week_end）的 subject_allocations，
-    /// 把原本安排在排除日的任务量分摊到剩余学习日。
+    ///   重新生成重排范围（excluded_date 至 week_end）的 subject_allocations，
+    ///   把原本安排在排除日的任务量分摊到剩余学习日。
     ///
     /// 返回 (是否实际重排, 重排影响的日期列表, 是否启用了确定性兜底[AI 失败])
     pub async fn regenerate_after_exclusion(
@@ -801,7 +800,7 @@ impl<'a> Planner<'a> {
         // 0. 只允许生成本周计划（包含今天的周）
         let today = today_string();
         let today_week_start = get_week_start(&today)?;
-        if week_start != &today_week_start {
+        if week_start != today_week_start {
             return Err(format!(
                 "只能生成本周（{} 至 {}）的周计划，不支持生成过去或未来的周计划",
                 today_week_start,
@@ -1042,6 +1041,7 @@ impl<'a> Planner<'a> {
     }
 
     /// 构建周计划 prompt
+    #[allow(clippy::too_many_arguments)]
     fn build_week_plan_prompt(
         &self,
         state: &StudyState,
@@ -1099,7 +1099,7 @@ impl<'a> Planner<'a> {
         prompt.push_str("## 考试信息\n");
         if !exam_config.is_empty() {
             prompt.push_str(exam_config);
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
         prompt.push_str(&format!(
             "- 考试日期: {}\n- 剩余天数: {} 天\n- 目标院校: {} {}\n- 总分目标: {} / 500\n\n",
@@ -1219,7 +1219,7 @@ impl<'a> Planner<'a> {
                         prompt.push_str(&format!("- 用户备注: {}\n", note));
                     }
                 }
-                prompt.push_str("\n");
+                prompt.push('\n');
             }
         }
 
@@ -1298,7 +1298,7 @@ impl<'a> Planner<'a> {
                     }
                 ));
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // 各科状态
@@ -1427,7 +1427,7 @@ impl<'a> Planner<'a> {
                     prompt.push('\n');
                 }
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // 用户画像
@@ -1454,7 +1454,7 @@ impl<'a> Planner<'a> {
                     ));
                 }
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // 知识图谱摘要
@@ -1476,7 +1476,7 @@ impl<'a> Planner<'a> {
                     crate::data::records::review_actual_hours(review)
                 ));
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
         }
 
         // 上一周任务参考（日计划 + 复盘），用于校准本周任务量
@@ -1587,7 +1587,7 @@ impl<'a> Planner<'a> {
                     }
                 }
             }
-            prompt.push_str("\n");
+            prompt.push('\n');
 
             // 上周未完成任务清单 — 要求 AI 在本周重新安排
             if !uncompleted_tasks.is_empty() {
@@ -1609,7 +1609,7 @@ impl<'a> Planner<'a> {
                         date, subj, title, status_label
                     ));
                 }
-                prompt.push_str("\n");
+                prompt.push('\n');
                 prompt.push_str("重新安排规则：\n");
                 prompt
                     .push_str("1. 将上述未完成任务作为本周该科目的重点，优先安排在周一至周三；\n");
@@ -2527,7 +2527,7 @@ fn weekly_self_calibration(prev_week_reviews: &[crate::data::records::ReviewFile
 /// - 平均完成率 < 60% 或精力均值 ≤ 1.5 → 偏轻（优先完成而非加量）；
 /// - 完成率 ≥ 90% 且精力均值 ≥ 4 → 可加量；
 /// - 完成率 < 75% → 适中；否则 → 正常。
-/// 完成率取有效复盘 completion rate（0-100）均值，精力取 `data.energy_level` 均值。
+///   完成率取有效复盘 completion rate（0-100）均值，精力取 `data.energy_level` 均值。
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
     if reviews.is_empty() {
         return String::new();
@@ -3322,7 +3322,7 @@ fn uncompleted_tasks_fallback(
                 .data
                 .days
                 .iter()
-                .any(|d| &d.date == date && !d.is_rest_day);
+                .any(|d| d.date == *date && !d.is_rest_day);
             if is_study {
                 break Some(i);
             }
@@ -3463,7 +3463,7 @@ fn regen_dates_contains_study_day(week_plan: &crate::data::plan::WeekPlanFile, d
         .data
         .days
         .iter()
-        .any(|d| &d.date == date && !d.is_rest_day)
+        .any(|d| d.date == date && !d.is_rest_day)
 }
 
 /// 判断某科目在指定日期是否还未到开始学习日期（planner 侧，逻辑与 scheduler 一致）
@@ -3549,9 +3549,10 @@ fn parse_regenerate_response(content: &str, data_dir: &Path) -> DataResult<Vec<R
         preview,
         raw_preview,
     ));
-    Err(format!(
+    Err(
         "解析 AI 重排响应失败：无法从响应中提取 days 数组。AI 可能返回了非预期格式。详细日志已写入 logs/ai-debug.log"
-    ))
+            .to_string(),
+    )
 }
 
 #[cfg(test)]

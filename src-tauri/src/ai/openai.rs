@@ -1,10 +1,10 @@
-//! OpenAI Compatible Provider — 使用 reqwest 调用 `/v1/chat/completions`
+﻿//! OpenAI Compatible Provider — 使用 reqwest 调用 `/v1/chat/completions`
 //!
 //! 支持 OpenAI、OpenRouter、SiliconFlow、DashScope、Volcengine、Ollama 等
 //! 所有兼容 OpenAI API 格式的服务商。
 
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
@@ -814,6 +814,7 @@ struct OpenAIApiResponse {
 /// OpenAI API 选择项
 #[derive(Debug, Deserialize)]
 struct OpenAIChoice {
+    #[allow(dead_code)]
     index: u32,
     message: OpenAIMessage,
     finish_reason: Option<String>,
@@ -857,6 +858,7 @@ struct OpenAIStreamChunk {
 /// OpenAI API 流式选择项
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamChoice {
+    #[allow(dead_code)]
     index: u32,
     delta: OpenAIStreamDelta,
     finish_reason: Option<String>,
@@ -866,6 +868,7 @@ struct OpenAIStreamChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamDelta {
     #[serde(default)]
+    #[allow(dead_code)]
     role: Option<MessageRole>,
     #[serde(default)]
     content: Option<String>,

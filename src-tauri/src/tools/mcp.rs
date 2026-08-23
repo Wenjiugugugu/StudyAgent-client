@@ -1,4 +1,4 @@
-//! MCP Client — 连接 MCP Server，列出工具，调用工具
+﻿//! MCP Client — 连接 MCP Server，列出工具，调用工具
 //!
 //! 对应前端 TypeScript 类型: `types/mcp.ts`
 //!
@@ -19,20 +19,15 @@ use tokio::sync::oneshot;
 // ============================================================================
 
 /// MCP Server 类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum MCPServerType {
     Ticktick,
     Filesystem,
     Browser,
     Obsidian,
+    #[default]
     Custom,
-}
-
-impl Default for MCPServerType {
-    fn default() -> Self {
-        MCPServerType::Custom
-    }
 }
 
 /// MCP Server 配置
@@ -185,6 +180,7 @@ struct JsonRpcError {
     code: i32,
     message: String,
     #[serde(default)]
+    #[allow(dead_code)]
     data: Option<Value>,
 }
 

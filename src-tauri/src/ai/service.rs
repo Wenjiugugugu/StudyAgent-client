@@ -325,7 +325,6 @@ impl AiService {
             .model
             .clone()
             .unwrap_or_else(|| default_provider.config().model.clone());
-        let default_id = self.default_provider_id.read().clone();
 
         let result = if *cancel_rx.borrow() {
             Err(REQUEST_CANCELLED.to_string())

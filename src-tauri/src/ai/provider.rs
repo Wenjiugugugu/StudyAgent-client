@@ -1,4 +1,4 @@
-//! AI Provider Trait — 统一 AI Provider 接口定义
+﻿//! AI Provider Trait — 统一 AI Provider 接口定义
 //!
 //! 对应前端 TypeScript 类型: `types/ai.ts`
 
@@ -39,9 +39,10 @@ fn rand_jitter(range: std::ops::RangeInclusive<u64>) -> u64 {
 // ============================================================================
 
 /// 支持的 AI Provider 类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
+    #[default]
     Openai,
     Gemini,
     Anthropic,
@@ -53,20 +54,15 @@ pub enum ProviderType {
     Custom,
 }
 
-impl Default for ProviderType {
-    fn default() -> Self {
-        ProviderType::Openai
-    }
-}
-
 /// 聊天消息角色
 ///
 /// M27：未知/异常角色值在反序列化时兜底为 `User`，而非解析失败中断流程。
 /// 保留 `Serialize` 派生，但 `Deserialize` 手动实现以实现容错。
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,
+    #[default]
     User,
     Assistant,
     Tool,
@@ -89,30 +85,19 @@ impl<'de> Deserialize<'de> for MessageRole {
     }
 }
 
-impl Default for MessageRole {
-    fn default() -> Self {
-        MessageRole::User
-    }
-}
-
 /// Agent 类型标识
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentType {
     Planner,
     Teacher,
     Reviewer,
+    #[default]
     Assistant,
     /// 每日简报生成器：基于昨日复盘与当前进度，生成今日寄语与阶段估时
     Briefing,
     /// 解惑导师：引导式答疑，结合本地教材与联网能力
     Doubt,
-}
-
-impl Default for AgentType {
-    fn default() -> Self {
-        AgentType::Assistant
-    }
 }
 
 // ============================================================================

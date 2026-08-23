@@ -1,4 +1,4 @@
-//! Tool Dispatcher — 统一工具调用入口，路由到对应 MCP server
+﻿//! Tool Dispatcher — 统一工具调用入口，路由到对应 MCP server
 //!
 //! 设计要点：
 //! - 维护多个 MCP Client（每个对应一个 MCP Server）
@@ -104,7 +104,8 @@ impl ToolDispatcher {
     /// 移除 MCP Server
     pub async fn remove_server(&self, server_id: &str) -> Result<(), String> {
         // 断开连接
-        if let Some(client_arc) = self.clients.write().unwrap().remove(server_id) {
+        let client_arc = self.clients.write().unwrap().remove(server_id);
+        if let Some(client_arc) = client_arc {
             client_arc.disconnect().await?;
         }
 

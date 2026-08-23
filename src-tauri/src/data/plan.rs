@@ -1,4 +1,4 @@
-//! Plan 数据层 — 读取/写入 JSON 学习计划
+﻿//! Plan 数据层 — 读取/写入 JSON 学习计划
 //!
 //! 统一数据契约：{ version, meta, data, view? }
 //! - 日计划：plan/YYYY-MM-DD_day.json
@@ -681,9 +681,8 @@ fn merge_status_by_task_id(
             continue;
         }
         // 找下一个未消耗的旧 state 任务
-        while let Some((_, st)) = legacy_state_iter.next() {
+        if let Some((_, st)) = legacy_state_iter.next() {
             pt.status = st.status.clone();
-            break;
         }
     }
 }

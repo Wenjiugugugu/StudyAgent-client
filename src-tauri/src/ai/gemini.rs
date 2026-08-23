@@ -146,8 +146,8 @@ impl GeminiProvider {
                     }
                     if let Some(ref tool_calls) = m.tool_calls {
                         for tc in tool_calls {
-                            let args: Value = serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or_else(|_| Value::Null);
+                            let args: Value =
+                                serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
                             parts.push(json!({
                                 "functionCall": {
                                     "name": tc.function.name,
