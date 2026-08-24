@@ -197,7 +197,20 @@
   color: var(--text-primary);
 }
 
-[data-visual-mode='liquid-glass'] .nav-item.active,
+[data-visual-mode='liquid-glass'] .nav-item.active {
+  /* The indicator supplies the selected surface. Keep the label on a dark
+   * ink color instead of placing accent text over an accent-colored pill. */
+  background: transparent;
+  border-color: transparent;
+  color: var(--lg-glass-text);
+  box-shadow: none;
+}
+
+[data-visual-mode='liquid-glass'] .nav-item.active .nav-icon {
+  color: inherit;
+  opacity: 1;
+}
+
 [data-visual-mode='liquid-glass'] .assistant-toggle.active {
   background: rgba(0, 113, 227, 0.14);
   border-color: rgba(0, 113, 227, 0.24);
@@ -206,8 +219,25 @@
 }
 
 [data-visual-mode='liquid-glass'] .nav-indicator {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12), 0 4px 12px rgba(0, 113, 227, 0.24);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.52));
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 5px 16px rgba(31, 35, 50, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    inset 0 -1px 0 rgba(31, 35, 50, 0.08);
+}
+
+[data-theme='dark'][data-visual-mode='liquid-glass'] .nav-item.active {
+  color: var(--lg-glass-text);
+}
+
+[data-theme='dark'][data-visual-mode='liquid-glass'] .nav-indicator {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.12));
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow:
+    0 5px 16px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.18);
 }
 
 /* Content cards are a lighter “standard material”, not Liquid Glass. */
