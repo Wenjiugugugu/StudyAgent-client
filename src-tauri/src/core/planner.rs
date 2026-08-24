@@ -2478,9 +2478,6 @@ fn subject_task_budget(
 ) -> Vec<(crate::data::state::SubjectKey, i64)> {
     crate::core::planning::pure::subject_task_budget(state, total, week_end, subject_start_dates)
 }
-fn weighted_spread(total: i64, weights: &[(crate::data::state::SubjectKey, f64)]) -> Vec<i64> {
-    crate::core::planning::pure::weighted_spread(total, weights)
-}
 type MemoryReviewItem = crate::core::planning::pure::MemoryReviewItem;
 fn memory_curve_review_items(
     reviews: &[crate::data::records::ReviewFile],
