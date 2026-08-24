@@ -41,7 +41,9 @@ impl GeminiProvider {
 
     /// 当前模型名
     fn model(&self, req: &ChatRequest) -> String {
-        req.model.clone().unwrap_or_else(|| self.config.model.clone())
+        req.model
+            .clone()
+            .unwrap_or_else(|| self.config.model.clone())
     }
 
     /// 构建 generateContent / streamGenerateContent URL
@@ -144,8 +146,8 @@ impl GeminiProvider {
                     }
                     if let Some(ref tool_calls) = m.tool_calls {
                         for tc in tool_calls {
-                            let args: Value = serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or_else(|_| Value::Null);
+                            let args: Value =
+                                serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
                             parts.push(json!({
                                 "functionCall": {
                                     "name": tc.function.name,
@@ -233,9 +235,10 @@ impl GeminiProvider {
             .and_then(|c| c.finish_reason.as_deref())
         {
             Some("MAX_TOKENS") => "length".to_string(),
-            Some("SAFETY") | Some("RECITATION") | Some("BLOCKLIST") | Some("PROHIBITED_CONTENT") => {
-                "content_filter".to_string()
-            }
+            Some("SAFETY")
+            | Some("RECITATION")
+            | Some("BLOCKLIST")
+            | Some("PROHIBITED_CONTENT") => "content_filter".to_string(),
             _ => "stop".to_string(),
         };
 

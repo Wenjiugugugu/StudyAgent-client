@@ -223,7 +223,11 @@ impl AppSettings {
     /// 返回 (subject_key, start_date) 元组列表，未设置的科目不包含在内。
     pub fn subject_start_dates(&self) -> Vec<(&'static str, String)> {
         let mut result = Vec::new();
-        if let Some(dates) = self.study_schedule.get("subject_start_dates").and_then(|v| v.as_object()) {
+        if let Some(dates) = self
+            .study_schedule
+            .get("subject_start_dates")
+            .and_then(|v| v.as_object())
+        {
             for key in ["math", "english", "politics", "professional"] {
                 if let Some(val) = dates.get(key).and_then(|v| v.as_str()) {
                     if !val.is_empty() {
@@ -312,7 +316,10 @@ fn default_data_dir() -> String {
 /// 生产模式：使用 exe 同级目录下的 `data/` 子目录
 pub fn get_default_data_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let exe_dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let exe_dir = exe
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
 
     // 始终尝试向上查找项目根目录（兼容 debug/release 开发构建）
     // 典型路径: .../desktop/src-tauri/target/{debug,release}/studyagent-desktop.exe
@@ -330,7 +337,10 @@ pub fn get_default_data_dir() -> PathBuf {
     }
 
     // 回退：正式安装场景使用 exe 同级的 data/ 目录
-    log::info!("未检测到项目根目录，回退到 data 子目录: {:?}", exe_dir.join("data"));
+    log::info!(
+        "未检测到项目根目录，回退到 data 子目录: {:?}",
+        exe_dir.join("data")
+    );
     exe_dir.join("data")
 }
 
@@ -414,7 +424,9 @@ pub fn load_settings(data_dir: &Path) -> AppSettings {
                                     );
                                 }
                             }
-                        } else if let Ok(Some(api_key)) = secrets::get_provider_api_key(&provider.id) {
+                        } else if let Ok(Some(api_key)) =
+                            secrets::get_provider_api_key(&provider.id)
+                        {
                             provider.api_key = api_key;
                         }
                     }
@@ -454,8 +466,7 @@ pub fn save_settings_file(data_dir: &Path, settings: &AppSettings) -> Result<(),
     // 确保目录存在
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 config 目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建 config 目录失败: {}", e))?;
         }
     }
 
@@ -614,7 +625,11 @@ pub async fn reinitialize_services(
         }
     }
     for old in &existing.ai_providers {
-        if !merged.ai_providers.iter().any(|provider| provider.id == old.id) {
+        if !merged
+            .ai_providers
+            .iter()
+            .any(|provider| provider.id == old.id)
+        {
             secrets::delete_provider_api_key(&old.id)?;
         }
     }
@@ -624,9 +639,8 @@ pub async fn reinitialize_services(
     let new_ai_service = Arc::new(AiService::from_configs(merged.ai_providers.clone()));
 
     // 创建新的 Tool Dispatcher
-    let new_tool_dispatcher = Arc::new(
-        ToolDispatcher::from_configs(merged.mcp_servers.clone()).await,
-    );
+    let new_tool_dispatcher =
+        Arc::new(ToolDispatcher::from_configs(merged.mcp_servers.clone()).await);
 
     // 替换 state 中的服务实例
     {
@@ -656,9 +670,7 @@ pub fn get_data_dir(state: &Mutex<AppState>) -> Result<PathBuf, String> {
 /// 写命令通过 `let _guard = get_io_lock(state.inner())?.lock().await;`
 /// 持有锁，串行化 state/plan/records 的读-改-写操作。
 /// 使用 `tokio::sync::Mutex`，守卫可跨 `await` 持有（覆盖 AI 生成期间）。
-pub fn get_io_lock(
-    state: &Mutex<AppState>,
-) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
+pub fn get_io_lock(state: &Mutex<AppState>) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok(s.io_lock.clone())
 }
@@ -676,9 +688,7 @@ pub fn get_tool_dispatcher(state: &Mutex<AppState>) -> Result<Arc<ToolDispatcher
 }
 
 /// 从 Mutex<AppState> 中同时获取 data_dir 和 AI Service
-pub fn get_data_dir_and_ai(
-    state: &Mutex<AppState>,
-) -> Result<(PathBuf, Arc<AiService>), String> {
+pub fn get_data_dir_and_ai(state: &Mutex<AppState>) -> Result<(PathBuf, Arc<AiService>), String> {
     let s = state.lock().map_err(|e| e.to_string())?;
     Ok((s.data_dir.clone(), s.ai_service.clone()))
 }

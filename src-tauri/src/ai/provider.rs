@@ -1,4 +1,4 @@
-//! AI Provider Trait — 统一 AI Provider 接口定义
+﻿//! AI Provider Trait — 统一 AI Provider 接口定义
 //!
 //! 对应前端 TypeScript 类型: `types/ai.ts`
 
@@ -24,7 +24,9 @@ fn rand_jitter(range: std::ops::RangeInclusive<u64>) -> u64 {
     let seed = now.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ counter ^ (now >> 17);
     // 简单的线性同余，仅用于抖动，不需要密码学强度
     let mut state = seed ^ (seed >> 16) | 0x9E37_79B9_7F4A_7C15;
-    state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     let span = *range.end() - *range.start() + 1;
     if span == 0 {
         return *range.start();
@@ -37,9 +39,10 @@ fn rand_jitter(range: std::ops::RangeInclusive<u64>) -> u64 {
 // ============================================================================
 
 /// 支持的 AI Provider 类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
+    #[default]
     Openai,
     Gemini,
     Anthropic,
@@ -51,20 +54,15 @@ pub enum ProviderType {
     Custom,
 }
 
-impl Default for ProviderType {
-    fn default() -> Self {
-        ProviderType::Openai
-    }
-}
-
 /// 聊天消息角色
 ///
 /// M27：未知/异常角色值在反序列化时兜底为 `User`，而非解析失败中断流程。
 /// 保留 `Serialize` 派生，但 `Deserialize` 手动实现以实现容错。
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,
+    #[default]
     User,
     Assistant,
     Tool,
@@ -87,30 +85,19 @@ impl<'de> Deserialize<'de> for MessageRole {
     }
 }
 
-impl Default for MessageRole {
-    fn default() -> Self {
-        MessageRole::User
-    }
-}
-
 /// Agent 类型标识
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentType {
     Planner,
     Teacher,
     Reviewer,
+    #[default]
     Assistant,
     /// 每日简报生成器：基于昨日复盘与当前进度，生成今日寄语与阶段估时
     Briefing,
     /// 解惑导师：引导式答疑，结合本地教材与联网能力
     Doubt,
-}
-
-impl Default for AgentType {
-    fn default() -> Self {
-        AgentType::Assistant
-    }
 }
 
 // ============================================================================
@@ -429,12 +416,9 @@ pub fn inject_context_length_fallback(
     model: &str,
     extra: &mut serde_json::Value,
 ) {
-    let has_provider_value = CONTEXT_LENGTH_KEYS
-        .iter()
-        .any(|k| extra.get(*k).is_some());
+    let has_provider_value = CONTEXT_LENGTH_KEYS.iter().any(|k| extra.get(*k).is_some());
     if !has_provider_value {
-        extra["_studyagent_ctx_len"] =
-            serde_json::json!(context_length_for_model(provider, model));
+        extra["_studyagent_ctx_len"] = serde_json::json!(context_length_for_model(provider, model));
     }
 }
 
@@ -589,7 +573,8 @@ subject 只能是 "math" / "english" / "politics" / "professional"（任务已�
 - 先具体后抽象（适配例子驱动型学习者）
 - 图示优先（适配图示优先理解）
 - 以题代学（适配以题代学偏好）
-- 关注停滞科目重启策略"#.to_string()
+- 关注停滞科目重启策略"#
+                .to_string()
         }
         AgentType::Assistant => {
             // 通用助手
@@ -724,10 +709,7 @@ subject 只能是 "math" / "english" / "politics" / "professional"。
 /// 如果消息列表中已有 system 消息，则不重复注入
 pub fn inject_system_prompt(req: &mut ChatRequest, agent: &AgentType) {
     // 检查是否已有 system 消息
-    let has_system = req
-        .messages
-        .iter()
-        .any(|m| m.role == MessageRole::System);
+    let has_system = req.messages.iter().any(|m| m.role == MessageRole::System);
 
     if !has_system {
         let system_prompt = get_system_prompt(agent, req.math_version.as_deref());
@@ -765,7 +747,9 @@ pub fn create_provider(config: AIProviderConfig) -> Result<Arc<dyn AiProvider>, 
         }
         ProviderType::Anthropic => {
             // Anthropic 原生 API（x-api-key + anthropic-version 认证，system 顶层字段）
-            Ok(Arc::new(crate::ai::anthropic::AnthropicProvider::new(config)))
+            Ok(Arc::new(crate::ai::anthropic::AnthropicProvider::new(
+                config,
+            )))
         }
     }
 }
@@ -795,8 +779,7 @@ pub async fn send_with_retry(
         let mut request_builder = client.post(url).headers(headers.clone()).json(body);
         // M24：timeout_override 限制在 5..=600 秒，避免 0 秒立即超时或超大值无限挂起
         if let Some(secs) = timeout_override {
-            request_builder =
-                request_builder.timeout(Duration::from_secs(secs.clamp(5, 600)));
+            request_builder = request_builder.timeout(Duration::from_secs(secs.clamp(5, 600)));
         }
 
         match request_builder.send().await {
@@ -853,7 +836,7 @@ pub async fn send_with_retry(
 
                 // 连接级错误：指数退避后重试
                 let backoff = 1u64 << (attempt - 1); // 1s, 2s
-                // M25：指数退避 + 随机抖动，避免多客户端同时重试加剧拥塞
+                                                     // M25：指数退避 + 随机抖动，避免多客户端同时重试加剧拥塞
                 let sleep_secs = backoff + rand_jitter(0..=backoff);
                 tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                 last_err = Some(formatted);
@@ -882,28 +865,73 @@ mod tests {
 
     #[test]
     fn context_length_prefers_model_name() {
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "gpt-4o-2024-05-13")), 128_000);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "gpt-4o-mini")), 128_000);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "gpt-4")), 8_192);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "o1")), 128_000);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Anthropic, "claude-3-5-sonnet-20241022")), 200_000);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Gemini, "gemini-2.5-pro")), 1_048_576);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Ollama, "llama3.1:8b")), 131_072);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "deepseek-chat")), 128_000);
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "gpt-4o-2024-05-13")),
+            128_000
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "gpt-4o-mini")),
+            128_000
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "gpt-4")),
+            8_192
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "o1")),
+            128_000
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Anthropic, "claude-3-5-sonnet-20241022")),
+            200_000
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Gemini, "gemini-2.5-pro")),
+            1_048_576
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Ollama, "llama3.1:8b")),
+            131_072
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "deepseek-chat")),
+            128_000
+        );
     }
 
     #[test]
     fn context_length_falls_back_to_provider_type() {
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "some-unknown-model")), 32_768);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Anthropic, "some-unknown-model")), 200_000);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Gemini, "some-unknown-model")), 1_048_576);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Ollama, "some-unknown-model")), 8_192);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Siliconflow, "some-unknown-model")), 32_768);
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "some-unknown-model")),
+            32_768
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Anthropic, "some-unknown-model")),
+            200_000
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Gemini, "some-unknown-model")),
+            1_048_576
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Ollama, "some-unknown-model")),
+            8_192
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Siliconflow, "some-unknown-model")),
+            32_768
+        );
     }
 
     #[test]
     fn context_length_is_case_insensitive() {
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "GPT-4O")), 128_000);
-        assert_eq!(max_context_length_for(&cfg(ProviderType::Openai, "")), 32_768);
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "GPT-4O")),
+            128_000
+        );
+        assert_eq!(
+            max_context_length_for(&cfg(ProviderType::Openai, "")),
+            32_768
+        );
     }
 }

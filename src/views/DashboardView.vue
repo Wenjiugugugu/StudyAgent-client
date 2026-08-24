@@ -144,8 +144,10 @@ let dashboardUnmounted = false;
 
 function triggerBriefingHint() {
   const hintKey = "studyagent.briefing_hint_viewed";
-  if (sessionStorage.getItem(hintKey) === todayDateStr) return;
-  sessionStorage.setItem(hintKey, todayDateStr);
+  // 用 localStorage 按日期记录「今日是否已提示过」：只在每天第一次打开应用时提示一次，
+  // 之后同一天内关闭再打开不再重复提示（sessionStorage 会随会话清空导致每次重开都提示）。
+  if (localStorage.getItem(hintKey) === todayDateStr) return;
+  localStorage.setItem(hintKey, todayDateStr);
   // 全屏遮罩：背景变暗 + 文字闪烁
   showBriefingOverlay.value = true;
   overlayLeaving.value = false;

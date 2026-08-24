@@ -1,4 +1,4 @@
-//! Focus（番茄钟）数据层 — 读取/写入 `focus/YYYY-MM-DD_focus.json`
+﻿//! Focus（番茄钟）数据层 — 读取/写入 `focus/YYYY-MM-DD_focus.json`
 //!
 //! 记录一次专注会话（学习/休息/长休息），供专注页展示今日统计与历史记录。
 //! 沿用结构化 JSON 契约：{ version, meta, sessions: [...] }。
@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{atomic_write, read_file_content, DataResult, today_string};
+use super::{atomic_write, read_file_content, today_string, DataResult};
 
 // ============================================================================
 // 数据结构
@@ -89,7 +89,9 @@ fn focus_day_path(data_dir: &Path, date: &str) -> PathBuf {
 fn default_day_file(date: &str) -> FocusDayFile {
     FocusDayFile {
         version: "1".to_string(),
-        meta: FocusDayMeta { date: date.to_string() },
+        meta: FocusDayMeta {
+            date: date.to_string(),
+        },
         sessions: Vec::new(),
     }
 }
@@ -118,11 +120,10 @@ pub fn append_focus_session(data_dir: &Path, session: FocusSession) -> DataResul
     day.sessions.push(session);
     let path = focus_day_path(data_dir, &date);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建目录失败 {:?}: {}", parent, e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败 {:?}: {}", parent, e))?;
     }
-    let json = serde_json::to_string_pretty(&day)
-        .map_err(|e| format!("序列化专注记录失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(&day).map_err(|e| format!("序列化专注记录失败: {}", e))?;
     atomic_write(&path, &json)
 }
 
@@ -150,20 +151,12 @@ pub fn list_focus_sessions_in_range(
     }
     let span = (end_date - start_date).num_days();
     if span > MAX_DAYS {
-        return Err(format!(
-            "区间跨度 {} 天超过上限 {} 天",
-            span, MAX_DAYS
-        ));
+        return Err(format!("区间跨度 {} 天超过上限 {} 天", span, MAX_DAYS));
     }
     let mut sessions = Vec::new();
     let mut d = start_date;
     while d <= end_date {
-        let date_str = format!(
-            "{}-{:02}-{:02}",
-            d.year(),
-            d.month(),
-            d.day()
-        );
+        let date_str = format!("{}-{:02}-{:02}", d.year(), d.month(), d.day());
         sessions.extend(list_focus_sessions(data_dir, &date_str)?);
         d += chrono::Duration::days(1);
     }
@@ -230,10 +223,10 @@ pub fn link_focus_session(
     }
     session.task_id = Some(task_id.to_string());
     let minutes = session.duration_minutes.max(0);
-    drop(session);
+    let _ = session;
     let path = focus_day_path(data_dir, date);
-    let json = serde_json::to_string_pretty(&day)
-        .map_err(|e| format!("序列化专注记录失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(&day).map_err(|e| format!("序列化专注记录失败: {}", e))?;
     atomic_write(&path, &json)?;
     Ok(minutes)
 }
@@ -253,7 +246,10 @@ pub fn day_unlinked_focus_minutes(data_dir: &Path, date: &str) -> i64 {
         .filter(|s| s.status == FocusSessionStatus::Completed)
         .filter(|s| s.task_id.is_none())
         .filter(|s| {
-            matches!(s.r#type, FocusSessionType::Focus | FocusSessionType::Stopwatch)
+            matches!(
+                s.r#type,
+                FocusSessionType::Focus | FocusSessionType::Stopwatch
+            )
         })
         .map(|s| s.duration_minutes.max(0))
         .sum()

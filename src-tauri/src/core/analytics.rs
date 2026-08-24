@@ -11,25 +11,20 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::data::records::{self, ReviewFile};
-use crate::data::{add_days, days_between, get_week_end, get_week_start, today_string, weekday_name, DataResult};
+use crate::data::{add_days, get_week_end, get_week_start, today_string, weekday_name, DataResult};
 
 // ============================================================================
 // 类型定义
 // ============================================================================
 
 /// 分析时间范围
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalyticsRange {
     Last7Days,
+    #[default]
     Last30Days,
     All,
-}
-
-impl Default for AnalyticsRange {
-    fn default() -> Self {
-        AnalyticsRange::Last30Days
-    }
 }
 
 /// 每日学习量数据点
@@ -302,7 +297,8 @@ pub fn build_analytics(
     let reviews = collect_reviews_in_range(data_dir, &start_date, &today)?;
 
     // 3. 学习量趋势（受 exclude_exempt 控制，跳过豁免日）
-    let learning_trend = build_learning_trend(data_dir, &start_date, &today, &reviews, &exempt_dates)?;
+    let learning_trend =
+        build_learning_trend(data_dir, &start_date, &today, &reviews, &exempt_dates)?;
 
     // 4. 复盘质量分析（基于 reviews，不受排除开关影响）
     let review_quality = build_review_quality(&reviews);
@@ -399,7 +395,11 @@ fn build_learning_trend(
     let avg_completion_rate = if days_with_plan.is_empty() {
         0.0
     } else {
-        days_with_plan.iter().map(|p| p.completion_rate).sum::<f64>() / days_with_plan.len() as f64
+        days_with_plan
+            .iter()
+            .map(|p| p.completion_rate)
+            .sum::<f64>()
+            / days_with_plan.len() as f64
     };
 
     Ok(LearningTrend {
@@ -522,7 +522,7 @@ fn build_review_quality(reviews: &[ReviewFile]) -> ReviewQuality {
             count: *v,
         })
         .collect();
-    blockers.sort_by(|a, b| b.count.cmp(&a.count));
+    blockers.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     // 困难类型转中文标签
     let mut difficulties: Vec<DifficultyItem> = difficulty_counts
@@ -533,7 +533,7 @@ fn build_review_quality(reviews: &[ReviewFile]) -> ReviewQuality {
             count: *v,
         })
         .collect();
-    difficulties.sort_by(|a, b| b.count.cmp(&a.count));
+    difficulties.sort_by_key(|a| std::cmp::Reverse(a.count));
 
     ReviewQuality {
         mastery,
@@ -604,8 +604,7 @@ fn build_period_comparison(
     let current = compute_period_metrics(data_dir, cur_start, cur_end)?;
     let previous = compute_period_metrics(data_dir, prev_start, prev_end)?;
 
-    let completion_rate_delta =
-        current.avg_completion_rate - previous.avg_completion_rate;
+    let completion_rate_delta = current.avg_completion_rate - previous.avg_completion_rate;
     let hours_delta = current.total_hours - previous.total_hours;
     let tasks_delta = current.total_tasks - previous.total_tasks;
 
@@ -620,11 +619,7 @@ fn build_period_comparison(
     })
 }
 
-fn compute_period_metrics(
-    data_dir: &Path,
-    start: &str,
-    end: &str,
-) -> DataResult<PeriodMetrics> {
+fn compute_period_metrics(data_dir: &Path, start: &str, end: &str) -> DataResult<PeriodMetrics> {
     let reviews = collect_reviews_in_range(data_dir, start, end)?;
 
     let mut total_hours = 0.0;
@@ -658,7 +653,11 @@ fn compute_period_metrics(
             let rate = if a_total > 0 {
                 (a_done as f64 / a_total as f64) * 100.0
             } else if !r.task_reviews.is_empty() {
-                let done = r.task_reviews.iter().filter(|t| t.status == "completed").count();
+                let done = r
+                    .task_reviews
+                    .iter()
+                    .filter(|t| t.status == "completed")
+                    .count();
                 (done as f64 / r.task_reviews.len() as f64) * 100.0
             } else {
                 0.0
@@ -682,15 +681,14 @@ fn compute_period_metrics(
     })
 }
 
-fn build_prediction(
-    reviews: &[ReviewFile],
-    today: &str,
-) -> GoalPrediction {
+fn build_prediction(reviews: &[ReviewFile], today: &str) -> GoalPrediction {
     // 近7天数据
     let seven_days_ago = add_days(today, -6).unwrap_or_else(|_| today.to_string());
     let recent: Vec<&ReviewFile> = reviews
         .iter()
-        .filter(|r| r.meta.date.as_str() >= seven_days_ago.as_str() && r.meta.date.as_str() <= today)
+        .filter(|r| {
+            r.meta.date.as_str() >= seven_days_ago.as_str() && r.meta.date.as_str() <= today
+        })
         .collect();
 
     if recent.is_empty() {
@@ -717,7 +715,11 @@ fn build_prediction(
             let rate = if a_total > 0 {
                 (a_done as f64 / a_total as f64) * 100.0
             } else if !r.task_reviews.is_empty() {
-                let done = r.task_reviews.iter().filter(|t| t.status == "completed").count();
+                let done = r
+                    .task_reviews
+                    .iter()
+                    .filter(|t| t.status == "completed")
+                    .count();
                 (done as f64 / r.task_reviews.len() as f64) * 100.0
             } else {
                 0.0
@@ -779,13 +781,9 @@ fn find_earliest_date(data_dir: &Path) -> DataResult<String> {
     let review_dates = records::list_review_dates(data_dir).unwrap_or_default();
     let plan_dates = crate::data::plan::list_daily_plan_dates(data_dir).unwrap_or_default();
 
-    let earliest = review_dates
-        .iter()
-        .chain(plan_dates.iter())
-        .min()
-        .cloned();
+    let earliest = review_dates.iter().chain(plan_dates.iter()).min().cloned();
 
-    Ok(earliest.unwrap_or_else(|| today_string()))
+    Ok(earliest.unwrap_or_else(today_string))
 }
 
 /// 收集指定日期范围内的所有复盘
@@ -813,12 +811,7 @@ fn current_month_range(today: &str) -> (String, String) {
     let month: u32 = parts[1].parse().unwrap_or(1);
 
     let start = format!("{:04}-{:02}-01", year, month);
-    let end = format!(
-        "{:04}-{:02}-{:02}",
-        year,
-        month,
-        days_in_month(year, month)
-    );
+    let end = format!("{:04}-{:02}-{:02}", year, month, days_in_month(year, month));
     (start, end)
 }
 
