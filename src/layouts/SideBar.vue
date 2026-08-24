@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settings";
@@ -126,6 +126,11 @@ function isPlanActive(): boolean {
 // 当前版本号（统一经 useAppVersion 读取，勿在此写死）
 const { version } = useAppVersion();
 
+// 调试入口可见性：开发模式，或版本号含 indev（如 0.5.7-indev）时对用户可见
+const isDebugAvailable = computed(
+  () => isDev || version.value.toLowerCase().includes("indev"),
+);
+
 /** 「计划」一级项点击：切换二级菜单展开/收起（保持原版行为） */
 function onPlanClick() {
   planOpen.value = !planOpen.value;
@@ -220,7 +225,7 @@ function onPlanClick() {
     <!-- Bottom Section -->
     <div class="sidebar-bottom">
       <router-link
-        v-if="isDev"
+        v-if="isDebugAvailable"
         to="/debug"
         class="nav-item bottom-item"
         active-class="active"
