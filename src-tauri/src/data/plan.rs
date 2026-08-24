@@ -1,4 +1,4 @@
-﻿//! Plan 数据层 — 读取/写入 JSON 学习计划
+//! Plan 数据层 — 读取/写入 JSON 学习计划
 //!
 //! 统一数据契约：{ version, meta, data, view? }
 //! - 日计划：plan/YYYY-MM-DD_day.json
@@ -76,6 +76,23 @@ pub struct WeekPlanData {
     /// 本周任务量调整（相对上周）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_adjustment: Option<WorkloadAdjustment>,
+    /// 本周任务量自校准（基于上周完成率自动下调每日任务数），
+    /// 用于周计划页向用户解释「为什么本周每天任务数这么少/多」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<WeekCalibration>,
+}
+
+/// 每周任务量自校准元数据（记录自动减量原因，供前端展示）
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WeekCalibration {
+    /// 基准每日任务数（用户设置 daily_task_count）
+    pub base_daily_task_count: i64,
+    /// 自动校准后的有效每日任务数
+    pub effective_daily_task_count: i64,
+    /// 自校准系数（<1.0 表示减量）
+    pub coefficient: f64,
+    /// 上周复盘平均完成率（0-100），说明减量依据
+    pub avg_completion_rate: f64,
 }
 
 /// 特殊情况排除日（用户主动声明本周某天不学习）

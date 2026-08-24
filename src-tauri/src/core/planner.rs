@@ -1,4 +1,4 @@
-﻿//! Planner — 调用 AI Service 生成周计划，再通过 DailyScheduler 生成日计划
+//! Planner — 调用 AI Service 生成周计划，再通过 DailyScheduler 生成日计划
 //!
 //! 数据契约：统一 JSON 格式 { version, meta, data, view? }
 //! - 周计划：plan/YYYY-Www_week.json
@@ -901,6 +901,20 @@ impl<'a> Planner<'a> {
         // 3.3 持久化用户本周配置（排除日 + 任务量调整）
         week_plan.data.excluded_days = excluded_days.to_vec();
         week_plan.data.workload_adjustment = workload_adjustment.cloned();
+
+        // 3.5 持久化本周任务量自校准元数据（供周计划页解释为什么每天任务数变少/多）
+        let calib_coeff = weekly_self_calibration(&prev_week_reviews);
+        let (_, calib_avg_rate) = prev_week_calibration_stats(&prev_week_reviews);
+        let calib_effective = ((daily_task_count as f64) * calib_coeff).floor() as i64;
+        let calib_effective = calib_effective.clamp(1, 8);
+        if calib_effective != daily_task_count {
+            week_plan.data.calibration = Some(crate::data::plan::WeekCalibration {
+                base_daily_task_count: daily_task_count,
+                effective_daily_task_count: calib_effective,
+                coefficient: calib_coeff,
+                avg_completion_rate: calib_avg_rate,
+            });
+        }
 
         // 4. 保存周计划 JSON
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
@@ -2451,15 +2465,41 @@ fn parse_week_plan_json(
 }
 
 /// 每周总量自校准（确定性公式）：根据上周复盘的完成率推导本周任务量系数。
-///
-/// - 无有效复盘数据 → 1.0（维持基准）
-/// - 平均完成率 ≥ 90% → 1.0（维持）
-/// - 70% ≤ 完成率 < 90% → 0.9（小幅减量）
-/// - 完成率 < 70% → 0.8（明确减量，优先未完成）
-///
-/// 完成率取各次有效复盘 completion rate（0-100）的平均值。
 fn weekly_self_calibration(prev_week_reviews: &[crate::data::records::ReviewFile]) -> f64 {
     crate::core::planning::pure::weekly_self_calibration(prev_week_reviews)
+}
+
+/// 每周自校准统计：返回 (系数, 上周复盘平均完成率%)。
+/// 平均完成率仅统计有效复盘（有逐任务记录或 completion 汇总数据）。
+fn prev_week_calibration_stats(
+    prev_week_reviews: &[crate::data::records::ReviewFile],
+) -> (f64, f64) {
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for review in prev_week_reviews {
+        // 跳过低质量复盘（既无逐任务记录也无 completion 汇总数据）
+        let has_tasks = !review.task_reviews.is_empty()
+            || review.data.completion.priority_a_total > 0
+            || review.data.completion.priority_b_total > 0;
+        if !has_tasks {
+            continue;
+        }
+        let (_, _, _, _, rate) = crate::data::records::review_completion_stats(review);
+        sum += rate;
+        count += 1;
+    }
+    if count == 0 {
+        return (1.0, 0.0);
+    }
+    let avg_rate = sum / count as f64;
+    let coeff = if avg_rate >= 90.0 {
+        1.0
+    } else if avg_rate >= 70.0 {
+        0.9
+    } else {
+        0.8
+    };
+    (coeff, avg_rate)
 }
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
     crate::core::planning::pure::today_intensity_label(reviews)
