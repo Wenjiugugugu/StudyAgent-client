@@ -36,34 +36,17 @@ use crate::{
 // Dashboard 命令
 // ============================================================================
 
-
 // ============================================================================
 // State 命令
 // ============================================================================
-
-
-
-
-
-
-
-
-
-
-
 
 // ============================================================================
 // Analytics 命令
 // ============================================================================
 
-
 // ============================================================================
 // Plan 命令
 // ============================================================================
-
-
-
-
 
 /// 日计划摘要（聚合 plan + review 数据）
 ///
@@ -89,7 +72,6 @@ pub struct PlanSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excluded_note: Option<String>,
 }
-
 
 /// 计算完成率
 ///
@@ -156,16 +138,9 @@ pub(super) fn compute_priority_a_completion(review: &Option<crate::data::records
     }
 }
 
-
-
-
-
 // ============================================================================
 // Review 命令
 // ============================================================================
-
-
-
 
 /// 提交结构化复盘（新版 Review，无需 AI）
 ///
@@ -194,8 +169,6 @@ pub struct SubmitReviewResult {
     #[serde(default)]
     pub briefing_generating: bool,
 }
-
-
 
 /// regenerate_remaining_days 的返回结构
 #[derive(Debug, Clone, serde::Serialize)]
@@ -239,9 +212,6 @@ pub struct GetBriefingResult {
     pub within_makeup_window: bool,
 }
 
-
-
-
 // ============================================================================
 // User Model 命令
 // ============================================================================
@@ -263,10 +233,6 @@ pub struct TextbookContent {
     pub content: String,
     pub file_path: String,
 }
-
-
-
-
 
 /// 将 relative_path 解析为 data_dir 内的绝对路径
 ///
@@ -305,10 +271,6 @@ pub(super) fn resolve_relative_path(
     Ok(canonical_target)
 }
 
-
-
-
-
 /// 教材内搜索结果
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TextbookSearchHit {
@@ -324,7 +286,6 @@ pub struct TextbookSearchHit {
     #[serde(default)]
     pub matched_terms: Vec<String>,
 }
-
 
 /// 浅层中文分词：把查询拆成可检索的关键词。
 ///
@@ -840,15 +801,9 @@ pub(super) fn safe_char_slice(s: &str, start: usize, end: usize) -> &str {
     &s[cstart..cend]
 }
 
-
-
-
 // ============================================================================
 // AI 对话命令
 // ============================================================================
-
-
-
 
 /// 测试 AI Provider 连接的返回结果
 #[derive(serde::Serialize)]
@@ -857,15 +812,9 @@ pub struct TestResult {
     pub message: String,
 }
 
-
-
 // ============================================================================
 // AI 用量日志命令
 // ============================================================================
-
-
-
-
 
 // ============================================================================
 // 调试页命令（数据文件检查 / 查看）
@@ -901,22 +850,13 @@ pub(super) fn resolve_debug_path(
     Ok(resolved_canon)
 }
 
-
-
-
-
 // ============================================================================
 // Settings 命令
 // ============================================================================
 
-
-
-
 // ============================================================================
 // 数据备份 / 导出 / 导入
 // ============================================================================
-
-
 
 // ============================================================================
 // Onboarding 命令
@@ -945,10 +885,6 @@ pub struct SubjectInit {
     #[serde(default)]
     pub textbook: Option<String>,
 }
-
-
-
-
 
 // ============================================================================
 // Update 命令
@@ -1091,8 +1027,6 @@ pub(super) fn unavailable_result(current_version: &str, log_reason: &str) -> Upd
     }
 }
 
-
-
 /// 计算文件的 SHA-256（十六进制小写）
 pub(super) fn sha256_hex(path: &std::path::Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
@@ -1145,7 +1079,6 @@ pub(super) fn verified_updates(
     > = std::sync::OnceLock::new();
     VERIFIED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
-
 
 /// 比较语义化版本号：判断 `remote` 是否比 `current` 更新
 ///
@@ -1250,10 +1183,6 @@ pub(super) fn parse_task_status(status: &str) -> Result<TaskStatus, String> {
 // ============================================================================
 // 通用命令（关闭行为 / 开机启动 / 应用版本）
 // ============================================================================
-
-
-
-
 
 #[cfg(test)]
 mod tests {

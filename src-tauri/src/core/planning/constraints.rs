@@ -65,7 +65,10 @@ pub(crate) fn enforce_rest_days(
     Ok(())
 }
 
-pub(crate) fn enforce_excluded_days(plan: &mut WeekPlanFile, excluded_days: &[ExcludedDay]) -> DataResult<()> {
+pub(crate) fn enforce_excluded_days(
+    plan: &mut WeekPlanFile,
+    excluded_days: &[ExcludedDay],
+) -> DataResult<()> {
     if excluded_days.is_empty() {
         return Ok(());
     }

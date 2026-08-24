@@ -2478,10 +2478,7 @@ fn subject_task_budget(
 ) -> Vec<(crate::data::state::SubjectKey, i64)> {
     crate::core::planning::pure::subject_task_budget(state, total, week_end, subject_start_dates)
 }
-fn weighted_spread(
-    total: i64,
-    weights: &[(crate::data::state::SubjectKey, f64)],
-) -> Vec<i64> {
+fn weighted_spread(total: i64, weights: &[(crate::data::state::SubjectKey, f64)]) -> Vec<i64> {
     crate::core::planning::pure::weighted_spread(total, weights)
 }
 type MemoryReviewItem = crate::core::planning::pure::MemoryReviewItem;
@@ -2506,10 +2503,7 @@ fn enforce_rest_days(
 /// 与 enforce_rest_days 不同，排除日是用户主动声明的"本周临时跳过"日期，
 /// 语义上区别于每周固定休息日。但为了复用 scheduler 的"休息日不生成日计划"逻辑，
 /// 排除日也设置 is_rest_day=true。前端通过 week_plan.data.excluded_days 区分展示。
-fn enforce_excluded_days(
-    plan: &mut WeekPlanFile,
-    excluded_days: &[ExcludedDay],
-) -> DataResult<()> {
+fn enforce_excluded_days(plan: &mut WeekPlanFile, excluded_days: &[ExcludedDay]) -> DataResult<()> {
     crate::core::planning::constraints::enforce_excluded_days(plan, excluded_days)
 }
 

@@ -266,7 +266,10 @@ pub(crate) fn check_review_needs_regeneration(review: &ReviewFile) -> bool {
         .task_reviews
         .iter()
         .any(|task| task.status == "incomplete" || task.status == "partial");
-    let has_weak_mastery = review.task_reviews.iter().any(|task| task.mastery == "weak");
+    let has_weak_mastery = review
+        .task_reviews
+        .iter()
+        .any(|task| task.mastery == "weak");
     let feels_hard = review
         .daily_review
         .as_ref()

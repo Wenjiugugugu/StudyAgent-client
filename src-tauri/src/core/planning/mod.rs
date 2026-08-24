@@ -4,6 +4,6 @@
 //! planning rules live in pure.rs so they can be tested without an AI service
 //! or filesystem state.
 
-pub(crate) mod pure;
-pub(crate) mod parsing;
 pub(crate) mod constraints;
+pub(crate) mod parsing;
+pub(crate) mod pure;
