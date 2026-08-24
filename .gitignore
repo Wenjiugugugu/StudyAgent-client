@@ -72,3 +72,6 @@ src-tauri/gen/
 
 # esbuild cache
 .tmp-esbuild/
+
+# Rust/toolchain build caches
+src-tauri/.tmp/

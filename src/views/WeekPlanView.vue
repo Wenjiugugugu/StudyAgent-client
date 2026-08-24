@@ -25,6 +25,7 @@ import {
   HeartPulse,
   FileText,
   Ban,
+  Info,
 } from "lucide-vue-next";
 import type {
   WeekPlan,
@@ -295,6 +296,9 @@ const weekCompletedTasks = computed(() =>
 );
 
 const goals = computed(() => weekPlan.value?.data?.goals ?? []);
+
+// 本周任务量自校准信息（基于上周完成率自动下调每日任务数）
+const calibration = computed(() => weekPlan.value?.data?.calibration);
 
 // 是否启用「记录学习时长」：关闭时隐藏计划学时相关展示
 const timeTrackingEnabled = computed(
@@ -655,6 +659,25 @@ onMounted(async () => {
               <span class="sum-value">{{ weekCompletedTasks }}/{{ weekTotalTasks }}</span>
               <span class="sum-label">已完成任务</span>
             </div>
+          </div>
+        </div>
+      </Card>
+
+      <!-- 任务量自动校准提示 -->
+      <Card
+        v-if="calibration && calibration.effective_daily_task_count < calibration.base_daily_task_count"
+        padding="md"
+        class="calib-banner"
+      >
+        <div class="calib-content">
+          <Info :size="16" class="calib-icon" />
+          <div class="calib-text">
+            <span class="calib-strong">本周每日任务数已自动调整</span>
+            <span class="calib-detail">
+              因上周复盘完成率仅 {{ Math.round(calibration.avg_completion_rate) }}% 未达标，
+              本周每日任务数由 {{ calibration.base_daily_task_count }} 自动下调至 {{ calibration.effective_daily_task_count }}，
+              优先保证完成；完成率回升后会自动恢复正常任务量。
+            </span>
           </div>
         </div>
       </Card>
@@ -1047,6 +1070,42 @@ onMounted(async () => {
 /* Summary card */
 .summary-card {
   display: flex;
+}
+
+/* ── 任务量自动校准提示 ── */
+.calib-banner {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+.calib-content {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.calib-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.calib-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: var(--leading-relaxed);
+}
+
+.calib-strong {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.calib-detail {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
 }
 
 .summary-grid {

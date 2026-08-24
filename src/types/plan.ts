@@ -119,6 +119,20 @@ export interface WeekPlanData {
   excluded_days?: ExcludedDay[];
   /** 本周任务量调整（相对上周） */
   workload_adjustment?: WorkloadAdjustment;
+  /** 本周任务量自校准（基于上周完成率自动下调每日任务数） */
+  calibration?: WeekCalibration;
+}
+
+/** 每周任务量自校准元数据（记录自动减量原因） */
+export interface WeekCalibration {
+  /** 基准每日任务数（用户设置） */
+  base_daily_task_count: number;
+  /** 自动校准后的有效每日任务数 */
+  effective_daily_task_count: number;
+  /** 自校准系数（<1.0 表示减量） */
+  coefficient: number;
+  /** 上周复盘平均完成率（0-100） */
+  avg_completion_rate: number;
 }
 
 /** 特殊情况排除日类型 */
