@@ -1,6 +1,6 @@
 //! API Layer — Tauri 命令注册
 //!
-//! 本模块定义所有 `#[tauri::command]` 函数，作为前端 Vue 3 调用 Rust 后端的入口。
+//! 本模块按业务领域组织所有 `#[tauri::command]` 函数，作为前端 Vue 3 调用 Rust 后端的入口。
 //!
 //! ## 命令列表
 //!

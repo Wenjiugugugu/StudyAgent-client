@@ -9,13 +9,11 @@ use std::path::Path;
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::core::scheduler::DailyScheduler;
-use crate::data::plan::{
-    BasedOn, DailyPlanFile, ExcludedDay, WeekDayPlan, WeekPlanFile, WorkloadAdjustment,
-};
+use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment};
 use crate::data::state::StudyState;
 use crate::data::{
     add_days, clean_ai_json, days_between, get_week_end, get_week_start, iso_week_string,
-    now_string, today_string, weekday_name, DataResult,
+    today_string, weekday_name, DataResult,
 };
 
 /// Planner — 计划生成器
@@ -2445,40 +2443,11 @@ fn parse_week_plan_json(
     expected_week_start: &str,
     expected_week_end: &str,
 ) -> DataResult<WeekPlanFile> {
-    let cleaned = clean_ai_json(content);
-    let mut plan: WeekPlanFile = serde_json::from_str(&cleaned).map_err(|e| {
-        // H2：用 chars().take 截断，避免字节切片在多字节字符处 panic
-        let preview: String = cleaned.chars().take(200).collect();
-        format!(
-            "解析 AI 返回的周计划 JSON 失败: {}\n内容片段: {}",
-            e, preview
-        )
-    })?;
-
-    // 兜底填充版本与 meta 日期
-    if plan.version.is_empty() {
-        plan.version = "1.0.0".to_string();
-    }
-    if plan.meta.week_start.is_empty() {
-        plan.meta.week_start = expected_week_start.to_string();
-    }
-    if plan.meta.week_end.is_empty() {
-        plan.meta.week_end = expected_week_end.to_string();
-    }
-    if plan.meta.generated_at.is_empty() {
-        plan.meta.generated_at = now_string();
-    }
-    if plan.meta.based_on.state.is_empty() {
-        plan.meta.based_on = BasedOn {
-            state: "state/current.state".to_string(),
-            user_model: "assets/user_model/_index.md".to_string(),
-            exam_config: "assets/config/exam-config.md".to_string(),
-            review_ref: None,
-            week_plan: None,
-        };
-    }
-
-    Ok(plan)
+    crate::core::planning::parsing::parse_week_plan_json(
+        content,
+        expected_week_start,
+        expected_week_end,
+    )
 }
 
 /// 每周总量自校准（确定性公式）：根据上周复盘的完成率推导本周任务量系数。
@@ -2490,384 +2459,40 @@ fn parse_week_plan_json(
 ///
 /// 完成率取各次有效复盘 completion rate（0-100）的平均值。
 fn weekly_self_calibration(prev_week_reviews: &[crate::data::records::ReviewFile]) -> f64 {
-    if prev_week_reviews.is_empty() {
-        return 1.0;
-    }
-    let mut sum = 0.0f64;
-    let mut count = 0usize;
-    for review in prev_week_reviews {
-        // 跳过低质量复盘（既无逐任务记录也无 completion 汇总数据）
-        let has_tasks = !review.task_reviews.is_empty()
-            || review.data.completion.priority_a_total > 0
-            || review.data.completion.priority_b_total > 0;
-        if !has_tasks {
-            continue;
-        }
-        let (_, _, _, _, rate) = crate::data::records::review_completion_stats(review);
-        sum += rate;
-        count += 1;
-    }
-    if count == 0 {
-        return 1.0;
-    }
-    let avg_rate = sum / count as f64;
-    if avg_rate >= 90.0 {
-        1.0
-    } else if avg_rate >= 70.0 {
-        0.9
-    } else {
-        0.8
-    }
+    crate::core::planning::pure::weekly_self_calibration(prev_week_reviews)
 }
-
-/// 今日/近期强度预测（E）：基于最近的复盘完成率与精力值，得出今日强度建议。
-///
-/// 规则（确定性）：
-/// - 无复盘 → 返回空串；
-/// - 平均完成率 < 60% 或精力均值 ≤ 1.5 → 偏轻（优先完成而非加量）；
-/// - 完成率 ≥ 90% 且精力均值 ≥ 4 → 可加量；
-/// - 完成率 < 75% → 适中；否则 → 正常。
-///   完成率取有效复盘 completion rate（0-100）均值，精力取 `data.energy_level` 均值。
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
-    if reviews.is_empty() {
-        return String::new();
-    }
-    // 按日期降序，取最近至多 7 次
-    let mut list: Vec<&crate::data::records::ReviewFile> = reviews.iter().collect();
-    list.sort_by(|a, b| b.meta.date.cmp(&a.meta.date));
-    let recent = list.into_iter().take(7);
-
-    let mut rate_sum = 0.0f64;
-    let mut rate_n = 0usize;
-    let mut energy_sum = 0i32;
-    let mut energy_n = 0usize;
-    for r in recent {
-        let has_tasks = !r.task_reviews.is_empty()
-            || r.data.completion.priority_a_total > 0
-            || r.data.completion.priority_b_total > 0;
-        if has_tasks {
-            let (_, _, _, _, rate) = crate::data::records::review_completion_stats(r);
-            rate_sum += rate;
-            rate_n += 1;
-        }
-        energy_sum += r.data.energy_level.max(1);
-        energy_n += 1;
-    }
-    let avg_rate = if rate_n > 0 {
-        rate_sum / rate_n as f64
-    } else {
-        100.0
-    };
-    let avg_energy = if energy_n > 0 {
-        energy_sum as f64 / energy_n as f64
-    } else {
-        3.0
-    };
-
-    if avg_rate < 60.0 || avg_energy <= 1.5 {
-        format!("今日强度建议：偏轻（近期完成率偏低 / 精力不足，优先完成而非加量）。完成率均值 {:.0}%，精力均值 {:.1}/5。", avg_rate, avg_energy)
-    } else if avg_rate >= 90.0 && avg_energy >= 4.0 {
-        format!(
-            "今日强度建议：可加量（近期完成度高且精力充沛）。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
-        )
-    } else if avg_rate < 75.0 {
-        format!(
-            "今日强度建议：适中（近期完成率一般，保持节奏）。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
-        )
-    } else {
-        format!(
-            "今日强度建议：正常。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
-        )
-    }
+    crate::core::planning::pure::today_intensity_label(reviews)
 }
-
-// ============================================================================
-// 新增规划算法：每科任务数分配（A）
-// ============================================================================
-
-/// 科目 → 设置键
 fn planner_subject_key_str(subject: &crate::data::state::SubjectKey) -> &'static str {
-    match subject {
-        crate::data::state::SubjectKey::Math => "math",
-        crate::data::state::SubjectKey::English => "english",
-        crate::data::state::SubjectKey::Politics => "politics",
-        crate::data::state::SubjectKey::Professional => "professional",
-    }
+    crate::core::planning::pure::subject_key_str(subject)
 }
-
-/// 科目 → 中文名
 fn planner_subject_cn(subject: &crate::data::state::SubjectKey) -> &'static str {
-    match subject {
-        crate::data::state::SubjectKey::Math => "数学",
-        crate::data::state::SubjectKey::English => "英语",
-        crate::data::state::SubjectKey::Politics => "政治",
-        crate::data::state::SubjectKey::Professional => "专业课",
-    }
+    crate::core::planning::pure::subject_cn(subject)
 }
-
-/// 每科每日任务数确定性分配（"每科至少一条，条数多了才按时长权重分散"）。
-///
-/// 规则：
-/// - 仅计入本周已开课科目（active 且开始日期 ≤ week_end，或无开始日期约束）；
-/// - 若每日任务总数 >= 科目数：先给每科保底 1 条，多余条数按 weekly_hours 权重分摊；
-/// - 若总数 < 科目数：只按权重分配总数（高时长科目优先占名额）。
 fn subject_task_budget(
     state: &StudyState,
     total: i64,
     week_end: &str,
     subject_start_dates: &[(&'static str, String)],
 ) -> Vec<(crate::data::state::SubjectKey, i64)> {
-    let mut weights: Vec<(crate::data::state::SubjectKey, f64)> = Vec::new();
-    let subjects = [
-        (crate::data::state::SubjectKey::Math, &state.subjects.math),
-        (
-            crate::data::state::SubjectKey::English,
-            &state.subjects.english,
-        ),
-        (
-            crate::data::state::SubjectKey::Politics,
-            &state.subjects.politics,
-        ),
-        (
-            crate::data::state::SubjectKey::Professional,
-            &state.subjects.professional,
-        ),
-    ];
-    for (key, subj) in subjects {
-        if !subj.active {
-            continue;
-        }
-        let key_str = planner_subject_key_str(&key);
-        if let Some((_, sd)) = subject_start_dates
-            .iter()
-            .find(|(k, d)| *k == key_str && !d.is_empty())
-        {
-            if sd.as_str() > week_end {
-                // 本周内该科目尚未开始
-                continue;
-            }
-        }
-        let w = if subj.weekly_hours > 0.0 {
-            subj.weekly_hours
-        } else {
-            1.0
-        };
-        weights.push((key, w));
-    }
-
-    if weights.is_empty() {
-        return Vec::new();
-    }
-
-    let n = weights.len() as i64;
-    let mut result: Vec<(crate::data::state::SubjectKey, i64)> = Vec::new();
-    if total >= n {
-        // 保底每科 1 条，多余按权重分散
-        for (k, _) in &weights {
-            result.push((k.clone(), 1));
-        }
-        let extra = total - n;
-        let spreads = weighted_spread(extra, &weights);
-        for (i, s) in spreads.iter().enumerate() {
-            result[i].1 += s;
-        }
-    } else {
-        // 总数不足以每科 1 条，按权重分配
-        let spreads = weighted_spread(total, &weights);
-        for (i, (k, _)) in weights.iter().enumerate() {
-            result.push((k.clone(), spreads[i]));
-        }
-    }
-    result
+    crate::core::planning::pure::subject_task_budget(state, total, week_end, subject_start_dates)
 }
-
-/// 把 `total` 个名额按权重用"最大余数法（Hare 定额）"分摊到各项，返回每项名额数。
-///
-/// - 权重可非整数；先取 floor，再按余数从大到小逐名补足，保证和严格等于 `total`。
-/// - 所有权重为 0 / 总权重非正时退化为均摊。
-fn weighted_spread(total: i64, weights: &[(crate::data::state::SubjectKey, f64)]) -> Vec<i64> {
-    if weights.is_empty() {
-        return Vec::new();
-    }
-    if total <= 0 {
-        return weights.iter().map(|_| 0).collect();
-    }
-    let wsum: f64 = weights.iter().map(|(_, w)| *w).sum();
-    if wsum <= 0.0 {
-        let base = total / weights.len() as i64;
-        let rem = (total as usize) % weights.len();
-        return weights
-            .iter()
-            .enumerate()
-            .map(|(i, _)| base + if i < rem { 1 } else { 0 })
-            .collect();
-    }
-
-    // 各成员的精确份额
-    let shares: Vec<f64> = weights
-        .iter()
-        .map(|(_, w)| (w / wsum) * total as f64)
-        .collect();
-    let mut alloc: Vec<i64> = shares.iter().map(|s| s.floor() as i64).collect();
-    let granted: i64 = alloc.iter().sum();
-    let mut remain = total - granted;
-
-    // 按余数从大到小排列成员下标，用于逐名补足
-    let mut order: Vec<usize> = (0..weights.len()).collect();
-    order.sort_by(|&a, &b| {
-        let fa = shares[a] - shares[a].floor();
-        let fb = shares[b] - shares[b].floor();
-        fb.partial_cmp(&fa)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.cmp(&b))
-    });
-
-    let mut i = 0usize;
-    while remain > 0 {
-        alloc[order[i % order.len()]] += 1;
-        remain -= 1;
-        i += 1;
-    }
-    alloc
-}
-
-// ============================================================================
-// 新增规划算法：记忆曲线复习调度（B）
-// ============================================================================
-
-/// 一个记忆曲线复习点：到期日 + 科目 + 需复习的薄弱内容
-#[derive(Debug, Clone)]
-struct MemoryReviewItem {
-    due_date: String,
-    subject: crate::data::state::SubjectKey,
-    title: String,
-}
-
-/// 记忆曲线复习调度：从近期复盘中收集 mastery=="weak" 的任务，
-/// 按学习日起 +1/+3/+7 天生成待复习到期日（仅保留落在 [week_start, week_end] 的），
-/// 确定性保证"掌握不足的内容在记忆衰减前得到复习"，不依赖 AI 自行决定是否复习。
+type MemoryReviewItem = crate::core::planning::pure::MemoryReviewItem;
 fn memory_curve_review_items(
     reviews: &[crate::data::records::ReviewFile],
     week_start: &str,
     week_end: &str,
 ) -> Vec<MemoryReviewItem> {
-    // Ebbinghaus 式复习间隔（天）
-    const INTERVALS: [i64; 3] = [1, 3, 7];
-    let mut out: Vec<MemoryReviewItem> = Vec::new();
-    for review in reviews {
-        let learn_date = &review.meta.date;
-        for tr in &review.task_reviews {
-            if tr.mastery != "weak" {
-                continue;
-            }
-            let subject = match tr.subject.as_str() {
-                "math" => crate::data::state::SubjectKey::Math,
-                "english" => crate::data::state::SubjectKey::English,
-                "politics" => crate::data::state::SubjectKey::Politics,
-                "professional" => crate::data::state::SubjectKey::Professional,
-                _ => continue,
-            };
-            let title = if tr.title.trim().is_empty() {
-                "薄弱内容".to_string()
-            } else {
-                tr.title.trim().to_string()
-            };
-            for d in INTERVALS {
-                let due = match crate::data::add_days(learn_date, d) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                if due.as_str() >= week_start && due.as_str() <= week_end {
-                    out.push(MemoryReviewItem {
-                        due_date: due,
-                        subject: subject.clone(),
-                        title: format!("{}（+{}天回访）", title, d),
-                    });
-                }
-            }
-        }
-    }
-    out.sort_by(|a, b| {
-        a.due_date
-            .cmp(&b.due_date)
-            .then_with(|| {
-                planner_subject_key_str(&a.subject).cmp(planner_subject_key_str(&b.subject))
-            })
-            .then_with(|| a.title.cmp(&b.title))
-    });
-    out
+    crate::core::planning::pure::memory_curve_review_items(reviews, week_start, week_end)
 }
-
-/// 后置校验：强制周计划中每天的 is_rest_day 与用户设置一致
-///
-/// 规则：
-/// - 用户休息日列表中的日期：is_rest_day = true，subject_allocations 清空
-/// - 不在用户休息日列表中的日期：is_rest_day = false
-///
-/// 同时补全缺失的日期（若 AI 漏掉了某些天，会自动补上空分配）
 fn enforce_rest_days(
     plan: &mut WeekPlanFile,
     rest_days: &[String],
     week_start: &str,
     week_end: &str,
 ) -> DataResult<()> {
-    // 收集已存在的日期
-    let existing_dates: std::collections::HashSet<String> =
-        plan.data.days.iter().map(|d| d.date.clone()).collect();
-
-    // 遍历整周，校验/补全
-    let mut current_date = week_start.to_string();
-    loop {
-        let weekday = weekday_name(&current_date)?;
-        let should_rest = rest_days.contains(&weekday);
-
-        if let Some(day) = plan.data.days.iter_mut().find(|d| d.date == current_date) {
-            // 已存在：强制覆盖
-            if should_rest && !day.is_rest_day {
-                log::warn!(
-                    "周计划校验: {}（{}）应为休息日但 AI 标记为学习日，已修正",
-                    current_date,
-                    weekday
-                );
-                day.is_rest_day = true;
-                day.subject_allocations.clear();
-            } else if !should_rest && day.is_rest_day {
-                log::warn!(
-                    "周计划校验: {}（{}）应为学习日但 AI 标记为休息日，已修正",
-                    current_date,
-                    weekday
-                );
-                day.is_rest_day = false;
-            }
-        } else if !existing_dates.contains(&current_date) {
-            // 缺失：补全
-            log::warn!(
-                "周计划校验: {}（{}）缺失，已补全（is_rest_day={}）",
-                current_date,
-                weekday,
-                should_rest
-            );
-            plan.data.days.push(WeekDayPlan {
-                date: current_date.clone(),
-                weekday,
-                is_rest_day: should_rest,
-                subject_allocations: Vec::new(),
-            });
-        }
-
-        if current_date == week_end {
-            break;
-        }
-        current_date = add_days(&current_date, 1)?;
-    }
-
-    // 按日期排序
-    plan.data.days.sort_by(|a, b| a.date.cmp(&b.date));
-
-    Ok(())
+    crate::core::planning::constraints::enforce_rest_days(plan, rest_days, week_start, week_end)
 }
 
 /// 后置校验：把排除日标记为 is_rest_day=true 并清空 subject_allocations
@@ -2876,34 +2501,7 @@ fn enforce_rest_days(
 /// 语义上区别于每周固定休息日。但为了复用 scheduler 的"休息日不生成日计划"逻辑，
 /// 排除日也设置 is_rest_day=true。前端通过 week_plan.data.excluded_days 区分展示。
 fn enforce_excluded_days(plan: &mut WeekPlanFile, excluded_days: &[ExcludedDay]) -> DataResult<()> {
-    if excluded_days.is_empty() {
-        return Ok(());
-    }
-    for ex in excluded_days {
-        if let Some(day) = plan.data.days.iter_mut().find(|d| d.date == ex.date) {
-            if !day.is_rest_day || !day.subject_allocations.is_empty() {
-                log::info!(
-                    "周计划校验: {} 标记为排除日（{}），清空 allocations",
-                    ex.date,
-                    ex.reason_type
-                );
-                day.is_rest_day = true;
-                day.subject_allocations.clear();
-            }
-        } else {
-            // 排除日缺失则补上
-            let weekday = weekday_name(&ex.date)?;
-            log::info!("周计划校验: 排除日 {} 缺失，补全为休息日", ex.date);
-            plan.data.days.push(WeekDayPlan {
-                date: ex.date.clone(),
-                weekday,
-                is_rest_day: true,
-                subject_allocations: Vec::new(),
-            });
-        }
-    }
-    plan.data.days.sort_by(|a, b| a.date.cmp(&b.date));
-    Ok(())
+    crate::core::planning::constraints::enforce_excluded_days(plan, excluded_days)
 }
 
 /// 后置校验：清空「早于今天」的日期的任务分配（周中生成周计划的确定性兜底）
@@ -2916,21 +2514,7 @@ fn enforce_excluded_days(plan: &mut WeekPlanFile, excluded_days: &[ExcludedDay])
 /// 这是确定性硬保证，不依赖 AI 是否遵循 prompt 中的「从今天开始」约束。
 /// 周初（today = 周一）生成时，没有日期早于今天，此函数为空操作。
 fn enforce_past_days_empty(plan: &mut WeekPlanFile) {
-    let today = today_string();
-    let mut cleared = 0usize;
-    for day in plan.data.days.iter_mut() {
-        if day.date.as_str() < today.as_str() && !day.subject_allocations.is_empty() {
-            day.subject_allocations.clear();
-            cleared += 1;
-        }
-    }
-    if cleared > 0 {
-        log::warn!(
-            "周计划校验: {} 个已过去日期（早于 {}）的任务分配已清空（周中生成时不再补排历史日）",
-            cleared,
-            today
-        );
-    }
+    crate::core::planning::constraints::enforce_past_days_empty(plan)
 }
 
 // ============================================================================
@@ -2945,32 +2529,8 @@ fn enforce_past_days_empty(plan: &mut WeekPlanFile) {
 /// - 用户感受困难（daily_review.overall_feeling == "hard"）
 /// - 有额外进度记录（overcompletion 非空）
 pub fn check_review_needs_regeneration(review: &crate::data::records::ReviewFile) -> bool {
-    // 未完成任务
-    let has_uncompleted = review
-        .task_reviews
-        .iter()
-        .any(|tr| tr.status == "incomplete" || tr.status == "partial");
-
-    // 掌握不足（需要巩固）：AI 应在后续计划中安排复习
-    let has_weak_mastery = review.task_reviews.iter().any(|tr| tr.mastery == "weak");
-
-    // 感受困难
-    let feels_hard = review
-        .daily_review
-        .as_ref()
-        .map(|d| d.overall_feeling == "hard")
-        .unwrap_or(false);
-
-    // 额外进度
-    let has_overcompletion = !review.overcompletion.is_empty();
-
-    has_uncompleted || has_weak_mastery || feels_hard || has_overcompletion
+    crate::core::planning::pure::check_review_needs_regeneration(review)
 }
-
-/// 保存原始周计划副本（用于一周结束后对比原计划与现计划）
-///
-/// 文件名：plan/YYYY-Www_week_original.json
-/// 仅在不存在时保存（保证第一次生成的原始版本不被覆盖）
 fn save_week_plan_original(data_dir: &Path, plan: &WeekPlanFile) -> DataResult<()> {
     let iso_week = iso_week_string(&plan.meta.week_start)?;
     let path = crate::data::plan::week_plan_path(data_dir, &format!("{}_original", iso_week));
@@ -3009,52 +2569,8 @@ fn subject_completed_list<'a>(
 
 /// 判断任务标题是否命中已完成章节（边界匹配，与 scheduler 一致，避免误杀子主题）
 fn matches_completed(title: &str, completed: &str) -> bool {
-    let t = title.trim();
-    let c = completed.trim();
-    if t.is_empty() || c.is_empty() {
-        return false;
-    }
-    if t == c {
-        return true;
-    }
-    if let Some(rest) = t.strip_prefix(c) {
-        return rest
-            .chars()
-            .next()
-            .map(|ch| {
-                matches!(
-                    ch,
-                    '：' | ':'
-                        | '，'
-                        | ','
-                        | '、'
-                        | '。'
-                        | '；'
-                        | ';'
-                        | '('
-                        | '（'
-                        | '·'
-                        | '-'
-                        | '—'
-                        | ')'
-                        | '）'
-                )
-            })
-            .unwrap_or(false);
-    }
-    false
+    crate::core::planning::pure::matches_completed(title, completed)
 }
-
-/// 一致性校验与确定性修正（重排 / 周计划生成后调用）
-///
-/// 由于本地缺少章节依赖关系图，无法纯确定性地判断「计划章节是否领先于用户实际进度」，
-/// 因此只处理边界内可确定的部分：
-/// 1. 确定性去重：把 `regen_dates` 内剩余计划中与该科「已完成」列表重复的任务模板摘除，
-///    并同步修正 allocation 时长。无论 AI 是否遵守「不得重复已完成内容」，都会兜底生效。
-/// 2. 进度生效检查：对本次复盘声明了实际进度（overcompletion）的科目，若重排后其剩余
-///    安排与重排前完全一致，说明该声明未能反映到计划，学校生成提醒返回（供前端提示）。
-///
-/// 返回一致性警告列表（可空）。
 fn consistency_check_and_correct(
     week_plan: &mut WeekPlanFile,
     state: &StudyState,
