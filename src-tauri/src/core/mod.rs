@@ -14,6 +14,7 @@ pub mod briefing;
 pub mod chapter_seq;
 pub mod dashboard;
 pub mod planner;
+pub mod planning;
 pub mod review;
 pub mod scheduler;
 pub mod user_model;
