@@ -71,7 +71,7 @@ git rebase origin/main   # 或 git merge origin/main
 1. 推送分支：`git push origin feature/zhangsan-周计划调整`
 2. 在 GitHub 新建 PR → base 为 `main`，写好标题与描述（说明改动、测试情况、相关 issue）。
 3. PR 的 CI 检查（前端 type-check/test/build + Rust fmt/clippy/test）必须全部通过。
-4. 至少一名协作者 review 通过后方可合并。
+4. 正式合并前建议让其他协作者 review；若团队约定或单人维护场景下，review 不作为强制门槛（以 CI 通过为准）。
 5. 合并后**删除分支**，再立即 `git pull origin main` 保持本地同步。
 
 ### 3.5 合并策略
@@ -88,6 +88,7 @@ git rebase origin/main   # 或 git merge origin/main
 - 禁止直接推送（force push 一律禁止）。
 - 要求 PR status check 通过后才能合并（CI 工作流）。
 - 合并前必须解决冲突。
+- review 不作为强制门槛：以 CI 检查通过为合入前提，团队成员可选择性互审。
 
 如需调整保护规则，需仓库管理员权限在 **Settings → Branches** 修改。
 
