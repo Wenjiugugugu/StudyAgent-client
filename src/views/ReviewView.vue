@@ -112,6 +112,26 @@ const loading = ref(true);
 const existingReview = ref<ReviewRecord | null>(null);
 const submitted = ref(false);
 
+// ── 鱼骨式步骤标签（样式三：编号箭头骨节）──
+// 各步骤的展示名，与 step 的 0..totalSteps-1 一一对应
+const stepLabels = [
+  "任务完成",
+  "未完成原因",
+  "掌握情况",
+  "整体感受",
+  "最大困难",
+  "计划外学习",
+];
+
+/** 点击鱼骨标签回到对应步骤（仅允许回退到已完成/当前步骤） */
+function jumpStep(idx: number) {
+  if (idx > step.value) return;
+  if (quickMode.value && idx < 3) {
+    quickMode.value = false;
+  }
+  step.value = idx;
+}
+
 // 重排状态：复盘提交后若需要 AI 重新生成剩余天数计划
 // 使用 sessionStorage 持久化，避免切页再回来时丢失提示
 const REGEN_SESSION_KEY = "studyagent.regen_status";
@@ -988,11 +1008,21 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       </div>
 
       <div class="step-bar">
-        <div class="step-dots">
-          <span v-for="i in totalSteps" :key="i" class="step-dot"
-            :class="{ active: i - 1 === step, done: i - 1 < step }" />
+        <div class="fishbone-steps">
+          <button
+            v-for="(label, idx) in stepLabels"
+            :key="idx"
+            type="button"
+            class="fish-tab"
+            :class="{ active: idx === step, done: idx < step }"
+            :disabled="idx > step"
+            :title="label"
+            @click="jumpStep(idx)"
+          >
+            <span class="fish-num">{{ idx + 1 }}</span>
+            <span class="fish-label">{{ label }}</span>
+          </button>
         </div>
-        <span class="step-label">{{ step + 1 }} / {{ totalSteps }}</span>
         <Button v-if="step === 0" variant="ghost" size="sm" @click="startQuickReview">
           <Clock :size="14" /> 快速复盘（约 30 秒）
         </Button>
@@ -1318,17 +1348,50 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .step-bar {
   display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2);
 }
-.step-dots { display: flex; gap: var(--space-2); flex: 1; }
-.step-dot {
-  width: 100%; height: 4px; background: var(--bg-tertiary);
-  border-radius: var(--radius-full); transition: background var(--transition-fast);
+
+/* 鱼骨式步骤标签：编号箭头骨节 */
+.fishbone-steps { display: flex; align-items: stretch; gap: 0; flex: 1; }
+
+.fish-tab {
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--space-1);
+  flex: 1 1 0;
+  min-width: 0;
+  height: 34px;
+  padding-left: var(--space-3);
+  padding-right: var(--space-4);
+  border: none;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  line-height: 1;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 50%, calc(100% - 12px) 100%, 0 100%, 12px 50%);
+  margin-left: -10px;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
-.step-dot.active { background: var(--accent); }
-.step-dot.done { background: var(--color-success); }
-.step-label {
-  font-size: var(--text-xs); color: var(--text-tertiary);
-  font-weight: var(--font-medium); flex-shrink: 0;
+.fish-tab:first-child {
+  margin-left: 0;
+  clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 50%, calc(100% - 12px) 100%, 0 100%);
 }
+.fish-tab:hover:not(:disabled) { background: var(--color-info-subtle, var(--bg-tertiary)); color: var(--text-primary); }
+.fish-tab.done { background: var(--accent-subtle); color: var(--accent); }
+.fish-tab.active { background: var(--accent); color: var(--text-on-accent); }
+.fish-tab:disabled { cursor: default; color: var(--text-tertiary); }
+
+.fish-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: currentColor;
+  color: var(--bg-elevated);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+}
+.fish-tab.done .fish-num, .fish-tab.active .fish-num { color: var(--bg-elevated); }
+.fish-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .step-card { display: flex; flex-direction: column; gap: var(--space-5); }
 .step-title {
