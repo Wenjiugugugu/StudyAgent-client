@@ -49,8 +49,8 @@ function generateLiquidGlassDisplacementMap() {
   const cx = 0.5, cy = 0.5;
   const halfW = 0.44, halfH = 0.44;
   const cornerR = 0.14;
-  const edgeBand = 0.18; // 更宽的折射带，增强液态膨胀感
-  const dispStrength = 55; // 更强的边缘位移，接近 rdev 的折射强度
+  const edgeBand = 0.1; // 只在轮廓附近折射，避免内容被拉伸
+  const dispStrength = 18; // 轻微膨胀感，保持 iOS 风格的清晰度
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const u = x / W;
@@ -128,15 +128,15 @@ onMounted(() => {
       </feComponentTransfer>
 
       <!-- Red 通道：位移最强 -->
-      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="55" xChannelSelector="R" yChannelSelector="G" result="RED_DISP" />
+      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="18" xChannelSelector="R" yChannelSelector="G" result="RED_DISP" />
       <feColorMatrix in="RED_DISP" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="RED_CH" />
 
       <!-- Green 通道：位移中等 -->
-      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="48" xChannelSelector="R" yChannelSelector="G" result="GREEN_DISP" />
+      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="15" xChannelSelector="R" yChannelSelector="G" result="GREEN_DISP" />
       <feColorMatrix in="GREEN_DISP" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="GREEN_CH" />
 
       <!-- Blue 通道：位移最弱 -->
-      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="42" xChannelSelector="R" yChannelSelector="G" result="BLUE_DISP" />
+      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="12" xChannelSelector="R" yChannelSelector="G" result="BLUE_DISP" />
       <feColorMatrix in="BLUE_DISP" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="BLUE_CH" />
 
       <!-- RGB 通道以 screen 模式合并，产生边缘色差 -->
