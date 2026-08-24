@@ -56,6 +56,8 @@ import {
   RotateCcw,
   ImagePlus,
   Search,
+  PanelLeft,
+  Box,
 } from "lucide-vue-next";
 import type {
   AIProviderConfig,
@@ -64,6 +66,7 @@ import type {
   MCPServerType,
   ThemeMode,
   VisualMode,
+  SidebarStyle,
   ModelInfo,
 } from "@/types";
 
@@ -742,6 +745,17 @@ function handleSetVisualMode(mode: VisualMode) {
   setVisualMode(mode);
 }
 
+// ── 侧边栏样式 ──
+const sidebarStyleOptions: { style: SidebarStyle; label: string; desc: string; icon: Component }[] = [
+  { style: "full", label: "落地式", desc: "占满整列，经典形态", icon: PanelLeft },
+  { style: "floating", label: "悬浮岛式", desc: "四边留白圆角面板", icon: Box },
+];
+
+function handleSetSidebarStyle(style: SidebarStyle) {
+  settingsStore.setSidebarStyle(style);
+  settingsStore.save();
+}
+
 // ── 主色调 ──
 const accentPresets: { value: string; label: string }[] = [
   { value: "#5b8def", label: "默认蓝" },
@@ -1274,6 +1288,27 @@ onBeforeUnmount(() => {
                 <span class="visual-mode-label">{{ opt.label }}</span>
                 <span v-if="opt.experimental" class="experimental-badge">实验性</span>
                 <Check v-if="settingsStore.visualMode === opt.mode" :size="14" class="visual-mode-check" />
+              </div>
+              <span class="visual-mode-desc">{{ opt.desc }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 侧边栏样式 -->
+        <div class="form-field">
+          <label class="form-label">侧边栏样式</label>
+          <div class="visual-mode-options">
+            <button
+              v-for="opt in sidebarStyleOptions"
+              :key="opt.style"
+              class="visual-mode-card"
+              :class="{ active: settingsStore.sidebarStyle === opt.style }"
+              @click="handleSetSidebarStyle(opt.style)"
+            >
+              <div class="visual-mode-header">
+                <component :is="opt.icon" :size="20" class="visual-mode-icon" />
+                <span class="visual-mode-label">{{ opt.label }}</span>
+                <Check v-if="settingsStore.sidebarStyle === opt.style" :size="14" class="visual-mode-check" />
               </div>
               <span class="visual-mode-desc">{{ opt.desc }}</span>
             </button>

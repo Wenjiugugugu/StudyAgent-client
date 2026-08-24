@@ -12,6 +12,9 @@ export type ThemeMode = "light" | "dark" | "system";
 /** 视觉模式：标准 | 液态玻璃 */
 export type VisualMode = "standard" | "liquid-glass";
 
+/** 侧边栏样式：落地式（默认，占满整列） | 悬浮岛式（四边留白圆角面板） */
+export type SidebarStyle = "full" | "floating";
+
 /** 应用设置 */
 export interface AppSettings {
   /** 数据目录路径 */
@@ -20,6 +23,8 @@ export interface AppSettings {
   theme: ThemeMode;
   /** 视觉模式（标准 / 液态玻璃） */
   visual_mode?: VisualMode;
+  /** 侧边栏样式（落地式 / 悬浮岛式，默认落地式） */
+  sidebar_style?: SidebarStyle;
   /** 语言 */
   language: "zh-CN" | "en-US";
   /** 用户称呼（用于首页问候） */

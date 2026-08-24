@@ -4,13 +4,14 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api";
-import type { AppSettings, ThemeMode, VisualMode, AIProviderConfig, MCPServerConfig } from "@/types";
+import type { AppSettings, ThemeMode, VisualMode, SidebarStyle, AIProviderConfig, MCPServerConfig } from "@/types";
 
 /** 默认设置 — 用于后端字段缺失时填充，防止渲染崩溃 */
 const defaultSettings: AppSettings = {
   data_directory: "",
   theme: "light",
   visual_mode: "standard",
+  sidebar_style: "full",
   language: "zh-CN",
   user_name: "",
   show_greeting: true,
@@ -64,6 +65,7 @@ export const useSettingsStore = defineStore("settings", () => {
 
   const theme = computed<ThemeMode>(() => settings.value?.theme ?? "light");
   const visualMode = computed<VisualMode>(() => settings.value?.visual_mode ?? "standard");
+  const sidebarStyle = computed<SidebarStyle>(() => settings.value?.sidebar_style ?? "full");
   const accentColor = computed<string>(() => settings.value?.accent_color ?? "");
   const showLogo = computed<boolean>(() => settings.value?.show_logo ?? true);
   const backgroundImage = computed<string>(() => settings.value?.background_image ?? "");
@@ -93,6 +95,7 @@ export const useSettingsStore = defineStore("settings", () => {
         data_directory: backendSettings.data_dir || backendSettings.data_directory || defaultSettings.data_directory,
         theme: backendSettings.theme || defaultSettings.theme,
         visual_mode: backendSettings.visual_mode || defaultSettings.visual_mode,
+        sidebar_style: backendSettings.sidebar_style || defaultSettings.sidebar_style,
         language: backendSettings.language || defaultSettings.language,
         user_name: backendSettings.user_name ?? defaultSettings.user_name,
         show_greeting: backendSettings.show_greeting ?? defaultSettings.show_greeting,
@@ -148,6 +151,12 @@ export const useSettingsStore = defineStore("settings", () => {
   function setVisualMode(mode: VisualMode) {
     if (settings.value) {
       settings.value.visual_mode = mode;
+    }
+  }
+
+  function setSidebarStyle(style: SidebarStyle) {
+    if (settings.value) {
+      settings.value.sidebar_style = style;
     }
   }
 
@@ -233,6 +242,7 @@ export const useSettingsStore = defineStore("settings", () => {
     error,
     theme,
     visualMode,
+    sidebarStyle,
     accentColor,
     showLogo,
     backgroundImage,
@@ -249,6 +259,7 @@ export const useSettingsStore = defineStore("settings", () => {
     completeOnboarding,
     setTheme,
     setVisualMode,
+    setSidebarStyle,
     setAccentColor,
     setShowLogo,
     setBackgroundImage,

@@ -106,6 +106,9 @@ pub struct AppSettings {
     /// 视觉模式（默认 "standard"）
     #[serde(default = "default_visual_mode")]
     pub visual_mode: String,
+    /// 侧边栏样式（"full" | "floating"，默认 "full"）
+    #[serde(default = "default_sidebar_style")]
+    pub sidebar_style: String,
     /// 语言（默认 "zh-CN"）
     #[serde(default = "default_language")]
     pub language: String,
@@ -282,6 +285,7 @@ impl Default for AppSettings {
             mcp_servers: Vec::new(),
             theme: default_theme(),
             visual_mode: default_visual_mode(),
+            sidebar_style: default_sidebar_style(),
             language: default_language(),
             default_provider_id: String::new(),
             enabled_mcp_ids: Vec::new(),
@@ -350,6 +354,10 @@ fn default_theme() -> String {
 
 fn default_visual_mode() -> String {
     "standard".to_string()
+}
+
+fn default_sidebar_style() -> String {
+    "full".to_string()
 }
 
 fn default_language() -> String {
@@ -710,6 +718,8 @@ mod tests {
         let json = r#"{
             "data_directory": ".",
             "theme": "dark",
+            "visual_mode": "standard",
+            "sidebar_style": "floating",
             "language": "zh-CN",
             "user_name": "数二",
             "show_greeting": true,
@@ -717,7 +727,20 @@ mod tests {
             "exam_date": "2026-12-26",
             "target_score": 360,
             "onboarding_completed": true,
-            "ai_providers": [],
+            "ai_providers": [{
+                "id": "p1",
+                "name": "火山",
+                "type": "volcengine",
+                "base_url": "https://example.com/v1",
+                "api_key": "",
+                "model": "m",
+                "fallback_model": null,
+                "timeout": 120,
+                "temperature": 0.7,
+                "max_tokens": 1000000,
+                "enabled": true,
+                "is_default": true
+            }],
             "mcp_servers": [],
             "default_provider_id": "",
             "enabled_mcp_ids": [],
@@ -728,6 +751,9 @@ mod tests {
 
         let settings: AppSettings = serde_json::from_str(json).expect("应能解析前端 settings JSON");
         assert_eq!(settings.data_dir, ".");
+        assert_eq!(settings.sidebar_style, "floating");
+        assert_eq!(settings.ai_providers.len(), 1);
+        assert_eq!(settings.ai_providers[0].max_tokens, Some(1000000));
         assert_eq!(settings.user_name, "数二");
         assert!(settings.show_greeting);
         assert_eq!(settings.exam_type, "数学二");
