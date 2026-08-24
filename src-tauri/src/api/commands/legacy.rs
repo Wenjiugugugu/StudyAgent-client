@@ -81,7 +81,9 @@ pub struct PlanSummary {
 /// - 优先统计 A 级任务完成率；若无 A 级任务，则统计全部任务完成率
 /// - completion_rate = done / total * 100
 /// - completed_tasks 返回已完成任务数（所有级别）
-pub(super) fn compute_priority_a_completion(review: &Option<crate::data::records::ReviewFile>) -> (i32, f64) {
+pub(super) fn compute_priority_a_completion(
+    review: &Option<crate::data::records::ReviewFile>,
+) -> (i32, f64) {
     match review {
         Some(r) => {
             // 新版：优先从 task_reviews 聚合
