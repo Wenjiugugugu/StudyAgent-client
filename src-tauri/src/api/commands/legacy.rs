@@ -4,33 +4,9 @@
 //! 命令实现位于同目录的领域模块中；本文件暂时集中保留跨领域复用的
 //! 数据结构和纯辅助逻辑，避免迁移过程中改变现有数据契约。
 
-use std::sync::Mutex;
-
 use serde::Serialize;
-use serde_json::Value;
-use tauri::{Emitter, State};
 
-use crate::ai::provider::{AIProviderConfig, ChatRequest, ChatResponse};
-use crate::ai::service::AiService;
-use crate::core::analytics::{build_analytics, AnalyticsRange, AnalyticsSummary};
-use crate::core::briefing::{yesterday_of, BriefingAgent};
-use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
-use crate::core::planner::Planner;
-use crate::core::review::ReviewAgent;
-use crate::core::user_model::UserModelService;
-use crate::data::assets::{UserCapability, UserObservation};
-use crate::data::plan::{
-    iso_week_string, DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment,
-};
-use crate::data::records::ReviewFile;
-use crate::data::state::{StudyState, TaskStatus};
-use crate::tools::dispatcher::{execute_builtin_tool, is_builtin_tool};
-use crate::tools::mcp::{MCPServerStatus, ToolCallResult};
-use crate::{
-    get_ai_service, get_data_dir, get_data_dir_and_ai, get_data_dir_and_dispatcher,
-    get_tool_dispatcher, load_settings, reinitialize_services, save_settings_file, AppSettings,
-    AppState,
-};
+use crate::data::state::TaskStatus;
 
 // ============================================================================
 // Dashboard 命令
@@ -944,7 +920,7 @@ pub struct DownloadProgress {
 }
 
 /// GitHub API 端点：获取最新 release
-const GITHUB_RELEASES_LATEST_URL: &str =
+pub(super) const GITHUB_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/Wenjiugugugu/StudyAgent-client/releases/latest";
 
 /// 推测资源类型
