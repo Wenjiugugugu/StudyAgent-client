@@ -40,6 +40,7 @@ function toggleCollapse() {
 }
 
 const navRef = ref<HTMLElement | null>(null);
+const planItemRef = ref<HTMLElement | null>(null);
 const indicatorStyle = ref<{ transform: string; height: string; opacity: number }>({
   transform: "translateY(0px)",
   height: "0px",
@@ -49,9 +50,10 @@ const indicatorStyle = ref<{ transform: string; height: string; opacity: number 
 function updateIndicator() {
   requestAnimationFrame(() => {
     if (!navRef.value) return;
-    // 保持原版语义：指示条固定跟「计划」一级项（取第一个 active），
-    // 命中的二级子项仅文字高亮，避免在收起/展开、切换子项间乱跳
-    const active = navRef.value.querySelector(".nav-item.active") as HTMLElement | null;
+    // 「计划」页面固定跟随一级按钮，命中的二级子项仅文字高亮，
+    // 避免在自动展开或切换子项时先命中二级链接导致指示条跳位。
+    const active = (!collapsed.value && isPlanActive() ? planItemRef.value : null)
+      ?? navRef.value.querySelector(".nav-item.active") as HTMLElement | null;
     if (!active) {
       indicatorStyle.value.opacity = 0;
       return;
@@ -68,8 +70,6 @@ function updateIndicator() {
 function onPlanMorphDone() {
   updateIndicator();
 }
-
-watch(() => route.path, updateIndicator, { immediate: true });
 
 interface NavItem {
   name: string;
@@ -113,8 +113,13 @@ watch(
   () => route.path,
   (p) => {
     planOpen.value = planGroup.children.some((c) => c.path === p) || p === planGroup.path;
-    nextTick(updateIndicator);
   },
+  { immediate: true },
+);
+
+watch(
+  [() => route.path, () => collapsed.value, () => planOpen.value],
+  () => nextTick(updateIndicator),
   { immediate: true },
 );
 
@@ -192,6 +197,7 @@ function onPlanClick() {
             <button
               type="button"
               class="nav-item"
+              ref="planItemRef"
               :class="{ active: isPlanActive() }"
               :aria-expanded="planOpen"
               aria-controls="plan-subnav"
@@ -271,6 +277,8 @@ function onPlanClick() {
    Deeper translucent base + heavy backdrop blur reads clearly against the
    lighter content area; faint inner highlight simulates glass edge. */
 .sidebar {
+  box-sizing: border-box;
+  flex: 0 0 var(--sidebar-width);
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
   height: 100%;
@@ -280,13 +288,16 @@ function onPlanClick() {
   display: flex;
   flex-direction: column;
   padding: var(--space-3) var(--space-2) var(--space-3);
-  border-right: 1px solid var(--border-color);
+  /* Reserve the same edge box in standard and liquid-glass modes. */
+  border: var(--sidebar-control-border-width) solid transparent;
+  border-right-color: var(--border-color);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.4);
   user-select: none;
 }
 
 /* 收起态：仅显示图标 */
 .sidebar.collapsed {
+  flex-basis: var(--sidebar-collapsed-width);
   width: var(--sidebar-collapsed-width);
   min-width: var(--sidebar-collapsed-width);
 }
@@ -377,8 +388,9 @@ function onPlanClick() {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-height: var(--sidebar-control-height);
   padding: var(--space-2) var(--space-3);
-  border: none;
+  border: var(--sidebar-control-border-width) solid transparent;
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
@@ -503,6 +515,7 @@ function onPlanClick() {
   to { opacity: 1; transform: translateY(0); }
 }
 .nav-child {
+  min-height: var(--sidebar-child-control-height);
   padding: var(--space-1) var(--space-3);
   font-size: var(--text-sm);
 }

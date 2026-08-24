@@ -139,6 +139,10 @@
   /* ── Layout ── */
   --sidebar-width: 220px;
   --sidebar-collapsed-width: 60px;
+  /* Shared sidebar geometry: visual modes may change material, never layout. */
+  --sidebar-control-height: 38px;
+  --sidebar-child-control-height: 30px;
+  --sidebar-control-border-width: 1px;
   --header-height: 48px;
   --assistant-width: 380px;
   --assistant-collapsed-width: 0px;
