@@ -905,8 +905,7 @@ impl<'a> Planner<'a> {
         // 3.5 持久化本周任务量自校准元数据（供周计划页解释为什么每天任务数变少/多）
         let calib_coeff = weekly_self_calibration(&prev_week_reviews);
         let (_, calib_avg_rate) = prev_week_calibration_stats(&prev_week_reviews);
-        let calib_effective =
-            ((daily_task_count as f64) * calib_coeff).floor() as i64;
+        let calib_effective = ((daily_task_count as f64) * calib_coeff).floor() as i64;
         let calib_effective = calib_effective.clamp(1, 8);
         if calib_effective != daily_task_count {
             week_plan.data.calibration = Some(crate::data::plan::WeekCalibration {
