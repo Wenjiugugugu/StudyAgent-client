@@ -1,0 +1,1279 @@
+/**
+ * 工作台 — 共享样式（原 DashboardView.vue scoped 样式迁移）
+ *
+ * 由 DashboardPage.vue 全局引入，供 Hero / 简报 / 昨日复盘侧栏等组件复用，
+ * 保证拆分前后视觉与布局完全一致。
+ */
+
+.dashboard-view {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-8) var(--space-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  overflow: hidden;
+}
+
+/* ── 主区域网格：简报 2fr + 侧栏 1fr ── */
+.dashboard-main {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.dashboard-main.no-sidebar {
+  grid-template-columns: 1fr;
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* ── 简报提示全屏遮罩 ── */
+.briefing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 仅整体压暗，不做全屏模糊（全屏 backdrop-filter 在背景图+动画页面上很吃性能） */
+  background: rgba(0, 0, 0, 0.45);
+  transition: opacity 0.35s ease;
+}
+
+/* 闪烁完成后遮罩淡出，恢复背景 */
+.briefing-overlay-leaving {
+  opacity: 0;
+}
+
+.briefing-overlay-card {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-6);
+  /* 毛玻璃卡片：只在这一小块模糊背景，兼顾视觉与性能 */
+  background: color-mix(in srgb, var(--bg-elevated) 62%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-lg);
+  /* 快速闪烁三次（约 0.75 秒内完成），随后保持显示 */
+  animation: hint-flash-3x 0.25s ease-in-out 3;
+}
+
+@keyframes hint-flash-3x {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+
+.overlay-fade-enter-active,
+.overlay-fade-leave-active {
+  transition: opacity 0.35s ease;
+}
+.overlay-fade-enter-from,
+.overlay-fade-leave-to {
+  opacity: 0;
+}
+
+/* ── 入场动画：简报左侧滑入，侧栏右侧滑入 ── */
+.briefing-card {
+  opacity: 0;
+  transform: translateX(-16px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.briefing-card.briefing-enter {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.review-sidebar {
+  opacity: 0;
+  transform: translateX(16px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.review-sidebar.sidebar-enter {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ── 发现新版本弹窗 ── */
+.update-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.update-modal-version {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.update-modal-version strong {
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+
+.update-modal-name {
+  color: var(--text-secondary);
+}
+
+.update-modal-tip {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-soft, var(--border-color));
+  border-radius: var(--radius-md);
+}
+
+.update-modal-notes {
+  padding: var(--space-3);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  font-size: var(--text-sm);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.update-modal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.update-modal-assets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.update-asset-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-color);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--transition-fast);
+}
+
+.update-asset-btn:hover {
+  border-color: var(--border-color-strong);
+}
+
+.update-asset-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.update-asset-size {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.update-download-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 150px;
+}
+
+.update-progress-text {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.update-download-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger, #ef4444);
+}
+
+/* Hero */
+.hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+}
+
+.hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.hero-name {
+  font-size: var(--text-3xl);
+  font-weight: var(--font-display);
+  color: var(--text-primary);
+  letter-spacing: -0.025em;
+  line-height: var(--leading-tight);
+}
+
+.hero-date {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+/* Countdown — soft gradient accent block, premium and quiet */
+.hero-countdown {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.1;
+  padding: var(--space-3) var(--space-5);
+  background: linear-gradient(135deg, var(--surface-accent) 0%, var(--surface-3) 100%);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.countdown-number {
+  font-size: var(--text-3xl);
+  font-weight: var(--font-display);
+  color: var(--accent);
+  letter-spacing: -0.03em;
+}
+
+.countdown-unit {
+  font-size: var(--text-xs);
+  color: var(--accent);
+  font-weight: var(--font-label);
+  opacity: 0.8;
+}
+
+/* Common card */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.card-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.card-icon {
+  color: var(--accent);
+}
+
+.card-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-heading);
+  color: var(--text-primary);
+}
+
+/* Daily Briefing — Apple-style: quiet accent, no heavy border decoration */
+.briefing-card {
+  background: var(--bg-elevated);
+  position: relative;
+}
+
+.briefing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.briefing-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.briefing-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.briefing-icon {
+  color: var(--accent);
+}
+
+.briefing-heading {
+  font-size: var(--text-base);
+  font-weight: var(--font-heading);
+  color: var(--text-primary);
+}
+
+.briefing-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.briefing-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* AI 寄语（大字引言式） */
+.briefing-quote {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-5);
+  background: linear-gradient(135deg, var(--accent-subtle) 0%, transparent 100%);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+
+.briefing-quote-mark {
+  font-size: 36px;
+  line-height: 1;
+  color: var(--accent);
+  font-weight: var(--font-bold);
+  font-family: Georgia, serif;
+  flex-shrink: 0;
+  opacity: 0.4;
+  margin-top: -4px;
+}
+
+.briefing-quote-mark.closing {
+  align-self: flex-end;
+  margin-top: auto;
+  margin-bottom: -8px;
+}
+
+.briefing-quote-text {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+  flex: 1;
+  letter-spacing: -0.01em;
+}
+
+/* 居中提示（特殊状态） */
+.briefing-center-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.briefing-center-prompt.clickable {
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast);
+}
+
+.briefing-center-prompt.clickable:hover {
+  background: var(--accent-subtle);
+}
+
+.briefing-center-prompt .briefing-empty-icon {
+  width: 56px;
+  height: 56px;
+}
+
+.briefing-center-prompt .briefing-empty-title {
+  font-size: var(--text-lg);
+}
+
+.briefing-center-prompt .briefing-empty-desc {
+  max-width: 360px;
+  text-align: center;
+}
+
+/* 简报区块 */
+.briefing-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.briefing-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--font-label);
+  color: var(--text-tertiary);
+}
+
+.briefing-section-title svg {
+  color: var(--text-tertiary);
+}
+
+/* 今日任务清单 */
+.briefing-task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.briefing-task-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+.briefing-task-item.done {
+  opacity: 0.55;
+}
+
+.briefing-task-item.done .briefing-task-title {
+  text-decoration: line-through;
+}
+
+.briefing-task-priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  flex-shrink: 0;
+}
+
+.briefing-task-priority.prio-a {
+  background: var(--color-danger-subtle, rgba(239, 68, 68, 0.12));
+  color: var(--color-danger, #ef4444);
+}
+
+.briefing-task-priority.prio-b {
+  background: var(--color-warning-subtle, rgba(245, 158, 11, 0.12));
+  color: var(--color-warning, #f59e0b);
+}
+
+.briefing-task-priority.prio-c {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+}
+
+.briefing-task-title {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.briefing-task-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+/* AI 各科估时 */
+.briefing-estimation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+}
+
+.briefing-estimation-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+.briefing-estimation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.briefing-estimation-days {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.briefing-estimation-chapter {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.briefing-estimation-note {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  line-height: var(--leading-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ── 迷你本周进度 ── */
+.mini-week-progress {
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--bg-secondary);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mini-week-progress:hover {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+.mini-week-stats {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+.mini-week-percent {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+}
+
+.mini-week-detail {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.mini-week-dots {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.mini-dot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.mini-dot::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+}
+
+.mini-dot.studied::before {
+  background: var(--color-success, #22c55e);
+  border-color: var(--color-success, #22c55e);
+}
+
+.mini-dot.today::before {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.dot-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* 昨日复盘入口 */
+.briefing-yesterday {
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.briefing-yesterday:hover {
+  background: var(--accent-subtle);
+}
+
+.briefing-yesterday-arrow {
+  margin-left: auto;
+  color: var(--text-tertiary);
+}
+
+.briefing-yesterday-desc {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* 错过窗口提示 */
+.briefing-missed-hint {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-warning-subtle, var(--bg-tertiary));
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--color-warning, var(--text-secondary));
+}
+
+/* 缺失复盘提示块 */
+.briefing-missing-review {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--color-warning-subtle, var(--bg-tertiary));
+  border: 1.5px solid var(--color-warning, var(--border-color));
+  border-radius: var(--radius-md);
+  text-align: left;
+  width: 100%;
+}
+
+.briefing-warn-icon {
+  background: var(--color-warning-subtle, var(--accent-subtle));
+  color: var(--color-warning, var(--accent));
+}
+
+.briefing-loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-4);
+}
+
+.briefing-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+
+/* 可点击区块标题 */
+.clickable-title {
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.clickable-title:hover {
+  color: var(--accent);
+}
+
+.briefing-section-arrow {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-fast);
+}
+
+.clickable-title:hover .briefing-section-arrow {
+  transform: translateX(2px);
+  color: var(--accent);
+}
+
+/* ── 昨日复盘侧栏 ── */
+.review-sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.review-sidebar-icon {
+  color: var(--accent);
+}
+
+.review-sidebar-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-heading);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.review-sidebar-date {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.review-sidebar-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.review-metric {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.review-metric-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+.review-metric-value {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+}
+
+.review-metric-value.good { color: var(--color-success, #22c55e); }
+.review-metric-value.warn { color: var(--color-warning, #f59e0b); }
+.review-metric-value.bad { color: var(--color-danger, #ef4444); }
+
+.review-metric-text {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.review-sidebar-action {
+  align-self: flex-start;
+  margin-top: var(--space-1);
+}
+
+/* 缺失复盘 */
+.review-sidebar-missing,
+.review-sidebar-exempt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-2);
+  text-align: center;
+}
+
+.review-missing-icon,
+.review-exempt-icon {
+  color: var(--color-warning, var(--text-tertiary));
+}
+
+.review-exempt-icon {
+  color: var(--accent);
+}
+
+.review-missing-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.review-missing-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* ── 紧凑统计卡 ── */
+.stats-card {
+  padding: var(--space-3) var(--space-4) !important;
+}
+
+.stats-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: var(--space-2);
+}
+
+.stats-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.stats-value {
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+}
+
+.stats-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+.stats-divider {
+  width: 1px;
+  height: 28px;
+  background: var(--border-color);
+  flex-shrink: 0;
+}
+
+.briefing-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1.5px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.briefing-empty:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* 每日开始时间前的提示块（非交互） */
+.briefing-before-start {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  text-align: left;
+  width: 100%;
+}
+
+/* 休息日提示块（非交互） */
+.briefing-rest-day {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  text-align: left;
+  width: 100%;
+}
+
+.briefing-rest-icon {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+/* 今日计划全部完成提示块（可点击跳转） */
+.briefing-all-done {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--color-success-subtle, var(--bg-tertiary));
+  border: 1.5px solid var(--color-success, var(--border-color));
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  text-align: left;
+  width: 100%;
+}
+
+.briefing-all-done:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.briefing-done-icon {
+  background: var(--color-success-subtle, var(--accent-subtle));
+  color: var(--color-success, var(--accent));
+}
+
+.briefing-empty-icon {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.briefing-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.briefing-empty-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+
+.briefing-empty-desc {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Week Progress */
+.week-range {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+.week-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.week-rates {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+
+.week-rate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.rate-divider {
+  width: 1px;
+  height: 32px;
+  background: var(--divider-color);
+  flex-shrink: 0;
+}
+
+.rate-number {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-heading);
+  color: var(--accent);
+  letter-spacing: -0.02em;
+  line-height: var(--leading-tight);
+}
+
+.rate-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+.week-details {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.detail-value {
+  font-size: var(--text-base);
+  font-weight: var(--font-heading);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.detail-value small {
+  font-size: var(--text-xs);
+  font-weight: var(--font-label);
+  color: var(--text-tertiary);
+}
+
+.detail-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+.status-good {
+  color: var(--color-success);
+}
+
+.status-warn {
+  color: var(--color-warning);
+}
+
+.week-dots {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* ── 可点击卡片 ── */
+.card.clickable {
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.card.clickable:hover {
+  transform: translateY(-1px);
+}
+
+.card-footer-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--divider-color);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  transition: color var(--transition-fast);
+}
+
+.card.clickable:hover .card-footer-hint {
+  color: var(--accent);
+}
+
+.day-dot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.day-dot.studied .dot {
+  background: var(--accent);
+}
+
+.day-dot.today .dot {
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.day-dot.today.studied .dot {
+  background: var(--color-success);
+}
+
+.day-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-weight: var(--font-medium);
+}
+
+.day-dot.today .day-label {
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+
+.day-date {
+  font-size: 10px;
+  color: var(--text-quaternary);
+}
+
+/* Subject Progress / Current Status */
+.subject-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+}
+
+.subject-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+
+.subject-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.subject-hours {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.subject-name {
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+  line-height: var(--leading-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subject-phase {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--divider-color);
+}
+
+.status-foot-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.status-foot-label {
+  color: var(--text-tertiary);
+  font-weight: var(--font-label);
+}
+
+.status-foot-value {
+  color: var(--text-primary);
+  font-weight: var(--font-heading);
+}
+
+@media (max-width: 860px) {
+  .dashboard-main {
+    grid-template-columns: 1fr;
+  }
+
+  .review-sidebar {
+    transform: translateX(0) translateY(12px);
+  }
+
+  .review-sidebar.sidebar-enter {
+    transform: translateX(0) translateY(0);
+  }
+}
+
+@media (max-width: 720px) {
+  .dashboard-view {
+    padding: var(--space-4);
+  }
+
+  .hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .hero-countdown {
+    align-items: flex-start;
+  }
+
+  .briefing-quote-text {
+    font-size: var(--text-base);
+  }
+
+  .briefing-estimation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .briefing-missing-review {
+    flex-wrap: wrap;
+  }
+
+  .stats-row {
+    gap: var(--space-1);
+  }
+
+  .stats-value {
+    font-size: var(--text-base);
+  }
+
+  .status-footer {
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+  }
+}

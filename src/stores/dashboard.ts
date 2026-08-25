@@ -1,20 +1,23 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import * as api from "@/api";
+import { dashboardApi } from "@/features/dashboard/api";
 import type { DashboardSummary } from "@/types";
+import { useAiRequest } from "@/composables/useAiRequest";
 
 export const useDashboardStore = defineStore("dashboard", () => {
   const summary = ref<DashboardSummary | null>(null);
   const loading = ref(false);
-  const error = ref<string | null>(null);
+  // 统一请求状态（阶段6：替代手写 loading/error 三件套）
+  const ai = useAiRequest();
+  const error = ai.error;
 
   async function loadSummary() {
     loading.value = true;
-    error.value = null;
+    ai.clearError();
     try {
-      summary.value = await api.getDashboardSummary();
+      summary.value = await dashboardApi.getDashboardSummary();
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
+      ai.setError(e instanceof Error ? e.message : String(e));
     } finally {
       loading.value = false;
     }

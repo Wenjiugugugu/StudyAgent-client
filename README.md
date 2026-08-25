@@ -90,7 +90,11 @@ pnpm tauri:build
 
 ```
 src/                          # 前端源码
-├── api/                      #   API 服务层 (统一入口)
+├── api/                      #   API 服务层 (统一入口，兼容层)
+├── features/                 #   领域目录（按业务领域组织）
+│   ├── dashboard/            #     工作台（首页）
+│   ├── settings/             #     设置页
+│   └── debug/                #     调试页
 ├── components/               #   可复用组件
 │   ├── ui/                   #     基础 UI 组件
 │   └── assistant/            #     AI 助手面板
@@ -99,8 +103,8 @@ src/                          # 前端源码
 ├── router/                   #   路由配置
 ├── stores/                   #   Pinia 状态管理
 ├── styles/                   #   全局样式
-├── types/                    #   TypeScript 类型定义
-├── views/                    #   页面视图
+├── types/                    #   跨领域共享类型定义
+├── views/                    #   页面视图（薄壳：仅路由入口 + 页面组合）
 ├── App.vue                   #   根组件
 └── main.ts                   #   入口
 
@@ -114,6 +118,13 @@ src-tauri/                    # Tauri 后端 (Rust)
 ├── tauri.conf.json
 └── capabilities/             #   权限配置
 ```
+
+### 领域目录约定
+
+- **views/** 只负责路由入口和页面布局，不承载业务逻辑；实际页面在 `features/<domain>/` 下。
+- 每个 feature 以 `api.ts` 作为公开入口，页面/组件/composable 通过它调用后端，避免直接耦合全局 `@/api`。
+- 调用链：`组件 → composable → store → feature api → api/index.ts → Tauri`。
+- 跨领域调用走公开 API 或 Store selector，不直接访问另一个 feature 的内部文件。
 
 ## 设计风格
 
