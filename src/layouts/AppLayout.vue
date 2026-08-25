@@ -375,9 +375,17 @@ onMounted(() => {
 
 /* ── 悬浮岛式侧边栏：顶部标题下移，与悬浮岛屿顶部对齐 ── */
 .app-layout.sidebar-floating .content-header {
+  position: relative;
   margin-top: var(--space-4);
   height: calc(var(--header-height) - var(--space-4) + var(--space-1));
   min-height: calc(var(--header-height) - var(--space-4) + var(--space-1));
+}
+/* 悬浮岛模式下窗口控件位置与默认一致：将右侧控件绝对定位回顶部，避免跟随 header 下移 */
+.app-layout.sidebar-floating .content-header .header-right {
+  position: absolute;
+  top: calc(-1 * var(--space-4));
+  right: 0;
+  height: var(--header-height);
 }
 /* 液态玻璃模式下，悬浮岛的顶部标题不再使用玻璃背景，保持干净 */
 [data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header,
