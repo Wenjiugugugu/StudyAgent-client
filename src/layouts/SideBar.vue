@@ -331,10 +331,10 @@ function onPlanClick() {
 .sidebar.floating.collapsed {
   flex: 0 0 var(--sidebar-collapsed-width);
 }
-/* 悬浮岛模式下指示条略收窄（留出呼吸空间），但仍保持较宽的观感 */
+/* 悬浮岛模式下指示条较默认略收窄（留出呼吸空间），但仍保持较宽的观感 */
 .sidebar.floating .nav-indicator {
-  left: var(--space-1);
-  right: var(--space-1);
+  left: 2px;
+  right: 2px;
 }
 
 /* Brand */
