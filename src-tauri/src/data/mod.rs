@@ -19,6 +19,7 @@ pub mod focus;
 pub mod plan;
 pub mod records;
 pub mod state;
+pub mod ui_flags;
 
 pub use ai_usage::*;
 pub use assets::*;
@@ -28,6 +29,7 @@ pub use focus::*;
 pub use plan::*;
 pub use records::*;
 pub use state::*;
+pub use ui_flags::*;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

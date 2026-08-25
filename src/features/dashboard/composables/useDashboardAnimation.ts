@@ -5,6 +5,7 @@
  * 简报卡片 / 侧栏的入场动画状态。H30：组件卸载后不再更新 state / 操作 DOM。
  */
 import { ref } from "vue";
+import { getUiFlag, setUiFlag } from "@/api";
 
 export function useDashboardAnimation() {
   // 默认显示内容，避免首次加载时卡片 opacity 为 0 导致空白
@@ -23,12 +24,22 @@ export function useDashboardAnimation() {
     unmounted = true;
   }
 
-  function triggerBriefingHint(todayDateStr: string) {
-    const hintKey = "studyagent.briefing_hint_viewed";
-    // 用 localStorage 按日期记录「今日是否已提示过」：只在每天第一次打开应用时提示一次，
-    // 之后同一天内关闭再打开不再重复提示（sessionStorage 会随会话清空导致每次重开都提示）。
-    if (localStorage.getItem(hintKey) === todayDateStr) return;
-    localStorage.setItem(hintKey, todayDateStr);
+  async function triggerBriefingHint(todayDateStr: string) {
+    const hintKey = "briefing_hint_viewed";
+    // 用「后端文件持久化」按日期记录「今日是否已提示过」：每日首次打开时提示一次，
+    // 之后同一天内关闭再打开不再重复（localStorage 在部分环境下随重启丢失，故改用后端落盘）。
+    let stored = "";
+    try {
+      stored = await getUiFlag(hintKey);
+    } catch {
+      stored = localStorage.getItem(`studyagent.${hintKey}`) ?? "";
+    }
+    if (stored === todayDateStr) return;
+    try {
+      await setUiFlag(hintKey, todayDateStr);
+    } catch {
+      localStorage.setItem(`studyagent.${hintKey}`, todayDateStr);
+    }
     // 全屏遮罩：背景变暗 + 文字闪烁
     showBriefingOverlay.value = true;
     overlayLeaving.value = false;

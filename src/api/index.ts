@@ -856,3 +856,29 @@ export async function setAutostart(enabled: boolean): Promise<void> {
 export async function getAppVersion(): Promise<string> {
   return invokeDirect<string>("get_app_version");
 }
+
+// ── UI 状态标记（跨重启持久化） ──
+
+/**
+ * 读取 UI 状态标记（如「更新日志已读版本」「简报已提示日期」），不存在返回空字符串。
+ * 优先读后端文件持久化；浏览器开发模式回退 localStorage。
+ */
+export async function getUiFlag(key: string): Promise<string> {
+  if (!isTauri()) {
+    return localStorage.getItem(`studyagent.${key}`) ?? "";
+  }
+  return invokeDirect<string>("get_ui_flag", { key });
+}
+
+/**
+ * 写入 UI 状态标记（Tauri 环境原子落盘，重启保留；同时写 localStorage 兜底）。
+ */
+export async function setUiFlag(key: string, value: string): Promise<void> {
+  try {
+    localStorage.setItem(`studyagent.${key}`, value);
+  } catch {
+    /* localStorage 不可用时不阻塞后端写入 */
+  }
+  if (!isTauri()) return;
+  return invokeDirect<void>("set_ui_flag", { key, value });
+}
