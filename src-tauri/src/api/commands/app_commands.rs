@@ -19,6 +19,7 @@ use crate::data::plan::{
 };
 use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, TaskStatus};
+use crate::data::{get_ui_flag, set_ui_flag};
 use crate::tools::dispatcher::{execute_builtin_tool, is_builtin_tool};
 use crate::tools::mcp::{MCPServerStatus, ToolCallResult};
 use crate::{
@@ -124,4 +125,32 @@ pub async fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<(), S
 #[tauri::command]
 pub async fn get_app_version(app: tauri::AppHandle) -> Result<String, String> {
     Ok(app.package_info().version.to_string())
+}
+
+/// 读取 UI 状态标记（跨重启持久化的「已提示」类标记，如「更新日志已读版本」「简报已提示日期」）
+///
+/// 前端调用: `invoke('get_ui_flag', { key: 'last_changelog_version' })`
+#[tauri::command]
+pub async fn get_ui_flag_cmd(
+    key: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    Ok(get_ui_flag(&data_dir, &key))
+}
+
+/// 写入 UI 状态标记（原子落盘，重启保留）
+///
+/// 前端调用: `invoke('set_ui_flag', { key: 'last_changelog_version', value: '0.6.0' })`
+#[tauri::command]
+pub async fn set_ui_flag_cmd(
+    key: String,
+    value: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+    // 与其他写命令串行化，避免并发写 ui_flags.json 丢更新
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    set_ui_flag(&data_dir, &key, &value)
 }

@@ -158,8 +158,12 @@ async function checkChangelog() {
   if (!isTauri()) return;
   try {
     const currentVersion = await api.getAppVersion();
-    const lastSeenKey = "studyagent.last_changelog_version";
-    const lastSeen = localStorage.getItem(lastSeenKey);
+    const lastSeenKey = "last_changelog_version";
+    // 优先读取后端持久化标记（重启保留）；未初始化时迁移仅存的 localStorage 旧值
+    let lastSeen = await api.getUiFlag(lastSeenKey);
+    if (!lastSeen) {
+      lastSeen = localStorage.getItem(`studyagent.${lastSeenKey}`) ?? "";
+    }
 
     // 首次启动或版本升级时展示对应版本的更新日志
     if (lastSeen !== currentVersion && VERSION_CHANGELOGS[currentVersion]) {
@@ -167,10 +171,10 @@ async function checkChangelog() {
       const raw = VERSION_CHANGELOGS[currentVersion];
       changelogContent.value = Array.isArray(raw) ? raw.join("\n") : raw;
       changelogVisible.value = true;
-      localStorage.setItem(lastSeenKey, currentVersion);
+      await api.setUiFlag(lastSeenKey, currentVersion);
     } else if (lastSeen !== currentVersion) {
       // 没有内置 changelog 的版本，仅记录已展示过
-      localStorage.setItem(lastSeenKey, currentVersion);
+      await api.setUiFlag(lastSeenKey, currentVersion);
     }
   } catch (e) {
     console.warn("[Changelog] 检查更新日志失败:", e);

@@ -223,6 +223,9 @@ fn main() {
             get_settings,
             save_settings,
             change_data_directory,
+            // UI 状态标记（跨重启持久化）
+            get_ui_flag_cmd,
+            set_ui_flag_cmd,
             // Backup（备份导出 / 导入）
             export_backup,
             import_backup,
