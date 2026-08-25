@@ -28,9 +28,9 @@ export function useAppearanceSettings() {
   }
 
   // ── 视觉模式 ──
-  const visualModeOptions: { mode: VisualMode; label: string; desc: string; icon: Component; experimental?: boolean }[] = [
+  const visualModeOptions: { mode: VisualMode; label: string; desc: string; icon: Component }[] = [
     { mode: "standard", label: "标准", desc: "稳定高性能", icon: Layers },
-    { mode: "liquid-glass", label: "液态玻璃", desc: "增强视觉 · 实验性功能", icon: Sparkles, experimental: true },
+    { mode: "liquid-glass", label: "液态玻璃", desc: "增强视觉", icon: Sparkles },
   ];
 
   function handleSetVisualMode(mode: VisualMode) {

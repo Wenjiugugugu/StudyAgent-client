@@ -396,6 +396,11 @@ onMounted(() => {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+/* 悬浮岛的窗口控件绝对定位上移到顶部时会溢出 content-header；液态玻璃的
+   overflow:hidden 会裁掉其顶部区域，导致可操控范围变小。此处解除裁切。 */
+[data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header {
+  overflow: visible;
+}
 
 /* 页面切换过渡 — Apple motion curve */
 .view-fade-enter-active,

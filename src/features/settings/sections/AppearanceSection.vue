@@ -65,7 +65,6 @@ const {
           <div class="visual-mode-header">
             <component :is="opt.icon" :size="20" class="visual-mode-icon" />
             <span class="visual-mode-label">{{ opt.label }}</span>
-            <span v-if="opt.experimental" class="experimental-badge">实验性</span>
             <Check v-if="settingsStore.visualMode === opt.mode" :size="14" class="visual-mode-check" />
           </div>
           <span class="visual-mode-desc">{{ opt.desc }}</span>
