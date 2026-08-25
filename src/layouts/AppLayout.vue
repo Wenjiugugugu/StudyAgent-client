@@ -2,15 +2,20 @@
 import { computed, ref, onMounted, watch, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import { useAssistantStore } from "@/stores/assistant";
+import { useSettingsStore } from "@/stores/settings";
 import SideBar from "./SideBar.vue";
 import AssistantPanel from "@/components/assistant/AssistantPanel.vue";
 import TitleBar from "@/components/TitleBar.vue";
 
 const route = useRoute();
 const assistantStore = useAssistantStore();
+const settingsStore = useSettingsStore();
 const titleBarRef = ref<InstanceType<typeof TitleBar> | null>(null);
 const isMaximized = ref(false);
 const contentBodyRef = ref<HTMLElement | null>(null);
+
+/** 是否启用悬浮岛式侧边栏（用于调整顶部标题的布局与材质） */
+const isFloating = computed(() => settingsStore.sidebarStyle === "floating");
 
 const pageTitle = computed(() => (route.meta.title as string) || "StudyAgent");
 const isReserved = computed(() => route.meta.reserved === true);
@@ -112,7 +117,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="app-layout" :class="{ 'is-maximized': isMaximized }">
+  <div class="app-layout" :class="{ 'is-maximized': isMaximized, 'sidebar-floating': isFloating }">
     <!-- 自定义背景图层（由设置中的 background_image 驱动） -->
     <div class="app-background-layer" aria-hidden="true" />
     <!-- 液态玻璃 SVG 边缘折射 filter — 仅折射边缘，中间无变形 -->
@@ -366,6 +371,22 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+/* ── 悬浮岛式侧边栏：顶部标题下移，与悬浮岛屿顶部对齐 ── */
+.app-layout.sidebar-floating .content-header {
+  margin-top: var(--space-4);
+  height: calc(var(--header-height) - var(--space-4) + var(--space-1));
+  min-height: calc(var(--header-height) - var(--space-4) + var(--space-1));
+}
+/* 液态玻璃模式下，悬浮岛的顶部标题不再使用玻璃背景，保持干净 */
+[data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header,
+[data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header::before {
+  background: transparent;
+  border-bottom-color: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* 页面切换过渡 — Apple motion curve */
