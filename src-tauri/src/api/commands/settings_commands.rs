@@ -149,6 +149,10 @@ pub async fn save_settings(
     settings: AppSettings,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
+    log::info!(
+        "[save_settings] entered, sidebar_style={}",
+        settings.sidebar_style
+    );
     // H1 并发保护：串行化 settings 写入与服务重建
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;

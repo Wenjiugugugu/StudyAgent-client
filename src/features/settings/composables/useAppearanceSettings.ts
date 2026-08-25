@@ -6,11 +6,11 @@
  */
 import { ref } from "vue";
 import type { Component } from "vue";
-import { SunMedium, Moon, Monitor, Layers, Sparkles } from "lucide-vue-next";
+import { SunMedium, Moon, Monitor, Layers, Sparkles, PanelLeft, Box } from "lucide-vue-next";
 import { useSettingsStore } from "@/stores/settings";
 import { useTheme } from "@/composables/useTheme";
 import { settingsApi } from "../api";
-import type { ThemeMode, VisualMode } from "@/types";
+import type { ThemeMode, VisualMode, SidebarStyle } from "@/types";
 
 export function useAppearanceSettings() {
   const settingsStore = useSettingsStore();
@@ -35,6 +35,17 @@ export function useAppearanceSettings() {
 
   function handleSetVisualMode(mode: VisualMode) {
     setVisualMode(mode);
+  }
+
+  // ── 侧边栏样式 ──
+  const sidebarStyleOptions: { style: SidebarStyle; label: string; desc: string; icon: Component }[] = [
+    { style: "full", label: "落地式", desc: "占满整列，经典形态", icon: PanelLeft },
+    { style: "floating", label: "悬浮岛式", desc: "四边留白圆角面板", icon: Box },
+  ];
+
+  function handleSetSidebarStyle(style: SidebarStyle) {
+    settingsStore.setSidebarStyle(style);
+    settingsStore.save();
   }
 
   // ── 主色调 ──
@@ -108,6 +119,8 @@ export function useAppearanceSettings() {
     handleSetTheme,
     visualModeOptions,
     handleSetVisualMode,
+    sidebarStyleOptions,
+    handleSetSidebarStyle,
     accentPresets,
     handleSetAccentColor,
     handleSetShowLogo,

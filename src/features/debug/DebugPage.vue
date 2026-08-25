@@ -61,12 +61,31 @@ const debugSections: DebugSection[] = [
 
 const activeSection = ref("sysinfo");
 
+/**
+ * 滚动到某个调试区块。
+ * 注：刻意不使用 scrollIntoView() 避免其在 Tauri WebView2（body/html overflow:hidden）
+ * 环境下递归触发 html/documentElement 级「伪滚动」，导致整个应用视口向上错位、
+ * 顶栏/侧边栏被挤出视口。此处直接在最近可滚动容器 .content-body 上做精确 scrollTo。
+ */
 function scrollToSection(id: string) {
   const el = document.getElementById(`debug-${id}`);
-  if (el) {
+  if (!el) return;
+  const scroller = el.closest<HTMLElement>(".content-body") ?? document.querySelector<HTMLElement>(".content-body");
+  if (!scroller) {
+    // 兜底（极少见）：退化到原 scrollIntoView
     el.scrollIntoView({ behavior: "smooth", block: "start" });
     activeSection.value = id;
+    return;
   }
+  const scrollerRect = scroller.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const target = Math.max(0, Math.round(scroller.scrollTop + (elRect.top - scrollerRect.top)));
+  try {
+    scroller.scrollTo({ top: target, behavior: "smooth" });
+  } catch {
+    scroller.scrollTop = target;
+  }
+  activeSection.value = id;
 }
 
 function onSectionIntersect(entries: IntersectionObserverEntry[]) {

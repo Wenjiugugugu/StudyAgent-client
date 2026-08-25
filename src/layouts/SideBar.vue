@@ -109,6 +109,8 @@ const menuEntries: MenuEntry[] = [
 
 /** 「计划」二级菜单是否展开：命中任一子项或一级项时展开 */
 const planOpen = ref(false);
+/** 是否启用悬浮岛式侧边栏（来自设置） */
+const isFloating = computed(() => settingsStore.sidebarStyle === "floating");
 watch(
   () => route.path,
   (p) => {
@@ -143,7 +145,7 @@ function onPlanClick() {
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ collapsed }">
+  <aside class="sidebar" :class="{ collapsed, floating: isFloating }">
     <!-- App Brand / Drag Region -->
     <div class="brand" data-tauri-drag-region>
       <div v-if="settingsStore.showLogo" class="brand-icon">
@@ -308,6 +310,31 @@ function onPlanClick() {
 .sidebar.collapsed .nav-children,
 .sidebar.collapsed .version-label {
   display: none;
+}
+
+/* 悬浮岛式侧边栏：四边留白 + 苹果规范大圆角 + 阴影，像一块悬浮在背景上的圆角面板 */
+.sidebar.floating {
+  flex: 0 0 calc(var(--sidebar-width) - 2 * var(--sidebar-floating-margin, var(--space-3)));
+  margin: var(--sidebar-floating-margin, var(--space-3));
+  width: auto;
+  min-width: 0;
+  height: calc(100% - 2 * var(--sidebar-floating-margin, var(--space-3)));
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  border-right-color: var(--border-color);
+  overflow: hidden;
+  box-shadow: var(--shadow-xl), inset -1px 0 0 rgba(255, 255, 255, 0.4);
+}
+/* 收起态仍是悬浮岛：保留四边留白、圆角与阴影。
+   content 宽度保持标准收起宽度（图标+内边距约需 59px），
+   避免按边距减宽后裁切图标；边距由 margin 单独提供。 */
+.sidebar.floating.collapsed {
+  flex: 0 0 var(--sidebar-collapsed-width);
+}
+/* 悬浮岛模式下指示条略收窄（留出呼吸空间），但仍保持较宽的观感 */
+.sidebar.floating .nav-indicator {
+  left: var(--space-1);
+  right: var(--space-1);
 }
 
 /* Brand */
