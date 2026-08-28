@@ -77,8 +77,13 @@ pub async fn generate_review(
         );
     }
 
+    // 回读滴答完成状态：今日窗口带来源标记的已完成任务，注入复盘 prompt
+    let dida_completed = crate::sync::dida::fetch_completed_titles(&data_dir, &date).await;
+
     let review_agent = ReviewAgent::new(&ai_service);
-    review_agent.generate_review(&data_dir, &date).await
+    review_agent
+        .generate_review(&data_dir, &date, &dida_completed)
+        .await
 }
 
 #[tauri::command]
@@ -87,11 +92,63 @@ pub async fn submit_review(
     app_state: State<'_, Mutex<AppState>>,
 ) -> Result<SubmitReviewResult, String> {
     crate::data::validate_date(&payload.date)?;
-    let data_dir = get_data_dir(app_state.inner())?;
+    let (data_dir, _) = get_data_dir_and_ai(app_state.inner())?;
 
-    // H1 并发保护：串行化 records/state 写入，避免与任务状态更新等并发竞态
+    // 回读滴答完成状态：今日窗口带来源标记的已完成任务，用于补全 task_reviews
+    let dida_completed_titles =
+        crate::sync::dida::fetch_completed_titles(&data_dir, &payload.date).await;
+
+    // 并发保护
     let io_lock = crate::get_io_lock(app_state.inner())?;
     let _io_guard = io_lock.lock().await;
+
+    // 以滴答为准：把滴答中已勾选完成的任务合并进 task_reviews
+    let mut payload = payload;
+    if !dida_completed_titles.is_empty() {
+        // 1) 已上报但状态非 completed 的 → 升级为完成（滴答勾选优先）
+        for tr in payload.task_reviews.iter_mut() {
+            if tr.status == "completed" || tr.title.trim().is_empty() {
+                continue;
+            }
+            if dida_completed_titles.iter().any(|t| t == &tr.title) {
+                tr.status = "completed".to_string();
+                tr.completion = 1.0;
+            }
+        }
+        // 2) 滴答已完成但未包含在 task_reviews 中的 → 按计划任务补一条 completed 记录
+        if let Ok(plan) = crate::data::plan::read_daily_plan(&data_dir, &payload.date) {
+            for t in &plan.data.tasks {
+                if !dida_completed_titles.iter().any(|x| x == &t.title) {
+                    continue;
+                }
+                if payload
+                    .task_reviews
+                    .iter()
+                    .any(|tr| !tr.title.is_empty() && tr.title == t.title)
+                {
+                    continue;
+                }
+                payload
+                    .task_reviews
+                    .push(crate::data::records::TaskReviewEntry {
+                        task_id: t.id.clone(),
+                        status: "completed".to_string(),
+                        completion: 1.0,
+                        mastery: String::new(),
+                        blockers: Vec::new(),
+                        blocker_note: None,
+                        title: t.title.clone(),
+                        subject: serde_json::to_string(&t.subject)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                            .to_string(),
+                        priority: format!("{:?}", t.priority),
+                        estimated_hours: Some(t.estimated_hours),
+                        actual_minutes: None,
+                    });
+            }
+        }
+    }
 
     // 聚合实际学习时长（分钟 → 小时），写入 data.total_hours
     // 供分析页/历史计划/周期对比读取，避免 actual_hours 恒为 0

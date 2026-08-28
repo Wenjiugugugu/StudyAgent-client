@@ -309,7 +309,17 @@ pub async fn generate_daily_plan(
     }
 
     let planner = Planner::new(&ai_service);
-    planner.generate_daily_plan(&data_dir, &date).await
+    let result = planner.generate_daily_plan(&data_dir, &date).await;
+
+    // 同步滴答：日计划生成后按日对账（失败仅记录，不影响主流程）
+    if result.is_ok()
+        && crate::sync::dida::reconcile_day(&data_dir, &date)
+            .await
+            .is_err()
+    {
+        // 具体错误已在 reconcile_day 内记录
+    }
+    result
 }
 
 /// AI 生成周计划
@@ -338,14 +348,26 @@ pub async fn generate_week_plan(
     }
 
     let planner = Planner::new(&ai_service);
-    planner
+    let result = planner
         .generate_week_plan(
             &data_dir,
             &week_start,
             &excluded_days,
             workload_adjustment.as_ref(),
         )
-        .await
+        .await;
+
+    // 同步滴答：周计划生成会逐天生成日计划，对本周 7 天按日对账（失败仅记录）
+    if result.is_ok() {
+        for i in 0..7i64 {
+            if let Ok(d) = crate::data::add_days(&week_start, i) {
+                if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, &d).await {
+                    log::warn!("[dida] 周计划生成后同步 {} 失败: {}", d, e);
+                }
+            }
+        }
+    }
+    result
 }
 
 /// 周中新增排除日并重排剩余天数（AI 驱动）
@@ -380,6 +402,13 @@ pub async fn add_excluded_day_and_regenerate(
     let (regenerated, affected_dates, used_fallback) = planner
         .regenerate_after_exclusion(&data_dir, &week_start, excluded_day)
         .await?;
+
+    // 同步滴答：对重排影响的日期按日对账（失败仅记录）
+    for d in &affected_dates {
+        if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, d).await {
+            log::warn!("[dida] 排除日重排后同步 {} 失败: {}", d, e);
+        }
+    }
 
     Ok(RegenerateResult {
         regenerated,
@@ -420,6 +449,13 @@ pub async fn regenerate_remaining_days(
     let (regenerated, affected_dates, used_fallback, consistency_warnings) = planner
         .regenerate_remaining_days_after_review(&data_dir, &review_date)
         .await?;
+
+    // 同步滴答：对重排影响的日期按日对账（失败仅记录）
+    for d in &affected_dates {
+        if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, d).await {
+            log::warn!("[dida] 复盘重排后同步 {} 失败: {}", d, e);
+        }
+    }
 
     Ok(RegenerateResult {
         regenerated,

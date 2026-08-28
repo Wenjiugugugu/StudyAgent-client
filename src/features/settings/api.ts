@@ -18,6 +18,9 @@ import {
   setAutostart,
   getCloseAction,
   setCloseAction,
+  getDidaTokenStatus,
+  setDidaToken,
+  syncDidaNow,
 } from "@/api";
 
 export type { CloseAction } from "@/api";
@@ -36,4 +39,7 @@ export const settingsApi = {
   setAutostart,
   getCloseAction,
   setCloseAction,
+  getDidaTokenStatus,
+  setDidaToken,
+  syncDidaNow,
 };

@@ -37,3 +37,47 @@ pub fn delete_provider_api_key(provider_id: &str) -> Result<(), String> {
         Err(error) => Err(format!("删除系统凭据失败: {error}")),
     }
 }
+
+// ============================================================================
+// 滴答清单（Dida365）Token
+// ============================================================================
+
+const DIDA_SERVICE_NAME: &str = "com.studyagent.desktop.dida";
+const DIDA_TOKEN_ENTRY: &str = "token";
+
+fn dida_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(DIDA_SERVICE_NAME, DIDA_TOKEN_ENTRY)
+        .map_err(|error| format!("无法访问系统凭据库: {error}"))
+}
+
+/// 获取滴答 Token：优先系统凭据库，其次环境变量 DIDA_TOKEN
+/// （兼容现有每日计划脚本 scripts/push_plan_to_dida.py 的环境变量用法）
+pub fn get_dida_token() -> Option<String> {
+    if let Ok(entry) = dida_entry() {
+        if let Ok(value) = entry.get_password() {
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    std::env::var("DIDA_TOKEN").ok().filter(|s| !s.is_empty())
+}
+
+pub fn set_dida_token(token: &str) -> Result<(), String> {
+    if token.is_empty() {
+        return Ok(());
+    }
+    dida_entry()?
+        .set_password(token)
+        .map_err(|error| format!("保存滴答 Token 到系统凭据库失败: {error}"))
+}
+
+pub fn delete_dida_token() -> Result<(), String> {
+    match dida_entry() {
+        Ok(entry) => match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(format!("删除滴答 Token 失败: {error}")),
+        },
+        Err(e) => Err(e),
+    }
+}

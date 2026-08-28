@@ -222,6 +222,9 @@ pub struct PlanTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fallback_plan: Option<String>,
     pub status: TaskStatus,
+    /// 滴答清单任务 ID（同步对账后回填；None 表示尚未同步到滴答）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dida_task_id: Option<String>,
 }
 
 // ============================================================================
@@ -812,6 +815,7 @@ mod tests {
                         style_tips: Some("例子驱动型学习者".to_string()),
                         fallback_plan: Some("若 2h 内无法完成，至少确保概念理解".to_string()),
                         status: TaskStatus::Pending,
+                        dida_task_id: None,
                     },
                     PlanTask {
                         id: "2026-07-25-02".to_string(),
@@ -825,6 +829,7 @@ mod tests {
                         style_tips: Some("通过真题语境记忆单词".to_string()),
                         fallback_plan: Some("若时间紧张，至少完成阅读与生词标记".to_string()),
                         status: TaskStatus::Pending,
+                        dida_task_id: None,
                     },
                 ],
                 style_tips: vec!["例子驱动型学习者".to_string()],
@@ -942,6 +947,7 @@ mod tests {
             style_tips: None,
             fallback_plan: None,
             status: TaskStatus::Pending,
+            dida_task_id: None,
         }
     }
 

@@ -18,13 +18,13 @@ import {
   Clock,
   GraduationCap,
   Calendar,
-  Target,
   User,
-  MapPin,
   BookOpen,
   TrendingUp,
   Info,
   AlertTriangle,
+  Cloud,
+  KeyRound,
 } from "lucide-vue-next";
 import type { AIProviderConfig, ProviderType } from "@/types";
 import * as api from "@/api";
@@ -48,7 +48,8 @@ function handleKeydown(e: KeyboardEvent) {
   e.preventDefault();
   if (finishing.value) return;
   if (isFirstStep.value) {
-    next();
+    // 欢迎页按 Enter 视为选择「完整配置」
+    startNormal();
   } else if (isLastStep.value) {
     finish();
   } else {
@@ -67,12 +68,11 @@ interface OnboardingStep {
 const steps: OnboardingStep[] = [
   { key: "welcome", title: "欢迎使用 StudyAgent", description: "你的个人考研学习智能体，让每一步都更有方向。", skippable: false },
   { key: "name", title: "该怎么称呼你", description: "我们会用这个名字称呼你，也会出现在工作台问候中。", skippable: false },
-  { key: "school", title: "目标院校", description: "告诉我们你的目标院校和专业方向。", skippable: false },
   { key: "subjects", title: "考试科目", description: "选择你的考试科目和版本（如数学二、英语一）。", skippable: false },
   { key: "progress", title: "当前进度", description: "告诉我们各科目的当前学习阶段，帮助 AI 更好地规划。", skippable: false },
-  { key: "exam", title: "你的考试目标", description: "设定目标分数，激励自己不断进步。", skippable: false },
   { key: "date", title: "考研年份", description: "考试默认在每年 12 月 20 日，设置年份即可自动计算倒计时。", skippable: false },
   { key: "schedule", title: "学习节奏", description: "设置每周学习天数和休息日，帮助我们安排可持续的学习计划。", skippable: true },
+  { key: "dida", title: "滴答清单同步", description: "同步每日任务到滴答清单，手机端查看并勾选。", skippable: true },
   { key: "ai", title: "配置 AI 助手", description: "智能计划、教学讲解与复盘等核心功能依赖 AI。未配置可跳过，稍后在设置中补全。", skippable: true },
   { key: "done", title: "配置完成", description: "一切就绪，开始你的考研之旅吧。", skippable: false },
 ];
@@ -84,11 +84,24 @@ const finishing = ref(false);
 // H32：initState 失败时的错误信息（保留用户停留在引导页）
 const errorMessage = ref("");
 const stepError = ref("");
+// 快速配置模式：跳过 称呼/考研年份(自动设 12-20)/滴答同步 三个步骤（保留 AI 配置）
+const quickMode = ref(false);
+const QUICK_SKIP_KEYS = new Set(["name", "date", "dida"]);
+const visibleSteps = computed(() =>
+  quickMode.value ? steps.filter(s => !QUICK_SKIP_KEYS.has(s.key)) : steps,
+);
 
-const step = computed(() => steps[currentStep.value]);
+const step = computed(() => visibleSteps.value[currentStep.value]);
 const isFirstStep = computed(() => currentStep.value === 0);
-const isLastStep = computed(() => currentStep.value === steps.length - 1);
-const progress = computed(() => Math.round(((currentStep.value + 1) / steps.length) * 100));
+const isLastStep = computed(() => currentStep.value === visibleSteps.value.length - 1);
+const progress = computed(() => Math.round(((currentStep.value + 1) / visibleSteps.value.length) * 100));
+/** 快速配置默认考试日期：当年 12-20，已晚于则次年 */
+const quickExamDate = computed(() => {
+  const now = new Date();
+  let year = now.getFullYear();
+  if (now.getTime() > new Date(year, 11, 20, 23, 59, 59).getTime()) year += 1;
+  return `${year}-12-20`;
+});
 
 // ── 表单数据 ──
 const userName = ref("");
@@ -120,8 +133,8 @@ const subjectStartDates = ref<{ math: string; english: string; politics: string;
   politics: "",
   professional: "",
 });
-// 用户期望每日任务数量（默认 3，每科约一条，未开始的科目不安排）
-const dailyTaskCount = ref(3);
+// 用户期望每日任务数量（默认 4，每科约一条，未开始的科目不安排）
+const dailyTaskCount = ref(4);
 // 每日目标学习时长（小时，默认 5，可在引导中调整）
 const dailyTargetHours = ref(5);
 // 是否允许 AI 安排总结/复习任务（默认 true，关闭时只推进新知识点）
@@ -136,6 +149,11 @@ const providerForm = ref<AIProviderConfig>({
   id: "", name: "我的 Provider", type: "openai", base_url: "", api_key: "", model: "",
   temperature: 0.7, max_tokens: 4096, enabled: true, is_default: true,
 });
+// 滴答清单同步
+const didaSyncEnabled = ref(false);
+const didaToken = ref("");
+const didaTokenSaving = ref(false);
+const hasDidaToken = ref(false);
 
 const providerTypeOptions: { value: ProviderType; label: string }[] = [
   { value: "openai", label: "OpenAI" }, { value: "gemini", label: "Gemini" },
@@ -176,16 +194,10 @@ const validationMessage = computed(() => {
       if (!userName.value.trim()) return "请填写一个称呼。";
       if (userName.value.trim().length > 40) return "称呼请控制在 40 个字符以内。";
       break;
-    case "school":
-      if (!targetSchool.value.trim() || !targetMajor.value.trim()) return "请填写目标院校和目标专业。";
-      break;
     case "subjects":
     case "progress":
       if (activeSubjects.value.length === 0) return "请至少选择一个考试科目。";
       if (hasProfessional.value && !professionalName.value.trim()) return "请填写专业课名称。";
-      break;
-    case "exam":
-      if (!targetScore.value || targetScore.value < 1 || targetScore.value > 500) return "目标分数需在 1–500 之间。";
       break;
     case "date": {
       const year = new Date().getFullYear();
@@ -204,6 +216,11 @@ const validationMessage = computed(() => {
       if (started && (!provider.base_url.trim() || !provider.model.trim())) return "配置 AI 时请至少填写 Base URL 和 Model；也可以直接跳过。";
       break;
     }
+    case "dida":
+      if (didaSyncEnabled.value && !hasDidaToken.value && !didaToken.value.trim()) {
+        return "启用同步需先保存滴答 Token；也可以选择暂不启用或跳过。";
+      }
+      break;
   }
   return "";
 });
@@ -218,7 +235,7 @@ function next() {
   direction.value = "forward";
   persistCurrentStep();
   if (isLastStep.value) { finish(); return; }
-  currentStep.value = Math.min(currentStep.value + 1, steps.length - 1);
+  currentStep.value = Math.min(currentStep.value + 1, visibleSteps.value.length - 1);
 }
 
 function prev() {
@@ -231,7 +248,24 @@ function prev() {
 function skip() {
   stepError.value = "";
   direction.value = "forward";
-  currentStep.value = Math.min(currentStep.value + 1, steps.length - 1);
+  currentStep.value = Math.min(currentStep.value + 1, visibleSteps.value.length - 1);
+}
+
+/** 欢迎页「开始配置」：完整引导流程 */
+function startNormal() {
+  quickMode.value = false;
+  next();
+}
+
+/** 欢迎页「快速配置」：跳过 称呼（留空不启用问候）/考研年份（自动 12-20）/滴答同步 */
+function startQuick() {
+  quickMode.value = true;
+  userName.value = "";
+  examYear.value = parseInt(quickExamDate.value.slice(0, 4), 10);
+  stepError.value = "";
+  direction.value = "forward";
+  // 快速模式下 visibleSteps[1] 为「考试科目」
+  currentStep.value = 1;
 }
 
 function persistCurrentStep() {
@@ -239,11 +273,6 @@ function persistCurrentStep() {
   if (!s) return;
   switch (step.value.key) {
     case "name": s.user_name = userName.value.trim(); break;
-    case "school":
-      s.target_school = targetSchool.value.trim();
-      s.target_major = targetMajor.value.trim();
-      break;
-    case "exam": s.target_score = targetScore.value ?? 0; break;
     case "date": s.exam_date = `${examYear.value}-12-20`; break;
     case "subjects":
       // H40：科目选择持久化到 exam_type，中断引导后不丢失
@@ -285,20 +314,35 @@ function persistCurrentStep() {
         }
       }
       break;
+    case "dida":
+      s.ticktick = { ...(s.ticktick || {}), enabled: didaSyncEnabled.value };
+      break;
+  }
+}
+
+/** 保存滴答 Token 到系统凭据库（成功后清除输入框明文） */
+async function saveDidaToken() {
+  const token = didaToken.value.trim();
+  if (!token || didaTokenSaving.value) return;
+  didaTokenSaving.value = true;
+  try {
+    await api.setDidaToken(token);
+    hasDidaToken.value = true;
+    didaToken.value = "";
+  } catch (e) {
+    console.warn("[Onboarding] 保存滴答 Token 失败:", e);
+    stepError.value = `保存滴答 Token 失败: ${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    didaTokenSaving.value = false;
   }
 }
 
 async function finish() {
   const currentYear = new Date().getFullYear();
   const invalidCore =
-    !userName.value.trim() ||
-    !targetSchool.value.trim() ||
-    !targetMajor.value.trim() ||
+    (!quickMode.value && !userName.value.trim()) ||
     activeSubjects.value.length === 0 ||
     (hasProfessional.value && !professionalName.value.trim()) ||
-    !targetScore.value ||
-    targetScore.value < 1 ||
-    targetScore.value > 500 ||
     examYear.value < currentYear ||
     examYear.value > currentYear + 3 ||
     studyDaysPerWeek.value < 1 ||
@@ -316,8 +360,11 @@ async function finish() {
   finishing.value = true;
   try {
     s.user_name = userName.value.trim();
-    s.target_score = targetScore.value ?? 0;
+    // 快速配置：称呼留空，首页问候功能不启用
+    if (quickMode.value) s.show_greeting = false;
     s.exam_date = `${examYear.value}-12-20`;
+    // 滴答同步配置（目标院校/目标分数已从引导剔除，可在设置页补充）
+    s.ticktick = { ...(s.ticktick || {}), enabled: didaSyncEnabled.value };
     s.study_schedule = {
       ...(s.study_schedule || {}),
       start_time: startTime.value, end_time: endTime.value,
@@ -426,6 +473,8 @@ function initFormFromSettings() {
     const def = s.ai_providers.find(p => p.is_default) ?? s.ai_providers[0];
     providerForm.value = { ...def };
   }
+  // 滴答同步回读（中断引导后恢复选择）
+  didaSyncEnabled.value = s.ticktick?.enabled === true;
 }
 
 function toggleRestDay(day: string) {
@@ -456,6 +505,8 @@ onMounted(async () => {
   } catch {
     // 非 Tauri 环境忽略
   }
+  // 滴答 Token 配置状态（keyring 或环境变量）
+  hasDidaToken.value = await api.getDidaTokenStatus().catch(() => false);
   window.addEventListener("keydown", handleKeydown);
 });
 
@@ -482,7 +533,7 @@ onUnmounted(() => {
         </div>
         <div class="step-dots">
           <button
-            v-for="(s, i) in steps"
+            v-for="(s, i) in visibleSteps"
             :key="s.key"
             class="step-dot"
             :class="{
@@ -494,7 +545,7 @@ onUnmounted(() => {
             @click="i < currentStep ? (currentStep = i) : null"
           />
         </div>
-        <span class="step-counter">{{ currentStep + 1 }} / {{ steps.length }}</span>
+        <span class="step-counter">{{ currentStep + 1 }} / {{ visibleSteps.length }}</span>
       </div>
 
       <!-- Step content -->
@@ -515,6 +566,17 @@ onUnmounted(() => {
                   <li><Check :size="15" /> AI 助手随时答疑</li>
                   <li><Check :size="15" /> 每日复盘持续改进</li>
                 </ul>
+                <div class="hero-actions">
+                  <Button variant="primary" size="md" @click="startQuick">
+                    <Sparkles :size="16" />
+                    快速配置
+                  </Button>
+                  <Button variant="secondary" size="md" @click="startNormal">
+                    <ArrowRight :size="16" />
+                    完整配置
+                  </Button>
+                </div>
+                <p class="hero-hint">快速配置将跳过称呼、考研年份与滴答清单同步（考试日期默认 {{ quickExamDate }}），AI 助手仍需配置。</p>
               </div>
             </template>
 
@@ -531,15 +593,19 @@ onUnmounted(() => {
                     <User :size="15" />
                     <span>{{ userName || "你好" }}</span>
                   </div>
-                  <div class="summary-item" v-if="targetScore">
-                    <Target :size="15" />
-                    <span>目标 {{ targetScore }} 分</span>
-                  </div>
                   <div class="summary-item" v-if="examYear">
                     <Calendar :size="15" />
                     <span>{{ examYear }} 年考研 · {{ examYear }}-12-20</span>
                   </div>
+                  <div class="summary-item" v-if="didaSyncEnabled">
+                    <Cloud :size="15" />
+                    <span>滴答清单同步已启用</span>
+                  </div>
                 </div>
+                <p v-if="quickMode" class="quick-skip-note">
+                  <Info :size="13" />
+                  <span>快速配置已跳过：称呼问候、考研年份（默认 {{ examYear }}-12-20）、滴答清单同步。以上内容稍后可在「设置」中更改。</span>
+                </p>
               </div>
             </template>
 
@@ -559,27 +625,6 @@ onUnmounted(() => {
                     placeholder="如：小明"
                     autofocus
                   />
-                </div>
-              </div>
-            </template>
-
-            <!-- School -->
-            <template v-else-if="step.key === 'school'">
-              <div class="form-step">
-                <div class="step-head-row">
-                  <div class="step-head-icon"><MapPin :size="18" /></div>
-                  <div>
-                    <h2 class="form-title">{{ step.title }}</h2>
-                    <p class="form-desc">{{ step.description }}</p>
-                  </div>
-                </div>
-                <div class="field">
-                  <label class="field-label">目标院校</label>
-                  <input v-model="targetSchool" type="text" class="field-input" placeholder="如：广东工业大学" autofocus />
-                </div>
-                <div class="field">
-                  <label class="field-label">目标专业</label>
-                  <input v-model="targetMajor" type="text" class="field-input" placeholder="如：计算机技术 / 人工智能" />
                 </div>
               </div>
             </template>
@@ -667,21 +712,45 @@ onUnmounted(() => {
               </div>
             </template>
 
-            <!-- Exam -->
-            <template v-else-if="step.key === 'exam'">
+            <!-- Dida Sync -->
+            <template v-else-if="step.key === 'dida'">
               <div class="form-step">
-                <h2 class="form-title">{{ step.title }}</h2>
-                <p class="form-desc">{{ step.description }}</p>
+                <div class="step-head-row">
+                  <div class="step-head-icon"><Cloud :size="18" /></div>
+                  <div>
+                    <h2 class="form-title">{{ step.title }}</h2>
+                    <p class="form-desc">{{ step.description }}</p>
+                  </div>
+                </div>
+
                 <div class="field">
-                  <label class="field-label">目标分数</label>
-                  <input
-                    v-model.number="targetScore"
-                    type="number"
-                    min="0"
-                    max="500"
-                    class="field-input"
-                    placeholder="如：360"
-                  />
+                  <label class="field-label">是否启用同步</label>
+                  <div class="option-grid cols-2">
+                    <button type="button" class="option-chip" :aria-pressed="didaSyncEnabled" :class="{ active: didaSyncEnabled }" @click="didaSyncEnabled = true">启用（推荐）</button>
+                    <button type="button" class="option-chip" :aria-pressed="!didaSyncEnabled" :class="{ active: !didaSyncEnabled }" @click="didaSyncEnabled = false">暂不启用</button>
+                  </div>
+                  <p class="field-hint">生成/重排日计划时自动同步到滴答；只读写本系统创建的任务，其余不受影响。</p>
+                </div>
+
+                <div class="field">
+                  <label class="field-label">
+                    <KeyRound :size="13" style="vertical-align: -2px; margin-right: 4px" />
+                    滴答 Token（API 口令）
+                  </label>
+                  <div class="input-with-action">
+                    <input
+                      v-model="didaToken"
+                      type="password"
+                      class="field-input"
+                      placeholder="网页版滴答清单 → 头像 → 设置 → 账户与安全 → API 口令"
+                      autocomplete="off"
+                      :disabled="hasDidaToken && !didaToken"
+                    />
+                    <button class="input-suffix-btn" type="button" aria-label="保存滴答 Token" :disabled="didaTokenSaving || !didaToken.trim()" @click="saveDidaToken">
+                      <Check :size="15" />
+                    </button>
+                  </div>
+                  <p class="field-hint">当前状态：{{ hasDidaToken ? "已配置（保存于系统凭据库）" : "未配置" }}。Token 保存后本地不再保留明文，可随时在「设置 → 滴答清单同步」中更换。</p>
                 </div>
               </div>
             </template>
@@ -792,7 +861,7 @@ onUnmounted(() => {
                     max="8"
                     class="field-input"
                   />
-                  <p class="field-hint">默认 3-4 个。例如政治未到开始日期时，当天不会排政治任务。</p>
+                  <p class="field-hint">默认 4 个。例如政治未到开始日期时，当天不会排政治任务。</p>
                 </div>
                 <div class="field">
                   <label class="field-label">是否安排总结/复习任务</label>
@@ -948,17 +1017,7 @@ onUnmounted(() => {
           </Button>
 
           <Button
-            v-if="isFirstStep"
-            variant="primary"
-            size="lg"
-            @click="next"
-          >
-            <Sparkles :size="16" />
-            开始配置
-          </Button>
-
-          <Button
-            v-else-if="isLastStep"
+            v-if="isLastStep"
             variant="primary"
             size="lg"
             :loading="finishing"
@@ -1167,6 +1226,42 @@ onUnmounted(() => {
 .hero-features svg {
   color: var(--color-success);
   flex-shrink: 0;
+}
+
+/* ── 欢迎页 快速/完整配置 入口 ── */
+.hero-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.hero-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: var(--leading-relaxed);
+  max-width: 420px;
+}
+
+/* 快速配置跳过项提示（配置完成页） */
+.quick-skip-note {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: var(--leading-relaxed);
+  max-width: 440px;
+}
+
+.quick-skip-note svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
 }
 
 .done-summary {

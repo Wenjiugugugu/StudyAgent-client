@@ -168,5 +168,9 @@ pub async fn update_task_status(
     crate::data::state::save_state(&data_dir, &study_state)?;
 
     log::info!("任务状态已更新: {} -> {:?}", task_id, new_status);
+
+    // 同步滴答：应用内勾选完成 → 单向同步滴答完成状态（失败仅记录）
+    crate::sync::dida::sync_task_status(&data_dir, &task_id, &new_status).await;
+
     Ok(())
 }

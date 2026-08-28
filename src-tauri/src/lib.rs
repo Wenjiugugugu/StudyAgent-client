@@ -24,6 +24,7 @@ pub mod api;
 pub mod core;
 pub mod data;
 pub mod secrets;
+pub mod sync;
 pub mod tools;
 
 use std::path::{Path, PathBuf};

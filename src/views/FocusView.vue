@@ -409,6 +409,10 @@ onMounted(async () => {
 }
 
 .focus-main {
+  /* 液态玻璃模式下 .ui-card 带 backdrop-filter 会形成层叠上下文，
+     溢出到卡片下方的下拉面板会被后续卡片（番茄钟设置）盖住，此处抬高主卡层级 */
+  position: relative;
+  z-index: 3;
   display: flex;
   flex-direction: column;
   align-items: center;

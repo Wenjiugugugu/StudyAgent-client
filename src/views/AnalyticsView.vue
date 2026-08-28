@@ -90,8 +90,9 @@ const completionOption = computed(() => {
     legend: {
       data: ["完成率", "计划任务", "已完成"],
       textStyle: { color: textColor.value },
+      bottom: 0,
     },
-    grid: { left: 50, right: 50, bottom: 30, top: 40 },
+    grid: { left: 50, right: 50, bottom: 48, top: 30, containLabel: true },
     xAxis: {
       type: "category",
       data: points.map((p) => p.date.slice(5)),
@@ -150,8 +151,9 @@ const hoursOption = computed(() => {
     legend: {
       data: ["计划时长", "实际时长"],
       textStyle: { color: textColor.value },
+      bottom: 0,
     },
-    grid: { left: 50, right: 20, bottom: 30, top: 40 },
+    grid: { left: 50, right: 30, bottom: 48, top: 30, containLabel: true },
     xAxis: {
       type: "category",
       data: points.map((p) => p.date.slice(5)),
@@ -222,7 +224,7 @@ const blockersOption = computed(() => {
   const top5 = blockers.slice(0, 5);
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-    grid: { left: 100, right: 30, bottom: 20, top: 20 },
+    grid: { left: 100, right: 30, bottom: 30, top: 20, containLabel: true },
     xAxis: {
       type: "value",
       axisLine: { lineStyle: { color: axisLineColor.value } },
@@ -264,7 +266,7 @@ const feelingOption = computed(() => {
         return `${point.date}<br/>感受: ${point.label}`;
       },
     },
-    grid: { left: 40, right: 20, bottom: 30, top: 20 },
+    grid: { left: 50, right: 30, bottom: 40, top: 30, containLabel: true },
     xAxis: {
       type: "category",
       data: feelings.map((f) => f.date.slice(5)),
@@ -373,8 +375,9 @@ function buildComparisonOption(cmp: PeriodComparison | undefined) {
     legend: {
       data: [cmp.current_label, cmp.previous_label],
       textStyle: { color: textColor.value },
+      bottom: 0,
     },
-    grid: { left: 50, right: 30, bottom: 30, top: 40 },
+    grid: { left: 50, right: 30, bottom: 48, top: 30, containLabel: true },
     xAxis: {
       type: "category",
       data: categories,

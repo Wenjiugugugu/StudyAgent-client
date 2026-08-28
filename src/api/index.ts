@@ -851,6 +851,24 @@ export async function setAutostart(enabled: boolean): Promise<void> {
 }
 
 /**
+ * 滴答清单同步 — 设置页
+ */
+/** 滴答 Token 是否已配置（系统凭据库或环境变量 DIDA_TOKEN） */
+export async function getDidaTokenStatus(): Promise<boolean> {
+  return invokeDirect<boolean>("get_dida_token_status");
+}
+
+/** 保存滴答 Token 到系统凭据库（不落 settings.json 明文） */
+export async function setDidaToken(token: string): Promise<void> {
+  return invokeDirect<void>("set_dida_token", { token });
+}
+
+/** 立即对今天执行一次滴答同步对账，返回 (created/updated/deleted) 摘要 */
+export async function syncDidaNow(): Promise<string> {
+  return invokeDirect<string>("sync_dida_now");
+}
+
+/**
  * 获取应用版本号（来自 tauri.conf.json）
  */
 export async function getAppVersion(): Promise<string> {
