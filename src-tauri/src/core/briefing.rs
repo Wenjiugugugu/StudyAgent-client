@@ -212,9 +212,16 @@ impl<'a> BriefingAgent<'a> {
                 a_done, a_total, b_done, b_total, rate
             ));
 
-            // 实际学习时长
-            let actual_hours = crate::data::records::review_actual_hours(review);
-            prompt.push_str(&format!("- 实际学习时长: {:.1} 小时\n", actual_hours));
+            // 实际学习时长（无任何计时数据时不写入 prompt，避免 AI 据 0 值编造「昨日未计时」类表述）
+            let has_time_data = review.data.total_hours > 0.0
+                || review
+                    .task_reviews
+                    .iter()
+                    .any(|tr| tr.actual_minutes.unwrap_or(0) > 0);
+            if has_time_data {
+                let actual_hours = crate::data::records::review_actual_hours(review);
+                prompt.push_str(&format!("- 实际学习时长: {:.1} 小时\n", actual_hours));
+            }
 
             // 整体感受
             if let Some(daily) = &review.daily_review {
@@ -355,7 +362,10 @@ impl<'a> BriefingAgent<'a> {
             prompt.push_str(
                 "中句给出今日具体策略（先做什么、再做什么、注意什么，含章节名或动作动词），",
             );
-            prompt.push_str("末句可给一句简短方向性提示（如剩余天数、节奏建议）。\n");
+            prompt.push_str("末句可给一句简短方向性提示（如剩余天数、节奏建议）。");
+            prompt.push_str(
+                "若依据中没有提供学习时长数据，则在寄语中不要提及时间/时长相关内容（如「昨日未计时」「没有计时记录」等表述一律不要出现）。\n",
+            );
         } else {
             prompt.push_str("用户昨日未提交复盘，前句客观说明未复盘这一事实（不虚构数据），");
             prompt.push_str("中句给出今日策略，末句提醒今日记得完成复盘。\n");
