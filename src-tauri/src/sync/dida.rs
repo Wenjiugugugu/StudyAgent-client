@@ -278,7 +278,11 @@ impl DidaClient {
             .as_array()
             .or_else(|| v.get("tasks").and_then(|t| t.as_array()))
             .or_else(|| v.get("result").and_then(|r| r.as_array()))
-            .or_else(|| v.get("result").and_then(|r| r.get("tasks")).and_then(|t| t.as_array()))
+            .or_else(|| {
+                v.get("result")
+                    .and_then(|r| r.get("tasks"))
+                    .and_then(|t| t.as_array())
+            })
             .cloned()
             .unwrap_or_default();
         Ok(arr
@@ -332,7 +336,10 @@ impl DidaClient {
         task.insert("priority".into(), json!(priority));
         task.insert("isAllDay".into(), json!(false));
         task.insert("dueDate".into(), json!(format!("{}T22:00:00+08:00", date)));
-        task.insert("startDate".into(), json!(format!("{}T09:00:00+08:00", date)));
+        task.insert(
+            "startDate".into(),
+            json!(format!("{}T09:00:00+08:00", date)),
+        );
         task.insert("timeZone".into(), json!(TIMEZONE));
         task.insert("kind".into(), json!("TEXT"));
         task.insert("tags".into(), json!(tags));
@@ -348,7 +355,11 @@ impl DidaClient {
         v.get("id")
             .or_else(|| v.get("task").and_then(|t| t.get("id")))
             .or_else(|| v.get("result").and_then(|r| r.get("id")))
-            .or_else(|| v.get("result").and_then(|r| r.get("task")).and_then(|t| t.get("id")))
+            .or_else(|| {
+                v.get("result")
+                    .and_then(|r| r.get("task"))
+                    .and_then(|t| t.get("id"))
+            })
             .and_then(|x| x.as_str())
             .map(String::from)
             .ok_or_else(|| format!("create_task 响应缺少 id: {}", v))
@@ -378,7 +389,9 @@ impl DidaClient {
         }
         *rid += 1;
         let payload = json!({ "task_id": id, "task": Value::Object(task) });
-        self.call_tool("update_task", payload, session, *rid).await.map(|_| ())
+        self.call_tool("update_task", payload, session, *rid)
+            .await
+            .map(|_| ())
     }
 
     /// 标记完成（官方 schema：`{ project_id, task_id }` 均必填）
@@ -443,8 +456,12 @@ fn parse_mcp_response(body: &str, content_type: &str) -> Result<Value, String> {
             &body[..body.len().min(400)]
         ));
     }
-    serde_json::from_str(body)
-        .map_err(|e| format!("JSON 响应解析失败: {e}, body={}", &body[..body.len().min(400)]))
+    serde_json::from_str(body).map_err(|e| {
+        format!(
+            "JSON 响应解析失败: {e}, body={}",
+            &body[..body.len().min(400)]
+        )
+    })
 }
 
 // ============================================================================
@@ -511,9 +528,11 @@ fn extract_first_project_id(v: &Value) -> Option<String> {
         .as_array()
         .or_else(|| v.get("projects").and_then(|p| p.as_array()))
         .or_else(|| {
-            v.get("result")
-                .and_then(|r| r.as_array())
-                .or_else(|| v.get("result").and_then(|r| r.get("projects")).and_then(|p| p.as_array()))
+            v.get("result").and_then(|r| r.as_array()).or_else(|| {
+                v.get("result")
+                    .and_then(|r| r.get("projects"))
+                    .and_then(|p| p.as_array())
+            })
         });
 
     let items: Vec<&Value> = arr.into_iter().flatten().collect();
@@ -554,7 +573,10 @@ pub async fn reconcile_day(data_dir: &Path, date: &str) -> Result<(i32, i32, i32
         return Ok((0, 0, 0));
     }
     let Some(token) = crate::secrets::get_dida_token() else {
-        log::warn!("[dida] 未配置滴答 Token（keyring 或 DIDA_TOKEN），跳过同步 {}", date);
+        log::warn!(
+            "[dida] 未配置滴答 Token（keyring 或 DIDA_TOKEN），跳过同步 {}",
+            date
+        );
         return Ok((0, 0, 0));
     };
 
@@ -646,7 +668,15 @@ async fn reconcile_with_plan(
                 if needs_update {
                     // 用任务自身所在清单 id 更新（任务可能在收件箱/其他清单，传目标清单 id 可能失效）
                     match client
-                        .update_task(session, rid, &did, &title, priority, &tags, pid_opt(&cur.project_id))
+                        .update_task(
+                            session,
+                            rid,
+                            &did,
+                            &title,
+                            priority,
+                            &tags,
+                            pid_opt(&cur.project_id),
+                        )
                         .await
                     {
                         Ok(()) => updated += 1,
@@ -658,7 +688,15 @@ async fn reconcile_with_plan(
             }
             // 2) 有 id 但滴答侧未找到（可能在滴答手动删除）→ 重建
             match client
-                .create_task(session, rid, &plan.meta.date, &title, priority, &tags, project_id)
+                .create_task(
+                    session,
+                    rid,
+                    &plan.meta.date,
+                    &title,
+                    priority,
+                    &tags,
+                    project_id,
+                )
                 .await
             {
                 Ok(new_id) => {
@@ -681,7 +719,15 @@ async fn reconcile_with_plan(
             task.dida_task_id = Some(did.clone());
             // 收养旧任务同样用其自身清单 id 更新
             match client
-                .update_task(session, rid, &did, &title, priority, &tags, pid_opt(&owned[oi].project_id))
+                .update_task(
+                    session,
+                    rid,
+                    &did,
+                    &title,
+                    priority,
+                    &tags,
+                    pid_opt(&owned[oi].project_id),
+                )
                 .await
             {
                 Ok(()) => updated += 1,
@@ -692,7 +738,15 @@ async fn reconcile_with_plan(
         }
 
         match client
-            .create_task(session, rid, &plan.meta.date, &title, priority, &tags, project_id)
+            .create_task(
+                session,
+                rid,
+                &plan.meta.date,
+                &title,
+                priority,
+                &tags,
+                project_id,
+            )
             .await
         {
             Ok(new_id) => {
@@ -707,11 +761,17 @@ async fn reconcile_with_plan(
     for (oi, t) in owned.iter().enumerate() {
         if !keep.contains(&oi) {
             if t.done {
-                log::info!("[dida] 任务 {} 已在滴答完成且不在计划中，保留完成历史", t.title);
+                log::info!(
+                    "[dida] 任务 {} 已在滴答完成且不在计划中，保留完成历史",
+                    t.title
+                );
                 continue;
             }
             // 删除必须用任务自身所在清单 id：传其他清单 id 时滴答会静默成功但不删除
-            match client.delete_task(session, rid, &t.id, pid_opt(&t.project_id)).await {
+            match client
+                .delete_task(session, rid, &t.id, pid_opt(&t.project_id))
+                .await
+            {
                 Ok(()) => deleted += 1,
                 Err(e) => log::warn!("[dida] 删除任务 {} 失败: {}", t.title, e),
             }
@@ -765,7 +825,10 @@ pub async fn sync_task_status(data_dir: &Path, task_id: &str, status: &TaskStatu
             }
         }
         // 取消完成：滴答官方 MCP 不支持 status=0，跳过（以滴答为准的回读会覆盖）
-        _ => log::debug!("[dida] 取消完成跳过（滴答 MCP 不支持），task_id={}", task_id),
+        _ => log::debug!(
+            "[dida] 取消完成跳过（滴答 MCP 不支持），task_id={}",
+            task_id
+        ),
     }
 }
 
@@ -863,11 +926,29 @@ mod tests {
         }
 
         // 打印写路径工具的官方参数 schema，作为实现依据
-        if let Some(tool_arr) = tools.get("result").and_then(|r| r.get("tools")).and_then(|t| t.as_array()) {
+        if let Some(tool_arr) = tools
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .and_then(|t| t.as_array())
+        {
             for t in tool_arr {
-                let Some(name) = t.get("name").and_then(|n| n.as_str()) else { continue };
-                if matches!(name, "create_task" | "update_task" | "complete_task" | "delete_task" | "list_undone_tasks_by_date" | "list_completed_tasks_by_date") {
-                    println!("[test] schema {}: {}", name, t.get("inputSchema").cloned().unwrap_or_default());
+                let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                if matches!(
+                    name,
+                    "create_task"
+                        | "update_task"
+                        | "complete_task"
+                        | "delete_task"
+                        | "list_undone_tasks_by_date"
+                        | "list_completed_tasks_by_date"
+                ) {
+                    println!(
+                        "[test] schema {}: {}",
+                        name,
+                        t.get("inputSchema").cloned().unwrap_or_default()
+                    );
                 }
             }
         }
@@ -915,7 +996,12 @@ mod tests {
         {
             if t.title.starts_with("SA连通性测试") && is_owned(&t.tags) {
                 match client
-                    .delete_task(&mut session, &mut cleanup_rid, &t.id, pid_opt(&t.project_id))
+                    .delete_task(
+                        &mut session,
+                        &mut cleanup_rid,
+                        &t.id,
+                        pid_opt(&t.project_id),
+                    )
                     .await
                 {
                     Ok(()) => println!("[test] 已清理残留任务 {}", t.id),
@@ -999,7 +1085,12 @@ mod tests {
     }
 
     /// 构造测试用日计划任务
-    fn sa_test_task(date: &str, idx: usize, title: &str, priority: TaskPriority) -> crate::data::plan::PlanTask {
+    fn sa_test_task(
+        date: &str,
+        idx: usize,
+        title: &str,
+        priority: TaskPriority,
+    ) -> crate::data::plan::PlanTask {
         crate::data::plan::PlanTask {
             id: format!("{}-{:02}", date, idx),
             subject: SubjectKey::Math,
@@ -1074,9 +1165,15 @@ mod tests {
                     .delete_task(&mut session, &mut rid, &t.id, pid_opt(&t.project_id))
                     .await
                     .expect("清理测试残留任务应成功");
-                println!("[test] 已清理残留任务: {}（清单 {}）", t.title, t.project_id);
+                println!(
+                    "[test] 已清理残留任务: {}（清单 {}）",
+                    t.title, t.project_id
+                );
             } else {
-                println!("SKIP: 今日存在真实 studyagent 任务 {:?}，为避免误删跳过对账 E2E", t.title);
+                println!(
+                    "SKIP: 今日存在真实 studyagent 任务 {:?}，为避免误删跳过对账 E2E",
+                    t.title
+                );
                 return;
             }
         }
@@ -1106,7 +1203,10 @@ mod tests {
         std::fs::create_dir_all(tmp.join("config")).expect("创建临时目录应成功");
         std::fs::write(
             tmp.join("config").join("settings.json"),
-            format!(r#"{{"ticktick": {{"enabled": true, "project_id": "{}"}}}}"#, PROJECT_ID),
+            format!(
+                r#"{{"ticktick": {{"enabled": true, "project_id": "{}"}}}}"#,
+                PROJECT_ID
+            ),
         )
         .expect("写入 settings 应成功");
 
@@ -1130,7 +1230,11 @@ mod tests {
         );
         let mut plan = read_daily_plan(&tmp, &today).expect("回读日计划应成功");
         for t in &plan.data.tasks {
-            assert!(t.dida_task_id.is_some(), "首次同步后应回填 dida_task_id: {}", t.title);
+            assert!(
+                t.dida_task_id.is_some(),
+                "首次同步后应回填 dida_task_id: {}",
+                t.title
+            );
         }
         println!("[test] 首次对账 ok（新建 2 · dida_task_id 已回填）");
 
@@ -1163,7 +1267,10 @@ mod tests {
             .iter()
             .find(|t| t.title == t3)
             .expect("重排后应存在任务丙");
-        assert!(task3.dida_task_id.is_some(), "新增任务丙应回填 dida_task_id");
+        assert!(
+            task3.dida_task_id.is_some(),
+            "新增任务丙应回填 dida_task_id"
+        );
         println!("[test] 重排对账 ok（新建1 更新1 删除1）");
 
         // ── 6. 复盘回读：滴答侧完成任务丙 → fetch_completed_titles 应包含其标题 ──

@@ -81,7 +81,9 @@ pub async fn generate_review(
     let dida_completed = crate::sync::dida::fetch_completed_titles(&data_dir, &date).await;
 
     let review_agent = ReviewAgent::new(&ai_service);
-    review_agent.generate_review(&data_dir, &date, &dida_completed).await
+    review_agent
+        .generate_review(&data_dir, &date, &dida_completed)
+        .await
 }
 
 #[tauri::command]
@@ -126,22 +128,24 @@ pub async fn submit_review(
                 {
                     continue;
                 }
-                payload.task_reviews.push(crate::data::records::TaskReviewEntry {
-                    task_id: t.id.clone(),
-                    status: "completed".to_string(),
-                    completion: 1.0,
-                    mastery: String::new(),
-                    blockers: Vec::new(),
-                    blocker_note: None,
-                    title: t.title.clone(),
-                    subject: serde_json::to_string(&t.subject)
-                        .unwrap_or_default()
-                        .trim_matches('"')
-                        .to_string(),
-                    priority: format!("{:?}", t.priority),
-                    estimated_hours: Some(t.estimated_hours),
-                    actual_minutes: None,
-                });
+                payload
+                    .task_reviews
+                    .push(crate::data::records::TaskReviewEntry {
+                        task_id: t.id.clone(),
+                        status: "completed".to_string(),
+                        completion: 1.0,
+                        mastery: String::new(),
+                        blockers: Vec::new(),
+                        blocker_note: None,
+                        title: t.title.clone(),
+                        subject: serde_json::to_string(&t.subject)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                            .to_string(),
+                        priority: format!("{:?}", t.priority),
+                        estimated_hours: Some(t.estimated_hours),
+                        actual_minutes: None,
+                    });
             }
         }
     }

@@ -312,7 +312,11 @@ pub async fn generate_daily_plan(
     let result = planner.generate_daily_plan(&data_dir, &date).await;
 
     // 同步滴答：日计划生成后按日对账（失败仅记录，不影响主流程）
-    if result.is_ok() && crate::sync::dida::reconcile_day(&data_dir, &date).await.is_err() {
+    if result.is_ok()
+        && crate::sync::dida::reconcile_day(&data_dir, &date)
+            .await
+            .is_err()
+    {
         // 具体错误已在 reconcile_day 内记录
     }
     result

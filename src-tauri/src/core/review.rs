@@ -62,8 +62,7 @@ impl<'a> ReviewAgent<'a> {
 
         // 2. 构建复盘 prompt
         // 注意：不在此处修改任务状态。任务状态由 `submit_review` 根据用户输入更新。
-        let prompt =
-            self.build_review_prompt(plan.as_ref(), &state, date, dida_completed);
+        let prompt = self.build_review_prompt(plan.as_ref(), &state, date, dida_completed);
         crate::data::write_ai_debug_log(
             data_dir,
             "review_prompt_ready",
