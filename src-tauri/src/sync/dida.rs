@@ -51,15 +51,28 @@ fn subject_tag(s: &SubjectKey) -> String {
     }
 }
 
-/// 为计划任务生成滴答标签集合（仅两类：来源标记 + 学科）
+/// 为计划任务生成滴答标签集合（仅两类：科目前置、来源标记在后）
 fn make_tags(s: &SubjectKey) -> Vec<String> {
-    vec![SOURCE_TAG.to_string(), subject_tag(s)]
+    vec![subject_tag(s), SOURCE_TAG.to_string()]
 }
 
-/// 去除旧版脚本写入的标题前缀（`[A] ` / `[B] ` / `[C] `）
-fn strip_legacy_prefix(title: &str) -> String {
+/// 任务写入滴答的标题：`[科目] 原标题`（如 `[数学] 刷高数第3章习题`）
+fn task_title(subject: &SubjectKey, title: &str) -> String {
+    format!("[{}] {}", subject_tag(subject), title.trim())
+}
+
+/// 还原滴答标题为计划原标题：去掉学科前缀（`[数学] ` 等）与旧版优先级前缀（`[A] ` / `[B] ` / `[C] `）
+fn strip_title_prefix(title: &str) -> String {
     let t = title.trim();
-    for p in ["[A] ", "[B] ", "[C] "] {
+    for p in [
+        "[数学] ",
+        "[英语] ",
+        "[政治] ",
+        "[专业课] ",
+        "[A] ",
+        "[B] ",
+        "[C] ",
+    ] {
         if let Some(rest) = t.strip_prefix(p) {
             return rest.trim().to_string();
         }
@@ -661,12 +674,14 @@ async fn reconcile_with_plan(
         let title = task.title.trim().to_string();
         let priority = priority_value(&task.priority);
         let tags = make_tags(&task.subject);
+        // 滴答侧统一存放 `[科目] 原标题`
+        let push_title = task_title(&task.subject, &title);
 
         // 1) 已有 dida_task_id 且滴答侧存在 → 内容差异则更新
         if let Some(did) = task.dida_task_id.clone() {
             if let Some(&oi) = owned_id_to_idx.get(&did) {
                 let cur = &owned[oi];
-                let needs_update = cur.title != title || cur.tags != tags;
+                let needs_update = cur.title != push_title || cur.tags != tags;
                 if needs_update {
                     // 用任务自身所在清单 id 更新（任务可能在收件箱/其他清单，传目标清单 id 可能失效）
                     match client
@@ -674,7 +689,7 @@ async fn reconcile_with_plan(
                             session,
                             rid,
                             &did,
-                            &title,
+                            &push_title,
                             priority,
                             &tags,
                             pid_opt(&cur.project_id),
@@ -694,7 +709,7 @@ async fn reconcile_with_plan(
                     session,
                     rid,
                     &plan.meta.date,
-                    &title,
+                    &push_title,
                     priority,
                     &tags,
                     project_id,
@@ -710,22 +725,24 @@ async fn reconcile_with_plan(
             continue;
         }
 
-        // 3) 无 id：先按旧版标题格式收养（`[A] 标题`），命中则补 id + 打标签，否则新建
+        // 3) 无 id：先按旧版标题格式收养（`[科目] 标题` / 旧 `[A] 标题`），命中则补 id + 规范化，否则新建
         let legacy_title = format!("[{:?}] {}", task.priority, task.title);
         let adopted = owned
             .iter()
             .enumerate()
-            .find(|(oi, t)| !keep.contains(oi) && t.title == legacy_title)
+            .find(|(oi, t)| {
+                !keep.contains(oi) && (t.title == push_title || t.title == legacy_title)
+            })
             .map(|(oi, t)| (oi, t.id.clone()));
         if let Some((oi, did)) = adopted {
             task.dida_task_id = Some(did.clone());
-            // 收养旧任务同样用其自身清单 id 更新
+            // 收养旧任务同样用其自身清单 id 更新（顺带把标题与标签规范化为新格式）
             match client
                 .update_task(
                     session,
                     rid,
                     &did,
-                    &title,
+                    &push_title,
                     priority,
                     &tags,
                     pid_opt(&owned[oi].project_id),
@@ -733,7 +750,7 @@ async fn reconcile_with_plan(
                 .await
             {
                 Ok(()) => updated += 1,
-                Err(e) => log::warn!("[dida] 收养任务 {} 补标签失败: {}", title, e),
+                Err(e) => log::warn!("[dida] 收养任务 {} 规范化失败: {}", title, e),
             }
             keep.insert(oi);
             continue;
@@ -744,7 +761,7 @@ async fn reconcile_with_plan(
                 session,
                 rid,
                 &plan.meta.date,
-                &title,
+                &push_title,
                 priority,
                 &tags,
                 project_id,
@@ -834,7 +851,7 @@ pub async fn sync_task_status(data_dir: &Path, task_id: &str, status: &TaskStatu
     }
 }
 
-/// 复盘回读：当日窗口内带来源标记的已完成任务标题（去掉旧版标题前缀）
+/// 复盘回读：当日窗口内带来源标记的已完成任务标题（还原为计划原标题，去掉 `[科目] ` / 旧 `[A] ` 前缀）
 pub async fn fetch_completed_titles(data_dir: &Path, date: &str) -> Vec<String> {
     if !is_sync_enabled(data_dir) {
         return Vec::new();
@@ -856,7 +873,7 @@ pub async fn fetch_completed_titles(data_dir: &Path, date: &str) -> Vec<String> 
         Ok(tasks) => tasks
             .iter()
             .filter(|t| is_owned(&t.tags))
-            .map(|t| strip_legacy_prefix(&t.title))
+            .map(|t| strip_title_prefix(&t.title))
             .collect(),
         Err(e) => {
             log::warn!("[dida] 复盘回读 {} 失败: {}", date, e);
@@ -1163,7 +1180,9 @@ mod tests {
             );
         }
         for t in &leftovers {
-            if t.title.starts_with(PREFIX) || t.title.starts_with("SA连通性测试") {
+            if strip_title_prefix(&t.title).starts_with(PREFIX)
+                || t.title.starts_with("SA连通性测试")
+            {
                 // 删除必须用任务自身清单 id（收件箱任务传「学习」id 会静默不生效）
                 client
                     .delete_task(&mut session, &mut rid, &t.id, pid_opt(&t.project_id))
@@ -1298,7 +1317,7 @@ mod tests {
                 .await
                 .expect("清理前查询应成功")
             {
-                if is_owned(&t.tags) && t.title.starts_with(PREFIX) {
+                if is_owned(&t.tags) && strip_title_prefix(&t.title).starts_with(PREFIX) {
                     client
                         .delete_task(&mut session, &mut rid, &t.id, pid_opt(&t.project_id))
                         .await
