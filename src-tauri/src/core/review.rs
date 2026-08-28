@@ -1,4 +1,4 @@
-﻿//! Review Agent — 调用 AI Service 生成复盘
+//! Review Agent — 调用 AI Service 生成复盘
 //!
 //! 数据契约：统一 JSON 格式 { version, meta, data, view? }
 //! - 复盘：records/YYYY-MM-DD_review.json
@@ -32,13 +32,21 @@ impl<'a> ReviewAgent<'a> {
 
     /// 生成复盘记录
     ///
+    /// `dida_completed`：滴答清单当日已确认完成的任务标题（来自 sync::dida 回读），
+    /// 注入 prompt 供 AI 作为「完成情况的事实来源」之一（以滴答勾选为准）。
+    ///
     /// 流程：
     /// 1. 校验只能生成今天的复盘
     /// 2. 读取今日计划和 State
     /// 3. 调用 AI 生成复盘 JSON
     /// 4. 保存 JSON
     /// 5. 返回 ReviewFile
-    pub async fn generate_review(&self, data_dir: &Path, date: &str) -> DataResult<ReviewFile> {
+    pub async fn generate_review(
+        &self,
+        data_dir: &Path,
+        date: &str,
+        dida_completed: &[String],
+    ) -> DataResult<ReviewFile> {
         // 0. 只允许生成今天的复盘
         let today = today_string();
         if date != today {
@@ -54,7 +62,8 @@ impl<'a> ReviewAgent<'a> {
 
         // 2. 构建复盘 prompt
         // 注意：不在此处修改任务状态。任务状态由 `submit_review` 根据用户输入更新。
-        let prompt = self.build_review_prompt(plan.as_ref(), &state, date);
+        let prompt =
+            self.build_review_prompt(plan.as_ref(), &state, date, dida_completed);
         crate::data::write_ai_debug_log(
             data_dir,
             "review_prompt_ready",
@@ -131,6 +140,7 @@ impl<'a> ReviewAgent<'a> {
         plan: Option<&crate::data::plan::DailyPlanFile>,
         state: &crate::data::state::StudyState,
         date: &str,
+        dida_completed: &[String],
     ) -> String {
         let mut prompt = String::new();
         prompt.push_str(&format!("请为 {} 生成学习复盘记录。\n\n", date));
@@ -180,6 +190,16 @@ impl<'a> ReviewAgent<'a> {
                     "  - [{:?}] {} ({:?}) - {:?}\n",
                     task.priority, task.subject, task.task, task.status
                 ));
+            }
+            prompt.push('\n');
+        }
+
+        // 滴答清单确认完成（以滴答勾选为准，用户在手机端勾选也会进入这里）
+        if !dida_completed.is_empty() {
+            prompt.push_str("## 滴答确认完成（来自滴答清单同步）\n");
+            prompt.push_str("以下任务在滴答清单中已被标记为完成（可能在本应用外勾选），复盘时请按已完成处理：\n");
+            for t in dida_completed {
+                prompt.push_str(&format!("- {}\n", t));
             }
             prompt.push('\n');
         }

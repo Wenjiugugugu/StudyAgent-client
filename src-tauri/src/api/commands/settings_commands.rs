@@ -416,3 +416,35 @@ pub async fn update_subject_textbook(
     log::info!("已更新 {} 科目教材: {:?}", subject, logged_textbook);
     Ok(())
 }
+
+/// 滴答清单 Token 是否已配置（系统凭据库或环境变量 DIDA_TOKEN）
+///
+/// 前端调用: `invoke('get_dida_token_status')`
+#[tauri::command]
+pub async fn get_dida_token_status() -> Result<bool, String> {
+    Ok(crate::secrets::get_dida_token().is_some())
+}
+
+/// 保存滴答清单 Token 到系统凭据库（不落 settings.json 明文）
+/// 留空不调用本命令；Token 为空时静默忽略。
+///
+/// 前端调用: `invoke('set_dida_token', { token: '...' })`
+#[tauri::command]
+pub async fn set_dida_token(token: String) -> Result<(), String> {
+    crate::secrets::set_dida_token(token.trim())
+}
+
+/// 立即对「今天」执行一次滴答同步对账（需已启用同步；失败仅记录）
+///
+/// 返回 `(created, updated, deleted)` 摘要文本，供设置页反馈。
+/// 前端调用: `invoke('sync_dida_now')`
+#[tauri::command]
+pub async fn sync_dida_now(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let today = crate::data::today_string();
+    let (created, updated, deleted) = crate::sync::dida::reconcile_day(&data_dir, &today).await?;
+    Ok(format!(
+        "同步完成：新建 {} · 更新 {} · 删除 {}",
+        created, updated, deleted
+    ))
+}

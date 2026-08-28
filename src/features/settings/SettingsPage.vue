@@ -24,6 +24,7 @@ import ScheduleSection from "./sections/ScheduleSection.vue";
 import RhythmSection from "./sections/RhythmSection.vue";
 import TextbooksSection from "./sections/TextbooksSection.vue";
 import AIProviderSection from "./sections/AIProviderSection.vue";
+import DidaSyncSection from "./sections/DidaSyncSection.vue";
 import McpSection from "./sections/McpSection.vue";
 import StorageSection from "./sections/StorageSection.vue";
 import UpdateSection from "./sections/UpdateSection.vue";
@@ -145,6 +146,7 @@ watch(
           :save-textbook="saveTextbook"
         />
         <AIProviderSection />
+        <DidaSyncSection />
 
         <!-- MCP 配置区（暂时下线：MCP 适配暂不稳定，后续版本恢复） -->
         <McpSection v-if="false" :scroll-to-section="scrollToSection" />

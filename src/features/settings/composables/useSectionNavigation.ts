@@ -7,7 +7,7 @@
 import { ref } from "vue";
 import { onBeforeUnmount } from "vue";
 import type { Component } from "vue";
-import { User, PowerOff, Palette, Target, Clock, Gauge, BookOpen, Bot, FolderOpen, RefreshCw } from "lucide-vue-next";
+import { User, PowerOff, Palette, Target, Clock, Gauge, BookOpen, Bot, Cloud, FolderOpen, RefreshCw } from "lucide-vue-next";
 
 export interface NavSection {
   id: string;
@@ -25,6 +25,7 @@ export function useSectionNavigation() {
     { id: "rhythm", label: "学习节奏", icon: Gauge },
     { id: "textbooks", label: "教材", icon: BookOpen },
     { id: "ai-provider", label: "AI Provider", icon: Bot },
+    { id: "dida-sync", label: "滴答同步", icon: Cloud },
     { id: "storage", label: "存储", icon: FolderOpen },
     { id: "update", label: "检查更新", icon: RefreshCw },
   ];

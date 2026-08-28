@@ -1,4 +1,4 @@
-﻿//! DailyScheduler — 从周计划 JSON 生成日计划 JSON
+//! DailyScheduler — 从周计划 JSON 生成日计划 JSON
 //!
 //! 原则：
 //! - 不调用 AI
@@ -405,6 +405,7 @@ fn template_to_task(
         style_tips: template.style_tips.clone(),
         fallback_plan: template.fallback_plan.clone(),
         status: TaskStatus::Pending,
+        dida_task_id: None,
     }
 }
 
