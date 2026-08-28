@@ -318,6 +318,7 @@ impl DidaClient {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn create_task(
         &self,
         session: &mut Option<String>,
@@ -369,6 +370,7 @@ impl DidaClient {
     ///
     /// 官方 schema（经 tools/list + 实测）：`{ task_id, task }`，
     /// task 内为 OpenTask 模型且 **id 必填**；projectId 建议携带。
+    #[allow(clippy::too_many_arguments)]
     async fn update_task(
         &self,
         session: &mut Option<String>,
@@ -1109,8 +1111,10 @@ mod tests {
 
     /// 构造测试用日计划文件（meta.date 为指定日期）
     fn sa_test_plan(date: &str, tasks: Vec<crate::data::plan::PlanTask>) -> DailyPlanFile {
-        let mut plan = DailyPlanFile::default();
-        plan.version = "2.0".to_string();
+        let mut plan = DailyPlanFile {
+            version: "2.0".to_string(),
+            ..Default::default()
+        };
         plan.meta.date = date.to_string();
         plan.meta.generated_at = format!("{}T00:00", date);
         plan.meta.r#type = "daily".to_string();
@@ -1281,7 +1285,7 @@ mod tests {
             .expect("滴答侧完成任务丙应成功");
         let titles = fetch_completed_titles(&tmp, &today).await;
         assert!(
-            titles.iter().any(|t| *t == t3),
+            titles.contains(&t3),
             "复盘回读应包含滴答侧已完成的任务丙，实际: {:?}",
             titles
         );
