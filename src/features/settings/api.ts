@@ -21,9 +21,11 @@ import {
   getDidaTokenStatus,
   setDidaToken,
   syncDidaNow,
+  listDidaProjects,
 } from "@/api";
 
 export type { CloseAction } from "@/api";
+export type { DidaProject } from "@/api";
 
 export const settingsApi = {
   getState,
@@ -42,4 +44,5 @@ export const settingsApi = {
   getDidaTokenStatus,
   setDidaToken,
   syncDidaNow,
+  listDidaProjects,
 };

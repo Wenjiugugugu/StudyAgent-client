@@ -15,8 +15,11 @@
 //! - 所有同步失败只记录日志，不阻塞计划生成/复盘等主流程。
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::data::plan::{read_daily_plan, save_daily_plan, DailyPlanFile};
@@ -27,6 +30,8 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 /// 来源标记：所有本系统创建/管理的滴答任务固定携带
 const SOURCE_TAG: &str = "studyagent";
 const TIMEZONE: &str = "Asia/Shanghai";
+/// 滴答 MCP 单次 HTTP 请求超时：同步是「尽力而为」的旁路，绝不允许拖垮主流程
+const MCP_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ============================================================================
 // 标签与字段映射（规范化）
@@ -101,6 +106,8 @@ fn pid_opt(s: &str) -> Option<&str> {
 /// 滴答 MCP 客户端（每次调用即用即建，不常驻）
 struct DidaClient {
     token: String,
+    /// 复用同一 http client，并施加总超时，避免网络挂起拖累主线程
+    http: reqwest::Client,
 }
 
 /// 滴答任务（对账用）
@@ -116,13 +123,17 @@ struct DidaTask {
 
 impl DidaClient {
     fn new(token: String) -> Self {
-        Self { token }
+        let http = reqwest::Client::builder()
+            .timeout(MCP_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { token, http }
     }
 
     /// 发送 JSON-RPC 请求，自动解析 JSON 或 SSE 响应，透传会话 ID
     async fn post(&self, payload: Value, session: &mut Option<String>) -> Result<Value, String> {
-        let client = reqwest::Client::new();
-        let mut req = client
+        let mut req = self
+            .http
             .post(MCP_URL)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
@@ -580,6 +591,50 @@ fn extract_first_project_id(v: &Value) -> Option<String> {
 // 公开接口
 // ============================================================================
 
+/// 后台按日对账：不阻塞主流程（生成/勾选/复盘命令不再等待网络）。
+///
+/// 在独立任务中自行获取 io_lock 覆盖「读-改-写日计划」的落盘点（回填 dida_task_id），
+/// 与计划生成等写命令串行化；单次请求有 MCP_TIMEOUT 兜底，网络异常最多延迟写操作几秒。
+pub fn spawn_reconcile_day(io_lock: Arc<tokio::sync::Mutex<()>>, data_dir: PathBuf, date: String) {
+    tauri::async_runtime::spawn(async move {
+        let _guard = io_lock.lock().await;
+        if let Err(e) = reconcile_day(&data_dir, &date).await {
+            log::warn!("[dida] 后台对账 {} 失败: {}", date, e);
+        }
+    });
+}
+
+/// 后台多日对账：分批最多 3 个会话并行（避免串行放大延迟），失败仅记录日志。
+///
+/// 锁在整批同步期间持有：网络挂起有超时兜底，且同步在后台执行，不阻塞任何命令返回。
+pub fn spawn_reconcile_days(
+    io_lock: Arc<tokio::sync::Mutex<()>>,
+    data_dir: PathBuf,
+    dates: Vec<String>,
+) {
+    tauri::async_runtime::spawn(async move {
+        let _guard = io_lock.lock().await;
+        for chunk in dates.chunks(3) {
+            let mut set = tokio::task::JoinSet::new();
+            // 需要持有 String 所有权（spawn 任务要求 'static），clippy 的 cloned 建议会导致借用逃逸
+            #[allow(clippy::unnecessary_to_owned)]
+            for d in chunk.iter().cloned() {
+                let dd = data_dir.clone();
+                set.spawn(async move { reconcile_day(&dd, &d).await });
+            }
+            while let Some(joined) = set.join_next().await {
+                match joined {
+                    Ok(Ok((c, u, d))) => {
+                        log::debug!("[dida] 后台对账完成: c={} u={} d={}", c, u, d)
+                    }
+                    Ok(Err(e)) => log::warn!("[dida] 后台对账失败: {}", e),
+                    Err(e) => log::warn!("[dida] 后台对账任务异常: {}", e),
+                }
+            }
+        }
+    });
+}
+
 /// 按日对账：计划 JSON 任务 ↔ 滴答任务（增删改增量；只动带 studyagent 标签的任务）
 ///
 /// 返回 `(created, updated, deleted)` 计数摘要；失败只记录日志。
@@ -599,9 +654,8 @@ pub async fn reconcile_day(data_dir: &Path, date: &str) -> Result<(i32, i32, i32
         // 无计划文件：无需同步
         return Ok((0, 0, 0));
     };
-    if plan.data.tasks.is_empty() {
-        return Ok((0, 0, 0));
-    }
+    // M1：即使计划任务为空也继续对账——把当日已不再属于计划的未完成 studyagent 任务清理掉
+    // （完成的任务保留完成历史，不会误删）
 
     let client = DidaClient::new(token);
     let mut session: Option<String> = None;
@@ -808,10 +862,13 @@ pub async fn sync_task_status(data_dir: &Path, task_id: &str, status: &TaskStatu
     let Some(token) = crate::secrets::get_dida_token() else {
         return;
     };
-    if task_id.len() < 10 {
+    // 防御：仅接受合法日期前缀的任务 id（`get(..10)` 在非字符边界返回 None，不会 panic）
+    let Some(date) = task_id.get(..10) else {
+        return;
+    };
+    if crate::data::validate_date(date).is_err() {
         return;
     }
-    let date = &task_id[..10];
     let Ok(plan) = read_daily_plan(data_dir, date) else {
         return;
     };
@@ -877,6 +934,75 @@ pub async fn fetch_completed_titles(data_dir: &Path, date: &str) -> Vec<String> 
             .collect(),
         Err(e) => {
             log::warn!("[dida] 复盘回读 {} 失败: {}", date, e);
+            Vec::new()
+        }
+    }
+}
+
+// ============================================================================
+// 滴答清单项目（设置页归属清单选择）
+// ============================================================================
+
+/// 滴答清单项目（序列化给前端展示/选择）
+#[derive(Debug, Clone, Serialize)]
+pub struct DidaProject {
+    pub id: String,
+    pub name: String,
+}
+
+/// 从 list_projects 响应中提取全部项目（兼容数组 / `{projects}` / `{result...}` 各形状）
+fn extract_projects(v: &Value) -> Vec<DidaProject> {
+    let arr = v
+        .as_array()
+        .or_else(|| v.get("projects").and_then(|p| p.as_array()))
+        .or_else(|| {
+            v.get("result").and_then(|r| r.as_array()).or_else(|| {
+                v.get("result")
+                    .and_then(|r| r.get("projects"))
+                    .and_then(|p| p.as_array())
+            })
+        });
+    let Some(items) = arr else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|p| {
+            let id = p.get("id").and_then(|x| x.as_str())?;
+            Some(DidaProject {
+                id: id.to_string(),
+                name: p
+                    .get("name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 拉取滴答清单项目列表（供设置页选择归属清单）；同步未启用/未配置 Token/失败返回空
+pub async fn fetch_projects(data_dir: &Path) -> Vec<DidaProject> {
+    if !is_sync_enabled(data_dir) {
+        return Vec::new();
+    }
+    let Some(token) = crate::secrets::get_dida_token() else {
+        return Vec::new();
+    };
+    let client = DidaClient::new(token);
+    let mut session: Option<String> = None;
+    if let Err(e) = client.initialize(&mut session).await {
+        log::warn!("[dida] 获取清单列表初始化失败: {}", e);
+        return Vec::new();
+    }
+    let rid: u64 = 600;
+    match client
+        .call_tool("list_projects", json!({}), &mut session, rid)
+        .await
+    {
+        Ok(v) => extract_projects(&v),
+        Err(e) => {
+            log::warn!("[dida] list_projects 失败: {}", e);
             Vec::new()
         }
     }

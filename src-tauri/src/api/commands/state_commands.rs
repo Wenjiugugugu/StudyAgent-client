@@ -139,7 +139,6 @@ pub async fn update_task_status(
         }
 
         // 更新 global progress
-        let today = crate::data::today_string();
         let progress = &mut study_state.progress;
 
         // 学习天数与连续天数：仅当「当天首个任务」完成时才 +1 / 更新 streak，
@@ -161,7 +160,8 @@ pub async fn update_task_status(
                 progress.streak_days = 1;
             }
         }
-        progress.last_study_date = today;
+        // M8：用任务所属日期而非当前日期，跨午夜补完成昨日任务时不把学习日错记为今天
+        progress.last_study_date = date.clone();
     }
 
     // 保存 State
@@ -169,8 +169,14 @@ pub async fn update_task_status(
 
     log::info!("任务状态已更新: {} -> {:?}", task_id, new_status);
 
-    // 同步滴答：应用内勾选完成 → 单向同步滴答完成状态（失败仅记录）
-    crate::sync::dida::sync_task_status(&data_dir, &task_id, &new_status).await;
+    // 同步滴答：应用内勾选完成 → 单向同步滴答完成状态
+    // H1: 后台 best-effort（只读本地计划文件、只写滴答侧），不阻塞 UI 且不占 io_lock
+    let dd = data_dir.clone();
+    let tid = task_id.clone();
+    let st = new_status.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::sync::dida::sync_task_status(&dd, &tid, &st).await;
+    });
 
     Ok(())
 }

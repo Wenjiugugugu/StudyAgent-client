@@ -441,10 +441,38 @@ pub async fn set_dida_token(token: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn sync_dida_now(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
     let data_dir = get_data_dir(state.inner())?;
+    // H2: reconcile_day 会读-改-写日计划（回填 dida_task_id），与计划生成等写命令串行化
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let today = crate::data::today_string();
     let (created, updated, deleted) = crate::sync::dida::reconcile_day(&data_dir, &today).await?;
     Ok(format!(
         "同步完成：新建 {} · 更新 {} · 删除 {}",
         created, updated, deleted
     ))
+}
+
+/// 回读滴答清单当日已完成任务标题（带 studyagent 标签，已还原为计划原标题）
+///
+/// 复盘页加载时调用，用于把手机端已勾选的任务自动标记为完成。
+/// 前端调用: `invoke('fetch_dida_completed_titles', { date: '2026-08-28' })`
+#[tauri::command]
+pub async fn fetch_dida_completed_titles(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<String>, String> {
+    crate::data::validate_date(&date)?;
+    let data_dir = get_data_dir(state.inner())?;
+    Ok(crate::sync::dida::fetch_completed_titles(&data_dir, &date).await)
+}
+
+/// 列出滴答清单项目（供设置页选择归属清单；需已启用同步并配置 Token）
+///
+/// 前端调用: `invoke('list_dida_projects')`
+#[tauri::command]
+pub async fn list_dida_projects(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::sync::dida::DidaProject>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    Ok(crate::sync::dida::fetch_projects(&data_dir).await)
 }

@@ -30,7 +30,7 @@
   --lg-glass-muted: rgba(29, 29, 31, 0.68);
   --lg-ambient-blue: rgba(91, 151, 255, 0.34);
   --lg-ambient-coral: rgba(255, 151, 119, 0.24);
-  --lg-focus-ring: rgba(0, 113, 227, 0.42);
+  --lg-focus-ring: color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 [data-theme='dark'][data-visual-mode='liquid-glass'] {
@@ -44,7 +44,7 @@
   --lg-glass-muted: rgba(245, 245, 247, 0.68);
   --lg-ambient-blue: rgba(78, 118, 255, 0.24);
   --lg-ambient-coral: rgba(255, 122, 91, 0.16);
-  --lg-focus-ring: rgba(105, 174, 255, 0.52);
+  --lg-focus-ring: color-mix(in srgb, var(--accent) 52%, transparent);
 }
 
 [data-visual-mode='liquid-glass'] body,
@@ -212,8 +212,8 @@
 }
 
 [data-visual-mode='liquid-glass'] .assistant-toggle.active {
-  background: rgba(0, 113, 227, 0.14);
-  border-color: rgba(0, 113, 227, 0.24);
+  background: var(--accent-subtle);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   color: var(--accent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
@@ -325,14 +325,14 @@
 
 /* Controls: tinted glass for primary actions, neutral glass for secondary ones. */
 [data-visual-mode='liquid-glass'] .ui-button.primary {
-  background: rgba(0, 113, 227, 0.82);
+  background: var(--accent);
   border: 1px solid rgba(255, 255, 255, 0.36);
   color: #fff;
-  box-shadow: 0 8px 18px rgba(0, 113, 227, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  box-shadow: 0 8px 18px var(--accent-subtle), inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
 [data-visual-mode='liquid-glass'] .ui-button.primary:hover {
-  background: rgba(0, 113, 227, 0.92);
+  background: var(--accent-hover);
   transform: translateY(-1px);
 }
 
@@ -382,8 +382,8 @@
 }
 
 [data-visual-mode='liquid-glass'] .ui-badge {
-  background: rgba(0, 113, 227, 0.12);
-  border: 1px solid rgba(0, 113, 227, 0.2);
+  background: var(--accent-subtle);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 

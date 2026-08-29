@@ -26,8 +26,10 @@ import {
   History,
   Coffee,
   Ban,
+  Smartphone,
+  Info,
 } from "lucide-vue-next";
-import type { TaskReviewEntry, DailyReviewInput, ReviewRecord, OvercompletionEntry } from "@/types";
+import type { TaskReviewEntry, DailyReviewInput, ReviewRecord, OvercompletionEntry, RegenDayChange } from "@/types";
 
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
@@ -121,14 +123,16 @@ interface RegenStatus {
   message: string;
   failed: boolean;
   timestamp: number;
+  /** 各受影响日期的任务变动明细（悬停展示；持久化便于切页/切日期后仍常驻） */
+  changes?: RegenDayChange[];
 }
 function loadRegenStatus(): RegenStatus | null {
   try {
     const raw = sessionStorage.getItem(REGEN_SESSION_KEY);
     if (!raw) return null;
     const status = JSON.parse(raw) as RegenStatus;
-    // 仅保留 10 分钟内的状态，过期视为陈旧
-    if (Date.now() - status.timestamp > 10 * 60 * 1000) {
+    // 仅保留 24 小时内的状态：重排提示在当天应常态化可见，过期视为陈旧
+    if (Date.now() - status.timestamp > 24 * 60 * 60 * 1000) {
       sessionStorage.removeItem(REGEN_SESSION_KEY);
       return null;
     }
@@ -150,6 +154,8 @@ const regenerating = ref(initialRegen?.regenerating ?? false);
 const regenMessage = ref(initialRegen?.message ?? "");
 // 需求：失败标记同样持久化，切页再回来仍保留重试按钮
 const regenFailed = ref(initialRegen?.failed ?? false);
+// 重排变更明细（悬停展示）：持久化，切页 / 切日期后再回来仍常驻展示
+const regenChanges = ref<RegenDayChange[]>(initialRegen?.changes ?? []);
 
 // 计划外学习：用户实际进度领先计划或做了计划外学习时填写
 const hasOvercompletion = ref(false);
@@ -204,6 +210,8 @@ const allTasks = computed(() => todayStore.allTasks);
 
 // Step 1: task completion (read from state, initialized from task.status)
 const taskCompleted = ref<Record<string, boolean>>({});
+// 滴答清单回读命中数：手机端已勾选完成、在复盘页自动标记的任务数量
+const didaMatchedCount = ref(0);
 
 // Step 2: blockers (per incomplete Priority A task)
 const taskBlockers = ref<Record<string, string[]>>({});
@@ -374,6 +382,28 @@ function initFromState() {
   }
 }
 
+/** 回读滴答清单当日已完成任务，把手机端勾选完成的任务在复盘页自动标记为完成 */
+async function loadDidaCompleted() {
+  const target = selectedDate.value;
+  didaMatchedCount.value = 0;
+  try {
+    const titles = await api.fetchDidaCompletedTitles(target);
+    // 回读期间用户已切换日期：丢弃本次结果，避免勾选串到别的日期
+    if (selectedDate.value !== target) return;
+    if (!titles.length) return;
+    let matched = 0;
+    for (const task of allTasks.value) {
+      if (titles.includes(task.title)) {
+        taskCompleted.value[task.id] = true;
+        matched++;
+      }
+    }
+    didaMatchedCount.value = matched;
+  } catch {
+    // 未启用同步 / 未配置 Token / 网络异常等场景静默忽略，不阻塞复盘
+  }
+}
+
 // 从已有复盘初始化（用于查看模式展示，兼容旧版与新版）
 function initFromReview(review: ReviewRecord) {
   // 新版：优先使用 task_reviews
@@ -515,6 +545,7 @@ async function executeRegeneration() {
     message: regenMessage.value,
     failed: false,
     timestamp: Date.now(),
+    changes: regenChanges.value,
   });
   try {
     const regenResult = await api.regenerateRemainingDays(selectedDate.value);
@@ -528,6 +559,8 @@ async function executeRegeneration() {
     } else {
       regenMessage.value = "本次复盘无需调整后续计划。";
     }
+    // 保存逐日变更明细（悬停查看具体修改了哪些内容）
+    regenChanges.value = regenResult.changes ?? [];
     // 一致性校验：声明了计划外进度的科目未在计划中生效时，追加警告提示
     if (regenResult.consistency_warnings?.length) {
       regenMessage.value += `\n${regenResult.consistency_warnings.join("\n")}`;
@@ -538,6 +571,7 @@ async function executeRegeneration() {
     const detail = e instanceof Error ? e.message : String(e);
     regenMessage.value = `调整失败：${detail}（不影响复盘结果）`;
     regenFailed.value = true;
+    regenChanges.value = [];
   } finally {
     regenerating.value = false;
     if (regenMessage.value) {
@@ -547,6 +581,7 @@ async function executeRegeneration() {
         message: regenMessage.value,
         failed: regenFailed.value,
         timestamp: Date.now(),
+        changes: regenChanges.value,
       });
     } else {
       clearRegenStatus();
@@ -598,13 +633,19 @@ async function loadReviewData() {
   existingReview.value = null;
   submitted.value = false;
 
-  // 若当前 regen 状态不属于该日期，清除提示（避免查看历史复盘时显示陈旧消息）
+  // 重排提示：会话内持久化（sessionStorage），切换日期不清除、切回仍有；
+  // 仅当持久化记录属于当前日期时才展示，避免在别的日期误显示陈旧的调整提示
   const persistedRegen = loadRegenStatus();
-  if (persistedRegen && persistedRegen.date !== selectedDate.value) {
-    clearRegenStatus();
+  if (persistedRegen && persistedRegen.date === selectedDate.value) {
+    regenerating.value = persistedRegen.regenerating;
+    regenMessage.value = persistedRegen.message;
+    regenFailed.value = persistedRegen.failed;
+    regenChanges.value = persistedRegen.changes ?? [];
+  } else {
     regenerating.value = false;
     regenMessage.value = "";
     regenFailed.value = false;
+    regenChanges.value = [];
   }
 
   try {
@@ -627,9 +668,14 @@ async function loadReviewData() {
       // 无已有复盘
     }
 
-    // 如果不是只读模式，从 state 初始化任务完成状态
+    // 如果不是只读模式，从 state 初始化任务完成状态；
+    // 仅当该日期可填写复盘（今天已过结束时间 / 昨天补复盘窗口）时才回读滴答，
+    // 且不阻塞加载（异步应用勾选结果）
     if (!submitted.value) {
       initFromState();
+      if (canFillReview.value) {
+        loadDidaCompleted();
+      }
     }
   } finally {
     loading.value = false;
@@ -824,7 +870,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
     </Card>
 
     <!-- Submitting / AI regenerating -->
-    <Card v-else-if="submitting || regenerating" padding="lg" class="gate-card">
+    <!-- 置于「已提交」分支之前：复盘已保存但 AI 仍在调整时，切页回来也优先显示调整中页面 -->
+    <Card v-if="submitting || regenerating" padding="lg" class="gate-card">
       <div class="gate-hero">
         <div class="gate-icon"><LoadingSpinner :size="40" /></div>
         <h1 class="gate-title">{{ regenerating ? '正在调整后续计划…' : '正在保存复盘…' }}</h1>
@@ -852,6 +899,37 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             <CheckCircle2 :size="18" v-else-if="!regenFailed" />
             <AlertTriangle :size="18" v-else />
             <span>{{ regenMessage }}</span>
+            <!-- 变更明细：常态化展示调整提示，鼠标悬停查看具体修改了哪些内容 -->
+            <div
+              v-if="regenChanges.length && !regenerating"
+              class="regen-details-trigger"
+            >
+              <Info :size="13" />
+              <span>悬停查看变更</span>
+              <div class="regen-details-popover">
+                <div v-if="regenFailed" class="regen-detail-fallback">
+                  本次为兜底安排（按未完成任务程序化分配），各日任务如下：
+                </div>
+                <div v-for="c in regenChanges" :key="c.date" class="regen-detail-day">
+                  <div class="regen-detail-date">{{ c.date }}</div>
+                  <div v-for="t in c.added" :key="'a' + t" class="regen-detail-item add">
+                    ＋{{ t }}
+                  </div>
+                  <div v-for="r in c.removed" :key="'r' + r" class="regen-detail-item remove">
+                    －{{ r }}
+                  </div>
+                  <div v-for="(adj, i) in c.adjusted" :key="'m' + i" class="regen-detail-item modify">
+                    ✎ {{ adj[0] }} → {{ adj[1] }}
+                  </div>
+                  <div
+                    v-if="!c.added.length && !c.removed.length && !c.adjusted.length"
+                    class="regen-detail-item none"
+                  >
+                    任务量分配微调，无标题变动
+                  </div>
+                </div>
+              </div>
+            </div>
             <Button v-if="regenFailed" variant="primary" size="sm" @click="retryRegeneration" :loading="regenerating" class="regen-retry-btn">
               重新生成
             </Button>
@@ -1002,6 +1080,10 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       <Card v-if="step === 0" padding="lg" class="step-card">
         <h2 class="step-title">任务完成情况</h2>
         <p class="step-desc">勾选{{ isYesterday ? '昨天' : '今天' }}已完成的任务（自动读取 State 中的完成状态）</p>
+        <div v-if="didaMatchedCount > 0" class="dida-sync-note">
+          <Smartphone :size="13" />
+          <span>已在滴答清单完成 {{ didaMatchedCount }} 项任务，已为你自动勾选；如需调整可直接点击。</span>
+        </div>
         <div class="task-review-list">
           <div v-for="task in allTasks" :key="task.id" class="task-review-item"
             :class="{ done: taskCompleted[task.id] }">
@@ -1337,6 +1419,18 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 .step-desc { font-size: var(--text-sm); color: var(--text-secondary); margin: 0; margin-top: -12px; }
 
+/* 滴答回读提示 */
+.dida-sync-note {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-subtle, color-mix(in srgb, var(--accent) 10%, transparent));
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs); color: var(--accent, var(--text-secondary));
+  margin-top: var(--space-3);
+  line-height: var(--leading-normal);
+}
+.dida-sync-note svg { flex-shrink: 0; }
+
 /* Task list */
 .task-review-list { display: flex; flex-direction: column; gap: var(--space-3); }
 .task-review-item {
@@ -1461,7 +1555,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .done-hint { font-size: var(--text-sm); color: var(--text-tertiary); margin: 0; }
 
 .regen-banner {
-  display: flex; align-items: center; gap: var(--space-2);
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
@@ -1469,6 +1563,61 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   background: var(--color-info-subtle, var(--bg-tertiary));
   color: var(--color-info, var(--text-secondary));
 }
+
+/* ── 重排变更明细：悬停查看 ── */
+.regen-details-trigger {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  font-size: var(--text-xs); cursor: help;
+  color: inherit; opacity: 0.9;
+  position: relative;
+}
+.regen-details-trigger:hover {
+  text-decoration: underline; opacity: 1;
+}
+.regen-details-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  min-width: 320px;
+  max-width: 460px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-3);
+  background: var(--bg-elevated, var(--bg-primary));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.18));
+  text-align: left;
+  color: var(--text-primary);
+}
+.regen-details-trigger:hover .regen-details-popover,
+.regen-details-trigger:focus-within .regen-details-popover {
+  display: block;
+}
+.regen-detail-fallback {
+  font-size: var(--text-xs); color: var(--text-tertiary);
+  margin-bottom: var(--space-2); line-height: var(--leading-normal);
+}
+.regen-detail-day {
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-color);
+  display: flex; flex-direction: column; gap: var(--space-1);
+}
+.regen-detail-day:first-child { border-top: none; padding-top: 0; }
+.regen-detail-date {
+  font-size: var(--text-xs); font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
+.regen-detail-item {
+  font-size: var(--text-xs); line-height: var(--leading-normal);
+  margin-left: var(--space-2); word-break: break-all;
+}
+.regen-detail-item.add { color: var(--color-success); }
+.regen-detail-item.remove { color: var(--color-danger); }
+.regen-detail-item.modify { color: var(--color-warning); }
+.regen-detail-item.none { color: var(--text-tertiary); }
 .regen-banner.regen-loading {
   background: var(--color-warning-subtle, var(--bg-tertiary));
   color: var(--color-warning, var(--text-primary));

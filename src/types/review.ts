@@ -158,6 +158,18 @@ export interface SubmitReviewResult {
   briefing_generating?: boolean;
 }
 
+/** 单个受影响日期的任务变动摘要（重排前后对比） */
+export interface RegenDayChange {
+  /** 受影响日期 (YYYY-MM-DD) */
+  date: string;
+  /** 该日新增的任务标题 */
+  added: string[];
+  /** 该日被移除的任务标题 */
+  removed: string[];
+  /** 该日标题变化的任务（原标题 → 新标题） */
+  adjusted: [string, string][];
+}
+
 /** 重排剩余天数的返回结果 */
 export interface RegenerateResult {
   /** 是否实际执行了重排 */
@@ -168,4 +180,6 @@ export interface RegenerateResult {
   used_fallback?: boolean;
   /** 一致性校验警告：声明了计划外进度的科目重排后未生效时给出提示 */
   consistency_warnings?: string[];
+  /** 各受影响日期的任务变动明细（悬停提示展示） */
+  changes?: RegenDayChange[];
 }

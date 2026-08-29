@@ -35,11 +35,6 @@ export function useDashboardAnimation() {
       stored = localStorage.getItem(`studyagent.${hintKey}`) ?? "";
     }
     if (stored === todayDateStr) return;
-    try {
-      await setUiFlag(hintKey, todayDateStr);
-    } catch {
-      localStorage.setItem(`studyagent.${hintKey}`, todayDateStr);
-    }
     // 全屏遮罩：背景变暗 + 文字闪烁
     showBriefingOverlay.value = true;
     overlayLeaving.value = false;
@@ -50,8 +45,20 @@ export function useDashboardAnimation() {
         if (unmounted) return;
         showBriefingOverlay.value = false;
         overlayLeaving.value = false;
+        // M6：展示完成后再落盘「已提示」，避免展示中断（崩溃/切页）导致当天错过提示
+        void persistHint(todayDateStr);
       }, 350);
     }, 1750);
+  }
+
+  /** 展示结束后持久化「今日已提示」标记（失败回退 localStorage） */
+  async function persistHint(day: string) {
+    const hintKey = "briefing_hint_viewed";
+    try {
+      await setUiFlag(hintKey, day);
+    } catch {
+      localStorage.setItem(`studyagent.${hintKey}`, day);
+    }
   }
 
   function playEntranceAnimation() {

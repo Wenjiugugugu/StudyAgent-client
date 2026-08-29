@@ -311,13 +311,10 @@ pub async fn generate_daily_plan(
     let planner = Planner::new(&ai_service);
     let result = planner.generate_daily_plan(&data_dir, &date).await;
 
-    // 同步滴答：日计划生成后按日对账（失败仅记录，不影响主流程）
-    if result.is_ok()
-        && crate::sync::dida::reconcile_day(&data_dir, &date)
-            .await
-            .is_err()
-    {
-        // 具体错误已在 reconcile_day 内记录
+    // 同步滴答：日计划生成后后台按日对账（H1：不阻塞主流程；后台任务自行持 io_lock 串行化落盘）
+    if result.is_ok() {
+        let io_lock = crate::get_io_lock(state.inner())?;
+        crate::sync::dida::spawn_reconcile_day(io_lock, data_dir, date);
     }
     result
 }
@@ -357,15 +354,16 @@ pub async fn generate_week_plan(
         )
         .await;
 
-    // 同步滴答：周计划生成会逐天生成日计划，对本周 7 天按日对账（失败仅记录）
+    // 同步滴答：周计划生成会逐天生成日计划，后台对本周 7 天按日对账（H1：不阻塞主流程）
     if result.is_ok() {
+        let mut dates = Vec::with_capacity(7);
         for i in 0..7i64 {
             if let Ok(d) = crate::data::add_days(&week_start, i) {
-                if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, &d).await {
-                    log::warn!("[dida] 周计划生成后同步 {} 失败: {}", d, e);
-                }
+                dates.push(d);
             }
         }
+        let io_lock = crate::get_io_lock(state.inner())?;
+        crate::sync::dida::spawn_reconcile_days(io_lock, data_dir, dates);
     }
     result
 }
@@ -403,12 +401,9 @@ pub async fn add_excluded_day_and_regenerate(
         .regenerate_after_exclusion(&data_dir, &week_start, excluded_day)
         .await?;
 
-    // 同步滴答：对重排影响的日期按日对账（失败仅记录）
-    for d in &affected_dates {
-        if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, d).await {
-            log::warn!("[dida] 排除日重排后同步 {} 失败: {}", d, e);
-        }
-    }
+    // 同步滴答：对重排影响的日期后台按日对账（H1：不阻塞主流程）
+    let io_lock = crate::get_io_lock(state.inner())?;
+    crate::sync::dida::spawn_reconcile_days(io_lock, data_dir, affected_dates.clone());
 
     Ok(RegenerateResult {
         regenerated,
@@ -416,6 +411,8 @@ pub async fn add_excluded_day_and_regenerate(
         used_fallback,
         // 排除日重排不涉及计划外进度，一致性警告为空
         consistency_warnings: Vec::new(),
+        // 排除日重排暂不提供逐日变更明细
+        changes: Vec::new(),
     })
 }
 
@@ -446,7 +443,7 @@ pub async fn regenerate_remaining_days(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates, used_fallback, consistency_warnings) = planner
+    let (regenerated, affected_dates, used_fallback, consistency_warnings, changes) = planner
         .regenerate_remaining_days_after_review(&data_dir, &review_date)
         .await?;
 
@@ -462,5 +459,6 @@ pub async fn regenerate_remaining_days(
         affected_dates,
         used_fallback,
         consistency_warnings,
+        changes,
     })
 }
