@@ -78,7 +78,7 @@ export interface UpdateAsset {
   download_url: string;
   /** 文件大小（字节） */
   size: number;
-  /** 资源类型推测：`nsis` / `msi` / `exe` / `unknown` */
+  /** 资源类型推测：`inno` / `nsis`（旧版）/ `msi` / `exe` / `unknown` */
   kind: string;
   /** 必填的文件 SHA-256；后端会过滤缺少校验值的资产 */
   sha256: string;

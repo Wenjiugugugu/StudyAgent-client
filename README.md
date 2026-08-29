@@ -55,6 +55,7 @@
 
 - Node.js 18+
 - Rust toolchain (仅 Tauri 构建时需要)
+- Inno Setup 6 (仅打包 Windows 安装程序时需要)
 - Windows 10/11
 
 ### 安装依赖
@@ -89,11 +90,25 @@ pnpm tauri:dev
 
 ### 构建安装包
 
-```bash
-pnpm tauri:build
+Windows 安装程序由 [Inno Setup 6](https://jrsoftware.org/isdl.php) 生成（Tauri 内置的 NSIS / MSI 打包已关闭）：
+
+```powershell
+pnpm install
+.\installer\build.ps1          # 已构建过 Rust 时加 -SkipBuild 只重新打包
 ```
 
-生成的安装包位于 `src-tauri/target/release/bundle/`。
+- `build.ps1` 先执行 `pnpm tauri build` 产出 `src-tauri/target/release/studyagent-desktop.exe`，
+  再调用 `ISCC.exe` 编译 `installer/StudyAgent.iss`。
+- 产物：`src-tauri/target/release/bundle/inno/StudyAgent_<version>_x64-setup.exe`
+
+安装程序源码：
+
+```
+installer/                    # Windows 安装程序（Inno Setup）
+├── StudyAgent.iss            #   安装脚本：安装模式 / 快捷方式 / 卸载与数据清理
+├── build.ps1                 #   一键构建：tauri build → 暂存 → ISCC 编译
+└── assets/                   #   向导位图与生成脚本（generate_assets.py）
+```
 
 ## 项目结构
 

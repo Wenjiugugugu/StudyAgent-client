@@ -28,11 +28,12 @@ export const useUpdateStore = defineStore("update", () => {
 
   const hasUpdate = computed(() => updateResult.value?.has_update ?? false);
 
-  // 当前选中的安装包（默认 nsis）
+  // 当前选中的安装包（默认 Inno Setup 生成的 Windows 安装包）
   const preferredAsset = computed(() => {
     const assets = updateResult.value?.assets ?? [];
     if (assets.length === 0) return null;
     return (
+      assets.find((a) => a.kind === "inno") ??
       assets.find((a) => a.kind === "nsis") ??
       assets.find((a) => a.kind === "exe") ??
       assets.find((a) => a.kind === "msi") ??
@@ -43,8 +44,10 @@ export const useUpdateStore = defineStore("update", () => {
   // 安装包类型展示名
   function assetLabel(kind: string): string {
     switch (kind) {
+      case "inno":
+        return "Windows 安装包（推荐）";
       case "nsis":
-        return "NSIS 安装包（推荐）";
+        return "Windows 安装包（旧版）";
       case "msi":
         return "MSI 安装包";
       case "exe":

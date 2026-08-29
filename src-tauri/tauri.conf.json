@@ -30,8 +30,8 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": ["nsis", "msi"],
+    "active": false,
+    "targets": [],
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",
@@ -39,20 +39,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "languages": ["SimpChinese"],
-        "displayLanguageSelector": false,
-        "template": "nsis/installer.nsi",
-        "installerIcon": "icons/icon.ico",
-        "uninstallerIcon": "icons/icon.ico",
-        "sidebarImage": "nsis/sidebar.bmp",
-        "headerImage": "nsis/header.bmp",
-        "uninstallerHeaderImage": "nsis/header.bmp"
-      }
-    }
+    ]
   },
   "plugins": {
     "shell": {

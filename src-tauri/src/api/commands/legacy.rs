@@ -943,12 +943,17 @@ pub(super) const GITHUB_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/Wenjiugugugu/StudyAgent-client/releases/latest";
 
 /// 推测资源类型
+///
+/// 安装程序现由 Inno Setup 生成（约定命名为 `*-setup.exe`）；
+/// `nsis` 仅保留用于识别历史 release 里遗留的旧安装包。
 pub(super) fn detect_asset_kind(name: &str) -> String {
     let lower = name.to_lowercase();
-    if lower.ends_with("-setup.exe") || lower.contains("nsis") {
-        "nsis".to_string()
-    } else if lower.ends_with(".msi") {
+    if lower.ends_with(".msi") {
         "msi".to_string()
+    } else if lower.ends_with("-setup.exe") || lower.contains("inno") {
+        "inno".to_string()
+    } else if lower.contains("nsis") {
+        "nsis".to_string()
     } else if lower.ends_with(".exe") {
         "exe".to_string()
     } else {
