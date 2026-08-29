@@ -32,6 +32,9 @@ const SOURCE_TAG: &str = "studyagent";
 const TIMEZONE: &str = "Asia/Shanghai";
 /// 滴答 MCP 单次 HTTP 请求超时：同步是「尽力而为」的旁路，绝不允许拖垮主流程
 const MCP_TIMEOUT: Duration = Duration::from_secs(10);
+/// 单次对账（reconcile_day）总时限：内部多请求串行（含逐任务增删改），
+/// 半死不活的服务端可能让每个请求都耗尽 10s，总时限保证整体封顶。
+const MCP_RECONCILE_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ============================================================================
 // 标签与字段映射（规范化）
@@ -638,7 +641,29 @@ pub fn spawn_reconcile_days(
 /// 按日对账：计划 JSON 任务 ↔ 滴答任务（增删改增量；只动带 studyagent 标签的任务）
 ///
 /// 返回 `(created, updated, deleted)` 计数摘要；失败只记录日志。
+/// 整体执行受 `MCP_RECONCILE_TIMEOUT` 总时限约束（覆盖内部逐任务写请求的累加时长）；
+/// 中途超时放弃本次同步，残留的滴答侧改动会在下次对账时按标题收养/删除自动收敛。
 pub async fn reconcile_day(data_dir: &Path, date: &str) -> Result<(i32, i32, i32), String> {
+    match tokio::time::timeout(MCP_RECONCILE_TIMEOUT, reconcile_day_inner(data_dir, date)).await {
+        Ok(Ok((c, u, d))) => Ok((c, u, d)),
+        Ok(Err(e)) => Err(e),
+        Err(_) => {
+            log::warn!(
+                "[dida] 对账 {} 超过总时限 {}s，放弃本次同步",
+                date,
+                MCP_RECONCILE_TIMEOUT.as_secs()
+            );
+            Err(format!(
+                "对账 {} 超过总时限 {}s",
+                date,
+                MCP_RECONCILE_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+/// 对账主体（无总时限，由 `reconcile_day` 统一包裹）
+async fn reconcile_day_inner(data_dir: &Path, date: &str) -> Result<(i32, i32, i32), String> {
     if !is_sync_enabled(data_dir) {
         return Ok((0, 0, 0));
     }
