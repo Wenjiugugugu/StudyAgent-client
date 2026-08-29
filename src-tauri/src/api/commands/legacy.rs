@@ -148,6 +148,22 @@ pub struct SubmitReviewResult {
     pub briefing_generating: bool,
 }
 
+/// 单个受影响日期的任务变动摘要（重排前后对比）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RegenDayChange {
+    /// 受影响日期 (YYYY-MM-DD)
+    pub date: String,
+    /// 该日新增的任务标题
+    #[serde(default)]
+    pub added: Vec<String>,
+    /// 该日被移除的任务标题
+    #[serde(default)]
+    pub removed: Vec<String>,
+    /// 该日标题变化的（原标题 → 新标题）
+    #[serde(default)]
+    pub adjusted: Vec<(String, String)>,
+}
+
 /// regenerate_remaining_days 的返回结构
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RegenerateResult {
@@ -161,6 +177,9 @@ pub struct RegenerateResult {
     /// 一致性校验警告：声明了计划外进度的科目重排后未生效时给出提示
     #[serde(default)]
     pub consistency_warnings: Vec<String>,
+    /// 各受影响日期的任务变动明细（重排前后标题对比，供前端悬停展示）
+    #[serde(default)]
+    pub changes: Vec<RegenDayChange>,
 }
 
 // ============================================================================

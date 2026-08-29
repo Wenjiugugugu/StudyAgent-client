@@ -8,6 +8,7 @@ use std::path::Path;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
+use crate::api::commands::legacy::RegenDayChange;
 use crate::core::scheduler::DailyScheduler;
 use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment};
 use crate::data::state::StudyState;
@@ -197,7 +198,7 @@ impl<'a> Planner<'a> {
         &self,
         data_dir: &Path,
         review_date: &str,
-    ) -> DataResult<(bool, Vec<String>, bool, Vec<String>)> {
+    ) -> DataResult<(bool, Vec<String>, bool, Vec<String>, Vec<RegenDayChange>)> {
         crate::data::write_ai_debug_log(
             data_dir,
             "regenerate_start",
@@ -217,7 +218,7 @@ impl<'a> Planner<'a> {
                 "复盘 {} 无需重排剩余天数（无未完成/困难/额外进度）",
                 review_date
             );
-            return Ok((false, Vec::new(), false, Vec::new()));
+            return Ok((false, Vec::new(), false, Vec::new(), Vec::new()));
         }
 
         // 3. 读取本周周计划
@@ -237,7 +238,7 @@ impl<'a> Planner<'a> {
                 "复盘 {} 之后已无剩余天数需要重排（本周已结束）",
                 review_date
             );
-            return Ok((false, Vec::new(), false, Vec::new()));
+            return Ok((false, Vec::new(), false, Vec::new(), Vec::new()));
         }
 
         // 收集需要重排的日期
@@ -466,6 +467,10 @@ impl<'a> Planner<'a> {
 
         // 10. 重新生成所有受影响日期的日计划文件
         Self::regenerate_daily_plans_for_dates(data_dir, &week_plan, &regen_dates, "review_regen")?;
+
+        // 10.5 对比重排前后周计划，汇总各受影响日期的任务变动明细（供前端悬停展示）
+        let changes = compute_regen_changes(&original_before, &week_plan, &regen_dates);
+
         crate::data::write_ai_debug_log(
             data_dir,
             "regenerate_complete",
@@ -475,7 +480,13 @@ impl<'a> Planner<'a> {
             ),
         );
 
-        Ok((true, regen_dates, used_fallback, consistency_warnings))
+        Ok((
+            true,
+            regen_dates,
+            used_fallback,
+            consistency_warnings,
+            changes,
+        ))
     }
 
     /// 周中新增排除日后，重新生成本周剩余天数的周计划安排（AI 驱动）
@@ -2571,6 +2582,67 @@ fn enforce_past_days_empty(plan: &mut WeekPlanFile) {
 pub fn check_review_needs_regeneration(review: &crate::data::records::ReviewFile) -> bool {
     crate::core::planning::pure::check_review_needs_regeneration(review)
 }
+
+/// 汇总重排前后各受影响日期的任务变动明细（标题级 diff，供前端悬停展示）
+///
+/// - `added`：新计划有而旧计划没有的任务标题
+/// - `removed`：旧计划有而新计划没有的任务标题
+/// - `adjusted`：标题发生变化的（原标题 → 新标题）
+fn compute_regen_changes(
+    before: &WeekPlanFile,
+    after: &WeekPlanFile,
+    dates: &[String],
+) -> Vec<RegenDayChange> {
+    fn day_titles(plan: &WeekPlanFile, date: &str) -> Vec<String> {
+        plan.data
+            .days
+            .iter()
+            .find(|d| d.date == date)
+            .map(|d| {
+                d.subject_allocations
+                    .iter()
+                    .flat_map(|a| a.task_templates.iter().map(|t| t.title.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    dates
+        .iter()
+        .map(|date| {
+            let before_titles = day_titles(before, date);
+            let after_titles = day_titles(after, date);
+
+            // adjusted：同一顺序/同名位置的标题变化简化为「原标题 → 新标题」配对（按位置对齐，尽力而为）
+            let mut adjusted: Vec<(String, String)> = Vec::new();
+            for (b, a) in before_titles.iter().zip(after_titles.iter()) {
+                if b != a {
+                    adjusted.push((b.clone(), a.clone()));
+                }
+            }
+
+            let before_set: std::collections::HashSet<&String> = before_titles.iter().collect();
+            let after_set: std::collections::HashSet<&String> = after_titles.iter().collect();
+            let added: Vec<String> = after_titles
+                .iter()
+                .filter(|t| !before_set.contains(t))
+                .cloned()
+                .collect();
+            let removed: Vec<String> = before_titles
+                .iter()
+                .filter(|t| !after_set.contains(t))
+                .cloned()
+                .collect();
+
+            RegenDayChange {
+                date: date.clone(),
+                added,
+                removed,
+                adjusted,
+            }
+        })
+        .collect()
+}
 fn save_week_plan_original(data_dir: &Path, plan: &WeekPlanFile) -> DataResult<()> {
     let iso_week = iso_week_string(&plan.meta.week_start)?;
     let path = crate::data::plan::week_plan_path(data_dir, &format!("{}_original", iso_week));
@@ -2784,10 +2856,8 @@ fn filter_ahead_of_progress(
                 });
                 if alloc.task_templates.len() != before {
                     changed = true;
-                    let sum: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
-                    if sum > 0.0 {
-                        alloc.hours = sum;
-                    }
+                    // M4：剔除后按剩余模板重算时长（全部被剔除时为 0，避免「0 模板残留时长」）
+                    alloc.hours = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
                 }
             }
         }

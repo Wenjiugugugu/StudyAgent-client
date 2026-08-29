@@ -41,12 +41,18 @@ function renderInline(raw: string, highlightTerms: string[] = []): string {
       ? reserve(`<a href="${safe}" target="_blank" rel="noopener noreferrer" class="md-link">${escapeHtml(label)}</a>`)
       : label;
   });
-  text = escapeHtml(text);
 
+  // M9：高亮在转义**前**对原文匹配——此时行内代码/链接已替换为占位符（不参与匹配），
+  // 避免在转义后的文本上误命中 HTML 实体（如搜索 "amp"）或嵌套 <mark>
   for (const term of highlightTerms) {
-    const escaped = escapeHtml(term);
-    if (escaped) text = text.replace(new RegExp(`(${escapeRegExp(escaped)})`, "gi"), '<mark class="md-hit">$1</mark>');
+    const trimmed = term.trim();
+    if (!trimmed) continue;
+    text = text.replace(new RegExp(`(${escapeRegExp(trimmed)})`, "gi"), (_match, m: string) =>
+      reserve(`<mark class="md-hit">${escapeHtml(m)}</mark>`),
+    );
   }
+
+  text = escapeHtml(text);
 
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");

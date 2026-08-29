@@ -108,9 +108,11 @@ export interface SubjectStartDates {
 /** TickTick 配置 */
 export interface TickTickConfig {
   enabled: boolean;
+  /** 归属清单 project_id（留空则自动选「学习」/首个未关闭清单）；与后端 dida 模块一致 */
+  project_id?: string;
   /** OAuth 或 Cookie 认证信息 */
   access_token?: string;
-  /** 默认项目 ID（学习列表） */
+  /** 默认项目 ID（学习列表），遗留字段（后端以 project_id 为准） */
   default_project_id?: string;
   /** 任务标签前缀 */
   tag_prefix: string;

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settings";
+import { getUiFlag, setUiFlag } from "@/api";
 import Logo from "@/components/Logo.vue";
 import {
   LayoutDashboard,
@@ -30,12 +31,24 @@ const route = useRoute();
 const isDev = import.meta.env.DEV;
 
 // ── 侧边栏收展（收起后仅显示图标）──
+// M7：持久化改走「后端 ui_flags 文件」（localStorage 部分环境随重启丢失）；
+// 本地值先用于首帧渲染，挂载后以后端为准校正。
 const COLLAPSE_KEY = "studyagent.sidebar.collapsed";
 const collapsed = ref(localStorage.getItem(COLLAPSE_KEY) === "1");
+
+onMounted(async () => {
+  try {
+    const stored = await getUiFlag(COLLAPSE_KEY);
+    if (stored === "1" || stored === "0") collapsed.value = stored === "1";
+  } catch {
+    // 浏览器/命令失败：保持 localStorage 初值
+  }
+});
 
 function toggleCollapse() {
   collapsed.value = !collapsed.value;
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? "1" : "0");
+  void setUiFlag(COLLAPSE_KEY, collapsed.value ? "1" : "0").catch(() => {});
   nextTick(updateIndicator);
 }
 

@@ -1,4 +1,4 @@
-﻿//! AI Provider Trait — 统一 AI Provider 接口定义
+//! AI Provider Trait — 统一 AI Provider 接口定义
 //!
 //! 对应前端 TypeScript 类型: `types/ai.ts`
 
@@ -391,10 +391,18 @@ pub fn max_context_length_for(config: &AIProviderConfig) -> u32 {
 pub fn context_length_for_model(provider: &ProviderType, model: &str) -> u32 {
     let model = model.trim().to_lowercase();
     if !model.is_empty() {
+        // 取「模型名包含的模式」中**最长**者：表内具体型号在前，但显式取最长可避免
+        // 短模式（如 "qwen"）误命中泛化档位（如 "qwen-turbo" 的 1M 窗口）
+        let mut best_len = 0usize;
+        let mut best: Option<u32> = None;
         for (pat, len) in MODEL_CONTEXT_TABLE {
-            if model.contains(pat) {
-                return *len;
+            if model.contains(pat) && pat.len() > best_len {
+                best_len = pat.len();
+                best = Some(*len);
             }
+        }
+        if let Some(len) = best {
+            return len;
         }
     }
     provider_default_context_length(provider)

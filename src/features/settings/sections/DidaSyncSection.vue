@@ -12,6 +12,7 @@ import Button from "@/components/ui/Button.vue";
 import Badge from "@/components/ui/Badge.vue";
 import { useSettingsStore } from "@/stores/settings";
 import { settingsApi } from "../api";
+import type { DidaProject } from "../api";
 import { Cloud, RefreshCw, KeyRound, Check } from "lucide-vue-next";
 
 const settingsStore = useSettingsStore();
@@ -27,6 +28,13 @@ const toggleSaving = ref(false);
 const toggleSavedFlash = ref(false);
 const syncRunning = ref(false);
 const syncResult = ref<string | null>(null);
+
+// 归属清单选择（M5）：任务写入的滴答清单，留空 = 自动选择「学习」/首个未关闭清单
+const projects = ref<DidaProject[]>([]);
+const projectsLoading = ref(false);
+const projectSaving = ref(false);
+const selectedProjectId = ref("");
+const currentProjectId = computed(() => settingsStore.settings?.ticktick?.project_id ?? "");
 
 /** Token 状态徽标（随保存结果实时切换） */
 const tokenBadge = computed(() => {
@@ -45,7 +53,45 @@ async function refreshTokenStatus() {
   }
 }
 
-onMounted(refreshTokenStatus);
+/** 拉取滴答清单列表（仅在已启用同步时拉取；失败静默为空） */
+async function loadProjects() {
+  if (!enabled.value) {
+    projects.value = [];
+    return;
+  }
+  projectsLoading.value = true;
+  try {
+    projects.value = await settingsApi.listDidaProjects();
+  } catch {
+    projects.value = [];
+  } finally {
+    projectsLoading.value = false;
+  }
+}
+
+/** 保存归属清单选择（独立保存，立即生效） */
+async function changeProject() {
+  if (!settingsStore.settings) return;
+  settingsStore.settings.ticktick = {
+    ...(settingsStore.settings.ticktick ?? { enabled: false, tag_prefix: "计划" }),
+    project_id: selectedProjectId.value,
+  };
+  projectSaving.value = true;
+  try {
+    await settingsStore.save();
+  } catch {
+    // 保存失败回滚显示为当前已持久化值
+    selectedProjectId.value = currentProjectId.value;
+  } finally {
+    projectSaving.value = false;
+  }
+}
+
+onMounted(() => {
+  void refreshTokenStatus();
+  selectedProjectId.value = currentProjectId.value;
+  void loadProjects();
+});
 
 async function toggleEnabled() {
   if (!settingsStore.settings) return;
@@ -58,6 +104,7 @@ async function toggleEnabled() {
     await settingsStore.save();
     toggleSavedFlash.value = true;
     setTimeout(() => (toggleSavedFlash.value = false), 1800);
+    if (enabled.value) void loadProjects();
   } catch (e) {
     // 保存失败时回滚开关
     if (settingsStore.settings) {
@@ -80,6 +127,7 @@ async function saveToken() {
     await settingsApi.setDidaToken(value);
     token.value = "";
     await refreshTokenStatus();
+    if (enabled.value) void loadProjects();
     tokenSavedFlash.value = true;
     setTimeout(() => (tokenSavedFlash.value = false), 1800);
   } catch (e) {
@@ -163,6 +211,26 @@ async function runSync() {
       </div>
     </div>
 
+    <!-- 归属清单（M5）：选择任务写入的滴答清单 -->
+    <div class="item-row">
+      <div class="item-info">
+        <span class="item-name">归属清单</span>
+        <span class="item-sub">
+          {{ projectsLoading ? "加载清单中…" : "任务写入的滴答清单；留空则自动选「学习」或首个未关闭清单" }}
+        </span>
+      </div>
+      <select
+        v-model="selectedProjectId"
+        class="form-input project-select"
+        autocomplete="off"
+        :disabled="!enabled || projectsLoading || projectSaving"
+        @change="changeProject"
+      >
+        <option value="">自动选择</option>
+        <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+      </select>
+    </div>
+
     <!-- 立即同步 -->
     <div class="item-row">
       <div class="item-info">
@@ -206,5 +274,15 @@ async function runSync() {
 
 .token-error {
   color: var(--color-danger);
+}
+
+/* 归属清单选择：与输入框同宽，右侧对齐 */
+.project-select {
+  width: min(240px, 50%);
+  cursor: pointer;
+}
+.project-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

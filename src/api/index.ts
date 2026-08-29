@@ -868,6 +868,22 @@ export async function syncDidaNow(): Promise<string> {
   return invokeDirect<string>("sync_dida_now");
 }
 
+/** 回读滴答清单指定日期已完成任务标题（复盘页加载时用于自动勾选完成状态） */
+export async function fetchDidaCompletedTitles(date: string): Promise<string[]> {
+  return invokeDirect<string[]>("fetch_dida_completed_titles", { date });
+}
+
+/** 滴答清单项目（设置页选择归属清单用） */
+export interface DidaProject {
+  id: string;
+  name: string;
+}
+
+/** 列出滴答清单项目（需已启用同步并配置 Token；失败返回空数组） */
+export async function listDidaProjects(): Promise<DidaProject[]> {
+  return invokeDirect<DidaProject[]>("list_dida_projects");
+}
+
 /**
  * 获取应用版本号（来自 tauri.conf.json）
  */

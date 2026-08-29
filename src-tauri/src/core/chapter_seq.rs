@@ -1,4 +1,4 @@
-﻿//! chapter_seq — 内置「科目章节·知识点先后顺序表」（按官方考纲，随包编译分发）
+//! chapter_seq — 内置「科目章节·知识点先后顺序表」（按官方考纲，随包编译分发）
 //!
 //! 用途：复盘声明「实际进度」后，确定性判断剩余计划任务是否超前于用户实际进度，
 //! 并把超前（排在用户实际进度之前 / 已学过的内容）剔除/后置，真正改写周计划文件。
@@ -419,27 +419,31 @@ fn seq_for(subject: &str, version: &str) -> Option<&'static [&'static str]> {
 }
 
 /// 在当前版本顺序表中定位某文本（章节/知识点/任务标题）的位置。
-/// 匹配策略：在表中找能在文本中命中的**最长**条目，返回其下标。
-/// 未命中返回 None（视为无法确认顺序的内容，不做超前判定）。
+/// 匹配策略：在与文本存在包含关系的条目里取**最长者**（最具体），避免短文本
+/// 命中首个泛化条目导致定位偏早。未命中返回 None（视为无法确认顺序的内容，不做超前判定）。
 pub fn position(subject: &str, version: &str, text: &str) -> Option<usize> {
     let seq = seq_for(subject, version)?;
     let norm = normalize(text);
-    let mut best: Option<(usize, usize)> = None;
+    let mut contained_in_entry: Option<(usize, usize)> = None; // 条目 ⊆ 文本（任务标题包含知识条目），取最长条目
+    let mut entry_contains_text: Option<(usize, usize)> = None; // 文本 ⊆ 条目（进度填简写「线性表示」→ 命中「向量组的线性表示」），取最长条目
     for (idx, entry) in seq.iter().enumerate() {
         let ent = normalize(entry);
         if ent.is_empty() {
             continue;
         }
-        if norm.contains(&ent) && best.is_none_or(|(_, blen)| ent.len() > blen) {
-            best = Some((idx, ent.len()));
+        if norm.contains(&ent) && contained_in_entry.is_none_or(|(_, blen)| ent.len() > blen) {
+            contained_in_entry = Some((idx, ent.len()));
         }
-        // 文本是单个条目的子串（如进度就填「线性表示」→ 命中「向量组的线性表示」）
-        if ent.contains(&norm) && !norm.is_empty() && norm.len() >= 2 {
-            best = Some((idx, usize::MAX));
-            break;
+        if !norm.is_empty()
+            && norm.len() >= 2
+            && ent.contains(&norm)
+            && entry_contains_text.is_none_or(|(_, blen)| ent.len() > blen)
+        {
+            entry_contains_text = Some((idx, ent.len()));
         }
     }
-    best.map(|(i, _)| i)
+    // 文本是条目子串的匹配更具体，优先于条目是文本子串的匹配
+    entry_contains_text.or(contained_in_entry).map(|(i, _)| i)
 }
 
 /// 判断某任务标题是否**早于**用户实际进度（即已学过、不应再排）。
