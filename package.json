@@ -26,22 +26,22 @@
     "date-fns": "^4.1.0",
     "echarts": "^6.1.0",
     "katex": "^0.18.4",
-    "lucide-vue-next": "^0.474.0",
-    "pinia": "^2.3.1",
-    "vue": "^3.5.41",
+    "lucide-vue-next": "^1.0.0",
+    "pinia": "^4.0.3",
+    "vue": "^3.5.42",
     "vue-echarts": "^8.1.0",
-    "vue-router": "^4.5.0"
+    "vue-router": "^5.2.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.2.0",
     "@tauri-apps/cli-win32-x64-msvc": "^2.11.4",
-    "@vitejs/plugin-vue": "^5.2.1",
+    "@vitejs/plugin-vue": "^6.0.8",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.26",
-    "typescript": "~5.7.3",
-    "vite": "^6.1.0",
-    "vitest": "^3.2.4",
-    "vue-tsc": "^2.2.0"
+    "typescript": "~7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11",
+    "vue-tsc": "^3.3.11"
   },
   "packageManager": "pnpm@11.18.0+sha512.33d83c77da82f49fba836925c6f1b841181ec3132b670639bd012f7075f5c7cf634c5f870147c19aae7478fac01df09d8892e880454896edd23ee9b33757563c"
 }
