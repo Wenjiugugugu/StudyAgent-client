@@ -370,7 +370,20 @@ pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<
             command.arg("/i").arg(&canonical);
             command
         } else {
-            std::process::Command::new(&canonical)
+            // 安装包由 Inno Setup 生成：静默覆盖安装。
+            // /FORCECLOSEAPPLICATIONS 兜底关闭仍在运行的旧版本（本进程随后 exit），
+            // 新版本由安装脚本在 ssPostInstall 阶段拉起，这里不再传 /RESTARTAPPLICATIONS
+            // （否则可能出现「脚本启动 + Inno 重启」的双开）。
+            let mut command = std::process::Command::new(&canonical);
+            command.args([
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/SP-",
+                "/NOCANCEL",
+                "/FORCECLOSEAPPLICATIONS",
+            ]);
+            command
         };
         command
             .creation_flags(DETACHED_PROCESS)

@@ -13,6 +13,11 @@ export type ProviderType =
   | "siliconflow"
   | "dashscope"
   | "volcengine"
+  | "zhipu"
+  | "kimi"
+  | "longcat"
+  | "minimax"
+  | "mimo"
   | "custom";
 
 /** AI Provider 配置 */
@@ -141,6 +146,25 @@ export interface ModelInfo {
   created: number;
   /** 从 API 返回的额外元数据（如 max_tokens 等） */
   extra: Record<string, unknown>;
+}
+
+/** 余额查询结果（对应后端 `ai::balance::BalanceResult`，参考 cc-Switch 用量查询 extractor） */
+export interface ProviderBalanceResult {
+  success: boolean;
+  /** 命中的查询模板：openrouter / siliconflow / deepseek / moonshot / credit_grants / general_balance */
+  mode: string;
+  /** 剩余额度 */
+  remaining: number | null;
+  /** 已使用额度 */
+  used: number | null;
+  /** 总额度 */
+  total: number | null;
+  /** 货币/单位（USD / CNY / % / 次 等，未知为空字符串） */
+  unit: string;
+  /** 套餐/条目名（如智谱套餐等级、MiniMax 模型名），无则空 */
+  plan_name: string;
+  /** 展示用消息（失败原因；成功时为空） */
+  message: string;
 }
 
 /** 单条 AI 用量记录（对应后端 `data::ai_usage::AiUsageEntry`） */

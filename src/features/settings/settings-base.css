@@ -170,6 +170,15 @@
   flex-shrink: 0;
 }
 
+/* ── Provider 余额查询结果 ── */
+.settings-view .balance-line {
+  color: var(--color-success, #10b981);
+}
+
+.settings-view .balance-line.balance-error {
+  color: var(--color-danger, #ef4444);
+}
+
 .settings-view .empty-inline {
   font-size: var(--text-sm);
   color: var(--text-tertiary);

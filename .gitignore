@@ -63,8 +63,9 @@ src-tauri/gen/
 *.deb
 *.rpm
 *.AppImage
-*.nsis
 *.zip
+# Inno Setup 打包前的暂存目录
+installer/staging/
 
 # Runtime data（仅仓库根目录的运行数据，不误伤 src-tauri/src/data/ 源码）
 /data/

@@ -4,10 +4,10 @@
  * 承载 Provider 表单状态、模型列表动态加载、连接测试、保存/删除/设默认，
  * 以及「上下文超限自动修正 Max Tokens」逻辑（原 SettingsView 中 Provider 相关逻辑）。
  */
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useSettingsStore } from "@/stores/settings";
 import { settingsApi } from "../api";
-import type { AIProviderConfig, ProviderType, ModelInfo } from "@/types";
+import type { AIProviderConfig, ProviderType, ModelInfo, ProviderBalanceResult } from "@/types";
 
 export function useProviderEditor() {
   const settingsStore = useSettingsStore();
@@ -38,6 +38,39 @@ export function useProviderEditor() {
   }
 
   const providerForm = ref<AIProviderConfig>(emptyProvider());
+
+  // 各 Provider 类型的默认 Base URL。
+  // 切换类型时：
+  // 1. 若 base_url 为空 → 用新类型默认 URL 自动填入；
+  // 2. 若 base_url 当前值与某一已知默认值一致（说明先前为自动填入）→ 替换为新类型默认 URL；
+  // 3. 若 base_url 是用户手动输入的自定义地址 → 保持不变，避免误覆盖。
+  const providerBaseUrlDefaults: Partial<Record<ProviderType, string>> = {
+    openai: "https://api.openai.com/v1",
+    gemini: "https://generativelanguage.googleapis.com",
+    anthropic: "https://api.anthropic.com",
+    openrouter: "https://openrouter.ai/api/v1",
+    siliconflow: "https://api.siliconflow.cn/v1",
+    dashscope: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    volcengine: "https://ark.cn-beijing.volces.com/api/v3",
+    zhipu: "https://open.bigmodel.cn/api/paas/v4",
+    kimi: "https://api.moonshot.cn/v1",
+    longcat: "https://api.longcat.chat/openai/v1",
+    minimax: "https://api.minimaxi.com/v1",
+    mimo: "https://api.xiaomimimo.com/v1",
+    ollama: "http://localhost:11434/v1",
+  };
+  const knownBaseUrls = Object.values(providerBaseUrlDefaults);
+  watch(
+    () => providerForm.value.type,
+    (t) => {
+      const def = providerBaseUrlDefaults[t];
+      if (!def) return;
+      const current = providerForm.value.base_url.trim();
+      if (!current || knownBaseUrls.includes(current)) {
+        providerForm.value.base_url = def;
+      }
+    },
+  );
 
   // ── 模型列表加载（基于当前 base_url + api_key 动态获取）──
   const modelList = ref<ModelInfo[]>([]);
@@ -115,6 +148,113 @@ export function useProviderEditor() {
     modelSearchKeyword.value = "";
   }
 
+  // ── 余额查询（参考 cc-Switch：按 provider 保存结果，在列表行内展示） ──
+  // 仅针对已保存的 Provider：api_key 为哨兵值时由后端从系统凭据库解析明文。
+
+  /**
+   * 是否支持余额查询（与后端 ai::balance::detect_mode 的模板覆盖保持一致）。
+   * 无余额 API 的供应商（Gemini / Anthropic / Ollama / 通义 / 火山引擎 /
+   * LongCat / MiMo / OpenAI 官方域名等）不显示查询按钮。
+   */
+  function supportsBalance(provider: AIProviderConfig): boolean {
+    const BALANCE_SUPPORTED_TYPES: ProviderType[] = [
+      "openrouter",
+      "siliconflow",
+      "kimi",
+      "zhipu",
+      "minimax",
+    ];
+    if (BALANCE_SUPPORTED_TYPES.includes(provider.type)) return true;
+
+    const host = provider.base_url
+      .trim()
+      .replace(/^https?:\/\//, "")
+      .split(/[/:?]/)[0]
+      .toLowerCase();
+    const BALANCE_SUPPORTED_HOSTS = [
+      "deepseek.com",
+      "moonshot.cn",
+      "moonshot.ai",
+      "openrouter.ai",
+      "siliconflow.cn",
+      "siliconflow.com",
+      "bigmodel.cn",
+      "z.ai",
+      "minimaxi.com",
+      "minimax.chat",
+    ];
+    if (BALANCE_SUPPORTED_HOSTS.some((h) => host.endsWith(h))) return true;
+
+    // openai / custom 型指向中转站（非 OpenAI 官方域名）时保留通用查询
+    if (
+      (provider.type === "openai" || provider.type === "custom") &&
+      !host.endsWith("openai.com")
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  // 仅针对已保存的 Provider：api_key 为哨兵值时由后端从系统凭据库解析明文。
+  const balanceResults = ref<Record<string, ProviderBalanceResult>>({});
+  const balanceLoading = ref<Record<string, boolean>>({});
+
+  /** 查询指定 Provider 的余额（按钮触发，失败信息直接随结果返回） */
+  async function queryBalance(provider: AIProviderConfig): Promise<void> {
+    balanceLoading.value = { ...balanceLoading.value, [provider.id]: true };
+    try {
+      const result = await settingsApi.queryProviderBalance(provider);
+      balanceResults.value = { ...balanceResults.value, [provider.id]: result };
+    } catch (e) {
+      // 后端约定始终返回结果对象；此处兜底命令层异常（如凭据库未找到 Key）
+      balanceResults.value = {
+        ...balanceResults.value,
+        [provider.id]: {
+          success: false,
+          mode: "",
+          remaining: null,
+          used: null,
+          total: null,
+          unit: "",
+          plan_name: "",
+          message: e instanceof Error ? e.message : String(e),
+        },
+      };
+    } finally {
+      balanceLoading.value = { ...balanceLoading.value, [provider.id]: false };
+    }
+  }
+
+  /** 清除指定 Provider 的余额查询状态（删除 Provider 时调用） */
+  function clearBalance(providerId: string) {
+    const results = { ...balanceResults.value };
+    const loading = { ...balanceLoading.value };
+    delete results[providerId];
+    delete loading[providerId];
+    balanceResults.value = results;
+    balanceLoading.value = loading;
+  }
+
+  /** 格式化余额展示文案：如 "15.83 CNY · 已用 0.00 CNY" 或 "GLM 剩余 58%" */
+  function formatBalance(r: ProviderBalanceResult): string {
+    if (!r.success || r.remaining == null) return "";
+    // 套餐百分比模板（智谱等）：展示剩余百分比 + 套餐名
+    if (r.unit === "%") {
+      const plan = r.plan_name ? `${r.plan_name} ` : "";
+      return `${plan}剩余 ${r.remaining.toFixed(0)}%`;
+    }
+    // 次数模板（MiniMax Plan 等）：额度大、无小数意义
+    if (r.unit === "次" || r.unit === "count") {
+      const plan = r.plan_name ? `${r.plan_name} ` : "";
+      return `${plan}${r.remaining.toLocaleString()} 次${r.total != null ? ` / 共 ${r.total.toLocaleString()} 次` : ""}`;
+    }
+    const unit = r.unit ? ` ${r.unit}` : "";
+    const parts = [`${r.remaining.toFixed(2)}${unit}`];
+    if (r.used != null) parts.push(`已用 ${r.used.toFixed(2)}${unit}`);
+    else if (r.total != null) parts.push(`总额 ${r.total.toFixed(2)}${unit}`);
+    return parts.join(" · ");
+  }
+
   const providerTypeOptions: { value: ProviderType; label: string }[] = [
     { value: "openai", label: "OpenAI" },
     { value: "gemini", label: "Gemini" },
@@ -124,6 +264,11 @@ export function useProviderEditor() {
     { value: "siliconflow", label: "硅基流动" },
     { value: "dashscope", label: "通义千问" },
     { value: "volcengine", label: "火山引擎" },
+    { value: "zhipu", label: "智谱 GLM" },
+    { value: "kimi", label: "Kimi (月之暗面)" },
+    { value: "longcat", label: "LongCat (美团)" },
+    { value: "minimax", label: "MiniMax" },
+    { value: "mimo", label: "MiMo (小米)" },
     { value: "custom", label: "自定义" },
   ];
 
@@ -208,6 +353,7 @@ export function useProviderEditor() {
     const defaultWarning = provider.is_default ? " 这是当前默认 Provider，删除后将自动切换到列表中的下一项。" : "";
     if (!window.confirm(`确定删除 AI Provider「${provider.name}」吗？${defaultWarning}`)) return;
     settingsStore.removeProvider(id);
+    clearBalance(id);
     // H33：修改后立即持久化，避免刷新丢失
     await settingsStore.save();
   }
@@ -301,5 +447,11 @@ export function useProviderEditor() {
     handleTestProvider,
     loadModelList,
     selectModel,
+    balanceResults,
+    balanceLoading,
+    queryBalance,
+    clearBalance,
+    formatBalance,
+    supportsBalance,
   };
 }

@@ -1,7 +1,7 @@
 /**
  * AI 模型定价表与费用估算工具
  *
- * 价格数据采集于 2026 年 7-8 月各家厂商官方定价页，单位为「元 / 百万 Token」。
+ * 价格数据核对于 2026 年 8 月 31 日，单位为「元 / 百万 Token」（USD 条目按 7.2 汇率折算展示）。
  * 厂商可能随时调整定价，使用 `fetchLatestPricingNote()` 获取更新提示。
  *
  * 数据来源：
@@ -43,43 +43,56 @@ export interface ModelPricing {
  * 因此通用关键字应放在具体关键字之后（如 "deepseek-chat" 应在 "deepseek" 之前）。
  */
 const PRICING_TABLE: ModelPricing[] = [
-  // ── DeepSeek ──
+  // ── DeepSeek（2026-08-17 起峰谷计费：9:00-12:00、14:00-18:00 为高峰，其余及周末全天为低谷半价）──
   {
     pattern: "deepseek-v4-flash",
     label: "DeepSeek V4 Flash",
-    inputPrice: 1,
-    outputPrice: 2,
-    cachedInputPrice: 0.02,
+    inputPrice: 3,
+    outputPrice: 9,
+    cachedInputPrice: 0.1,
     currency: "CNY",
-    note: "缓存命中输入 0.02 元/百万 Token",
+    note: "高峰时段价；低谷时段半价（¥1.5/¥4.5，缓存命中 ¥0.05）",
   },
   {
     pattern: "deepseek-v4-pro",
     label: "DeepSeek V4 Pro",
-    inputPrice: 3.13,
-    outputPrice: 6.26,
-    cachedInputPrice: 0.026,
+    inputPrice: 9,
+    outputPrice: 27,
+    cachedInputPrice: 0.3,
     currency: "CNY",
-    note: "缓存命中输入 0.026 元/百万 Token",
+    note: "高峰时段价；低谷时段半价（¥4.5/¥13.5，缓存命中 ¥0.15）",
   },
   {
     pattern: "deepseek",
     label: "DeepSeek (通用)",
-    inputPrice: 1,
-    outputPrice: 2,
-    cachedInputPrice: 0.02,
+    inputPrice: 3,
+    outputPrice: 9,
+    cachedInputPrice: 0.1,
     currency: "CNY",
-    note: "默认按 V4 Flash 定价",
+    note: "默认按 V4 Flash 高峰价估算",
   },
 
   // ── 通义千问（阿里百炼）──
   {
     pattern: "qwen3.7-max",
     label: "Qwen3.7 Max",
-    inputPrice: 3,
-    outputPrice: 9,
+    inputPrice: 2.5,
+    outputPrice: 7.5,
     currency: "CNY",
-    note: "限时 5 折（原价 6/18）",
+  },
+  {
+    pattern: "qwen3.7-plus",
+    label: "Qwen3.7 Plus",
+    inputPrice: 1.5,
+    outputPrice: 4.5,
+    currency: "CNY",
+  },
+  {
+    pattern: "qwen3.7-flash",
+    label: "Qwen3.7 Flash",
+    inputPrice: 0.8,
+    outputPrice: 2.4,
+    currency: "CNY",
   },
   {
     pattern: "qwen3-max",
@@ -127,6 +140,22 @@ const PRICING_TABLE: ModelPricing[] = [
     note: "永久免费",
   },
   {
+    pattern: "glm-5.3-flash",
+    label: "GLM-5.3 Flash",
+    inputPrice: 1.1,
+    outputPrice: 3.6,
+    currency: "CNY",
+    note: "官方约 $0.15/$0.50 每百万 token，限时活动价更低",
+  },
+  {
+    pattern: "glm-5.3",
+    label: "GLM-5.3",
+    inputPrice: 8,
+    outputPrice: 28,
+    currency: "CNY",
+    note: "定价与 GLM-5.2 持平",
+  },
+  {
     pattern: "glm-5.2",
     label: "GLM-5.2",
     inputPrice: 8,
@@ -167,15 +196,16 @@ const PRICING_TABLE: ModelPricing[] = [
   {
     pattern: "kimi-k3",
     label: "Kimi K3",
-    inputPrice: 30,
-    outputPrice: 100,
+    inputPrice: 21.6,
+    outputPrice: 108,
     currency: "CNY",
+    note: "官方 $3/$15 每百万 token 折算；缓存命中输入 $0.30",
   },
   {
     pattern: "kimi-k2.6",
     label: "Kimi K2.6",
-    inputPrice: 5,
-    outputPrice: 20,
+    inputPrice: 6.5,
+    outputPrice: 27,
     currency: "CNY",
   },
   {
@@ -186,7 +216,87 @@ const PRICING_TABLE: ModelPricing[] = [
     currency: "CNY",
   },
 
+  // ── MiniMax ──
+  {
+    pattern: "minimax-m3",
+    label: "MiniMax M3",
+    inputPrice: 4.2,
+    outputPrice: 16.8,
+    currency: "CNY",
+    note: "512K 以内上下文档原价；512K-1M 档为 ¥8.4/¥33.6，限时活动另有五折",
+  },
+
+  // ── LongCat（美团） ──
+  {
+    pattern: "longcat-2.0",
+    label: "LongCat-2.0",
+    inputPrice: 5,
+    outputPrice: 20,
+    currency: "CNY",
+    note: "原价；平台初上线限时折扣价 ¥2/¥8",
+  },
+
   // ── OpenAI ──
+  {
+    pattern: "gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    inputPrice: 4,
+    outputPrice: 20,
+    cachedInputPrice: 0.4,
+    currency: "USD",
+    note: "2026-08 降价后（原 $5/$30）；272K 以上长上下文档 $8/$30",
+  },
+  {
+    pattern: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    inputPrice: 2.5,
+    outputPrice: 15,
+    currency: "USD",
+  },
+  {
+    pattern: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    inputPrice: 1,
+    outputPrice: 6,
+    currency: "USD",
+  },
+  {
+    pattern: "gpt-5.6",
+    label: "GPT-5.6",
+    inputPrice: 4,
+    outputPrice: 20,
+    currency: "USD",
+    note: "未识别子型号时按 Sol 降价后价格估算",
+  },
+  {
+    pattern: "gpt-5.5-pro",
+    label: "GPT-5.5 Pro",
+    inputPrice: 30,
+    outputPrice: 180,
+    currency: "USD",
+  },
+  {
+    pattern: "gpt-5.5",
+    label: "GPT-5.5",
+    inputPrice: 5,
+    outputPrice: 30,
+    cachedInputPrice: 2.5,
+    currency: "USD",
+  },
+  {
+    pattern: "gpt-5.2",
+    label: "GPT-5.2",
+    inputPrice: 1.75,
+    outputPrice: 14,
+    currency: "USD",
+  },
+  {
+    pattern: "gpt-5",
+    label: "GPT-5",
+    inputPrice: 1.25,
+    outputPrice: 10,
+    currency: "USD",
+  },
   {
     pattern: "gpt-4o-mini",
     label: "GPT-4o mini",
@@ -218,8 +328,16 @@ const PRICING_TABLE: ModelPricing[] = [
 
   // ── Anthropic Claude ──
   {
+    pattern: "claude-opus-4",
+    label: "Claude Opus 4.x",
+    inputPrice: 5,
+    outputPrice: 25,
+    currency: "USD",
+    note: "Opus 4.x 起大幅降价；Opus 3 为 $15/$75",
+  },
+  {
     pattern: "claude-opus",
-    label: "Claude Opus",
+    label: "Claude Opus (3.x)",
     inputPrice: 15,
     outputPrice: 75,
     currency: "USD",
@@ -232,6 +350,13 @@ const PRICING_TABLE: ModelPricing[] = [
     currency: "USD",
   },
   {
+    pattern: "claude-haiku-4",
+    label: "Claude Haiku 4.5",
+    inputPrice: 1,
+    outputPrice: 5,
+    currency: "USD",
+  },
+  {
     pattern: "claude-haiku",
     label: "Claude Haiku",
     inputPrice: 0.25,
@@ -240,6 +365,28 @@ const PRICING_TABLE: ModelPricing[] = [
   },
 
   // ── Google Gemini ──
+  {
+    pattern: "gemini-3",
+    label: "Gemini 3 Pro / 3.1 Pro",
+    inputPrice: 2,
+    outputPrice: 12,
+    currency: "USD",
+    note: "200K 以上长文档档为 $4/$18",
+  },
+  {
+    pattern: "gemini-2.5-pro",
+    label: "Gemini 2.5 Pro",
+    inputPrice: 1.25,
+    outputPrice: 10,
+    currency: "USD",
+  },
+  {
+    pattern: "gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
+    inputPrice: 0.3,
+    outputPrice: 2.5,
+    currency: "USD",
+  },
   {
     pattern: "gemini-1.5-pro",
     label: "Gemini 1.5 Pro",
@@ -346,7 +493,7 @@ function matchPricing(model: string): ModelPricing | null {
 
 /** 获取定价表更新提示 */
 export function fetchLatestPricingNote(): string {
-  return "价格数据采集于 2026 年 7-8 月，仅供参考。请以各家厂商官方最新价格为准。";
+  return "价格数据核对于 2026 年 8 月 31 日，仅供参考。请以各家厂商官方最新价格为准。";
 }
 
 /** 格式化费用为可读字符串 */

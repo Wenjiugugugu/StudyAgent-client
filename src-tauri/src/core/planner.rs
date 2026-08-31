@@ -540,7 +540,8 @@ impl<'a> Planner<'a> {
             ));
         }
 
-        // 4. 若该日已是排除日，直接返回（幂等）
+        // 4. 若该日已是排除日，直接返回（幂等）；但仍收敛一次该日旧计划，
+        //    保证旧版本残留的日计划/滴答任务也能被清理
         if week_plan
             .data
             .excluded_days
@@ -548,6 +549,9 @@ impl<'a> Planner<'a> {
             .any(|d| d.date == excluded_day.date)
         {
             log::info!("排除日 {} 已存在，跳过重排", excluded_day.date);
+            if let Err(e) = crate::data::plan::clear_daily_plan(data_dir, &excluded_day.date) {
+                log::warn!("清空排除日 {} 旧日计划失败: {}", excluded_day.date, e);
+            }
             return Ok((false, Vec::new(), false));
         }
 
@@ -956,6 +960,16 @@ impl<'a> Planner<'a> {
         for day in &week_plan.data.days {
             if day.is_rest_day {
                 skipped_rest += 1;
+                // 今天及以后的休息日/排除日：清空可能残留的旧日计划，
+                // 使随后的滴答按日对账能删除该日期的原有任务；
+                // 过去的日期保留历史计划不动
+                if day.date.as_str() >= today.as_str() {
+                    match crate::data::plan::clear_daily_plan(data_dir, &day.date) {
+                        Ok(true) => log::info!("{}: 已清空旧日计划（休息日/排除日）", day.date),
+                        Ok(false) => {}
+                        Err(e) => log::warn!("清空 {} 旧日计划失败: {}", day.date, e),
+                    }
+                }
                 continue;
             }
             // 周中生成周计划时，跳过早于今天的日期：
@@ -999,10 +1013,11 @@ impl<'a> Planner<'a> {
 
     /// 重新生成指定日期的日计划文件（M8：抽取自重排逻辑，消除重复）
     ///
-    /// 遍历 `regen_dates`，跳过排除日，对每个非排除日重新生成并保存日计划。
+    /// 遍历 `regen_dates`，对每个非休息日/排除日重新生成并保存日计划；
+    /// 排除日/休息日改为清空旧日计划文件，使随后的滴答按日对账删除该日期的原有任务。
     /// 仅对今天额外执行温和同步（`sync_current_task`，不覆盖已有完成状态）。
     ///
-    /// `week_plan` 用于读取排除日列表以跳过对应日期。
+    /// `week_plan` 用于读取每日 is_rest_day 标记（排除日已被 enforce 标记为休息日）。
     fn regenerate_daily_plans_for_dates(
         data_dir: &Path,
         week_plan: &WeekPlanFile,
@@ -1013,10 +1028,21 @@ impl<'a> Planner<'a> {
         let today_is_excluded = week_plan.data.excluded_days.iter().any(|d| d.date == today);
 
         for date in regen_dates {
-            // 排除日不生成日计划
-            let is_excluded = week_plan.data.excluded_days.iter().any(|d| &d.date == date);
-            if is_excluded {
-                log::info!("{} 是排除日，跳过日计划生成", date);
+            // 排除日/休息日不生成日计划，但要清空该日可能残留的旧日计划：
+            // 使随后的滴答按日对账能删除该日期在滴答侧的原有任务（"被更改日期的原有计划删掉"）
+            let is_rest = week_plan
+                .data
+                .days
+                .iter()
+                .find(|d| &d.date == date)
+                .map(|d| d.is_rest_day)
+                .unwrap_or(false);
+            if is_rest {
+                match crate::data::plan::clear_daily_plan(data_dir, date) {
+                    Ok(true) => log::info!("{}: 已清空旧日计划（排除日/休息日）", date),
+                    Ok(false) => {}
+                    Err(e) => log::warn!("清空 {} 旧日计划失败: {}", date, e),
+                }
                 continue;
             }
             match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
@@ -2481,36 +2507,11 @@ fn weekly_self_calibration(prev_week_reviews: &[crate::data::records::ReviewFile
 }
 
 /// 每周自校准统计：返回 (系数, 上周复盘平均完成率%)。
-/// 平均完成率仅统计有效复盘（有逐任务记录或 completion 汇总数据）。
+/// 实现见 `pure::prev_week_calibration_stats_impl`（按任务数加权的平均完成率）。
 fn prev_week_calibration_stats(
     prev_week_reviews: &[crate::data::records::ReviewFile],
 ) -> (f64, f64) {
-    let mut sum = 0.0f64;
-    let mut count = 0usize;
-    for review in prev_week_reviews {
-        // 跳过低质量复盘（既无逐任务记录也无 completion 汇总数据）
-        let has_tasks = !review.task_reviews.is_empty()
-            || review.data.completion.priority_a_total > 0
-            || review.data.completion.priority_b_total > 0;
-        if !has_tasks {
-            continue;
-        }
-        let (_, _, _, _, rate) = crate::data::records::review_completion_stats(review);
-        sum += rate;
-        count += 1;
-    }
-    if count == 0 {
-        return (1.0, 0.0);
-    }
-    let avg_rate = sum / count as f64;
-    let coeff = if avg_rate >= 90.0 {
-        1.0
-    } else if avg_rate >= 70.0 {
-        0.9
-    } else {
-        0.8
-    };
-    (coeff, avg_rate)
+    crate::core::planning::pure::prev_week_calibration_stats_impl(prev_week_reviews)
 }
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
     crate::core::planning::pure::today_intensity_label(reviews)

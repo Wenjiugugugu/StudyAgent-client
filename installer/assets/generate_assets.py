@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Generate modern, on-brand NSIS installer assets for StudyAgent.
+"""Generate on-brand Inno Setup wizard bitmaps for StudyAgent.
 
 Outputs (next to this script):
-  sidebar.bmp  -> 164x314  (MUI2 welcome/finish page bitmap)
-  header.bmp   -> 150x57   (MUI2 header bitmap)
+  wizard.bmp        -> 164x314  (Inno Setup WizardImageFile, 左侧大图)
+  wizard-small.bmp  ->  55x58   (Inno Setup WizardSmallImageFile, 右上角小图)
 
 Design language:
-  - Brand-blue gradient sidebar with a soft top-center glow for depth
-  - Real app icon (../icons/icon.png) as the logo mark, lifted by a
+  - Brand-blue gradient with a soft top-center glow for depth
+  - Real app icon (../../src-tauri/icons/icon.png) as the logo mark, lifted by a
     frosted radial backdrop so the blue hexagon reads on blue
-  - Clean white header: real icon mark + "StudyAgent" wordmark
   - Rendered at 4x supersampling then Lanczos-downscaled; faint noise
     added to defeat gradient banding in the final BMP.
 
@@ -30,13 +29,13 @@ BRAND_DARKER = (33, 70, 150)    # deeper bottom for richer gradient
 INK = (31, 41, 55)              # #1f2937
 WHITE = (255, 255, 255)
 
-# NSIS MUI2 standard bitmap sizes
-SIDEBAR_W, SIDEBAR_H = 164, 314
-HEADER_W, HEADER_H = 150, 57
+# Inno Setup wizard bitmap sizes
+WIZARD_W, WIZARD_H = 164, 314
+SMALL_W, SMALL_H = 55, 58
 SCALE = 4  # supersampling factor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ICON_PATH = os.path.join(HERE, "..", "icons", "icon.png")
+ICON_PATH = os.path.join(HERE, "..", "..", "src-tauri", "icons", "icon.png")
 FONT_DIR = os.environ.get("WINDIR", r"C:\Windows") + r"\Fonts"
 FONT_REGULAR = FONT_DIR + r"\segoeui.ttf"
 FONT_SEMIBOLD = FONT_DIR + r"\seguisb.ttf"   # Segoe UI Semibold
@@ -112,8 +111,8 @@ def _load_icon(size):
     return ic.resize((size, size), Image.LANCZOS)
 
 
-def make_sidebar():
-    w, h = SIDEBAR_W * SCALE, SIDEBAR_H * SCALE
+def make_wizard():
+    w, h = WIZARD_W * SCALE, WIZARD_H * SCALE
     base = _v_gradient(w, h, BRAND_LIGHT, BRAND_DARKER).convert("RGBA")
 
     # top-center soft glow for depth
@@ -161,51 +160,45 @@ def make_sidebar():
     _draw_text_centered(draw, w // 2, ty + int(20 * SCALE),
                         "AI 学习工作台", f_tag, (255, 255, 255, 210))
 
-    # --- version footer ---------------------------------------------------
-    f_ver = _font(FONT_REGULAR, int(7 * SCALE))
-    _draw_text_centered(draw, w // 2, h - int(15 * SCALE),
-                        "v0.3.1", f_ver, (255, 255, 255, 130))
-
     out = base.convert("RGB")
     out = _add_noise(out, amount=2)
-    return out.resize((SIDEBAR_W, SIDEBAR_H), Image.LANCZOS)
+    return out.resize((WIZARD_W, WIZARD_H), Image.LANCZOS)
 
 
-def make_header():
-    w, h = HEADER_W * SCALE, HEADER_H * SCALE
-    base = Image.new("RGBA", (w, h), WHITE + (255,))
-    draw = ImageDraw.Draw(base, "RGBA")
+def make_wizard_small():
+    """右上角小图：透明背景 + 居中应用图标（55x58）。
 
-    # real icon mark on the left
-    icx, icy = int(16 * SCALE), h // 2
-    icon_px = int(20 * SCALE)
+    32-bit BMP with alpha，Inno Setup 6 按 alpha 通道透明渲染。
+    经过 alpha 阈值化以消除 LANCZOS 缩放在图标边缘产生的
+    alpha 1-7 "幽灵"像素（这些像素会被 Inno 渲染为暗色斑点）。
+    """
+    w, h = SMALL_W * SCALE, SMALL_H * SCALE
+    base = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    # 应用图标居中
+    icon_px = int(40 * SCALE)
     icon = _load_icon(icon_px)
-    base.alpha_composite(icon, (icx - icon_px // 2, icy - icon_px // 2))
-    draw = ImageDraw.Draw(base, "RGBA")
+    base.alpha_composite(icon, ((w - icon_px) // 2, (h - icon_px) // 2))
 
-    # wordmark
-    f = _font(FONT_SEMIBOLD, int(12 * SCALE))
-    draw.text((icx + icon_px // 2 + int(6 * SCALE),
-               icy - int(7 * SCALE)),
-              "StudyAgent", font=f, fill=INK)
+    out = base.resize((SMALL_W, SMALL_H), Image.LANCZOS)
 
-    # bottom accent rule
-    draw.rectangle((0, h - max(2, SCALE), w, h), fill=BRAND)
-
-    out = base.convert("RGB")
-    return out.resize((HEADER_W, HEADER_H), Image.LANCZOS)
+    # alpha 阈值化：< 8 视为完全透明（消除 LANCZOS 边缘振铃暗斑），
+    # >= 8 保留原有抗锯齿以维持图标边缘平滑。
+    r, g, b, a = out.split()
+    a = a.point(lambda v: 0 if v < 8 else v)
+    return Image.merge("RGBA", (r, g, b, a))
 
 
 def main():
     out_dir = HERE
-    sb = make_sidebar()
-    hd = make_header()
-    sb_path = os.path.join(out_dir, "sidebar.bmp")
-    hd_path = os.path.join(out_dir, "header.bmp")
-    sb.save(sb_path, "BMP")
-    hd.save(hd_path, "BMP")
-    print(f"wrote {sb_path} ({os.path.getsize(sb_path)} bytes, {sb.size})")
-    print(f"wrote {hd_path} ({os.path.getsize(hd_path)} bytes, {hd.size})")
+    big = make_wizard()
+    small = make_wizard_small()
+    big_path = os.path.join(out_dir, "wizard.bmp")
+    small_path = os.path.join(out_dir, "wizard-small.bmp")
+    big.save(big_path, "BMP")
+    small.save(small_path, "BMP")
+    print(f"wrote {big_path} ({os.path.getsize(big_path)} bytes, {big.size})")
+    print(f"wrote {small_path} ({os.path.getsize(small_path)} bytes, {small.size})")
 
 
 if __name__ == "__main__":

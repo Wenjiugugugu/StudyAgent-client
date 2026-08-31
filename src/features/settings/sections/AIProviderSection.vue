@@ -16,6 +16,7 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  Wallet,
 } from "lucide-vue-next";
 
 const settingsStore = useSettingsStore();
@@ -46,6 +47,11 @@ const {
   handleTestProvider,
   loadModelList,
   selectModel,
+  balanceResults,
+  balanceLoading,
+  queryBalance,
+  formatBalance,
+  supportsBalance,
 } = useProviderEditor();
 </script>
 
@@ -81,6 +87,18 @@ const {
             <span v-if="provider.model">· {{ provider.model }}</span>
           </div>
           <div class="item-sub text-mono">{{ provider.base_url }}</div>
+          <!-- 余额查询结果（cc-Switch 风格：行内展示剩余/已用额度） -->
+          <div
+            v-if="balanceResults[provider.id]"
+            class="item-sub balance-line"
+            :class="{ 'balance-error': !balanceResults[provider.id].success }"
+          >
+            {{
+              balanceResults[provider.id].success
+                ? `余额 ${formatBalance(balanceResults[provider.id])}`
+                : `余额查询失败：${balanceResults[provider.id].message}`
+            }}
+          </div>
         </div>
         <div class="item-actions">
           <Button
@@ -90,6 +108,20 @@ const {
             @click="setDefaultProvider(provider.id)"
           >
             设为默认
+          </Button>
+          <!-- 无余额 API 的供应商（Gemini/Anthropic/Ollama/通义/火山/LongCat/MiMo 等）不显示 -->
+          <Button
+            v-if="supportsBalance(provider)"
+            variant="ghost"
+            size="sm"
+            icon
+            :disabled="balanceLoading[provider.id]"
+            :aria-label="`查询余额 ${provider.name}`"
+            :title="balanceLoading[provider.id] ? '查询中…' : '查询余额'"
+            @click="queryBalance(provider)"
+          >
+            <RefreshCw v-if="balanceLoading[provider.id]" :size="14" class="spin" />
+            <Wallet v-else :size="14" />
           </Button>
           <Button variant="ghost" size="sm" icon :aria-label="`编辑 ${provider.name}`" @click="editProvider(provider)">
             <Pencil :size="14" />

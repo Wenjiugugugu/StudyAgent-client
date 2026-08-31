@@ -145,6 +145,7 @@ import type {
   AiUsageEntry,
   BriefingFile,
   GetBriefingResult,
+  ProviderBalanceResult,
 } from "@/types";
 
 export { isTauri } from "./tauri";
@@ -534,6 +535,17 @@ export async function listAIModels(config?: AIProviderConfig): Promise<ModelInfo
     timeoutMs: 60_000,
     timeoutMessage: "获取模型列表超时（超过 60 秒）",
   });
+}
+
+/**
+ * 查询 AI Provider 余额/用量（参考 cc-Switch 用量查询模板）
+ *
+ * 后端按 Provider 类型 / base_url 域名自动选择查询端点（OpenRouter / SiliconFlow /
+ * DeepSeek / Moonshot），未识别时依次尝试通用端点。始终返回结果对象（失败时
+ * success: false），不抛异常，便于界面区分「网络失败」与「端点不支持」。
+ */
+export async function queryProviderBalance(config: AIProviderConfig): Promise<ProviderBalanceResult> {
+  return invokeDirect<ProviderBalanceResult>("query_provider_balance", { config });
 }
 
 // ── AI 用量日志 ──

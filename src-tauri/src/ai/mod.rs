@@ -6,6 +6,7 @@
 //! - AI Service 管理多个 provider，选择默认 provider，注入 system prompt
 
 pub mod anthropic;
+pub mod balance;
 pub mod gemini;
 pub mod openai;
 pub mod provider;
