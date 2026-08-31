@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, State};
 
+use crate::ai::balance::BalanceResult;
 use crate::ai::provider::{AIProviderConfig, ChatRequest, ChatResponse};
 use crate::ai::service::AiService;
 use crate::core::analytics::{build_analytics, AnalyticsRange, AnalyticsSummary};
@@ -185,6 +186,21 @@ pub async fn list_ai_models(
             ai_service.list_models().await
         }
     }
+}
+
+/// 查询 AI Provider 余额/用量（参考 cc-Switch 用量查询模板）
+///
+/// 按 Provider 类型 / base_url 域名自动选择查询端点（OpenRouter / SiliconFlow /
+/// DeepSeek / Moonshot），未识别时依次尝试通用端点（OpenAI credit_grants、
+/// one-api 风格 /user/balance）。始终返回 BalanceResult（失败时 success: false）。
+/// 前端调用: `invoke('query_provider_balance', { config: { ... } })`
+#[tauri::command]
+pub async fn query_provider_balance(mut config: AIProviderConfig) -> Result<BalanceResult, String> {
+    if config.api_key == crate::secrets::CONFIGURED_SENTINEL {
+        config.api_key = crate::secrets::get_provider_api_key(&config.id)?
+            .ok_or_else(|| "系统凭据库中未找到该 Provider 的 API Key".to_string())?;
+    }
+    Ok(crate::ai::balance::query_balance(&config).await)
 }
 
 /// 读取 AI 用量日志（持久化记录，重启后不丢失）

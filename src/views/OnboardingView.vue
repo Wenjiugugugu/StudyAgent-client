@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
@@ -160,8 +160,37 @@ const providerTypeOptions: { value: ProviderType; label: string }[] = [
   { value: "anthropic", label: "Anthropic" }, { value: "ollama", label: "Ollama (本地)" },
   { value: "openrouter", label: "OpenRouter" }, { value: "siliconflow", label: "硅基流动" },
   { value: "dashscope", label: "通义千问" }, { value: "volcengine", label: "火山引擎" },
+  { value: "zhipu", label: "智谱 GLM" }, { value: "kimi", label: "Kimi (月之暗面)" },
+  { value: "longcat", label: "LongCat (美团)" }, { value: "minimax", label: "MiniMax" },
+  { value: "mimo", label: "MiMo (小米)" },
   { value: "custom", label: "自定义" },
 ];
+
+// 与设置页一致：切换类型且 Base URL 为空时自动填充默认地址
+const providerBaseUrlDefaults: Partial<Record<ProviderType, string>> = {
+  openai: "https://api.openai.com/v1",
+  gemini: "https://generativelanguage.googleapis.com",
+  anthropic: "https://api.anthropic.com",
+  openrouter: "https://openrouter.ai/api/v1",
+  siliconflow: "https://api.siliconflow.cn/v1",
+  dashscope: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  volcengine: "https://ark.cn-beijing.volces.com/api/v3",
+  zhipu: "https://open.bigmodel.cn/api/paas/v4",
+  kimi: "https://api.moonshot.cn/v1",
+  longcat: "https://api.longcat.chat/openai/v1",
+  minimax: "https://api.minimaxi.com/v1",
+  mimo: "https://api.xiaomimimo.com/v1",
+  ollama: "http://localhost:11434/v1",
+};
+watch(
+  () => providerForm.value.type,
+  (t) => {
+    const def = providerBaseUrlDefaults[t];
+    if (def && !providerForm.value.base_url.trim()) {
+      providerForm.value.base_url = def;
+    }
+  },
+);
 
 // ── Helpers ──
 const phaseOptions = ["foundation", "strengthen", "sprint", "mock"];

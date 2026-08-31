@@ -207,6 +207,7 @@ fn main() {
             cancel_ai_request,
             test_ai_provider,
             list_ai_models,
+            query_provider_balance,
             // AI 用量日志
             get_ai_usage_log,
             clear_ai_usage_log,

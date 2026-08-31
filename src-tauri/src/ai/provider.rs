@@ -51,6 +51,11 @@ pub enum ProviderType {
     Siliconflow,
     Dashscope,
     Volcengine,
+    Zhipu,   // 智谱 GLM（open.bigmodel.cn）
+    Kimi,    // Kimi（月之暗面 Moonshot）
+    Longcat, // LongCat 龙猫（美团）
+    Minimax, // MiniMax
+    Mimo,    // MiMo（小米）
     Custom,
 }
 
@@ -331,6 +336,9 @@ const MODEL_CONTEXT_TABLE: &[(&str, u32)] = &[
     ("gpt-4-32k", 32_768),
     ("gpt-4", 8_192),
     ("gpt-3.5-turbo", 16_384),
+    ("gpt-5.6", 1_000_000),
+    ("gpt-5.5", 400_000),
+    ("gpt-5.2", 128_000),
     ("o4-mini", 200_000),
     ("o1-mini", 128_000),
     ("o1", 128_000),
@@ -363,6 +371,30 @@ const MODEL_CONTEXT_TABLE: &[(&str, u32)] = &[
     ("doubao-pro", 131_072),
     ("doubao-lite", 131_072),
     ("doubao", 32_768),
+    // 智谱 GLM / Kimi(Moonshot) / MiniMax / LongCat / MiMo
+    ("glm-5.3-flash", 131_072),
+    ("glm-5.3", 1_000_000),
+    ("glm-5.2", 1_000_000),
+    ("glm-5", 200_000),
+    ("glm-4.6", 200_000),
+    ("glm-4.5", 131_072),
+    ("glm-4-flash", 131_072),
+    ("glm-4", 128_000),
+    ("glm-3", 128_000),
+    ("kimi-k3", 1_000_000),
+    ("kimi-k2", 262_144),
+    ("moonshot-v1-128k", 131_072),
+    ("moonshot-v1-32k", 32_768),
+    ("moonshot-v1-8k", 8_192),
+    ("minimax-m3", 1_000_000),
+    ("minimax-m2", 204_800),
+    ("minimax-m1", 1_000_000),
+    ("minimax", 245_760),
+    ("longcat-2.0", 1_000_000),
+    ("longcat-flash", 131_072),
+    ("longcat", 32_768),
+    ("mimo-v2.5", 1_000_000),
+    ("mimo", 32_768),
     // 常见本地/Ollama 模型
     ("llama3.3", 131_072),
     ("llama3.1", 131_072),
@@ -436,7 +468,8 @@ fn provider_default_context_length(provider: &ProviderType) -> u32 {
         ProviderType::Anthropic => 200_000,
         ProviderType::Gemini => 1_048_576,
         ProviderType::Ollama => 8_192,
-        // OpenAI / OpenRouter / Siliconflow / Dashscope / Volcengine / Custom
+        // OpenAI / OpenRouter / Siliconflow / Dashscope / Volcengine /
+        // Zhipu / Kimi / Longcat / Minimax / Mimo / Custom
         _ => 32_768,
     }
 }
@@ -744,6 +777,11 @@ pub fn create_provider(config: AIProviderConfig) -> Result<Arc<dyn AiProvider>, 
         | ProviderType::Siliconflow
         | ProviderType::Dashscope
         | ProviderType::Volcengine
+        | ProviderType::Zhipu
+        | ProviderType::Kimi
+        | ProviderType::Longcat
+        | ProviderType::Minimax
+        | ProviderType::Mimo
         | ProviderType::Custom
         | ProviderType::Ollama => {
             // 所有 OpenAI Compatible 的 provider 使用同一个实现
