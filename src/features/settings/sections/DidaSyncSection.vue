@@ -276,9 +276,15 @@ async function runSync() {
   color: var(--color-danger);
 }
 
-/* 归属清单选择：与输入框同宽，右侧对齐 */
+/* 归属清单选择：与输入框同宽，右侧对齐。
+   注：全局 .settings-view .form-input 已声明 width: 100%，与本规则同为 (0,2,0) 优先级，
+   若 cascade 顺序不当会覆盖本规则导致 <select> 占满整行，
+   把 .item-info（flex:1; min-width:0）挤到 0 宽，标签逐字垂直堆叠。
+   这里用 !important 锁定宽度并加 min-width:0，保证归属清单行的布局正确。*/
 .project-select {
-  width: min(240px, 50%);
+  width: min(240px, 50%) !important;
+  min-width: 0;
+  flex-shrink: 0;
   cursor: pointer;
 }
 .project-select:disabled {

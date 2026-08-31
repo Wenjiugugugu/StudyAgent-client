@@ -338,6 +338,26 @@ pub fn read_daily_plan(data_dir: &Path, date: &str) -> DataResult<DailyPlanFile>
     serde_json::from_str(&content).map_err(|e| format!("解析日计划 JSON 失败: {}", e))
 }
 
+/// 清空指定日期的日计划（重排后该日变为休息日/排除日时的旧计划清理）
+///
+/// 保留计划文件与 meta（date 等），仅清空任务列表与统计量。
+/// 这样随后的滴答按日对账（`sync::dida::reconcile_day`）能识别「该日已无计划任务」，
+/// 自动删除滴答侧该日期窗口内所有未完成的 studyagent 任务（已完成的保留完成历史）。
+///
+/// 文件不存在时返回 `Ok(false)`（本就无计划，对账也会因无文件跳过）。
+pub fn clear_daily_plan(data_dir: &Path, date: &str) -> DataResult<bool> {
+    let path = daily_plan_path(data_dir, date);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let mut plan = read_daily_plan(data_dir, date)?;
+    plan.data.tasks.clear();
+    plan.data.total_tasks = 0;
+    plan.data.total_hours = 0.0;
+    save_daily_plan(data_dir, &plan)?;
+    Ok(true)
+}
+
 /// 保存日计划 JSON
 pub fn save_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> {
     let path = daily_plan_path(data_dir, &plan.meta.date);

@@ -283,6 +283,12 @@ const weekCompletionRate = computed(() => {
   if (!days.length) return 0;
   const reviewed = days.filter((d) => d.hasReview);
   if (!reviewed.length) return 0;
+  // 按任务数加权（总完成 / 总计划），避免每日完成率宏平均虚高
+  const totalTasks = reviewed.reduce((s, d) => s + d.taskCount, 0);
+  if (totalTasks > 0) {
+    const done = reviewed.reduce((s, d) => s + d.tasksDone, 0);
+    return Math.round((done / totalTasks) * 100);
+  }
   const sum = reviewed.reduce((s, d) => s + d.completionRate, 0);
   return Math.round(sum / reviewed.length);
 });
@@ -358,9 +364,15 @@ const prevWeekReport = computed(() => {
   const totalCompleted = sums.reduce((a, s) => a + (s.completed_tasks ?? 0), 0);
   const totalActualHours = sums.reduce((a, s) => a + (s.actual_hours ?? 0), 0);
   const reviewedDays = sums.filter((s) => s.has_review);
-  const avgCompletion = reviewedDays.length
-    ? Math.round(reviewedDays.reduce((a, s) => a + (s.completion_rate ?? 0), 0) / reviewedDays.length)
-    : 0;
+  // 平均完成率按任务数加权（总完成 / 总计划）。
+  // 不能对每日完成率做简单算术平均：任务少但全完成的天（100%）会等权拉高整体，
+  // 导致实际完成 8/23 却显示出虚高的百分比。
+  const avgCompletion =
+    totalPlanned > 0
+      ? Math.round((totalCompleted / totalPlanned) * 100)
+      : reviewedDays.length
+        ? Math.round(reviewedDays.reduce((a, s) => a + (s.completion_rate ?? 0), 0) / reviewedDays.length)
+        : 0;
   return {
     studyDays: studyDays.length,
     totalPlanned,
@@ -560,7 +572,8 @@ onMounted(async () => {
             {{ dateRange }}
             <span class="bar-week">· 第 {{ weekPlan.meta.week_number }} 周</span>
           </span>
-          <span v-else class="bar-range">加载中…</span>
+          <span v-else-if="loading" class="bar-range">加载中…</span>
+          <span v-else class="bar-range">暂无周计划</span>
         </div>
       </div>
       <div class="bar-actions">

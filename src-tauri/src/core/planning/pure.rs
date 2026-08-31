@@ -4,33 +4,45 @@ use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, SubjectKey};
 
 pub(crate) fn weekly_self_calibration(prev_week_reviews: &[ReviewFile]) -> f64 {
-    if prev_week_reviews.is_empty() {
-        return 1.0;
-    }
-    let mut sum = 0.0f64;
-    let mut count = 0usize;
+    prev_week_calibration_stats_impl(prev_week_reviews).0
+}
+
+/// 每周自校准统计：返回 (系数, 上周复盘平均完成率%)。
+///
+/// 平均完成率按任务数加权（总完成 / 总计划），
+/// 不能对每日完成率做简单算术平均：任务少但全完成的天（100%）会等权拉高整体，
+/// 导致实际完成 8/23 却计算出虚高的 72%。
+/// 仅统计有效复盘（有逐任务记录或 completion 汇总数据）。
+pub(crate) fn prev_week_calibration_stats_impl(
+    prev_week_reviews: &[ReviewFile],
+) -> (f64, f64) {
+    let mut sum_done = 0i32;
+    let mut sum_total = 0i32;
     for review in prev_week_reviews {
+        // 跳过低质量复盘（既无逐任务记录也无 completion 汇总数据）
         let has_tasks = !review.task_reviews.is_empty()
             || review.data.completion.priority_a_total > 0
             || review.data.completion.priority_b_total > 0;
         if !has_tasks {
             continue;
         }
-        let (_, _, _, _, rate) = crate::data::records::review_completion_stats(review);
-        sum += rate;
-        count += 1;
+        let (a_total, a_done, b_total, b_done, _) =
+            crate::data::records::review_completion_stats(review);
+        sum_total += a_total + b_total;
+        sum_done += a_done + b_done;
     }
-    if count == 0 {
-        return 1.0;
+    if sum_total == 0 {
+        return (1.0, 0.0);
     }
-    let avg_rate = sum / count as f64;
-    if avg_rate >= 90.0 {
+    let avg_rate = (sum_done as f64 / sum_total as f64) * 100.0;
+    let coeff = if avg_rate >= 90.0 {
         1.0
     } else if avg_rate >= 70.0 {
         0.9
     } else {
         0.8
-    }
+    };
+    (coeff, avg_rate)
 }
 
 pub(crate) fn today_intensity_label(reviews: &[ReviewFile]) -> String {
