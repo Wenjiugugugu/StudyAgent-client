@@ -7,7 +7,8 @@
 //! 3. 未识别 → 通用端点链（对应 cc-Switch 的「通用模板」）：
 //!    - `{origin}/dashboard/billing/credit_grants`（OpenAI 旧版赠费端点）
 //!    - `{origin}/user/balance`（one-api / new-api 风格余额端点）
-//!    依次尝试，第一个能解析出余额的端点即命中。
+//!
+//! 依次尝试，第一个能解析出余额的端点即命中。
 //!
 //! 注意：同一请求地址可能同时支持多种查询模式（套餐配额 vs 账户余额），
 //! 本实现为免配置的自动推断，如某端点查询失败请以服务商控制台为准。
@@ -452,9 +453,7 @@ async fn query_minimax(
             if let Some(r) = parse_minimax_token_plan(&v) {
                 return Ok(r);
             }
-            return Err(format!(
-                "MiniMax 响应中未找到可识别的用量字段（model_remains / remains）"
-            ));
+            Err("MiniMax 响应中未找到可识别的用量字段（model_remains / remains）".to_string())
         }
         Err(e) => Err(format!(
             "MiniMax 用量查询失败（已尝试 coding_plan 与 token_plan 端点）：{e}"
@@ -647,8 +646,10 @@ mod tests {
 
     #[test]
     fn detect_mode_by_host_and_type() {
-        let mut cfg = AIProviderConfig::default();
-        cfg.base_url = "https://api.deepseek.com".to_string();
+        let mut cfg = AIProviderConfig {
+            base_url: "https://api.deepseek.com".to_string(),
+            ..Default::default()
+        };
         assert_eq!(detect_mode(&cfg), QueryMode::DeepSeek);
 
         cfg.r#type = ProviderType::Openrouter;
@@ -662,10 +663,11 @@ mod tests {
 
     #[test]
     fn detect_mode_for_new_provider_types() {
-        let mut cfg = AIProviderConfig::default();
-
-        cfg.r#type = ProviderType::Kimi;
-        cfg.base_url = "https://api.moonshot.cn/v1".to_string();
+        let mut cfg = AIProviderConfig {
+            r#type: ProviderType::Kimi,
+            base_url: "https://api.moonshot.cn/v1".to_string(),
+            ..Default::default()
+        };
         assert_eq!(detect_mode(&cfg), QueryMode::Moonshot);
 
         cfg.r#type = ProviderType::Zhipu;
