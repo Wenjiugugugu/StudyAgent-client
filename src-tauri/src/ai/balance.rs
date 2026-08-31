@@ -256,8 +256,7 @@ fn parse_money(v: Option<&Value>) -> Option<f64> {
 fn extract_unit(v: Option<&Value>) -> String {
     if let Some(Value::String(s)) = v {
         if let Some(first) = s.split_whitespace().next() {
-            let is_currency = !first.is_empty()
-                && first.chars().all(|c| c.is_ascii_alphabetic());
+            let is_currency = !first.is_empty() && first.chars().all(|c| c.is_ascii_alphabetic());
             if is_currency {
                 return first.to_ascii_uppercase();
             }
@@ -289,7 +288,14 @@ async fn query_openrouter(
     if remaining.is_none() && total.is_none() && used.is_none() {
         return Err("OpenRouter 响应中未找到额度字段（total_credits / total_usage）".to_string());
     }
-    Ok(BalanceResult::success("openrouter", remaining, used, total, "USD", ""))
+    Ok(BalanceResult::success(
+        "openrouter",
+        remaining,
+        used,
+        total,
+        "USD",
+        "",
+    ))
 }
 
 /// SiliconFlow：GET {origin}/v1/user/info（CNY，金额形如 "CNY 12.34"）
@@ -315,8 +321,19 @@ async fn query_siliconflow(
         _ => None,
     };
     let unit = extract_unit(balance_raw);
-    let unit = if unit.is_empty() { "CNY".to_string() } else { unit };
-    Ok(BalanceResult::success("siliconflow", remaining, used, total, &unit, ""))
+    let unit = if unit.is_empty() {
+        "CNY".to_string()
+    } else {
+        unit
+    };
+    Ok(BalanceResult::success(
+        "siliconflow",
+        remaining,
+        used,
+        total,
+        &unit,
+        "",
+    ))
 }
 
 /// DeepSeek：GET {origin}/user/balance
@@ -338,7 +355,9 @@ async fn query_deepseek(
         return Err("DeepSeek 响应中未找到 total_balance 字段".to_string());
     }
     let unit = extract_unit(info.get("currency"));
-    Ok(BalanceResult::success("deepseek", remaining, None, None, &unit, ""))
+    Ok(BalanceResult::success(
+        "deepseek", remaining, None, None, &unit, "",
+    ))
 }
 
 /// 智谱 GLM 套餐用量：GET {origin}/api/monitor/usage/quota/limit
@@ -388,7 +407,14 @@ async fn query_zhipu(
         .and_then(|l| l.as_str())
         .map(|s| s.to_ascii_uppercase())
         .unwrap_or_else(|| "ZHIPU".to_string());
-    Ok(BalanceResult::success("zhipu_quota", Some(remaining), Some(used_pct), Some(100.0), "%", &plan_name))
+    Ok(BalanceResult::success(
+        "zhipu_quota",
+        Some(remaining),
+        Some(used_pct),
+        Some(100.0),
+        "%",
+        &plan_name,
+    ))
 }
 
 /// MiniMax 用量：Coding Plan 与 Token Plan 是两条独立产品线、端点不通用
@@ -441,9 +467,7 @@ fn parse_minimax_model_remains(v: &Value) -> Option<BalanceResult> {
     let items = v.get("model_remains")?.as_array()?;
     let target = items
         .iter()
-        .find(|item| {
-            parse_money(item.get("current_interval_total_count")).unwrap_or(0.0) > 0.0
-        })?;
+        .find(|item| parse_money(item.get("current_interval_total_count")).unwrap_or(0.0) > 0.0)?;
 
     let total = parse_money(target.get("current_interval_total_count"));
     // 字段名叫 usage_count，但按官方提取器语义实为「剩余」
@@ -458,7 +482,12 @@ fn parse_minimax_model_remains(v: &Value) -> Option<BalanceResult> {
         .unwrap_or("")
         .to_string();
     Some(BalanceResult::success(
-        "minimax_plan", remaining, used, total, "次", &plan_name,
+        "minimax_plan",
+        remaining,
+        used,
+        total,
+        "次",
+        &plan_name,
     ))
 }
 
@@ -468,10 +497,17 @@ fn parse_minimax_token_plan(v: &Value) -> Option<BalanceResult> {
     let candidates = ["remains", "remaining", "remain", "balance"];
     for key in candidates {
         if let Some(remaining) = parse_money(data.get(key)) {
-            let total = parse_money(data.get("total")).or_else(|| parse_money(data.get("total_count")));
-            let used = parse_money(data.get("used")).or_else(|| parse_money(data.get("used_count")));
+            let total =
+                parse_money(data.get("total")).or_else(|| parse_money(data.get("total_count")));
+            let used =
+                parse_money(data.get("used")).or_else(|| parse_money(data.get("used_count")));
             return Some(BalanceResult::success(
-                "minimax_plan", Some(remaining), used, total, "次", "",
+                "minimax_plan",
+                Some(remaining),
+                used,
+                total,
+                "次",
+                "",
             ));
         }
     }
@@ -495,7 +531,9 @@ async fn query_moonshot(
     let used = parse_money(data.get("total_used"));
     let total = parse_money(data.get("total_balance"));
     let unit = extract_unit(data.get("currency"));
-    Ok(BalanceResult::success("moonshot", remaining, used, total, &unit, ""))
+    Ok(BalanceResult::success(
+        "moonshot", remaining, used, total, &unit, "",
+    ))
 }
 
 /// 通用端点链：credit_grants → {origin}/user/balance → {base}/user/balance
@@ -507,7 +545,10 @@ async fn query_generic(
     let base = config.base_url.trim().trim_end_matches('/');
 
     let mut attempts: Vec<(&str, String)> = vec![
-        ("credit_grants", format!("{origin}/dashboard/billing/credit_grants")),
+        (
+            "credit_grants",
+            format!("{origin}/dashboard/billing/credit_grants"),
+        ),
         ("general_balance", format!("{origin}/user/balance")),
     ];
     if base != origin && !base.is_empty() {
@@ -546,7 +587,14 @@ fn parse_credit_grants(v: &Value) -> Option<BalanceResult> {
     if remaining.is_none() && total.is_none() {
         return None;
     }
-    Some(BalanceResult::success("credit_grants", remaining, used, total, "USD", ""))
+    Some(BalanceResult::success(
+        "credit_grants",
+        remaining,
+        used,
+        total,
+        "USD",
+        "",
+    ))
 }
 
 /// one-api / new-api 风格：顶层或 data 下的 balance 字段
@@ -557,7 +605,14 @@ fn parse_general_balance(v: &Value) -> Option<BalanceResult> {
     let used = parse_money(data.get("used_amount"));
     let total = parse_money(data.get("total_balance"));
     let unit = extract_unit(data.get("currency"));
-    Some(BalanceResult::success("general_balance", remaining, used, total, &unit, ""))
+    Some(BalanceResult::success(
+        "general_balance",
+        remaining,
+        used,
+        total,
+        &unit,
+        "",
+    ))
 }
 
 #[cfg(test)]
@@ -580,8 +635,14 @@ mod tests {
 
     #[test]
     fn origin_of_extracts_scheme_and_host() {
-        assert_eq!(origin_of("https://api.deepseek.com/v1"), "https://api.deepseek.com");
-        assert_eq!(origin_of("http://localhost:8080/v1/"), "http://localhost:8080");
+        assert_eq!(
+            origin_of("https://api.deepseek.com/v1"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            origin_of("http://localhost:8080/v1/"),
+            "http://localhost:8080"
+        );
     }
 
     #[test]

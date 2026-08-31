@@ -13,9 +13,7 @@ pub(crate) fn weekly_self_calibration(prev_week_reviews: &[ReviewFile]) -> f64 {
 /// 不能对每日完成率做简单算术平均：任务少但全完成的天（100%）会等权拉高整体，
 /// 导致实际完成 8/23 却计算出虚高的 72%。
 /// 仅统计有效复盘（有逐任务记录或 completion 汇总数据）。
-pub(crate) fn prev_week_calibration_stats_impl(
-    prev_week_reviews: &[ReviewFile],
-) -> (f64, f64) {
+pub(crate) fn prev_week_calibration_stats_impl(prev_week_reviews: &[ReviewFile]) -> (f64, f64) {
     let mut sum_done = 0i32;
     let mut sum_total = 0i32;
     for review in prev_week_reviews {
