@@ -166,29 +166,27 @@ def make_wizard():
 
 
 def make_wizard_small():
-    """右上角小图：品牌蓝底 + 居中应用图标（55x58 放不下文字）。"""
+    """右上角小图：透明背景 + 居中应用图标（55x58）。
+
+    32-bit BMP with alpha，Inno Setup 6 按 alpha 通道透明渲染。
+    经过 alpha 阈值化以消除 LANCZOS 缩放在图标边缘产生的
+    alpha 1-7 "幽灵"像素（这些像素会被 Inno 渲染为暗色斑点）。
+    """
     w, h = SMALL_W * SCALE, SMALL_H * SCALE
-    base = _v_gradient(w, h, BRAND_LIGHT, BRAND_DEEP).convert("RGBA")
-    draw = ImageDraw.Draw(base, "RGBA")
+    base = Image.new("RGBA", (w, h), (0, 0, 0, 0))
 
-    icx, icy = w // 2, h // 2 - int(1 * SCALE)
-    icon_px = int(34 * SCALE)
+    # 应用图标居中
+    icon_px = int(40 * SCALE)
     icon = _load_icon(icon_px)
-    shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse((icx - icon_px // 2, icy - icon_px // 2 + int(2 * SCALE),
-                icx + icon_px // 2, icy + icon_px // 2 + int(2 * SCALE)),
-               fill=(0, 10, 40, 110))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(int(3 * SCALE)))
-    base = Image.alpha_composite(base, shadow)
-    base.alpha_composite(icon, (icx - icon_px // 2, icy - icon_px // 2))
-    draw = ImageDraw.Draw(base, "RGBA")
+    base.alpha_composite(icon, ((w - icon_px) // 2, (h - icon_px) // 2))
 
-    # bottom accent rule
-    draw.rectangle((0, h - max(2, SCALE), w, h), fill=BRAND)
+    out = base.resize((SMALL_W, SMALL_H), Image.LANCZOS)
 
-    out = base.convert("RGB")
-    return out.resize((SMALL_W, SMALL_H), Image.LANCZOS)
+    # alpha 阈值化：< 8 视为完全透明（消除 LANCZOS 边缘振铃暗斑），
+    # >= 8 保留原有抗锯齿以维持图标边缘平滑。
+    r, g, b, a = out.split()
+    a = a.point(lambda v: 0 if v < 8 else v)
+    return Image.merge("RGBA", (r, g, b, a))
 
 
 def main():

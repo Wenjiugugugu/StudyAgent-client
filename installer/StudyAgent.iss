@@ -44,7 +44,7 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 DisableDirPage=auto
-DisableReadyPage=auto
+DisableReadyPage=yes
 UsePreviousAppDir=yes
 UsePreviousGroup=yes
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
@@ -52,7 +52,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\src-tauri\icons\icon.ico
 WizardStyle=modern
 WizardImageFile=assets\wizard.bmp
-WizardSmallImageFile=assets\wizard-small.bmp
+; Inno 6 实际不渲染 WizardSmallImageFile 的 32-bit BMP alpha 通道
+; （把 BGRA 当 BGR 解析，透明区直接变黑底）。空值=不显示右上角小图。
+WizardSmallImageFile=
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; 与旧版 NSIS 一致：默认当前用户安装，不请求管理员权限
@@ -67,7 +69,8 @@ OutputDir=dist
 OutputBaseFilename=StudyAgent_{#MyAppVersion}_x64-setup
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; 简体中文语言文件随仓库提供（Inno Setup 官方安装包不含中文）
+Name: "chinesesimp"; MessagesFile: "assets\languages\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
@@ -88,11 +91,21 @@ Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Fla
 const
   WEBVIEW2_GUID = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   WEBVIEW2_DOWNLOAD_URL = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+  // 说明：Inno 自身生成的卸载键名是 AppId_is1，即
+  //       Software\...\Uninstall\2E1F7C4B-9A3D-4C58-B6E0-7D14AF38C295_is1，
+  //       且本安装器为 lowest（用户级）权限，卸载信息写在 HKCU 下。
+  //       下方 UNINSTALL_KEY 沿用旧 NSIS 时代的键名（StudyAgent），
+  //       仅用于 InitializeSetup 检测旧版 NSIS 残留，不要用它读取
+  //       Inno 自身版本的卸载入口。
   UNINSTALL_KEY = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#MyAppName}';
   AUTOSTART_RUN_KEY = 'Software\Microsoft\Windows\CurrentVersion\Run';
 
 var
   ResultCode: Integer;
+  NSISUninstallString: String;   // 旧 NSIS 版的卸载命令；为空表示未检测到
+  NSISInstallDir: String;        // 旧 NSIS 版的安装目录；为空表示未检测到
+  AutoStartCommand: String;      // 卸载前读到的开机自启命令原文
+  RestoreAutoStart: Boolean;     // 卸载前是否开着开机自启
 
 function RegHasWebView2(const RootKey: Integer; const SubKey: String): Boolean;
 var
@@ -121,30 +134,34 @@ end;
 function InitializeSetup(): Boolean;
 var
   UninstallString: String;
-  Message: String;
+  InstallLocation: String;
 begin
   Result := True;
 
-  // 旧版（NSIS）安装的卸载程序不是 Inno 生成的 unins000.exe，
-  // 直接覆盖安装会残留旧的卸载入口，这里先提示用户。
+  // 记录旧版（NSIS）的卸载命令，真正的卸载推迟到 PrepareToInstall 执行。
+  // 顺序是硬约束：NSIS 卸载脚本会无条件 Delete "$INSTDIR\主程序.exe"，
+  // 必须在 Inno 复制新文件之前跑完，否则会把刚装好的新版主程序删掉。
   if RegQueryStringValue(HKCU, UNINSTALL_KEY, 'UninstallString', UninstallString) or
      RegQueryStringValue(HKLM32, UNINSTALL_KEY, 'UninstallString', UninstallString) or
      RegQueryStringValue(HKLM64, UNINSTALL_KEY, 'UninstallString', UninstallString) then
   begin
+    // unins000.exe 是 Inno 自己的卸载程序；匹配到它说明装的是 Inno 旧版，
+    // 同 AppId 直接覆盖升级即可，不需要卸载。
     if (UninstallString <> '') and (Pos('unins000.exe', Lowercase(UninstallString)) = 0) then
     begin
-      if WizardSilent() then
-        Log('检测到旧版（非 Inno Setup）安装，继续静默安装：' + UninstallString)
-      else
+      NSISUninstallString := UninstallString;
+      Log('检测到旧版 NSIS 安装，将在复制文件前静默卸载：' + UninstallString);
+
+      // 沿用旧版的安装目录。学习数据就在 {app}\data 下，
+      // UsePreviousAppDir 只认 Inno 自己装的旧版，对 NSIS 版无效；
+      // 不沿用就会装到默认目录，用户看到一份全新的空数据，以为数据丢了。
+      if RegQueryStringValue(HKCU, UNINSTALL_KEY, 'InstallLocation', InstallLocation) then
       begin
-        Message := '检测到本机已安装旧版安装程序打包的 ' + '{#MyAppName}' + '。' + #13#10 +
-                   '建议先在「添加或删除程序」中卸载旧版本，再运行本安装程序，' + #13#10 +
-                   '否则旧的卸载入口会残留在系统中。' + #13#10#13#10 +
-                   '仍要继续安装吗？';
-        if MsgBox(Message, mbConfirmation, MB_YESNO) <> IDYES then
+        InstallLocation := RemoveQuotes(InstallLocation);
+        if (InstallLocation <> '') and DirExists(InstallLocation) then
         begin
-          Result := False;
-          Exit;
+          NSISInstallDir := InstallLocation;
+          Log('沿用旧版安装目录：' + InstallLocation);
         end;
       end;
     end;
@@ -155,17 +172,58 @@ begin
     Exec('taskkill.exe', '/IM "{#MyAppExeName}" /F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+procedure InitializeWizard();
+begin
+  // 把目录页默认值设成旧 NSIS 版的安装目录。
+  // InitializeWizard 在 Inno 处理完 UsePreviousAppDir 之后才调用，
+  // 且 Inno 旧版覆盖升级时 NSISInstallDir 为空，不会误覆盖。
+  // 交互模式和静默模式（应用内更新）都会从 DirEdit.Text 取 {app}。
+  if NSISInstallDir <> '' then
+    WizardForm.DirEdit.Text := NSISInstallDir;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  // 静默安装只用于「应用内更新」：装完直接拉起新版本，
-  // 避免用户更新后还要手动去开始菜单启动。
-  if (CurStep = ssPostInstall) and WizardSilent() then
-    Exec(ExpandConstant('{app}\{#MyAppExeName}'), '', '', SW_SHOW, ewNoWait, ResultCode);
+  if CurStep = ssPostInstall then
+  begin
+    // 恢复开机自启：旧版 NSIS 卸载会清掉 HKCU Run 下的该项，
+    // 这里重新指向新安装的主程序，保证用户升级后自启不丢。
+    if RestoreAutoStart then
+      RegWriteStringValue(HKCU, AUTOSTART_RUN_KEY, '{#MyAppName}',
+                          '"' + ExpandConstant('{app}\{#MyAppExeName}') + '"');
+
+    // 静默安装只用于「应用内更新」：装完直接拉起新版本，
+    // 避免用户更新后还要手动去开始菜单启动。
+    if WizardSilent() then
+      Exec(ExpandConstant('{app}\{#MyAppExeName}'), '', '', SW_SHOW, ewNoWait, ResultCode);
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
+
+  // 卸载旧版 NSIS 安装。此处是唯一安全的时间窗：
+  // 用户已确认安装、但 Inno 还没复制任何文件。
+  // ssInstall / ssPostInstall 时新文件已落地，再唤 NSIS 卸载会删掉新版主程序。
+  if NSISUninstallString <> '' then
+  begin
+    // NSIS 卸载会清掉 HKCU Run 下的开机自启，先记下来，装完再写回
+    RestoreAutoStart := RegQueryStringValue(HKCU, AUTOSTART_RUN_KEY, '{#MyAppName}', AutoStartCommand)
+                        and (AutoStartCommand <> '');
+
+    // /S = NSIS 静默卸载。此时「删除应用数据」复选框为未勾选状态，
+    // 学习数据（{app}\data）不会被删除。
+    if not Exec(RemoveQuotes(NSISUninstallString), '/S', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      Result := '未能自动卸载旧版本 ' + '{#MyAppName}' + '。' + #13#10#13#10 +
+                '请先在「添加或删除程序」中手动卸载旧版本，然后重新运行本安装程序。';
+      Exit;
+    end;
+    Log('旧版 NSIS 卸载程序已执行，退出码 ' + IntToStr(ResultCode));
+    NSISUninstallString := '';   // 已处理，避免重复执行
+  end;
+
   if not IsWebView2Installed() then
   begin
     if not WizardSilent() then
