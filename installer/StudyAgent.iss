@@ -14,6 +14,14 @@
   #define MyAppVersion "0.6.0"
 #endif
 
+; VersionInfoVersion / ProductVersion 只接受纯数字点分格式（如 0.6.1）。
+; 对 0.6.1-indev 等带预发布后缀的版本，剥离 "-indev"/"-rc.*"/"-beta" 等后缀。
+#if defined(Pos) && Pos("-", MyAppVersion) > 0
+  #define MyAppVersionInfoVersion Copy(MyAppVersion, 1, Pos("-", MyAppVersion) - 1)
+#else
+  #define MyAppVersionInfoVersion MyAppVersion
+#endif
+
 #ifndef StagingDir
   #define StagingDir "staging"
 #endif
@@ -35,8 +43,8 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
-VersionInfoVersion={#MyAppVersion}
-VersionInfoProductVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersionInfoVersion}
+VersionInfoProductVersion={#MyAppVersionInfoVersion}
 VersionInfoProductName={#MyAppName}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} 安装程序

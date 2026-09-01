@@ -1,6 +1,6 @@
 [package]
 name = "studyagent-desktop"
-version = "0.6.0"
+version = "0.6.1-indev"
 description = "StudyAgent Learning Workspace"
 authors = ["StudyAgent"]
 edition = "2021"

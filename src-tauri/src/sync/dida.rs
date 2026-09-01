@@ -1,7 +1,7 @@
 //! 滴答清单（Dida365）同步模块
 //!
-//! 基于 MCP Streamable HTTP 协议直连滴答官方服务 `https://mcp.dida365.com/`，
-//! 协议实现参考 `scripts/push_plan_to_dida.py`（initialize + tools/call + SSE 响应解析）。
+//! 基于 TickTick / Dida365 Open API（`https://api.dida365.com/open/v1/*`）直连滴答官方服务，
+//! 认证方式为 Personal Access Token（`Authorization: Bearer <token>`）。
 //!
 //! ## 职责
 //! - `reconcile_day`：按日对账「计划 JSON 任务 ↔ 滴答任务」（增删改增量，只动带 studyagent 标签的任务）
@@ -25,16 +25,16 @@ use serde_json::{json, Value};
 use crate::data::plan::{read_daily_plan, save_daily_plan, DailyPlanFile};
 use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
 
-const MCP_URL: &str = "https://mcp.dida365.com/";
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// TickTick / Dida365 Open API 基础地址（滴答国内站）
+const API_BASE: &str = "https://api.dida365.com/open/v1";
 /// 来源标记：所有本系统创建/管理的滴答任务固定携带
 const SOURCE_TAG: &str = "studyagent";
 const TIMEZONE: &str = "Asia/Shanghai";
-/// 滴答 MCP 单次 HTTP 请求超时：同步是「尽力而为」的旁路，绝不允许拖垮主流程
-const MCP_TIMEOUT: Duration = Duration::from_secs(10);
+/// 滴答 Open API 单次 HTTP 请求超时：同步是「尽力而为」的旁路，绝不允许拖垮主流程
+const API_TIMEOUT: Duration = Duration::from_secs(10);
 /// 单次对账（reconcile_day）总时限：内部多请求串行（含逐任务增删改），
 /// 半死不活的服务端可能让每个请求都耗尽 10s，总时限保证整体封顶。
-const MCP_RECONCILE_TIMEOUT: Duration = Duration::from_secs(60);
+const RECONCILE_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ============================================================================
 // 标签与字段映射（规范化）
@@ -103,10 +103,10 @@ fn pid_opt(s: &str) -> Option<&str> {
 }
 
 // ============================================================================
-// MCP Streamable HTTP 客户端
+// TickTick / Dida365 Open API 客户端
 // ============================================================================
 
-/// 滴答 MCP 客户端（每次调用即用即建，不常驻）
+/// 滴答 Open API 客户端（每次调用即用即建，不常驻）
 struct DidaClient {
     token: String,
     /// 复用同一 http client，并施加总超时，避免网络挂起拖累主线程
@@ -122,234 +122,182 @@ struct DidaTask {
     done: bool,
     /// 任务实际所在清单 id（删除/完成必须用它；传错清单 id 时滴答会静默成功但不生效）
     project_id: String,
+    /// 开始日期（YYYY-MM-DD，取自 startDate；用于判断任务所属日期）
+    start_date: Option<String>,
+    /// 截止日期（YYYY-MM-DD，取自 dueDate；用于判断任务是否过期）
+    due_date: Option<String>,
+}
+
+/// 解析滴答 API 返回的任务 JSON 为 `DidaTask`
+fn parse_dida_task(t: &Value, done: bool) -> DidaTask {
+    DidaTask {
+        id: t
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        title: t
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        project_id: t
+            .get("projectId")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        tags: t
+            .get("tags")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        done,
+        start_date: t
+            .get("startDate")
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.get(..10))
+            .map(String::from),
+        due_date: t
+            .get("dueDate")
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.get(..10))
+            .map(String::from),
+    }
 }
 
 impl DidaClient {
     fn new(token: String) -> Self {
         let http = reqwest::Client::builder()
-            .timeout(MCP_TIMEOUT)
+            .timeout(API_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { token, http }
     }
 
-    /// 发送 JSON-RPC 请求，自动解析 JSON 或 SSE 响应，透传会话 ID
-    async fn post(&self, payload: Value, session: &mut Option<String>) -> Result<Value, String> {
-        let mut req = self
-            .http
-            .post(MCP_URL)
+    /// 构造带认证头的请求构造器
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let url = format!("{API_BASE}{path}");
+        self.http
+            .request(method, url)
+            .header("Authorization", format!("Bearer {}", self.token))
             .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
-            .header("Authorization", format!("Bearer {}", self.token));
-        if let Some(sid) = session.as_deref() {
-            req = req.header("Mcp-Session-Id", sid);
-        }
-        let resp = req
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("滴答 MCP 请求失败: {e}"))?;
-
-        // streamable-http 规范：服务端可能返回会话 ID，后续请求需携带
-        if let Some(v) = resp.headers().get("Mcp-Session-Id") {
-            if let Ok(s) = v.to_str() {
-                *session = Some(s.to_string());
-            }
-        }
-
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("读取滴答 MCP 响应失败: {e}"))?;
-        parse_mcp_response(&body, &content_type)
-    }
-
-    async fn initialize(&self, session: &mut Option<String>) -> Result<(), String> {
-        let resp = self
-            .post(
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": MCP_PROTOCOL_VERSION,
-                        "capabilities": {},
-                        "clientInfo": { "name": "studyagent-desktop", "version": "0.6.0" }
-                    }
-                }),
-                session,
-            )
-            .await?;
-        if let Some(err) = resp.get("error") {
-            return Err(format!("滴答 MCP initialize 失败: {}", err));
-        }
-        // 可选：枚举工具，确认服务端实际工具名（对账 schema 以便后续适配）
-        let _ = self
-            .post(
-                json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
-                session,
-            )
-            .await
-            .map(|v| {
-                let names: Vec<String> = v
-                    .get("result")
-                    .and_then(|r| r.get("tools"))
-                    .and_then(|t| t.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.get("name").and_then(|n| n.as_str()))
-                            .map(String::from)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if !names.is_empty() {
-                    log::info!("[dida] 服务端可用工具: {:?}", names);
-                }
-            });
-        let _ = self
-            .post(
-                json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} }),
-                session,
-            )
-            .await;
-        Ok(())
-    }
-
-    /// 调用 MCP 工具，返回 structuredContent（不存在则退回 content[0].text 解析）
-    async fn call_tool(
-        &self,
-        name: &str,
-        arguments: Value,
-        session: &mut Option<String>,
-        rid: u64,
-    ) -> Result<Value, String> {
-        let resp = self
-            .post(
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": rid,
-                    "method": "tools/call",
-                    "params": { "name": name, "arguments": arguments }
-                }),
-                session,
-            )
-            .await?;
-        if let Some(err) = resp.get("error") {
-            return Err(format!("滴答 MCP 工具 {} 返回错误: {}", name, err));
-        }
-        let result = resp.get("result").cloned().unwrap_or(Value::Null);
-        if result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            let detail = result
-                .get("content")
-                .and_then(|c| c.as_array())
-                .and_then(|a| a.first())
-                .and_then(|x| x.get("text"))
-                .cloned()
-                .unwrap_or_else(|| json!("无错误详情"));
-            return Err(format!("滴答 MCP 工具 {} 调用失败: {}", name, detail));
-        }
-        if let Some(sc) = result.get("structuredContent") {
-            return Ok(sc.clone());
-        }
-        if let Some(arr) = result.get("content").and_then(|c| c.as_array()) {
-            for item in arr {
-                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                    if let Ok(v) = serde_json::from_str::<Value>(text) {
-                        return Ok(v);
-                    }
-                    return Ok(json!({ "_text": text }));
-                }
-            }
-        }
-        Ok(Value::Null)
     }
 
     /// 拉取指定日期窗口内的任务（未完成或已完成）
+    ///
+    /// Open API 没有按日期窗口直接列任务的端点，分两步：
+    /// 1. 未完成：`POST /task/undone`（按 startDate/endDate 范围筛选）
+    /// 2. 已完成：`POST /task/completed`（按 completedTime 范围筛选）
     async fn list_tasks_in_window(
         &self,
-        session: &mut Option<String>,
         date: &str,
         completed: bool,
-        rid: &mut u64,
     ) -> Result<Vec<DidaTask>, String> {
-        let tool = if completed {
-            "list_completed_tasks_by_date"
-        } else {
-            "list_undone_tasks_by_date"
-        };
         let end = crate::data::add_days(date, 1).unwrap_or_else(|_| date.to_string());
-        *rid += 1;
-        let v = self
-            .call_tool(
-                tool,
-                json!({ "search": {
-                    "startDate": format!("{}T00:00:00+08:00", date),
-                    "endDate": format!("{}T00:00:00+08:00", end),
-                }}),
-                session,
-                *rid,
-            )
-            .await?;
-        let arr = v
-            .as_array()
-            .or_else(|| v.get("tasks").and_then(|t| t.as_array()))
-            .or_else(|| v.get("result").and_then(|r| r.as_array()))
-            .or_else(|| {
-                v.get("result")
-                    .and_then(|r| r.get("tasks"))
-                    .and_then(|t| t.as_array())
-            })
-            .cloned()
-            .unwrap_or_default();
+        let start_iso = format!("{}T00:00:00+0800", date);
+        let end_iso = format!("{}T00:00:00+0800", end);
+
+        let arr = if completed {
+            // 已完成任务：POST /task/completed，按 completedTime 范围筛选（最多 200 条）
+            let body = json!({
+                "startDate": start_iso,
+                "endDate": end_iso,
+            });
+            let resp = self
+                .request(reqwest::Method::POST, "/task/completed")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("滴答 API 查询已完成任务失败: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "滴答 API 查询已完成任务 HTTP {}",
+                    resp.status()
+                ));
+            }
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("解析已完成任务响应失败: {e}"))?
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            // 未完成任务：POST /task/undone（startDate/endDate 必填，范围最大 14 天）
+            let body = json!({
+                "startDate": start_iso,
+                "endDate": end_iso,
+            });
+            let resp = self
+                .request(reqwest::Method::POST, "/task/undone")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("滴答 API 查询未完成任务失败: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "滴答 API 查询未完成任务 HTTP {}",
+                    resp.status()
+                ));
+            }
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("解析未完成任务响应失败: {e}"))?
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
+
         Ok(arr
             .into_iter()
-            .map(|t| DidaTask {
-                id: t
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                title: t
-                    .get("title")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                project_id: t
-                    .get("projectId")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                tags: t
-                    .get("tags")
-                    .and_then(|x| x.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str())
-                            .map(String::from)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                done: completed,
-            })
+            .map(|t| parse_dida_task(&t, completed))
+            .collect())
+    }
+
+    /// 拉取 `[start_date, end_date]` 区间（含两端全天）的未完成任务
+    ///
+    /// Open API `/task/undone` 的 startDate/endDate 范围上限 14 天，用于过往任务清理等批量场景。
+    async fn list_undone_between(
+        &self,
+        start_date: &str,
+        end_date: &str,
+    ) -> Result<Vec<DidaTask>, String> {
+        let end = crate::data::add_days(end_date, 1).unwrap_or_else(|_| end_date.to_string());
+        let body = json!({
+            "startDate": format!("{}T00:00:00+0800", start_date),
+            "endDate": format!("{}T00:00:00+0800", end),
+        });
+        let resp = self
+            .request(reqwest::Method::POST, "/task/undone")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("滴答 API 查询未完成任务失败: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!(
+                "滴答 API 查询未完成任务 HTTP {}",
+                resp.status()
+            ));
+        }
+        Ok(resp
+            .json::<Value>()
+            .await
+            .map_err(|e| format!("解析未完成任务响应失败: {e}"))?
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| parse_dida_task(&t, false))
             .collect())
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn create_task(
         &self,
-        session: &mut Option<String>,
-        rid: &mut u64,
         date: &str,
         title: &str,
         priority: i32,
@@ -357,37 +305,36 @@ impl DidaClient {
         project_id: Option<&str>,
     ) -> Result<String, String> {
         let mut task = serde_json::Map::new();
-        if let Some(pid) = project_id {
-            task.insert("projectId".into(), json!(pid));
-        }
         task.insert("title".into(), json!(title));
         task.insert("priority".into(), json!(priority));
         task.insert("isAllDay".into(), json!(false));
-        task.insert("dueDate".into(), json!(format!("{}T22:00:00+08:00", date)));
+        task.insert("dueDate".into(), json!(format!("{}T22:00:00+0800", date)));
         task.insert(
             "startDate".into(),
-            json!(format!("{}T09:00:00+08:00", date)),
+            json!(format!("{}T09:00:00+0800", date)),
         );
         task.insert("timeZone".into(), json!(TIMEZONE));
         task.insert("kind".into(), json!("TEXT"));
         task.insert("tags".into(), json!(tags));
-        *rid += 1;
-        let v = self
-            .call_tool(
-                "create_task",
-                json!({ "task": Value::Object(task) }),
-                session,
-                *rid,
-            )
-            .await?;
+        if let Some(pid) = project_id {
+            task.insert("projectId".into(), json!(pid));
+        }
+        let resp = self
+            .request(reqwest::Method::POST, "/task")
+            .json(&Value::Object(task))
+            .send()
+            .await
+            .map_err(|e| format!("滴答 API 创建任务失败: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("滴答 API 创建任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+        }
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析创建任务响应失败: {e}"))?;
         v.get("id")
-            .or_else(|| v.get("task").and_then(|t| t.get("id")))
-            .or_else(|| v.get("result").and_then(|r| r.get("id")))
-            .or_else(|| {
-                v.get("result")
-                    .and_then(|r| r.get("task"))
-                    .and_then(|t| t.get("id"))
-            })
             .and_then(|x| x.as_str())
             .map(String::from)
             .ok_or_else(|| format!("create_task 响应缺少 id: {}", v))
@@ -395,13 +342,10 @@ impl DidaClient {
 
     /// 更新任务标题/优先级/标签
     ///
-    /// 官方 schema（经 tools/list + 实测）：`{ task_id, task }`，
-    /// task 内为 OpenTask 模型且 **id 必填**；projectId 建议携带。
+    /// Open API：`POST /task/{taskId}`，body 内 `id` 与 `projectId` 必填。
     #[allow(clippy::too_many_arguments)]
     async fn update_task(
         &self,
-        session: &mut Option<String>,
-        rid: &mut u64,
         id: &str,
         title: &str,
         priority: i32,
@@ -416,81 +360,58 @@ impl DidaClient {
         if let Some(pid) = project_id {
             task.insert("projectId".into(), json!(pid));
         }
-        *rid += 1;
-        let payload = json!({ "task_id": id, "task": Value::Object(task) });
-        self.call_tool("update_task", payload, session, *rid)
+        let path = format!("/task/{id}");
+        let resp = self
+            .request(reqwest::Method::POST, &path)
+            .json(&Value::Object(task))
+            .send()
             .await
-            .map(|_| ())
+            .map_err(|e| format!("滴答 API 更新任务失败: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("滴答 API 更新任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+        }
+        Ok(())
     }
 
-    /// 标记完成（官方 schema：`{ project_id, task_id }` 均必填）
+    /// 标记完成（Open API：`POST /project/{projectId}/task/{taskId}/complete`）
     async fn complete_task(
         &self,
-        session: &mut Option<String>,
-        rid: &mut u64,
         id: &str,
         project_id: Option<&str>,
     ) -> Result<(), String> {
         let pid = project_id.ok_or_else(|| "缺少滴答 project_id，无法完成任务".to_string())?;
-        *rid += 1;
-        self.call_tool(
-            "complete_task",
-            json!({ "project_id": pid, "task_id": id }),
-            session,
-            *rid,
-        )
-        .await
-        .map(|_| ())
+        let path = format!("/project/{pid}/task/{id}/complete");
+        let resp = self
+            .request(reqwest::Method::POST, &path)
+            .send()
+            .await
+            .map_err(|e| format!("滴答 API 完成任务失败: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("滴答 API 完成任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+        }
+        Ok(())
     }
 
-    /// 删除任务（官方 schema：`{ project_id, task_id }` 均必填）
-    async fn delete_task(
-        &self,
-        session: &mut Option<String>,
-        rid: &mut u64,
-        id: &str,
-        project_id: Option<&str>,
-    ) -> Result<(), String> {
+    /// 删除任务（Open API：`DELETE /project/{projectId}/task/{taskId}`）
+    async fn delete_task(&self, id: &str, project_id: Option<&str>) -> Result<(), String> {
         let pid = project_id.ok_or_else(|| "缺少滴答 project_id，无法删除任务".to_string())?;
-        *rid += 1;
-        self.call_tool(
-            "delete_task",
-            json!({ "project_id": pid, "task_id": id }),
-            session,
-            *rid,
-        )
-        .await
-        .map(|_| ())
-    }
-}
-
-/// 解析 MCP 响应：JSON 或 SSE（按 data: 行解析）
-fn parse_mcp_response(body: &str, content_type: &str) -> Result<Value, String> {
-    let data_lines: Vec<&str> = body
-        .lines()
-        .filter_map(|l| l.strip_prefix("data:").map(|d| d.trim()))
-        .collect();
-    if content_type.contains("text/event-stream") || data_lines.len() > 1 {
-        let joined = data_lines.join("\n");
-        if let Ok(v) = serde_json::from_str::<Value>(&joined) {
-            return Ok(v);
+        let path = format!("/project/{pid}/task/{id}");
+        let resp = self
+            .request(reqwest::Method::DELETE, &path)
+            .send()
+            .await
+            .map_err(|e| format!("滴答 API 删除任务失败: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("滴答 API 删除任务 HTTP {status}: {}", &body[..body.len().min(400)]));
         }
-        for d in &data_lines {
-            if let Ok(v) = serde_json::from_str::<Value>(d) {
-                return Ok(v);
-            }
-        }
-        return Err(format!(
-            "SSE 响应解析失败: {}",
-            &body[..body.len().min(400)]
-        ));
+        Ok(())
     }
-    serde_json::from_str(body).map_err(|e| {
-        format!(
-            "JSON 响应解析失败: {e}, body={}",
-            &body[..body.len().min(400)]
-        )
-    })
 }
 
 // ============================================================================
@@ -519,25 +440,16 @@ fn project_id_of(data_dir: &Path) -> Option<String> {
 
 /// 归属项目解析：优先 settings.ticktick.project_id；
 /// 未配置时调用 list_projects 取第一个项目（通常为「学习」或用户首个清单）
-async fn resolve_project_id(
-    data_dir: &Path,
-    client: &DidaClient,
-    session: &mut Option<String>,
-    rid: &mut u64,
-) -> Option<String> {
+async fn resolve_project_id(data_dir: &Path, client: &DidaClient) -> Option<String> {
     if let Some(pid) = project_id_of(data_dir) {
         return Some(pid);
     }
-    *rid += 1;
-    match client
-        .call_tool("list_projects", json!({}), session, *rid)
-        .await
-    {
-        Ok(v) => {
-            let pid = extract_first_project_id(&v);
+    match client.list_projects().await {
+        Ok(projects) => {
+            let pid = pick_default_project(&projects);
             log::info!("[dida] 未配置 project_id，自动选用项目 {:?}", pid);
             if pid.is_none() {
-                log::warn!("[dida] list_projects 响应形状未匹配: {}", v);
+                log::warn!("[dida] list_projects 返回为空，无法确定归属项目");
             }
             pid
         }
@@ -548,46 +460,26 @@ async fn resolve_project_id(
     }
 }
 
-/// 从 list_projects 响应中挑选归属项目 id
+/// 从项目列表中挑选归属项目 id
 ///
 /// 策略：优先名称为「学习」的清单；否则第一个未关闭（closed != true）的清单；再退第一个。
-/// 兼容数组、`{ "projects": [...] }`、`{ "result": [...] }` 等形状。
-fn extract_first_project_id(v: &Value) -> Option<String> {
-    let arr = v
-        .as_array()
-        .or_else(|| v.get("projects").and_then(|p| p.as_array()))
-        .or_else(|| {
-            v.get("result").and_then(|r| r.as_array()).or_else(|| {
-                v.get("result")
-                    .and_then(|r| r.get("projects"))
-                    .and_then(|p| p.as_array())
-            })
-        });
-
-    let items: Vec<&Value> = arr.into_iter().flatten().collect();
-    if items.is_empty() {
+fn pick_default_project(projects: &[DidaProject]) -> Option<String> {
+    if projects.is_empty() {
         return None;
     }
     // 1) 名称为「学习」
-    if let Some(p) = items
-        .iter()
-        .find(|p| p.get("name").and_then(|n| n.as_str()) == Some("学习"))
-    {
-        return p.get("id").and_then(|x| x.as_str()).map(String::from);
+    if let Some(p) = projects.iter().find(|p| p.name == "学习") {
+        return Some(p.id.clone());
     }
-    // 2) 第一个未关闭的清单
-    if let Some(p) = items.iter().find(|p| {
-        !p.get("closed").and_then(|c| c.as_bool()).unwrap_or(false)
-            && p.get("id").and_then(|x| x.as_str()) != Some("inbox")
-    }) {
-        return p.get("id").and_then(|x| x.as_str()).map(String::from);
+    // 2) 第一个未关闭的清单（inbox 是特殊 id，跳过）
+    if let Some(p) = projects
+        .iter()
+        .find(|p| p.id != "inbox" && !p.id.is_empty())
+    {
+        return Some(p.id.clone());
     }
     // 3) 兜底：第一个
-    items
-        .first()
-        .and_then(|p| p.get("id"))
-        .and_then(|x| x.as_str())
-        .map(String::from)
+    projects.first().map(|p| p.id.clone())
 }
 
 // ============================================================================
@@ -597,7 +489,7 @@ fn extract_first_project_id(v: &Value) -> Option<String> {
 /// 后台按日对账：不阻塞主流程（生成/勾选/复盘命令不再等待网络）。
 ///
 /// 在独立任务中自行获取 io_lock 覆盖「读-改-写日计划」的落盘点（回填 dida_task_id），
-/// 与计划生成等写命令串行化；单次请求有 MCP_TIMEOUT 兜底，网络异常最多延迟写操作几秒。
+/// 与计划生成等写命令串行化；单次请求有 API_TIMEOUT 兜底，网络异常最多延迟写操作几秒。
 pub fn spawn_reconcile_day(io_lock: Arc<tokio::sync::Mutex<()>>, data_dir: PathBuf, date: String) {
     tauri::async_runtime::spawn(async move {
         let _guard = io_lock.lock().await;
@@ -641,22 +533,22 @@ pub fn spawn_reconcile_days(
 /// 按日对账：计划 JSON 任务 ↔ 滴答任务（增删改增量；只动带 studyagent 标签的任务）
 ///
 /// 返回 `(created, updated, deleted)` 计数摘要；失败只记录日志。
-/// 整体执行受 `MCP_RECONCILE_TIMEOUT` 总时限约束（覆盖内部逐任务写请求的累加时长）；
+/// 整体执行受 `RECONCILE_TIMEOUT` 总时限约束（覆盖内部逐任务写请求的累加时长）；
 /// 中途超时放弃本次同步，残留的滴答侧改动会在下次对账时按标题收养/删除自动收敛。
 pub async fn reconcile_day(data_dir: &Path, date: &str) -> Result<(i32, i32, i32), String> {
-    match tokio::time::timeout(MCP_RECONCILE_TIMEOUT, reconcile_day_inner(data_dir, date)).await {
+    match tokio::time::timeout(RECONCILE_TIMEOUT, reconcile_day_inner(data_dir, date)).await {
         Ok(Ok((c, u, d))) => Ok((c, u, d)),
         Ok(Err(e)) => Err(e),
         Err(_) => {
             log::warn!(
                 "[dida] 对账 {} 超过总时限 {}s，放弃本次同步",
                 date,
-                MCP_RECONCILE_TIMEOUT.as_secs()
+                RECONCILE_TIMEOUT.as_secs()
             );
             Err(format!(
                 "对账 {} 超过总时限 {}s",
                 date,
-                MCP_RECONCILE_TIMEOUT.as_secs()
+                RECONCILE_TIMEOUT.as_secs()
             ))
         }
     }
@@ -683,26 +575,17 @@ async fn reconcile_day_inner(data_dir: &Path, date: &str) -> Result<(i32, i32, i
     // （完成的任务保留完成历史，不会误删）
 
     let client = DidaClient::new(token);
-    let mut session: Option<String> = None;
-    client.initialize(&mut session).await?;
-    let mut rid: u64 = 100;
 
     // 归属项目：优先 settings.ticktick.project_id，未配置则用 list_projects 兜底取第一个
-    let project_id = resolve_project_id(data_dir, &client, &mut session, &mut rid).await;
+    let project_id = resolve_project_id(data_dir, &client).await;
 
-    let undone = client
-        .list_tasks_in_window(&mut session, date, false, &mut rid)
-        .await?;
-    let completed = client
-        .list_tasks_in_window(&mut session, date, true, &mut rid)
-        .await?;
+    let undone = client.list_tasks_in_window(date, false).await?;
+    let completed = client.list_tasks_in_window(date, true).await?;
     let existing: Vec<DidaTask> = undone.into_iter().chain(completed).collect();
 
     let (created, updated, deleted) = reconcile_with_plan(
         &mut plan,
         &client,
-        &mut session,
-        &mut rid,
         &existing,
         project_id.as_deref(),
     )
@@ -727,8 +610,6 @@ async fn reconcile_day_inner(data_dir: &Path, date: &str) -> Result<(i32, i32, i
 async fn reconcile_with_plan(
     plan: &mut DailyPlanFile,
     client: &DidaClient,
-    session: &mut Option<String>,
-    rid: &mut u64,
     existing: &[DidaTask],
     project_id: Option<&str>,
 ) -> (i32, i32, i32) {
@@ -765,8 +646,6 @@ async fn reconcile_with_plan(
                     // 用任务自身所在清单 id 更新（任务可能在收件箱/其他清单，传目标清单 id 可能失效）
                     match client
                         .update_task(
-                            session,
-                            rid,
                             &did,
                             &push_title,
                             priority,
@@ -784,15 +663,7 @@ async fn reconcile_with_plan(
             }
             // 2) 有 id 但滴答侧未找到（可能在滴答手动删除）→ 重建
             match client
-                .create_task(
-                    session,
-                    rid,
-                    &plan.meta.date,
-                    &push_title,
-                    priority,
-                    &tags,
-                    project_id,
-                )
+                .create_task(&plan.meta.date, &push_title, priority, &tags, project_id)
                 .await
             {
                 Ok(new_id) => {
@@ -818,8 +689,6 @@ async fn reconcile_with_plan(
             // 收养旧任务同样用其自身清单 id 更新（顺带把标题与标签规范化为新格式）
             match client
                 .update_task(
-                    session,
-                    rid,
                     &did,
                     &push_title,
                     priority,
@@ -836,15 +705,7 @@ async fn reconcile_with_plan(
         }
 
         match client
-            .create_task(
-                session,
-                rid,
-                &plan.meta.date,
-                &push_title,
-                priority,
-                &tags,
-                project_id,
-            )
+            .create_task(&plan.meta.date, &push_title, priority, &tags, project_id)
             .await
         {
             Ok(new_id) => {
@@ -867,7 +728,7 @@ async fn reconcile_with_plan(
             }
             // 删除必须用任务自身所在清单 id：传其他清单 id 时滴答会静默成功但不删除
             match client
-                .delete_task(session, rid, &t.id, pid_opt(&t.project_id))
+                .delete_task(&t.id, pid_opt(&t.project_id))
                 .await
             {
                 Ok(()) => deleted += 1,
@@ -908,26 +769,20 @@ pub async fn sync_task_status(data_dir: &Path, task_id: &str, status: &TaskStatu
     };
 
     let client = DidaClient::new(token);
-    let mut session: Option<String> = None;
-    if let Err(e) = client.initialize(&mut session).await {
-        log::warn!("[dida] 状态同步初始化失败 {}: {}", task_id, e);
-        return;
-    }
-    let mut rid: u64 = 400;
     // complete_task 需要 project_id；未能解析则跳过（避免把任务标错的低频场景）
-    let project_id = resolve_project_id(data_dir, &client, &mut session, &mut rid).await;
+    let project_id = resolve_project_id(data_dir, &client).await;
     match status {
         TaskStatus::Done => {
             if let Err(e) = client
-                .complete_task(&mut session, &mut rid, &task, project_id.as_deref())
+                .complete_task(&task, project_id.as_deref())
                 .await
             {
                 log::warn!("[dida] 标记完成失败 {}: {}", task, e);
             }
         }
-        // 取消完成：滴答官方 MCP 不支持 status=0，跳过（以滴答为准的回读会覆盖）
+        // 取消完成：滴答 Open API 不支持回退已完成任务，跳过（以滴答为准的回读会覆盖）
         _ => log::debug!(
-            "[dida] 取消完成跳过（滴答 MCP 不支持），task_id={}",
+            "[dida] 取消完成跳过（滴答 Open API 不支持），task_id={}",
             task_id
         ),
     }
@@ -942,16 +797,7 @@ pub async fn fetch_completed_titles(data_dir: &Path, date: &str) -> Vec<String> 
         return Vec::new();
     };
     let client = DidaClient::new(token);
-    let mut session: Option<String> = None;
-    if let Err(e) = client.initialize(&mut session).await {
-        log::warn!("[dida] 复盘回读初始化失败 {}: {}", date, e);
-        return Vec::new();
-    }
-    let mut rid: u64 = 300;
-    match client
-        .list_tasks_in_window(&mut session, date, true, &mut rid)
-        .await
-    {
+    match client.list_tasks_in_window(date, true).await {
         Ok(tasks) => tasks
             .iter()
             .filter(|t| is_owned(&t.tags))
@@ -962,6 +808,78 @@ pub async fn fetch_completed_titles(data_dir: &Path, date: &str) -> Vec<String> 
             Vec::new()
         }
     }
+}
+
+/// 过往未完成任务回看窗口（天）：清理仅覆盖该范围内的过期任务。
+/// Open API `/task/undone` 单次范围查询上限 14 天，超出部分会被服务端截断，故取 14。
+const STALE_LOOKBACK_DAYS: i64 = 14;
+
+/// 从滴答任务时间字段提取所属日期（YYYY-MM-DD）
+///
+/// 过期判断优先使用 `dueDate`（截止日期），缺失时回退 `startDate`；
+/// 两者都无法解析则返回 `None`（保守跳过，不删除）。
+fn task_date_of(t: &DidaTask) -> Option<String> {
+    for raw in [&t.due_date, &t.start_date] {
+        if let Some(date) = raw.as_deref() {
+            if crate::data::validate_date(date).is_ok() {
+                return Some(date.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 清理过往（已过期）未完成的 studyagent 任务（提交复盘时调用）
+///
+/// 规则：
+/// - 仅处理带 `studyagent` 来源标签的未完成任务；
+/// - 仅处理任务所属日期早于今天（< 今天）的「过期」任务；
+/// - 已完成任务保留完成历史，不删除；今天及未来的任务由按日对账管理，不受影响；
+/// - 单次范围查询（回看 `STALE_LOOKBACK_DAYS` 天），删除失败仅记录日志，不阻塞复盘提交。
+///
+/// 返回成功删除的任务数量。
+pub async fn cleanup_stale_tasks(data_dir: &Path) -> i32 {
+    if !is_sync_enabled(data_dir) {
+        return 0;
+    }
+    let Some(token) = crate::secrets::get_dida_token() else {
+        return 0;
+    };
+    let client = DidaClient::new(token);
+    let today = crate::data::today_string();
+    let Ok(start) = crate::data::add_days(&today, -STALE_LOOKBACK_DAYS) else {
+        return 0;
+    };
+    let Ok(tasks) = client.list_undone_between(&start, &today).await else {
+        log::warn!("[dida] 过往未完成任务查询失败，跳过清理");
+        return 0;
+    };
+
+    let mut deleted = 0i32;
+    for t in tasks.iter().filter(|t| is_owned(&t.tags) && !t.done) {
+        let Some(owned_date) = task_date_of(t) else {
+            continue;
+        };
+        if owned_date.as_str() >= today.as_str() {
+            continue; // 今天及未来不清理，由按日对账处理
+        }
+        // 删除必须用任务自身所在清单 id：传其他清单 id 时滴答会静默成功但不删除
+        match client.delete_task(&t.id, pid_opt(&t.project_id)).await {
+            Ok(()) => {
+                deleted += 1;
+                log::info!(
+                    "[dida] 清理过往未完成任务: {}（原日期 {}）",
+                    t.title,
+                    owned_date
+                );
+            }
+            Err(e) => log::warn!("[dida] 清理过往任务 {} 失败: {}", t.title, e),
+        }
+    }
+    if deleted > 0 {
+        log::info!("[dida] 过往未完成任务清理完成: 共删除 {} 条", deleted);
+    }
+    deleted
 }
 
 // ============================================================================
@@ -975,35 +893,38 @@ pub struct DidaProject {
     pub name: String,
 }
 
-/// 从 list_projects 响应中提取全部项目（兼容数组 / `{projects}` / `{result...}` 各形状）
-fn extract_projects(v: &Value) -> Vec<DidaProject> {
-    let arr = v
-        .as_array()
-        .or_else(|| v.get("projects").and_then(|p| p.as_array()))
-        .or_else(|| {
-            v.get("result").and_then(|r| r.as_array()).or_else(|| {
-                v.get("result")
-                    .and_then(|r| r.get("projects"))
-                    .and_then(|p| p.as_array())
+impl DidaClient {
+    /// 拉取滴答清单项目列表（Open API：`GET /project`）
+    async fn list_projects(&self) -> Result<Vec<DidaProject>, String> {
+        let resp = self
+            .request(reqwest::Method::GET, "/project")
+            .send()
+            .await
+            .map_err(|e| format!("滴答 API 获取项目列表失败: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("滴答 API 获取项目列表 HTTP {status}: {}", &body[..body.len().min(400)]));
+        }
+        let arr: Vec<Value> = resp
+            .json()
+            .await
+            .map_err(|e| format!("解析项目列表响应失败: {e}"))?;
+        Ok(arr
+            .iter()
+            .filter_map(|p| {
+                let id = p.get("id").and_then(|x| x.as_str())?;
+                Some(DidaProject {
+                    id: id.to_string(),
+                    name: p
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                })
             })
-        });
-    let Some(items) = arr else {
-        return Vec::new();
-    };
-    items
-        .iter()
-        .filter_map(|p| {
-            let id = p.get("id").and_then(|x| x.as_str())?;
-            Some(DidaProject {
-                id: id.to_string(),
-                name: p
-                    .get("name")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-        })
-        .collect()
+            .collect())
+    }
 }
 
 /// 拉取滴答清单项目列表（供设置页选择归属清单）；同步未启用/未配置 Token/失败返回空
@@ -1015,17 +936,8 @@ pub async fn fetch_projects(data_dir: &Path) -> Vec<DidaProject> {
         return Vec::new();
     };
     let client = DidaClient::new(token);
-    let mut session: Option<String> = None;
-    if let Err(e) = client.initialize(&mut session).await {
-        log::warn!("[dida] 获取清单列表初始化失败: {}", e);
-        return Vec::new();
-    }
-    let rid: u64 = 600;
-    match client
-        .call_tool("list_projects", json!({}), &mut session, rid)
-        .await
-    {
-        Ok(v) => extract_projects(&v),
+    match client.list_projects().await {
+        Ok(v) => v,
         Err(e) => {
             log::warn!("[dida] list_projects 失败: {}", e);
             Vec::new()
@@ -1041,7 +953,7 @@ pub async fn fetch_projects(data_dir: &Path) -> Vec<DidaProject> {
 mod tests {
     use super::*;
 
-    /// 端到端验证滴答 MCP：握手 → tools/list → 今日窗口查询 → create/update/complete/delete 往返。
+    /// 端到端验证滴答 Open API：查询 → create/update/complete/delete 往返。
     ///
     /// 需要 DIDA_TOKEN（keyring 或环境变量；运行前可 `$env:DIDA_TOKEN=...`）。
     /// 运行：
@@ -1054,84 +966,26 @@ mod tests {
             return;
         };
         let client = DidaClient::new(token);
-        let mut session: Option<String> = None;
-        client
-            .initialize(&mut session)
-            .await
-            .expect("initialize 与滴答 MCP 服务握手应成功");
 
-        // 1. tools/list：确认服务端实际工具名（写路径 schema 依赖）
-        let tools = client
-            .post(
-                json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": {} }),
-                &mut session,
-            )
+        // 1. list_projects：确认可用项目
+        let projects = client
+            .list_projects()
             .await
-            .expect("tools/list 调用应成功");
-        let names: Vec<String> = tools
-            .get("result")
-            .and_then(|r| r.get("tools"))
-            .and_then(|t| t.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.get("name").and_then(|n| n.as_str()))
-                    .map(String::from)
-                    .collect()
-            })
-            .unwrap_or_default();
-        println!("[test] 服务端可用工具: {:?}", names);
-        for need in [
-            "create_task",
-            "update_task",
-            "complete_task",
-            "delete_task",
-            "list_undone_tasks_by_date",
-            "list_completed_tasks_by_date",
-        ] {
-            assert!(
-                names.iter().any(|n| n == need),
-                "服务端缺少工具 {}（应以 tools/list 返回为准适配）",
-                need
-            );
-        }
-
-        // 打印写路径工具的官方参数 schema，作为实现依据
-        if let Some(tool_arr) = tools
-            .get("result")
-            .and_then(|r| r.get("tools"))
-            .and_then(|t| t.as_array())
-        {
-            for t in tool_arr {
-                let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
-                    continue;
-                };
-                if matches!(
-                    name,
-                    "create_task"
-                        | "update_task"
-                        | "complete_task"
-                        | "delete_task"
-                        | "list_undone_tasks_by_date"
-                        | "list_completed_tasks_by_date"
-                ) {
-                    println!(
-                        "[test] schema {}: {}",
-                        name,
-                        t.get("inputSchema").cloned().unwrap_or_default()
-                    );
-                }
-            }
-        }
+            .expect("list_projects 应成功");
+        println!("[test] 项目数: {}", projects.len());
+        let project_id: String = pick_default_project(&projects)
+            .or_else(|| Some("6a5b50e2e9ae5b00000000f7".to_string()))
+            .expect("应能确定一个项目 id");
+        println!("[test] 选用 project_id={}", project_id);
 
         // 2. 只读：今日窗口查询
         let today = crate::data::today_string();
-        let mut rid: u64 = 10;
         let undone = client
-            .list_tasks_in_window(&mut session, &today, false, &mut rid)
+            .list_tasks_in_window(&today, false)
             .await
             .expect("查询今日未完成任务应成功");
         let completed = client
-            .list_tasks_in_window(&mut session, &today, true, &mut rid)
+            .list_tasks_in_window(&today, true)
             .await
             .expect("查询今日已完成任务应成功");
         println!(
@@ -1140,38 +994,15 @@ mod tests {
             completed.len()
         );
 
-        // 2.5 归属项目：优先借 list_projects 取一个真实项目（验证项目内任务可被窗口查询到）
-        let proj_rid: u64 = 150;
-        let projects = client
-            .call_tool("list_projects", json!({}), &mut session, proj_rid)
-            .await
-            .expect("list_projects 应成功");
-        let project_id: Option<String> = extract_first_project_id(&projects);
-        // 兜底：脚本已知的「学习」清单（push_plan_to_dida.py 中 PROJECT_ID）
-        let project_id = project_id
-            .or_else(|| Some("6a5b50e2e9ae5b00000000f7".to_string()))
-            .expect("应能确定一个项目 id");
-        println!(
-            "[test] list_projects 原始响应: {}",
-            projects.to_string().chars().take(400).collect::<String>()
-        );
-        println!("[test] 选用 project_id={}", project_id);
-
         // 清理历史失败运行残留（带 studyagent 标签、标题前缀 SA连通性测试）
-        let mut cleanup_rid: u64 = 200;
         for t in client
-            .list_tasks_in_window(&mut session, &today, false, &mut cleanup_rid)
+            .list_tasks_in_window(&today, false)
             .await
             .expect("查询残留应成功")
         {
             if t.title.starts_with("SA连通性测试") && is_owned(&t.tags) {
                 match client
-                    .delete_task(
-                        &mut session,
-                        &mut cleanup_rid,
-                        &t.id,
-                        pid_opt(&t.project_id),
-                    )
+                    .delete_task(&t.id, pid_opt(&t.project_id))
                     .await
                 {
                     Ok(()) => println!("[test] 已清理残留任务 {}", t.id),
@@ -1189,66 +1020,50 @@ mod tests {
         let tags = vec![SOURCE_TAG.to_string(), "测试".to_string()];
 
         let id = client
-            .create_task(
-                &mut session,
-                &mut rid,
-                &today,
-                &title,
-                1,
-                &tags,
-                Some(&project_id),
-            )
+            .create_task(&today, &title, 1, &tags, Some(project_id.as_str()))
             .await
             .expect("create_task 应返回任务 id");
         println!("[test] create ok, id={}", id);
 
         // 创建后应立即能被「今日窗口」查询到（验证重组/回读依赖的列表链路）
         let after = client
-            .list_tasks_in_window(&mut session, &today, false, &mut rid)
+            .list_tasks_in_window(&today, false)
             .await
             .expect("查询创建后任务应成功");
         assert!(
             after.iter().any(|t| t.id == id),
-            "创建的任务 {} 未能被 list_undone_tasks_by_date 查询到（id={}）",
-            title,
-            id
+            "创建的任务 {} 未能被 undone 窗口查询到",
+            title
         );
         println!("[test] 创建后窗口可见 ok");
 
         client
-            .update_task(
-                &mut session,
-                &mut rid,
-                &id,
-                &format!("{}_改", title),
-                1,
-                &tags,
-                Some(&project_id),
-            )
+            .update_task(&id, &format!("{}_改", title), 1, &tags, Some(project_id.as_str()))
             .await
             .expect("update_task 应成功");
         println!("[test] update ok");
 
         client
-            .complete_task(&mut session, &mut rid, &id, Some(&project_id))
+            .complete_task(&id, Some(project_id.as_str()))
             .await
             .expect("complete_task 应成功");
         println!("[test] complete ok");
 
         // 完成后应出现在「已完成窗口」（回读复盘的依赖链路）
         let completed_after = client
-            .list_tasks_in_window(&mut session, &today, true, &mut rid)
+            .list_tasks_in_window(&today, true)
             .await
             .expect("查询已完成任务应成功");
         assert!(
             completed_after.iter().any(|t| t.id == id),
-            "已完成任务 {} 未能被 list_completed_tasks_by_date 查询到",
+            "已完成任务 {} 未能被 completed 窗口查询到",
             id
         );
         println!("[test] 完成后窗口可见 ok");
 
+        // 已完成任务通过 DELETE 清理（Open API 的 complete 会让任务变为已完成态，DELETE 仍可清理）
         client
-            .delete_task(&mut session, &mut rid, &id, Some(&project_id))
+            .delete_task(&id, Some(project_id.as_str()))
             .await
             .expect("delete_task 应成功");
         println!("[test] delete ok —— 全链路往返验证通过（create → update → complete → delete）");
@@ -1313,17 +1128,11 @@ mod tests {
 
         // ── 0. 直连客户端：预清理本测试残留 + 安全检查（存在真实 studyagent 任务则跳过）──
         let client = DidaClient::new(token);
-        let mut session: Option<String> = None;
-        client
-            .initialize(&mut session)
-            .await
-            .expect("initialize 应成功");
-        let mut rid: u64 = 500;
         let mut leftovers: Vec<DidaTask> = Vec::new();
         for completed in [false, true] {
             leftovers.extend(
                 client
-                    .list_tasks_in_window(&mut session, &today, completed, &mut rid)
+                    .list_tasks_in_window(&today, completed)
                     .await
                     .expect("查询今日窗口应成功")
                     .into_iter()
@@ -1336,7 +1145,7 @@ mod tests {
             {
                 // 删除必须用任务自身清单 id（收件箱任务传「学习」id 会静默不生效）
                 client
-                    .delete_task(&mut session, &mut rid, &t.id, pid_opt(&t.project_id))
+                    .delete_task(&t.id, pid_opt(&t.project_id))
                     .await
                     .expect("清理测试残留任务应成功");
                 println!(
@@ -1356,7 +1165,7 @@ mod tests {
         // 避免被随后的对账重复计入 deleted 计数
         for _ in 0..10 {
             let visible = client
-                .list_tasks_in_window(&mut session, &today, false, &mut rid)
+                .list_tasks_in_window(&today, false)
                 .await
                 .expect("轮询查询应成功")
                 .into_iter()
@@ -1450,7 +1259,7 @@ mod tests {
         // ── 6. 复盘回读：滴答侧完成任务丙 → fetch_completed_titles 应包含其标题 ──
         let did3 = task3.dida_task_id.clone().unwrap();
         client
-            .complete_task(&mut session, &mut rid, &did3, Some(PROJECT_ID))
+            .complete_task(&did3, Some(PROJECT_ID))
             .await
             .expect("滴答侧完成任务丙应成功");
         let titles = fetch_completed_titles(&tmp, &today).await;
@@ -1464,13 +1273,13 @@ mod tests {
         // ── 7. 清理：删除测试任务与临时目录 ──
         for completed in [false, true] {
             for t in client
-                .list_tasks_in_window(&mut session, &today, completed, &mut rid)
+                .list_tasks_in_window(&today, completed)
                 .await
                 .expect("清理前查询应成功")
             {
                 if is_owned(&t.tags) && strip_title_prefix(&t.title).starts_with(PREFIX) {
                     client
-                        .delete_task(&mut session, &mut rid, &t.id, pid_opt(&t.project_id))
+                        .delete_task(&t.id, pid_opt(&t.project_id))
                         .await
                         .expect("清理测试任务应成功");
                 }

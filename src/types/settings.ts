@@ -85,8 +85,11 @@ export interface StudySchedule {
   review_reminder_time: string;
   /** 各科开始学习日期 (YYYY-MM-DD)，未到该日期前不为该科安排任务 */
   subject_start_dates?: SubjectStartDates;
-  /** 用户期望每日任务数量（默认 3，每科约一条，未开始的科目不安排） */
+  /** 用户期望每日任务数量（默认 3，每科约一条，未开始的科目不安排）。
+   *  注意：实际规划以派生条数为准（每日目标学时 ÷ 标准任务粒度）。 */
   daily_task_count?: number;
+  /** 标准任务粒度（小时/条，默认 1.5）：每日任务数 = 每日目标学时 × 效率 ÷ 该值 */
+  standard_granularity?: number;
   /** 是否允许 AI 安排总结/复习任务（默认 true，关闭时 AI 只推进新知识点） */
   enable_review_tasks?: boolean;
   /** 是否启用任务计时（默认 false，关闭时不显示计时 UI，State 不写入计时字段） */

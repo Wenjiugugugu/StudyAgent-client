@@ -4,7 +4,7 @@
 //! 命令实现位于同目录的领域模块中；本文件暂时集中保留跨领域复用的
 //! 数据结构和纯辅助逻辑，避免迁移过程中改变现有数据契约。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::data::state::TaskStatus;
 
@@ -925,6 +925,12 @@ pub struct UpdateCheckResult {
     pub assets: Vec<UpdateAsset>,
     /// 用户可读的提示信息（不包含技术细节）
     pub message: String,
+    /// 是否强制更新（当前版本被远端策略清单禁用时为 true）
+    #[serde(default)]
+    pub force_update: bool,
+    /// 强制更新原因（force_update=true 时展示给用户）
+    #[serde(default)]
+    pub force_update_reason: String,
 }
 
 /// 下载进度事件 payload
@@ -938,9 +944,34 @@ pub struct DownloadProgress {
     pub percent: f64,
 }
 
-/// GitHub API 端点：获取最新 release
+/// GitHub API 端点：获取最新 release（兜底源）
 pub(super) const GITHUB_RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/Wenjiugugugu/StudyAgent-client/releases/latest";
+
+/// GitCode API 端点：获取最新 release（国内加速源，优先使用）
+///
+/// GitCode 为国内部署，API / 附件下载 / raw 文件均走国内 CDN，
+/// 响应字段（tag_name/name/body/assets[].browser_download_url）与 GitHub 兼容。
+/// 注意 owner path 为小写 `wenjiugugugu`、仓库名为 `StudyAgent`（与 GitHub 的
+/// `Wenjiugugugu/StudyAgent-client` 不同名）。
+pub(super) const GITCODE_RELEASES_LATEST_URL: &str =
+    "https://api.gitcode.com/api/v5/repos/wenjiugugugu/StudyAgent/releases/latest";
+
+/// 远端版本策略清单（仓库根目录维护，raw CDN 访问）。
+///
+/// 用于紧急禁用某版本：将该版本加入 blocked_versions 后，已更新到该版本
+/// 的客户端启动时会进入强制更新模式（弹窗不可关闭，仅可更新或退出应用）。
+/// 修改方式：直接编辑仓库该文件并 push，raw CDN 约 1–5 分钟刷新即生效。
+/// 双源拉取：GitCode raw（国内快）优先，GitHub raw 兜底，任一端更新即生效。
+pub(super) const VERSION_POLICY_URL: &str =
+    "https://raw.githubusercontent.com/Wenjiugugugu/StudyAgent-client/main/version-policy.json";
+
+/// GitCode 版本策略清单（国内加速源，优先于 GitHub raw 拉取）。
+///
+/// 注：GitCode 的 raw 预览端点（raw.gitcode.com/.../raw/...）对 JSON 返回 403「暂不支持预览」，
+/// 因此改用 contents API（与 Gitee v5 同源，匿名可读，返回 base64 编码的 content 字段）。
+pub(super) const GITCODE_VERSION_POLICY_URL: &str =
+    "https://api.gitcode.com/api/v5/repos/wenjiugugugu/StudyAgent/contents/version-policy.json";
 
 /// 推测资源类型
 ///
@@ -961,9 +992,14 @@ pub(super) fn detect_asset_kind(name: &str) -> String {
     }
 }
 
-/// 从 GitHub release assets 数组提取安装包列表
+/// 从 release assets 数组提取安装包列表（兼容 GitHub 与 GitCode）
 ///
-/// 过滤掉 `.sig`、`.json`、`.txt` 等非安装包文件。
+/// - GitHub：assets 含 `digest`（"sha256:<hex>"）字段，直接提取；
+/// - GitCode：assets 含 `type`（"attach" / "source"）字段但**无 digest**，
+///   sha256 留空，由调用方通过同 release 的 checksums 附件补齐。
+///
+/// 均跳过 `.sig`、`.json`、`.txt`、`.blockmap` 等签名/manifest 文件与源码包。
+/// 注意：这里不再按 sha256 过滤（GitCode 无 digest），由调用方在补齐后兜底过滤。
 pub(super) fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAsset> {
     let arr = match assets.as_array() {
         Some(a) => a,
@@ -975,7 +1011,7 @@ pub(super) fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAs
             let name = asset.get("name")?.as_str()?.to_string();
             let lower = name.to_lowercase();
 
-            // 跳过签名 / manifest 文件
+            // 跳过签名 / manifest / 源码包文件
             if lower.ends_with(".sig")
                 || lower.ends_with(".json")
                 || lower.ends_with(".txt")
@@ -983,12 +1019,17 @@ pub(super) fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAs
             {
                 return None;
             }
+            // GitCode 明确标记 `type: "source"` 的源码包直接跳过
+            if asset.get("type").and_then(|v| v.as_str()) == Some("source") {
+                return None;
+            }
 
             let download_url = asset.get("browser_download_url")?.as_str()?.to_string();
             let size = asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
             let kind = detect_asset_kind(&name);
 
-            // GitHub API 对资产提供 digest 字段，形如 "sha256:<hex>"，剥离前缀
+            // GitHub API 对资产提供 digest 字段，形如 "sha256:<hex>"，剥离前缀；
+            // GitCode 无该字段，此处保持 None，由调用方用 checksums 附件补齐。
             let sha256 = asset
                 .get("digest")
                 .and_then(|v| v.as_str())
@@ -996,8 +1037,8 @@ pub(super) fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAs
                 .map(|hex| hex.to_lowercase())
                 .filter(|hex| !hex.is_empty());
 
-            if kind == "unknown" || sha256.as_ref().is_none_or(|hex| !is_valid_sha256(hex)) {
-                log::warn!("[Update] 忽略缺少有效 SHA-256 的安装资源: {}", name);
+            if kind == "unknown" {
+                log::warn!("[Update] 忽略无法识别类型的安装资源: {}", name);
                 return None;
             }
 
@@ -1010,6 +1051,87 @@ pub(super) fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAs
             })
         })
         .collect()
+}
+
+/// 从 release JSON 中定位并下载 checksums 附件（如 `StudyAgent-0.6.1-sha256.txt`），
+/// 解析为 `文件名 -> SHA-256` 映射。
+///
+/// GitCode release API 的 assets 不提供 digest，完整性校验依赖发版时随附的
+/// checksums 文件（sha256sum 格式：`<hex>  <filename>` 或 `<hex> *<filename>`）。
+/// 任何失败（附件缺失 / 请求失败 / 格式不符）均返回空映射，不阻断主流程。
+pub(super) async fn fetch_checksums(
+    client: &reqwest::Client,
+    release_json: &serde_json::Value,
+) -> std::collections::HashMap<String, String> {
+    let map = std::collections::HashMap::new();
+
+    let Some(assets) = release_json.get("assets").and_then(|v| v.as_array()) else {
+        return map;
+    };
+
+    // 定位 checksums 附件：文件名含 "sha256" 或 "checksum"，且以 .txt 结尾
+    let Some(sum_asset) = assets.iter().find(|a| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .map(|n| {
+                let lower = n.to_lowercase();
+                (lower.contains("sha256") || lower.contains("checksum")) && lower.ends_with(".txt")
+            })
+            .unwrap_or(false)
+    }) else {
+        return map;
+    };
+
+    let url = match sum_asset.get("browser_download_url").and_then(|v| v.as_str()) {
+        Some(u) => u.to_string(),
+        None => return map,
+    };
+
+    // 短超时 + 大小上限，防止被异常大文件拖住
+    let response = match client.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return map,
+    };
+    const MAX_CHECKSUMS_BYTES: u64 = 1024 * 1024;
+    if response.content_length().unwrap_or(0) > MAX_CHECKSUMS_BYTES {
+        log::warn!("[Update] checksums 附件过大，已忽略");
+        return map;
+    }
+    let text = match response.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("[Update] checksums 附件读取失败: {}", e);
+            return map;
+        }
+    };
+
+    let map = parse_checksums_text(&text);
+    log::info!("[Update] checksums 附件解析到 {} 条记录", map.len());
+    map
+}
+
+/// 解析 sha256sum 格式文本为 `文件名 -> SHA-256` 映射（纯函数，便于单测）。
+///
+/// 兼容三种行格式：`<hex>  <filename>`（双空格）、`<hex> *<filename>`（二进制）、
+/// `<hex> <filename>`（单空格）；跳过空行与 `#` 注释行。
+pub(super) fn parse_checksums_text(text: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((hex, name)) = line.split_once(' ') else {
+            continue;
+        };
+        let hex = hex.trim();
+        let name = name.trim_start_matches('*').trim();
+        if !is_valid_sha256(hex) || name.is_empty() {
+            continue;
+        }
+        map.insert(name.to_string(), hex.to_lowercase());
+    }
+    map
 }
 
 /// 构造一个「暂时无法检查」的结果（用于错误降级）
@@ -1026,6 +1148,8 @@ pub(super) fn unavailable_result(current_version: &str, log_reason: &str) -> Upd
         release_notes: String::new(),
         assets: Vec::new(),
         message: "暂时无法检查更新，请确认网络连接后重试".to_string(),
+        force_update: false,
+        force_update_reason: String::new(),
     }
 }
 
@@ -1057,20 +1181,32 @@ pub(super) fn is_valid_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// 更新下载 URL 白名单（GitHub + GitCode 双源）
+///
+/// - `require_release_path=true`：下载起点必须是指定仓库的 release 直链路径；
+///   两源路径模式一致（`/releases/download/{tag}/{file}`），但 owner/repo 不同名，
+///   需按 host 分别校验前缀。
+/// - `require_release_path=false`：重定向中间站 / 最终 CDN 域名白名单。
+///   GitCode 的直链会 302 到 `file-cdn.gitcode.com` 的预签名 URL；
+///   `api.gitcode.com` 的 `attach_files/.../download` 端点同为合法下载源。
 pub(super) fn is_allowed_update_url(url: &reqwest::Url, require_release_path: bool) -> bool {
     if url.scheme() != "https" {
         return false;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    // GitHub 与 GitCode 仓库名不同，各自维护 release 下载路径前缀
+    const GITHUB_RELEASE_PATH: &str = "/Wenjiugugugu/StudyAgent-client/releases/download/";
+    const GITCODE_RELEASE_PATH: &str = "/wenjiugugugu/StudyAgent/releases/download/";
     if require_release_path {
-        host == "github.com"
-            && url
-                .path()
-                .starts_with("/Wenjiugugugu/StudyAgent-client/releases/download/")
+        (host == "github.com" && url.path().starts_with(GITHUB_RELEASE_PATH))
+            || (host == "gitcode.com" && url.path().starts_with(GITCODE_RELEASE_PATH))
     } else {
         host == "github.com"
             || host == "objects.githubusercontent.com"
             || host == "release-assets.githubusercontent.com"
+            || host == "gitcode.com"
+            || host == "file-cdn.gitcode.com"
+            || host == "api.gitcode.com"
     }
 }
 
@@ -1135,6 +1271,215 @@ pub(super) fn compare_prerelease(a: &str, b: &str) -> i32 {
     // 简单按字典序比较（足够覆盖 beta / rc / alpha）
     // 详见 https://semver.org/#spec-item-11
     a.cmp(b) as i32
+}
+
+// ============================================================================
+// 版本策略（禁用版本清单）
+// ============================================================================
+
+/// 远端版本策略清单条目：一个被禁用的版本
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlockedVersion {
+    /// 被禁用的版本号（如 "0.6.1"，与 CARGO_PKG_VERSION 精确匹配）
+    pub version: String,
+    /// 展示给用户的原因文案
+    pub reason: String,
+    /// 禁用生效起始时间（ISO 8601，可选）；早于此时间不算禁用
+    pub block_since: Option<String>,
+    /// 建议升级到的最低安全版本（信息性，实际安装 latest）
+    pub min_safe_version: Option<String>,
+}
+
+/// 远端版本策略清单
+#[derive(Debug, Clone, Deserialize)]
+pub struct VersionPolicy {
+    /// 清单格式版本号
+    pub schema_version: u32,
+    /// 清单最后更新时间（ISO 8601），客户端用于判断本地缓存是否过期
+    pub updated_at: String,
+    /// 被禁用的版本列表
+    pub blocked_versions: Vec<BlockedVersion>,
+}
+
+/// 按序尝试多个远端 JSON 端点，返回第一个成功的响应体与所用 URL。
+///
+/// 用于「GitCode 优先、GitHub 兜底」的双源更新检查。
+/// GitHub 端点需携带 `Accept: application/vnd.github+json`，其余端点不附加。
+pub(super) async fn fetch_remote_json(
+    client: &reqwest::Client,
+    urls: &[&str],
+) -> Option<(serde_json::Value, String)> {
+    for url in urls {
+        let mut req = client.get(*url);
+        if url.contains("api.github.com") {
+            req = req.header("Accept", "application/vnd.github+json");
+        }
+        match req.send().await {
+            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                Ok(v) => {
+                    log::info!("[Update] 远端源可用: {}", url);
+                    return Some((v, (*url).to_string()));
+                }
+                Err(e) => log::warn!("[Update] JSON 解析失败({}): {}", url, e),
+            },
+            Ok(r) => log::warn!("[Update] 远端 {} 返回 HTTP {}", url, r.status()),
+            Err(e) => log::warn!("[Update] 请求失败({}): {}", url, e),
+        }
+    }
+    None
+}
+
+/// 请求远端版本策略清单（双源：GitCode contents API 优先，GitHub raw 兜底）。
+///
+/// GitCode 端点返回 base64 编码的 `content` 字段，此处统一解码为原始文本后再解析。
+/// 返回 `Ok(Some((policy, raw_text)))`；任何错误情况均返回 `Ok(None)`，
+/// 不阻断主更新检查流程。`raw_text` 用于写入本地缓存。
+pub(super) async fn fetch_version_policy(
+    client: &reqwest::Client,
+) -> Result<Option<(VersionPolicy, String)>, String> {
+    let mut last_err: Option<String> = None;
+    for url in [GITCODE_VERSION_POLICY_URL, VERSION_POLICY_URL] {
+        let response = match client
+            .get(url)
+            .header("Accept", "application/json")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = Some(format!("{}: {}", url, e));
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            last_err = Some(format!("{}: HTTP {}", url, response.status()));
+            continue;
+        }
+
+        let text = match response.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                last_err = Some(format!("{}: 读取失败 {}", url, e));
+                continue;
+            }
+        };
+
+        // GitCode contents API 返回 { "content": "<base64>" }，需解码为原始 JSON 文本
+        let raw_text = if let Ok(outer) = serde_json::from_str::<serde_json::Value>(&text) {
+            match outer.get("content").and_then(|c| c.as_str()) {
+                Some(encoded) => match decode_base64_text(encoded) {
+                    Some(decoded) => decoded,
+                    None => {
+                        last_err = Some(format!("{}: base64 解码失败", url));
+                        continue;
+                    }
+                },
+                None => text,
+            }
+        } else {
+            text
+        };
+
+        match serde_json::from_str::<VersionPolicy>(&raw_text) {
+            Ok(p) => {
+                log::info!("[Update] 版本策略获取成功: {}", url);
+                return Ok(Some((p, raw_text)));
+            }
+            Err(e) => {
+                last_err = Some(format!("{}: JSON 解析失败 {}", url, e));
+            }
+        }
+    }
+
+    if let Some(e) = last_err {
+        log::warn!("[Update] 版本策略全部源失败: {}", e);
+    }
+    Ok(None)
+}
+
+/// 将 base64 字符串解码为 UTF-8 文本（用于 GitCode contents API 的 content 字段）
+fn decode_base64_text(encoded: &str) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+/// 判断 `current_version` 是否在策略清单中被禁用。
+///
+/// 精确匹配版本号；若条目带 `block_since`，则当前时间早于该时间不算禁用。
+/// 返回命中的条目引用（供调用方取 reason）。
+pub(super) fn is_version_blocked<'a>(
+    policy: &'a VersionPolicy,
+    current_version: &str,
+) -> Option<&'a BlockedVersion> {
+    let now = chrono::Utc::now();
+    policy.blocked_versions.iter().find(|b| {
+        if b.version != current_version {
+            return false;
+        }
+        // 校验 block_since（可选）：未到生效时间则不算禁用
+        if let Some(since) = &b.block_since {
+            if let Some(ts) = parse_iso8601(since) {
+                if now < ts {
+                    return false;
+                }
+            }
+            // block_since 解析失败则忽略该约束（保守判定为已生效）
+        }
+        true
+    })
+}
+
+/// 解析 ISO 8601 / RFC 3339 时间字符串为 UTC DateTime
+fn parse_iso8601(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+}
+
+/// 本地缓存文件路径：<data_dir>/version-policy.cache.json
+pub(super) fn cache_version_policy_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("version-policy.cache.json")
+}
+
+/// 读取本地缓存的策略；仅当 updated_at 在 7 天内才视为有效。
+pub(super) fn load_cached_policy(data_dir: &std::path::Path) -> Option<VersionPolicy> {
+    let path = cache_version_policy_path(data_dir);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let policy: VersionPolicy = match serde_json::from_str(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            log::warn!("[Update] 本地策略缓存解析失败: {}", e);
+            return None;
+        }
+    };
+    // 校验缓存有效期：updated_at 距今超过 7 天则弃用
+    if let Some(updated) = parse_iso8601(&policy.updated_at) {
+        let age = chrono::Utc::now().signed_duration_since(updated);
+        if age.num_days() > 7 {
+            log::info!("[Update] 本地策略缓存已过期（>7天），忽略");
+            return None;
+        }
+    }
+    Some(policy)
+}
+
+/// 原子写入本地策略缓存（先写 .tmp 再 rename，避免崩溃产生半截文件）。
+pub(super) fn save_cached_policy(data_dir: &std::path::Path, raw: &str) {
+    let path = cache_version_policy_path(data_dir);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, raw).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 // ============================================================================
@@ -1218,6 +1563,111 @@ mod tests {
         }
         // 合法文件名应通过
         assert!(!String::from("StudyAgent_0.1.2_x64-setup.exe").contains(['/', '\\']));
+    }
+
+    // ── GitCode 双源加速相关测试 ────────────────────────────────
+
+    /// 下载白名单：GitCode 直链 / CDN 重定向 / API 端点均放行，越权主机拒绝
+    #[test]
+    fn gitcode_download_urls_whitelist() {
+        let allow_start = |u: &str| {
+            is_allowed_update_url(&reqwest::Url::parse(u).unwrap(), true)
+        };
+        let allow_redirect = |u: &str| {
+            is_allowed_update_url(&reqwest::Url::parse(u).unwrap(), false)
+        };
+
+        // 起点：GitCode 与 GitHub 的 release 直链都应放行
+        assert!(allow_start(
+            "https://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/StudyAgent_0.6.1_x64-setup.exe"
+        ));
+        assert!(allow_start(
+            "https://github.com/Wenjiugugugu/StudyAgent-client/releases/download/v0.6.1/StudyAgent_0.6.1_x64-setup.exe"
+        ));
+
+        // 起点：非 release 路径 / 其他仓库 / 非 https / 仓库名不匹配 拒绝
+        assert!(!allow_start("https://gitcode.com/wenjiugugugu/StudyAgent/raw/main/README.md"));
+        assert!(!allow_start(
+            "https://gitcode.com/other-org/StudyAgent/releases/download/v0.6.1/x.exe"
+        ));
+        assert!(!allow_start(
+            "https://gitcode.com/wenjiugugugu/StudyAgent-client/releases/download/v0.6.1/x.exe"
+        ));
+        assert!(!allow_start("http://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/x.exe"));
+
+        // 重定向目标：GitCode CDN / API 端点 / GitHub CDN 放行
+        assert!(allow_redirect("https://file-cdn.gitcode.com/9483585/releases/untagger_abc/x.exe?auth_key=1"));
+        assert!(allow_redirect("https://api.gitcode.com/api/v5/repos/wenjiugugugu/StudyAgent/releases/v0.6.1/attach_files/x.exe/download"));
+        assert!(allow_redirect("https://objects.githubusercontent.com/abc/x.exe"));
+        assert!(allow_redirect("https://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/x.exe"));
+
+        // 重定向目标：越权主机拒绝
+        assert!(!allow_redirect("https://evil.example.com/x.exe"));
+        assert!(!allow_redirect("https://file-cdn.example.com/x.exe"));
+    }
+
+    /// 资产解析兼容 GitCode：type=attach 保留、type=source 跳过、无 digest 时 sha256=None
+    #[test]
+    fn extract_install_assets_gitcode_compatible() {
+        let assets = serde_json::json!([
+            {
+                "browser_download_url": "https://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/StudyAgent_0.6.1_x64-setup.exe",
+                "name": "StudyAgent_0.6.1_x64-setup.exe",
+                "type": "attach",
+                "id": 1
+            },
+            {
+                "browser_download_url": "https://raw.gitcode.com/wenjiugugugu/StudyAgent/archive/refs/heads/v0.6.1.zip",
+                "name": "v0.6.1.zip",
+                "type": "source",
+                "id": 2
+            },
+            {
+                "browser_download_url": "https://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/StudyAgent-0.6.1-sha256.txt",
+                "name": "StudyAgent-0.6.1-sha256.txt",
+                "type": "attach",
+                "id": 3
+            }
+        ]);
+        let list = extract_install_assets(&assets);
+        assert_eq!(list.len(), 1, "只应保留安装包，源码包与 checksums 文件被过滤");
+        assert_eq!(list[0].name, "StudyAgent_0.6.1_x64-setup.exe");
+        assert_eq!(list[0].kind, "inno");
+        // GitCode 无 digest → sha256 留空，等待调用方用 checksums 补齐
+        assert!(list[0].sha256.is_none());
+    }
+
+    /// GitHub 资产解析保持原行为：digest 提取 sha256
+    #[test]
+    fn extract_install_assets_github_digest() {
+        let assets = serde_json::json!([
+            {
+                "browser_download_url": "https://github.com/Wenjiugugugu/StudyAgent-client/releases/download/v0.6.1/StudyAgent_0.6.1_x64-setup.exe",
+                "name": "StudyAgent_0.6.1_x64-setup.exe",
+                "size": 12345,
+                "digest": "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+            }
+        ]);
+        let list = extract_install_assets(&assets);
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list[0].sha256.as_deref(),
+            Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        );
+    }
+
+    /// checksums 文本解析：双空格 / 单空格 / 二进制 `*` 三种格式
+    #[test]
+    fn parse_checksums_text_supports_common_formats() {
+        let hex = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+        let text = format!(
+            "{hex}  StudyAgent_0.6.1_x64-setup.exe\n{hex} *StudyAgent_0.6.1_x64_en-US.msi\n# comment\n{hex} StudyAgent_0.6.1_other.exe\n\n"
+        );
+        let map = parse_checksums_text(&text);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get("StudyAgent_0.6.1_x64-setup.exe").map(|s| s.as_str()), Some(hex));
+        assert_eq!(map.get("StudyAgent_0.6.1_x64_en-US.msi").map(|s| s.as_str()), Some(hex));
+        assert_eq!(map.get("StudyAgent_0.6.1_other.exe").map(|s| s.as_str()), Some(hex));
     }
 
     // ── 教材 OCR 容错检索的单元测试 ──────────────────────────────

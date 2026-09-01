@@ -111,6 +111,32 @@ const totalSteps = 6;
 const quickMode = ref(false);
 const submitting = ref(false);
 const loading = ref(true);
+
+// 提交复盘的加载进度：展示给用户当前执行到哪个阶段
+interface SubmitStep { key: string; label: string; }
+const SUBMIT_STEPS: SubmitStep[] = [
+  { key: "analyzing", label: "正在分析" },
+  { key: "applying", label: "正在应用修改" },
+  { key: "adjusting", label: "正在调整" },
+  { key: "syncing", label: "正在调整滴答同步" },
+];
+/** 当前展示的步骤列表（无需 AI 调整时动态省略「正在调整」步骤） */
+const submitSteps = ref<SubmitStep[]>([SUBMIT_STEPS[0], SUBMIT_STEPS[1], SUBMIT_STEPS[3]]);
+/** 当前进度步骤索引：-1 表示不在提交/调整流程中（不显示进度卡片） */
+const submitStepIndex = ref(-1);
+function setSubmitStep(i: number) {
+  submitStepIndex.value = i;
+}
+/** 确保某步骤存在于当前列表（重试/恢复时补充），返回其在列表中的索引 */
+function ensureSubmitStep(key: string): number {
+  let idx = submitSteps.value.findIndex(s => s.key === key);
+  if (idx === -1) {
+    const step = SUBMIT_STEPS.find(s => s.key === key);
+    if (step) submitSteps.value.push(step);
+    idx = submitSteps.value.findIndex(s => s.key === key);
+  }
+  return idx;
+}
 const existingReview = ref<ReviewRecord | null>(null);
 const submitted = ref(false);
 
@@ -472,6 +498,9 @@ function goPrev() {
 // ── Submit ──
 async function doSubmit() {
   submitting.value = true;
+  // 动态步骤：分析 → 应用修改 →（可能）调整 → 同步
+  submitSteps.value = [SUBMIT_STEPS[0], SUBMIT_STEPS[1], SUBMIT_STEPS[3]];
+  setSubmitStep(0); // 正在分析
   try {
     const taskReviews: TaskReviewEntry[] = allTasks.value.map(t => ({
       task_id: t.id,
@@ -506,10 +535,24 @@ async function doSubmit() {
     });
     submitted.value = true;
 
-    // 若需要 AI 重排剩余天数，提示用户并调用
+    // 复盘已保存：应用修改阶段完成
+    setSubmitStep(1);
+
+    // 若需要 AI 重排剩余天数，插入「正在调整」步骤并执行
     if (result.needs_regeneration) {
+      setSubmitStep(ensureSubmitStep("adjusting"));
       await executeRegeneration();
     }
+
+    // 收尾：清理滴答中过往未完成任务
+    setSubmitStep(ensureSubmitStep("syncing"));
+    try {
+      await api.cleanupDidaStale();
+    } catch (e) {
+      console.error("清理滴答过往任务失败:", e);
+    }
+    // 全部完成，关闭进度卡片
+    setSubmitStep(-1);
 
     // 重新加载复盘
     await loadReviewData();
@@ -519,6 +562,7 @@ async function doSubmit() {
     console.error("提交复盘失败:", e);
   } finally {
     submitting.value = false;
+    setSubmitStep(-1);
   }
 }
 
@@ -536,6 +580,7 @@ async function cancelRegeneration() {
 
 /** 执行 AI 重排剩余天数（doSubmit 和 retry 共用） */
 async function executeRegeneration() {
+  setSubmitStep(ensureSubmitStep("adjusting")); // 正在调整
   regenFailed.value = false;
   regenerating.value = true;
   regenMessage.value = "正在调整后续计划，请勿关闭应用…";
@@ -592,6 +637,8 @@ async function executeRegeneration() {
 /** 重试 AI 重排剩余天数 */
 async function retryRegeneration() {
   await executeRegeneration();
+  // 关闭进度卡片，回到复盘结果页（无论成败都回到页面展示提示/重试按钮）
+  setSubmitStep(-1);
   // 重排成功后重新加载复盘数据以同步最新计划
   if (!regenFailed.value) {
     await loadReviewData();
@@ -641,11 +688,18 @@ async function loadReviewData() {
     regenMessage.value = persistedRegen.message;
     regenFailed.value = persistedRegen.failed;
     regenChanges.value = persistedRegen.changes ?? [];
+    // 切页回来时 AI 仍在调整：恢复进度卡片到「正在调整」步骤
+    if (persistedRegen.regenerating) {
+      setSubmitStep(ensureSubmitStep("adjusting"));
+    } else {
+      setSubmitStep(-1);
+    }
   } else {
     regenerating.value = false;
     regenMessage.value = "";
     regenFailed.value = false;
     regenChanges.value = [];
+    setSubmitStep(-1);
   }
 
   try {
@@ -871,12 +925,26 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
     <!-- Submitting / AI regenerating -->
     <!-- 置于「已提交」分支之前：复盘已保存但 AI 仍在调整时，切页回来也优先显示调整中页面 -->
-    <Card v-if="submitting || regenerating" padding="lg" class="gate-card">
+    <Card v-if="submitStepIndex >= 0 || regenerating" padding="lg" class="gate-card">
       <div class="gate-hero">
         <div class="gate-icon"><LoadingSpinner :size="40" /></div>
-        <h1 class="gate-title">{{ regenerating ? '正在调整后续计划…' : '正在保存复盘…' }}</h1>
-        <p v-if="regenerating" class="gate-desc">正在调用 AI 调整后续计划，请勿关闭应用。</p>
-        <p v-else class="gate-desc">正在保存复盘数据…</p>
+        <h1 class="gate-title">{{ regenerating ? '正在调整后续计划…' : '正在提交复盘…' }}</h1>
+        <p class="gate-desc">请稍候，正在处理你的学习数据。</p>
+        <div class="submit-steps">
+          <div
+            v-for="(s, i) in submitSteps"
+            :key="s.key"
+            class="submit-step"
+            :class="{ done: i < submitStepIndex, active: i === submitStepIndex, pending: i > submitStepIndex }"
+          >
+            <span class="submit-step-icon">
+              <CheckCircle2 v-if="i < submitStepIndex" :size="16" />
+              <LoadingSpinner v-else-if="i === submitStepIndex" :size="16" />
+              <span v-else class="submit-step-dot"></span>
+            </span>
+            <span class="submit-step-label">{{ s.label }}</span>
+          </div>
+        </div>
         <Button v-if="regenerating" variant="ghost" size="sm" class="gate-cancel-btn" @click="cancelRegeneration">
           取消本次调整
         </Button>
@@ -907,25 +975,27 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
               <Info :size="13" />
               <span>悬停查看变更</span>
               <div class="regen-details-popover">
-                <div v-if="regenFailed" class="regen-detail-fallback">
-                  本次为兜底安排（按未完成任务程序化分配），各日任务如下：
-                </div>
-                <div v-for="c in regenChanges" :key="c.date" class="regen-detail-day">
-                  <div class="regen-detail-date">{{ c.date }}</div>
-                  <div v-for="t in c.added" :key="'a' + t" class="regen-detail-item add">
-                    ＋{{ t }}
+                <div class="regen-details-inner">
+                  <div v-if="regenFailed" class="regen-detail-fallback">
+                    本次为兜底安排（按未完成任务程序化分配），各日任务如下：
                   </div>
-                  <div v-for="r in c.removed" :key="'r' + r" class="regen-detail-item remove">
-                    －{{ r }}
-                  </div>
-                  <div v-for="(adj, i) in c.adjusted" :key="'m' + i" class="regen-detail-item modify">
-                    ✎ {{ adj[0] }} → {{ adj[1] }}
-                  </div>
-                  <div
-                    v-if="!c.added.length && !c.removed.length && !c.adjusted.length"
-                    class="regen-detail-item none"
-                  >
-                    任务量分配微调，无标题变动
+                  <div v-for="c in regenChanges" :key="c.date" class="regen-detail-day">
+                    <div class="regen-detail-date">{{ c.date }}</div>
+                    <div v-for="t in c.added" :key="'a' + t" class="regen-detail-item add">
+                      ＋{{ t }}
+                    </div>
+                    <div v-for="r in c.removed" :key="'r' + r" class="regen-detail-item remove">
+                      －{{ r }}
+                    </div>
+                    <div v-for="(adj, i) in c.adjusted" :key="'m' + i" class="regen-detail-item modify">
+                      ✎ {{ adj[0] }} → {{ adj[1] }}
+                    </div>
+                    <div
+                      v-if="!c.added.length && !c.removed.length && !c.adjusted.length"
+                      class="regen-detail-item none"
+                    >
+                      任务量分配微调，无标题变动
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1397,6 +1467,30 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .gate-hint { font-size: var(--text-sm); color: var(--text-tertiary); margin: 0; }
 .gate-cancel-btn { margin-top: var(--space-2); }
 
+/* 提交复盘分步进度 */
+.submit-steps {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: var(--space-3); margin-top: var(--space-2);
+  width: 100%; max-width: 320px;
+}
+.submit-step {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-base); color: var(--text-tertiary);
+  transition: color var(--transition-fast);
+}
+.submit-step.done { color: var(--text-secondary); }
+.submit-step.active { color: var(--text-primary); font-weight: var(--font-medium); }
+.submit-step-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; flex-shrink: 0;
+}
+.submit-step.done .submit-step-icon,
+.submit-step.active .submit-step-icon { color: var(--accent); }
+.submit-step-dot {
+  width: 8px; height: 8px; border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+}
+
 .step-bar {
   display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2);
 }
@@ -1577,13 +1671,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .regen-details-popover {
   display: none;
   position: absolute;
-  top: calc(100% + 8px);
+  top: 100%;
   left: 0;
   z-index: 40;
   min-width: 320px;
   max-width: 460px;
-  max-height: 320px;
-  overflow-y: auto;
   padding: var(--space-3);
   background: var(--bg-elevated, var(--bg-primary));
   border: 1px solid var(--border-color);
@@ -1591,6 +1683,24 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   box-shadow: var(--shadow-lg, 0 12px 32px rgba(0, 0, 0, 0.18));
   text-align: left;
   color: var(--text-primary);
+  /* 弹窗本体保持 overflow: visible，使过渡桥（::before）不被裁剪，
+     内部滚动交给 .regen-details-inner；margin-top 制造视觉间隙但鼠标可经桥无间断滑入 */
+  overflow: visible;
+  margin-top: 8px;
+}
+/* 过渡桥：覆盖在 trigger 与弹窗之间的空白区域，消除悬停死区 */
+.regen-details-popover::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: -1px;
+  right: -1px;
+  height: 8px;
+}
+/* 内部滚动容器：真正承载滚动的区域 */
+.regen-details-inner {
+  max-height: 320px;
+  overflow-y: auto;
 }
 .regen-details-trigger:hover .regen-details-popover,
 .regen-details-trigger:focus-within .regen-details-popover {

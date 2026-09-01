@@ -25,19 +25,22 @@ defineProps<{
     <div class="form-grid">
       <div class="form-field">
         <label class="form-label">每日开始时间</label>
-        <TimePicker v-model="form.start_time" :minute-step="15" />
+        <TimePicker v-model="form.start_time" :minute-step="5" />
       </div>
       <div class="form-field">
         <label class="form-label">每日结束时间</label>
-        <TimePicker v-model="form.end_time" :minute-step="15" />
+        <TimePicker v-model="form.end_time" :minute-step="5" />
       </div>
       <div class="form-field">
-        <label class="form-label">每日目标学时</label>
+        <label class="form-label">
+          每日目标学时
+          <span class="field-hint">调整学时会自动影响每日任务数（学时 ÷ 标准任务粒度）</span>
+        </label>
         <input v-model.number="form.daily_target_hours" type="number" step="0.5" min="0" class="form-input" />
       </div>
       <div class="form-field">
         <label class="form-label">复盘提醒时间</label>
-        <TimePicker v-model="form.review_reminder_time" :minute-step="15" />
+        <TimePicker v-model="form.review_reminder_time" :minute-step="5" />
       </div>
       <div class="form-field form-field-full">
         <label class="form-label">每周休息日（可多选）</label>

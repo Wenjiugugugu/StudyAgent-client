@@ -31,11 +31,12 @@ use super::legacy::*;
 
 /// 检查更新
 ///
-/// 通过 GitHub API 获取最新 release，与当前版本比较。
+/// 双源获取最新 release：GitCode API（国内加速）优先，GitHub API 兜底。
+/// 与当前版本比较。
 /// **约定**：任何错误情况（网络错误、服务不可用、解析失败）
 /// 一律返回 `has_update = false` + 友好的提示信息，详细错误仅写入日志。
 #[tauri::command]
-pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates(state: State<'_, Mutex<AppState>>) -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     log::info!("[Update] 开始检查更新：当前版本 {}", current_version);
 
@@ -56,46 +57,19 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         }
     };
 
-    // 请求 latest release
-    let response = client
-        .get(GITHUB_RELEASES_LATEST_URL)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await;
-
-    let response = match response {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("[Update] 请求失败: {}", e);
+    // 请求 latest release：GitCode（国内加速）优先，GitHub 兜底
+    let release_json = match fetch_remote_json(
+        &client,
+        &[GITCODE_RELEASES_LATEST_URL, GITHUB_RELEASES_LATEST_URL],
+    )
+    .await
+    {
+        Some((json, _used_url)) => json,
+        None => {
             return Ok(unavailable_result(
                 &current_version,
-                &format!("request failed: {}", e),
+                "all release sources unavailable",
             ));
-        }
-    };
-
-    let status = response.status();
-    log::info!("[Update] 响应 status={}", status);
-
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        log::warn!(
-            "[Update] 非 2xx：status={}, body_len={}",
-            status,
-            body.len()
-        );
-        return Ok(unavailable_result(
-            &current_version,
-            &format!("http status {}", status),
-        ));
-    }
-
-    // 解析 JSON
-    let release_json: serde_json::Value = match response.json().await {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("[Update] JSON 解析失败: {}", e);
-            return Ok(unavailable_result(&current_version, "json parse failed"));
         }
     };
 
@@ -130,9 +104,11 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // GitHub 用 published_at，GitCode 用 created_at，兼容取其一
     let published_at = release_json
         .get("published_at")
         .and_then(|v| v.as_str())
+        .or_else(|| release_json.get("created_at").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
     let release_notes = release_json
@@ -140,13 +116,62 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let assets = extract_install_assets(
+    let mut assets = extract_install_assets(
         release_json
             .get("assets")
             .unwrap_or(&serde_json::Value::Null),
     );
 
-    let message = if has_update {
+    // GitCode 的 assets 无 digest 字段：从同 release 的 checksums 附件补齐 SHA-256
+    if assets.iter().any(|a| a.sha256.is_none()) {
+        let sums = fetch_checksums(&client, &release_json).await;
+        if !sums.is_empty() {
+            for asset in &mut assets {
+                if asset.sha256.is_none() {
+                    if let Some(hex) = sums.get(&asset.name) {
+                        asset.sha256 = Some(hex.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 兜底过滤：仍缺有效 SHA-256 的资源不可安全下载，从更新列表剔除
+    assets.retain(|a| a.sha256.as_ref().is_some_and(|hex| is_valid_sha256(hex)));
+
+    // ── 版本策略：判断当前版本是否被远端禁用 ──
+    // 远端成功则写本地缓存；失败则读缓存兜底（缓存 updated_at 在 7 天内有效）。
+    // 设计原则：有据才阻断，无据则放行，避免误锁离线用户。
+    let data_dir = get_data_dir(state.inner()).ok();
+    let (force_update, force_update_reason) = match fetch_version_policy(&client).await {
+        Ok(Some((policy, raw))) => {
+            if let Some(dir) = &data_dir {
+                save_cached_policy(dir, &raw);
+            }
+            match is_version_blocked(&policy, &current_version) {
+                Some(b) => (true, b.reason.clone()),
+                None => (false, String::new()),
+            }
+        }
+        _ => {
+            // 远端失败：读本地缓存兜底
+            match data_dir
+                .as_ref()
+                .and_then(|d| load_cached_policy(d))
+                .and_then(|p| is_version_blocked(&p, &current_version).map(|b| (true, b.reason.clone())))
+            {
+                Some((fu, reason)) => (fu, reason),
+                None => (false, String::new()),
+            }
+        }
+    };
+
+    // 被禁用的版本必须更新（即使远端 latest 与当前版本号相同也算有更新）
+    let has_update = has_update || force_update;
+
+    let message = if force_update {
+        format!("当前版本 {} 存在已知问题，必须更新", current_version)
+    } else if has_update {
         format!("发现新版本 {}（当前 {}）", latest_version, current_version)
     } else {
         format!("已是最新版本（{}）", current_version)
@@ -161,6 +186,8 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         release_notes,
         assets,
         message,
+        force_update,
+        force_update_reason,
     })
 }
 
@@ -185,7 +212,7 @@ pub async fn download_update(
 
     let parsed_url = reqwest::Url::parse(&url).map_err(|_| "无效的下载地址".to_string())?;
     if !is_allowed_update_url(&parsed_url, true) {
-        return Err("仅允许从 StudyAgent 官方 GitHub Release 下载更新".to_string());
+        return Err("仅允许从 StudyAgent 官方 Release（GitHub / GitCode）下载更新".to_string());
     }
 
     let expected = expected_sha256

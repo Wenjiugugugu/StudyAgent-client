@@ -28,6 +28,9 @@ export const useUpdateStore = defineStore("update", () => {
 
   const hasUpdate = computed(() => updateResult.value?.has_update ?? false);
 
+  /** 是否强制更新（当前版本被远端策略禁用）——强制更新无视 3 天静默期 */
+  const forceUpdate = computed(() => updateResult.value?.force_update ?? false);
+
   // 当前选中的安装包（默认 Inno Setup 生成的 Windows 安装包）
   const preferredAsset = computed(() => {
     const assets = updateResult.value?.assets ?? [];
@@ -94,7 +97,8 @@ export const useUpdateStore = defineStore("update", () => {
     }
   }
 
-  /** 启动时检查更新（仅一次），发现新版本时弹出首页弹窗 */
+  /** 启动时检查更新（仅一次），发现新版本时弹出首页弹窗。
+   *  强制更新无视静默期；普通更新若在 3 天静默期内则不弹窗。 */
   async function checkOnStartup() {
     if (startupChecked) return;
     startupChecked = true;
@@ -102,7 +106,16 @@ export const useUpdateStore = defineStore("update", () => {
       await ensureProgressListener();
       await checkUpdate();
       if (hasUpdate.value) {
-        showUpdateModal.value = true;
+        if (forceUpdate.value) {
+          // 强制更新：无视静默期，必须弹窗
+          showUpdateModal.value = true;
+        } else {
+          // 普通更新：3 天静默期内不再打扰
+          const snoozeUntil = await api.getUiFlag("update_snooze_until");
+          const untilMs = Number(snoozeUntil) || 0;
+          if (untilMs > 0 && Date.now() < untilMs) return;
+          showUpdateModal.value = true;
+        }
       }
     } catch (e) {
       console.warn("[Update] 启动检查更新失败:", e);
@@ -123,6 +136,8 @@ export const useUpdateStore = defineStore("update", () => {
       const path = await api.downloadUpdate(asset.download_url, asset.name, asset.sha256);
       downloadedFilePath.value = path;
       downloadState.value = "downloaded";
+      // 下载完成自动启动安装程序（安装程序启动后应用随即退出）
+      await handleInstall();
     } catch (e) {
       downloadError.value = e instanceof Error ? e.message : String(e);
       downloadState.value = "error";
@@ -152,9 +167,13 @@ export const useUpdateStore = defineStore("update", () => {
     selectedAsset.value = null;
   }
 
-  /** 关闭首页更新弹窗（不重置下载状态） */
+  /** 关闭首页更新弹窗（强制更新模式下无效）。
+   *  非强制关闭时记录 3 天静默期，避免打扰用户。 */
   function dismissUpdate() {
+    if (forceUpdate.value) return; // 强制更新不可关闭
     showUpdateModal.value = false;
+    const until = Date.now() + 3 * 24 * 60 * 60 * 1000;
+    api.setUiFlag("update_snooze_until", String(until)).catch(() => {});
   }
 
   return {
@@ -168,6 +187,7 @@ export const useUpdateStore = defineStore("update", () => {
     selectedAsset,
     installing,
     hasUpdate,
+    forceUpdate,
     showUpdateModal,
     preferredAsset,
     checkUpdate,

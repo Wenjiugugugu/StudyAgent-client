@@ -228,6 +228,7 @@ fn main() {
             get_dida_token_status,
             set_dida_token,
             sync_dida_now,
+            cleanup_dida_stale,
             fetch_dida_completed_titles,
             list_dida_projects,
             // UI 状态标记（跨重启持久化）

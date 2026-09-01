@@ -38,6 +38,8 @@ const {
   modelContextLength,
   formatContextLength,
   providerTypeOptions,
+  nameAutoFilled,
+  markNameEdited,
   startAddProvider,
   editProvider,
   cancelProviderForm,
@@ -145,10 +147,16 @@ const {
       <div class="form-grid">
         <div class="form-field">
           <label class="form-label">名称</label>
-          <input v-model="providerForm.name" type="text" class="form-input" placeholder="我的 Provider" />
+          <input
+            v-model="providerForm.name"
+            type="text"
+            class="form-input"
+            :placeholder="nameAutoFilled ? '' : '我的 Provider'"
+            @input="markNameEdited"
+          />
         </div>
         <div class="form-field">
-          <label class="form-label">类型</label>
+          <label class="form-label">模型提供商</label>
           <Select v-model="providerForm.type" :max-width="'220px'">
             <option v-for="opt in providerTypeOptions" :key="opt.value" :value="opt.value">
               {{ opt.label }}
