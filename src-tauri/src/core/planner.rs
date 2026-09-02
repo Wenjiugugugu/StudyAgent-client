@@ -1796,6 +1796,18 @@ impl<'a> Planner<'a> {
             math = Self::math_syllabus_constraint(state),
         ));
 
+        // 英语单词每日安排约束：凡当天安排了英语任务，须至少包含 1 条背单词任务
+        if state.subjects.english.active {
+            prompt.push_str(&format!(
+                "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
+                if enable_review_tasks {
+                    "背 N 个新词（可含单词复习巩固）"
+                } else {
+                    "背 N 个新词（推进新词，不含复习字样）"
+                }
+            ));
+        }
+
         prompt
     }
 
@@ -2234,6 +2246,18 @@ impl<'a> Planner<'a> {
             math = Self::math_syllabus_constraint(state),
         ));
 
+        // 英语单词每日安排约束：凡当天安排了英语任务，须至少包含 1 条背单词任务
+        if state.subjects.english.active {
+            prompt.push_str(&format!(
+                "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
+                if enable_review_tasks {
+                    "背 N 个新词（可含单词复习巩固）"
+                } else {
+                    "背 N 个新词（推进新词，不含复习字样）"
+                }
+            ));
+        }
+
         prompt
     }
 
@@ -2548,6 +2572,18 @@ impl<'a> Planner<'a> {
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
             math = Self::math_syllabus_constraint(state),
         ));
+
+        // 英语单词每日安排约束：凡当天安排了英语任务，须至少包含 1 条背单词任务
+        if state.subjects.english.active {
+            prompt.push_str(&format!(
+                "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
+                if enable_review_tasks {
+                    "背 N 个新词（可含单词复习巩固）"
+                } else {
+                    "背 N 个新词（推进新词，不含复习字样）"
+                }
+            ));
+        }
 
         prompt
     }

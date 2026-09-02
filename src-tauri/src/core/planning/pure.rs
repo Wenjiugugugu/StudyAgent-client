@@ -89,13 +89,9 @@ pub(crate) fn prev_week_calibration_stats_impl(prev_week_reviews: &[ReviewFile])
         return (1.0, 0.0);
     }
     let avg_rate = (sum_done as f64 / sum_total as f64) * 100.0;
-    let coeff = if avg_rate >= 90.0 {
-        1.0
-    } else if avg_rate >= 70.0 {
-        0.9
-    } else {
-        0.8
-    };
+    // 连续系数（替代原离散三档 1.0/0.9/0.8）：90%→0.95、70%→0.85、50%→0.75、0%→0.5，
+    // 消除跨阈值（如 89.9%↔90%）时任务量的跳变失真。
+    let coeff = (0.5 + avg_rate / 200.0).clamp(0.5, 1.0);
     (coeff, avg_rate)
 }
 
@@ -246,7 +242,14 @@ pub(crate) fn subject_task_budget(
                 continue;
             }
         }
-        weights.push((key, subject.weekly_hours.max(1.0)));
+        // 权重用各科周学时；0 学时（新开始科目）给最低权重 0.5，
+        // 避免被 max(1.0) 抬成与高时长科目同权而多分任务条数。
+        let weight = if subject.weekly_hours > 0.0 {
+            subject.weekly_hours
+        } else {
+            0.5
+        };
+        weights.push((key, weight));
     }
 
     if weights.is_empty() {
