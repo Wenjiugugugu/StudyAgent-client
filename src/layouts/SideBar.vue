@@ -53,7 +53,6 @@ function toggleCollapse() {
 }
 
 const navRef = ref<HTMLElement | null>(null);
-const planItemRef = ref<HTMLElement | null>(null);
 const indicatorStyle = ref<{ transform: string; height: string; opacity: number }>({
   transform: "translateY(0px)",
   height: "0px",
@@ -65,7 +64,11 @@ function updateIndicator() {
     if (!navRef.value) return;
     // 「计划」页面固定跟随一级按钮，命中的二级子项仅文字高亮，
     // 避免在自动展开或切换子项时先命中二级链接导致指示条跳位。
-    const active = (!collapsed.value && isPlanActive() ? planItemRef.value : null)
+    // 展开态「计划」一级按钮是 .nav-group 的直接子按钮。这里直接查询而非用模板 ref：
+    // 该 ref 处于外层 v-for 模板作用域内，会被 Vue 收集成数组而非元素，
+    // 导致读取 offsetTop/offsetHeight 失效、指示条无法跟随。
+    const planItem = navRef.value.querySelector<HTMLElement>(".nav-group > button.nav-item");
+    const active = (!collapsed.value && isPlanActive() ? planItem : null)
       ?? navRef.value.querySelector(".nav-item.active") as HTMLElement | null;
     if (!active) {
       indicatorStyle.value.opacity = 0;
@@ -212,7 +215,6 @@ function onPlanClick() {
             <button
               type="button"
               class="nav-item"
-              ref="planItemRef"
               :class="{ active: isPlanActive() }"
               :aria-expanded="planOpen"
               aria-controls="plan-subnav"
