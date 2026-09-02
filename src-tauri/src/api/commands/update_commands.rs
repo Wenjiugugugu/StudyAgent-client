@@ -36,7 +36,9 @@ use super::legacy::*;
 /// **约定**：任何错误情况（网络错误、服务不可用、解析失败）
 /// 一律返回 `has_update = false` + 友好的提示信息，详细错误仅写入日志。
 #[tauri::command]
-pub async fn check_for_updates(state: State<'_, Mutex<AppState>>) -> Result<UpdateCheckResult, String> {
+pub async fn check_for_updates(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<UpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     log::info!("[Update] 开始检查更新：当前版本 {}", current_version);
 
@@ -161,8 +163,9 @@ pub async fn check_for_updates(state: State<'_, Mutex<AppState>>) -> Result<Upda
             match data_dir
                 .as_ref()
                 .and_then(|d| load_cached_policy(d))
-                .and_then(|p| is_version_blocked(&p, &current_version).map(|b| (true, b.reason.clone())))
-            {
+                .and_then(|p| {
+                    is_version_blocked(&p, &current_version).map(|b| (true, b.reason.clone()))
+                }) {
                 Some((fu, reason)) => (fu, reason),
                 None => (false, String::new()),
             }
@@ -191,7 +194,10 @@ pub async fn check_for_updates(state: State<'_, Mutex<AppState>>) -> Result<Upda
         if force_update_reason.is_empty() {
             format!("当前版本 {} 存在已知问题，必须更新", current_version)
         } else {
-            format!("当前版本 {} 必须更新：{}", current_version, force_update_reason)
+            format!(
+                "当前版本 {} 必须更新：{}",
+                current_version, force_update_reason
+            )
         }
     } else if has_update {
         format!("发现新版本 {}（当前 {}）", latest_version, current_version)

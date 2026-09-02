@@ -215,10 +215,7 @@ impl DidaClient {
                 .await
                 .map_err(|e| format!("滴答 API 查询已完成任务失败: {e}"))?;
             if !resp.status().is_success() {
-                return Err(format!(
-                    "滴答 API 查询已完成任务 HTTP {}",
-                    resp.status()
-                ));
+                return Err(format!("滴答 API 查询已完成任务 HTTP {}", resp.status()));
             }
             resp.json::<Value>()
                 .await
@@ -239,10 +236,7 @@ impl DidaClient {
                 .await
                 .map_err(|e| format!("滴答 API 查询未完成任务失败: {e}"))?;
             if !resp.status().is_success() {
-                return Err(format!(
-                    "滴答 API 查询未完成任务 HTTP {}",
-                    resp.status()
-                ));
+                return Err(format!("滴答 API 查询未完成任务 HTTP {}", resp.status()));
             }
             resp.json::<Value>()
                 .await
@@ -278,10 +272,7 @@ impl DidaClient {
             .await
             .map_err(|e| format!("滴答 API 查询未完成任务失败: {e}"))?;
         if !resp.status().is_success() {
-            return Err(format!(
-                "滴答 API 查询未完成任务 HTTP {}",
-                resp.status()
-            ));
+            return Err(format!("滴答 API 查询未完成任务 HTTP {}", resp.status()));
         }
         Ok(resp
             .json::<Value>()
@@ -309,10 +300,7 @@ impl DidaClient {
         task.insert("priority".into(), json!(priority));
         task.insert("isAllDay".into(), json!(false));
         task.insert("dueDate".into(), json!(format!("{}T22:00:00+0800", date)));
-        task.insert(
-            "startDate".into(),
-            json!(format!("{}T09:00:00+0800", date)),
-        );
+        task.insert("startDate".into(), json!(format!("{}T09:00:00+0800", date)));
         task.insert("timeZone".into(), json!(TIMEZONE));
         task.insert("kind".into(), json!("TEXT"));
         task.insert("tags".into(), json!(tags));
@@ -328,7 +316,10 @@ impl DidaClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("滴答 API 创建任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+            return Err(format!(
+                "滴答 API 创建任务 HTTP {status}: {}",
+                &body[..body.len().min(400)]
+            ));
         }
         let v: Value = resp
             .json()
@@ -370,17 +361,16 @@ impl DidaClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("滴答 API 更新任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+            return Err(format!(
+                "滴答 API 更新任务 HTTP {status}: {}",
+                &body[..body.len().min(400)]
+            ));
         }
         Ok(())
     }
 
     /// 标记完成（Open API：`POST /project/{projectId}/task/{taskId}/complete`）
-    async fn complete_task(
-        &self,
-        id: &str,
-        project_id: Option<&str>,
-    ) -> Result<(), String> {
+    async fn complete_task(&self, id: &str, project_id: Option<&str>) -> Result<(), String> {
         let pid = project_id.ok_or_else(|| "缺少滴答 project_id，无法完成任务".to_string())?;
         let path = format!("/project/{pid}/task/{id}/complete");
         let resp = self
@@ -391,7 +381,10 @@ impl DidaClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("滴答 API 完成任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+            return Err(format!(
+                "滴答 API 完成任务 HTTP {status}: {}",
+                &body[..body.len().min(400)]
+            ));
         }
         Ok(())
     }
@@ -408,7 +401,10 @@ impl DidaClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("滴答 API 删除任务 HTTP {status}: {}", &body[..body.len().min(400)]));
+            return Err(format!(
+                "滴答 API 删除任务 HTTP {status}: {}",
+                &body[..body.len().min(400)]
+            ));
         }
         Ok(())
     }
@@ -583,13 +579,8 @@ async fn reconcile_day_inner(data_dir: &Path, date: &str) -> Result<(i32, i32, i
     let completed = client.list_tasks_in_window(date, true).await?;
     let existing: Vec<DidaTask> = undone.into_iter().chain(completed).collect();
 
-    let (created, updated, deleted) = reconcile_with_plan(
-        &mut plan,
-        &client,
-        &existing,
-        project_id.as_deref(),
-    )
-    .await;
+    let (created, updated, deleted) =
+        reconcile_with_plan(&mut plan, &client, &existing, project_id.as_deref()).await;
 
     // 回填 dida_task_id 后原子写回（即使无变化也无害）
     if let Err(e) = save_daily_plan(data_dir, &plan) {
@@ -645,13 +636,7 @@ async fn reconcile_with_plan(
                 if needs_update {
                     // 用任务自身所在清单 id 更新（任务可能在收件箱/其他清单，传目标清单 id 可能失效）
                     match client
-                        .update_task(
-                            &did,
-                            &push_title,
-                            priority,
-                            &tags,
-                            pid_opt(&cur.project_id),
-                        )
+                        .update_task(&did, &push_title, priority, &tags, pid_opt(&cur.project_id))
                         .await
                     {
                         Ok(()) => updated += 1,
@@ -727,10 +712,7 @@ async fn reconcile_with_plan(
                 continue;
             }
             // 删除必须用任务自身所在清单 id：传其他清单 id 时滴答会静默成功但不删除
-            match client
-                .delete_task(&t.id, pid_opt(&t.project_id))
-                .await
-            {
+            match client.delete_task(&t.id, pid_opt(&t.project_id)).await {
                 Ok(()) => deleted += 1,
                 Err(e) => log::warn!("[dida] 删除任务 {} 失败: {}", t.title, e),
             }
@@ -773,10 +755,7 @@ pub async fn sync_task_status(data_dir: &Path, task_id: &str, status: &TaskStatu
     let project_id = resolve_project_id(data_dir, &client).await;
     match status {
         TaskStatus::Done => {
-            if let Err(e) = client
-                .complete_task(&task, project_id.as_deref())
-                .await
-            {
+            if let Err(e) = client.complete_task(&task, project_id.as_deref()).await {
                 log::warn!("[dida] 标记完成失败 {}: {}", task, e);
             }
         }
@@ -904,7 +883,10 @@ impl DidaClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(format!("滴答 API 获取项目列表 HTTP {status}: {}", &body[..body.len().min(400)]));
+            return Err(format!(
+                "滴答 API 获取项目列表 HTTP {status}: {}",
+                &body[..body.len().min(400)]
+            ));
         }
         let arr: Vec<Value> = resp
             .json()
@@ -968,10 +950,7 @@ mod tests {
         let client = DidaClient::new(token);
 
         // 1. list_projects：确认可用项目
-        let projects = client
-            .list_projects()
-            .await
-            .expect("list_projects 应成功");
+        let projects = client.list_projects().await.expect("list_projects 应成功");
         println!("[test] 项目数: {}", projects.len());
         let project_id: String = pick_default_project(&projects)
             .or_else(|| Some("6a5b50e2e9ae5b00000000f7".to_string()))
@@ -1001,10 +980,7 @@ mod tests {
             .expect("查询残留应成功")
         {
             if t.title.starts_with("SA连通性测试") && is_owned(&t.tags) {
-                match client
-                    .delete_task(&t.id, pid_opt(&t.project_id))
-                    .await
-                {
+                match client.delete_task(&t.id, pid_opt(&t.project_id)).await {
                     Ok(()) => println!("[test] 已清理残留任务 {}", t.id),
                     Err(e) => eprintln!("[test] 清理残留失败 {}: {}", t.id, e),
                 }
@@ -1038,7 +1014,13 @@ mod tests {
         println!("[test] 创建后窗口可见 ok");
 
         client
-            .update_task(&id, &format!("{}_改", title), 1, &tags, Some(project_id.as_str()))
+            .update_task(
+                &id,
+                &format!("{}_改", title),
+                1,
+                &tags,
+                Some(project_id.as_str()),
+            )
             .await
             .expect("update_task 应成功");
         println!("[test] update ok");

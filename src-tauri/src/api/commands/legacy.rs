@@ -1082,7 +1082,10 @@ pub(super) async fn fetch_checksums(
         return map;
     };
 
-    let url = match sum_asset.get("browser_download_url").and_then(|v| v.as_str()) {
+    let url = match sum_asset
+        .get("browser_download_url")
+        .and_then(|v| v.as_str())
+    {
         Some(u) => u.to_string(),
         None => return map,
     };
@@ -1603,12 +1606,9 @@ mod tests {
     /// 下载白名单：GitCode 直链 / CDN 重定向 / API 端点均放行，越权主机拒绝
     #[test]
     fn gitcode_download_urls_whitelist() {
-        let allow_start = |u: &str| {
-            is_allowed_update_url(&reqwest::Url::parse(u).unwrap(), true)
-        };
-        let allow_redirect = |u: &str| {
-            is_allowed_update_url(&reqwest::Url::parse(u).unwrap(), false)
-        };
+        let allow_start = |u: &str| is_allowed_update_url(&reqwest::Url::parse(u).unwrap(), true);
+        let allow_redirect =
+            |u: &str| is_allowed_update_url(&reqwest::Url::parse(u).unwrap(), false);
 
         // 起点：GitCode 与 GitHub 的 release 直链都应放行
         assert!(allow_start(
@@ -1619,20 +1619,30 @@ mod tests {
         ));
 
         // 起点：非 release 路径 / 其他仓库 / 非 https / 仓库名不匹配 拒绝
-        assert!(!allow_start("https://gitcode.com/wenjiugugugu/StudyAgent/raw/main/README.md"));
+        assert!(!allow_start(
+            "https://gitcode.com/wenjiugugugu/StudyAgent/raw/main/README.md"
+        ));
         assert!(!allow_start(
             "https://gitcode.com/other-org/StudyAgent/releases/download/v0.6.1/x.exe"
         ));
         assert!(!allow_start(
             "https://gitcode.com/wenjiugugugu/StudyAgent-client/releases/download/v0.6.1/x.exe"
         ));
-        assert!(!allow_start("http://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/x.exe"));
+        assert!(!allow_start(
+            "http://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/x.exe"
+        ));
 
         // 重定向目标：GitCode CDN / API 端点 / GitHub CDN 放行
-        assert!(allow_redirect("https://file-cdn.gitcode.com/9483585/releases/untagger_abc/x.exe?auth_key=1"));
+        assert!(allow_redirect(
+            "https://file-cdn.gitcode.com/9483585/releases/untagger_abc/x.exe?auth_key=1"
+        ));
         assert!(allow_redirect("https://api.gitcode.com/api/v5/repos/wenjiugugugu/StudyAgent/releases/v0.6.1/attach_files/x.exe/download"));
-        assert!(allow_redirect("https://objects.githubusercontent.com/abc/x.exe"));
-        assert!(allow_redirect("https://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/x.exe"));
+        assert!(allow_redirect(
+            "https://objects.githubusercontent.com/abc/x.exe"
+        ));
+        assert!(allow_redirect(
+            "https://gitcode.com/wenjiugugugu/StudyAgent/releases/download/v0.6.1/x.exe"
+        ));
 
         // 重定向目标：越权主机拒绝
         assert!(!allow_redirect("https://evil.example.com/x.exe"));
@@ -1663,7 +1673,11 @@ mod tests {
             }
         ]);
         let list = extract_install_assets(&assets);
-        assert_eq!(list.len(), 1, "只应保留安装包，源码包与 checksums 文件被过滤");
+        assert_eq!(
+            list.len(),
+            1,
+            "只应保留安装包，源码包与 checksums 文件被过滤"
+        );
         assert_eq!(list[0].name, "StudyAgent_0.6.1_x64-setup.exe");
         assert_eq!(list[0].kind, "inno");
         // GitCode 无 digest → sha256 留空，等待调用方用 checksums 补齐
@@ -1698,9 +1712,20 @@ mod tests {
         );
         let map = parse_checksums_text(&text);
         assert_eq!(map.len(), 3);
-        assert_eq!(map.get("StudyAgent_0.6.1_x64-setup.exe").map(|s| s.as_str()), Some(hex));
-        assert_eq!(map.get("StudyAgent_0.6.1_x64_en-US.msi").map(|s| s.as_str()), Some(hex));
-        assert_eq!(map.get("StudyAgent_0.6.1_other.exe").map(|s| s.as_str()), Some(hex));
+        assert_eq!(
+            map.get("StudyAgent_0.6.1_x64-setup.exe")
+                .map(|s| s.as_str()),
+            Some(hex)
+        );
+        assert_eq!(
+            map.get("StudyAgent_0.6.1_x64_en-US.msi")
+                .map(|s| s.as_str()),
+            Some(hex)
+        );
+        assert_eq!(
+            map.get("StudyAgent_0.6.1_other.exe").map(|s| s.as_str()),
+            Some(hex)
+        );
     }
 
     // ── 自动禁用旧版 indev / 预发布版本的单元测试 ──────────────
@@ -1756,8 +1781,16 @@ mod tests {
     #[test]
     fn auto_block_prerelease_reason_readable() {
         let reason = auto_block_prerelease("0.6.1", "0.6.1-indev").expect("应命中");
-        assert!(reason.contains("0.6.1-indev"), "文案应包含当前版本，实际: {}", reason);
-        assert!(reason.contains("0.6.1"), "文案应包含最新版本，实际: {}", reason);
+        assert!(
+            reason.contains("0.6.1-indev"),
+            "文案应包含当前版本，实际: {}",
+            reason
+        );
+        assert!(
+            reason.contains("0.6.1"),
+            "文案应包含最新版本，实际: {}",
+            reason
+        );
     }
 
     // ── 教材 OCR 容错检索的单元测试 ──────────────────────────────
