@@ -390,16 +390,12 @@ fn build_learning_trend(
     let total_actual_hours: f64 = points.iter().map(|p| p.actual_hours).sum();
     let study_days = points.iter().filter(|p| p.actual_hours > 0.0).count() as i32;
 
-    let days_with_plan: Vec<&DailyTrendPoint> =
-        points.iter().filter(|p| p.planned_tasks > 0).collect();
-    let avg_completion_rate = if days_with_plan.is_empty() {
-        0.0
+    // 平均完成率用任务数加权口径（总完成 ÷ 总计划），与周计划自校准一致，
+    // 避免"任务少但全完成"的天等权拉高整体（见 pure::prev_week_calibration_stats_impl）。
+    let avg_completion_rate = if total_planned_tasks > 0 {
+        (total_completed_tasks as f64 / total_planned_tasks as f64) * 100.0
     } else {
-        days_with_plan
-            .iter()
-            .map(|p| p.completion_rate)
-            .sum::<f64>()
-            / days_with_plan.len() as f64
+        0.0
     };
 
     Ok(LearningTrend {
@@ -625,7 +621,6 @@ fn compute_period_metrics(data_dir: &Path, start: &str, end: &str) -> DataResult
     let mut total_hours = 0.0;
     let mut total_tasks = 0i32;
     let mut total_completed = 0i32;
-    let mut completion_rates: Vec<f64> = Vec::new();
     let mut study_days = 0i32;
 
     for r in &reviews {
@@ -642,34 +637,15 @@ fn compute_period_metrics(data_dir: &Path, start: &str, end: &str) -> DataResult
                 .iter()
                 .filter(|t| t.status == "completed")
                 .count() as i32;
-
-            let (a_total, a_done) = r
-                .task_reviews
-                .iter()
-                .filter(|t| t.priority == "A")
-                .fold((0, 0), |(t, d), tr| {
-                    (t + 1, d + if tr.status == "completed" { 1 } else { 0 })
-                });
-            let rate = if a_total > 0 {
-                (a_done as f64 / a_total as f64) * 100.0
-            } else if !r.task_reviews.is_empty() {
-                let done = r
-                    .task_reviews
-                    .iter()
-                    .filter(|t| t.status == "completed")
-                    .count();
-                (done as f64 / r.task_reviews.len() as f64) * 100.0
-            } else {
-                0.0
-            };
-            completion_rates.push(rate);
         }
     }
 
-    let avg_completion_rate = if completion_rates.is_empty() {
-        0.0
+    // 平均完成率用任务数加权口径（总完成 ÷ 总计划），与周计划自校准一致，
+    // 避免"任务少但全完成"的天等权拉高整体。
+    let avg_completion_rate = if total_tasks > 0 {
+        (total_completed as f64 / total_tasks as f64) * 100.0
     } else {
-        completion_rates.iter().sum::<f64>() / completion_rates.len() as f64
+        0.0
     };
 
     Ok(PeriodMetrics {
@@ -701,38 +677,26 @@ fn build_prediction(reviews: &[ReviewFile], today: &str) -> GoalPrediction {
         };
     }
 
-    let mut rates: Vec<f64> = Vec::new();
+    let mut total_planned = 0i32;
+    let mut total_done = 0i32;
     let mut total_hours = 0.0;
     for r in &recent {
         if !r.task_reviews.is_empty() {
-            let (a_total, a_done) = r
+            total_planned += r.task_reviews.len() as i32;
+            total_done += r
                 .task_reviews
                 .iter()
-                .filter(|t| t.priority == "A")
-                .fold((0, 0), |(t, d), tr| {
-                    (t + 1, d + if tr.status == "completed" { 1 } else { 0 })
-                });
-            let rate = if a_total > 0 {
-                (a_done as f64 / a_total as f64) * 100.0
-            } else if !r.task_reviews.is_empty() {
-                let done = r
-                    .task_reviews
-                    .iter()
-                    .filter(|t| t.status == "completed")
-                    .count();
-                (done as f64 / r.task_reviews.len() as f64) * 100.0
-            } else {
-                0.0
-            };
-            rates.push(rate);
+                .filter(|t| t.status == "completed")
+                .count() as i32;
         }
         total_hours += crate::data::records::review_actual_hours(r);
     }
 
-    let recent_avg_completion_rate = if rates.is_empty() {
-        0.0
+    // 近7天平均完成率用任务数加权口径（总完成 ÷ 总计划），与全站口径一致。
+    let recent_avg_completion_rate = if total_planned > 0 {
+        (total_done as f64 / total_planned as f64) * 100.0
     } else {
-        rates.iter().sum::<f64>() / rates.len() as f64
+        0.0
     };
     let recent_avg_daily_hours = total_hours / 7.0;
 

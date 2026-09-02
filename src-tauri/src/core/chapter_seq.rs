@@ -446,6 +446,14 @@ pub fn position(subject: &str, version: &str, text: &str) -> Option<usize> {
     entry_contains_text.or(contained_in_entry).map(|(i, _)| i)
 }
 
+/// 返回某科目在当前版本顺序表中的条目总数（未命中返回 0）。
+///
+/// 用于按已完成内容在顺序表中的位置计算学习进度百分比，
+/// 替代硬编码的「每科 50 章」估算。
+pub fn total_count(subject: &str, version: &str) -> usize {
+    seq_for(subject, version).map_or(0, |seq| seq.len())
+}
+
 /// 判断某任务标题是否**早于**用户实际进度（即已学过、不应再排）。
 pub fn is_ahead_of_progress(
     subject: &str,
