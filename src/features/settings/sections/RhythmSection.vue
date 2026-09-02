@@ -1,15 +1,23 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import Card from "@/components/ui/Card.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import { Gauge } from "lucide-vue-next";
 import type { SettingsForm } from "../composables/useSettingsForm";
 import type { SubjectActive } from "../types";
 
-defineProps<{
+const props = defineProps<{
   form: SettingsForm;
   subjectActive: SubjectActive;
   professionalName: string;
 }>();
+
+// 每日任务数 = 每日目标学时 ÷ 标准任务粒度（效率系数由后端按上周完成率自校准，前端按 1.0 展示基准值）
+const derivedTaskCount = computed(() => {
+  const target = Math.max(0, props.form.daily_target_hours || 0);
+  const gran = Math.max(0.5, props.form.standard_granularity || 1.5);
+  return Math.max(1, Math.min(8, Math.round(target / gran)));
+});
 </script>
 
 <template>
@@ -24,17 +32,35 @@ defineProps<{
     <div class="form-grid">
       <div class="form-field">
         <label class="form-label">
-          每天安排多少任务
-          <span class="field-hint">（每科约一条；未开始的科目不安排，相应减少当日任务数）</span>
+          每天任务数（自动计算）
+          <span class="field-hint">由「每日目标学时 ÷ 标准任务粒度」得出，调整学时时自动变化</span>
         </label>
         <input
-          v-model.number="form.daily_task_count"
+          :value="derivedTaskCount"
           type="number"
           min="1"
           max="8"
           class="form-input"
+          readonly
+          tabindex="-1"
         />
-        <p class="field-hint">默认 3-4 个。例如政治未到开始日期时，当天不会排政治任务。</p>
+        <p class="field-hint">
+          当前目标学时 {{ form.daily_target_hours }}h ÷ 粒度 {{ form.standard_granularity }}h/条 ≈
+          {{ derivedTaskCount }} 个任务（每科约一条；未开始的科目不安排，实际会相应减少）
+        </p>
+      </div>
+      <div class="form-field">
+        <label class="form-label">
+          标准任务粒度
+          <span class="field-hint">（高级设置，默认 1.5h/条 ≈ 2 个番茄钟）</span>
+        </label>
+        <select v-model.number="form.standard_granularity" class="form-input">
+          <option :value="1">1 小时/条</option>
+          <option :value="1.25">1.25 小时/条</option>
+          <option :value="1.5">1.5 小时/条</option>
+          <option :value="2">2 小时/条</option>
+        </select>
+        <p class="field-hint">粒度越小任务拆得越细（条数越多），越大越粗（条数越少）。</p>
       </div>
       <div class="form-field form-field-full">
         <label class="form-label">是否安排总结/复习任务</label>

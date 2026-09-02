@@ -123,20 +123,35 @@ impl DailyScheduler {
         }
 
         // 每日任务量预算约束：若当日任务预估时长总和超过设置中的每日目标时长，
-        // 按比值归一化所有任务时长，保证当日总时长不超过预算（用户精力可控）。
+        // 优先裁剪末尾任务（任务已按 estimated_hours 降序排列，大块头在前），
+        // 保留剩余每条任务的真实时长语义，不再等比压缩时长扭曲语义。
+        // 仅当单条任务本身超预算（AI 粒度问题，周计划层已被 normalize 拆分，
+        // 此处是最后兜底）才对该条做等比压缩。
         let raw_total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let budget = settings.daily_target_hours();
         if budget > 0.0 && raw_total_hours > budget && !tasks.is_empty() {
-            let scale = budget / raw_total_hours;
-            for t in tasks.iter_mut() {
-                t.estimated_hours = (t.estimated_hours * scale * 100.0).round() / 100.0;
+            let mut total = raw_total_hours;
+            let mut trimmed = 0usize;
+            while tasks.len() > 1 && total > budget {
+                if let Some(removed) = tasks.pop() {
+                    total -= removed.estimated_hours;
+                    trimmed += 1;
+                }
             }
-            let scaled: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
+            if total > budget {
+                // 单条任务本身超预算：压缩该条作为最后兜底
+                let scale = budget / total;
+                for t in tasks.iter_mut() {
+                    t.estimated_hours = (t.estimated_hours * scale * 100.0).round() / 100.0;
+                }
+                total = tasks.iter().map(|t| t.estimated_hours).sum();
+            }
             log::warn!(
-                "每日预算：今日任务原总时长 {:.2}h 超过预算 {:.2}h，已等比归一化到 {:.2}h",
+                "每日预算：今日任务原总时长 {:.2}h 超过预算 {:.2}h，已裁剪末尾 {} 个任务，最终 {:.2}h",
                 raw_total_hours,
                 budget,
-                scaled
+                trimmed,
+                total
             );
         }
 

@@ -11,7 +11,7 @@ import { useDashboardStore } from "@/stores/dashboard";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import Button from "@/components/ui/Button.vue";
-import { RefreshCw, Sparkles } from "lucide-vue-next";
+import { RefreshCw } from "lucide-vue-next";
 import { useDashboardData } from "./composables/useDashboardData";
 import { useBriefing } from "./composables/useBriefing";
 import { useDashboardAnimation } from "./composables/useDashboardAnimation";
@@ -50,9 +50,8 @@ function goWeekPlan() {
 // ── 简报加载（含首次查看的闪烁提示与入场动画） ──
 async function loadBriefing() {
   await briefing.loadBriefing();
-  // 如果简报存在且非特殊状态（开始前/休息日/排除日），触发闪烁提示 + 入场动画
+  // 如果简报存在且非特殊状态（开始前/休息日/排除日），触发入场动画
   if (briefing.briefingExists.value && !data.isSpecialState.value) {
-    animation.triggerBriefingHint(data.todayDateStr);
     animation.playEntranceAnimation();
   }
 }
@@ -137,7 +136,6 @@ onBeforeUnmount(() => {
   // H30：组件卸载后不再更新 state / 操作 DOM
   briefing.dispose();
   animation.markUnmounted();
-  animation.clearTimers();
   data.stopClock();
 });
 </script>
@@ -178,20 +176,6 @@ onBeforeUnmount(() => {
         :remaining-days="data.remainingDays.value"
         :show-greeting="data.showGreeting.value"
       />
-
-      <!-- 简报提示全屏遮罩：背景变暗 + 文字快速闪烁三次 -->
-      <Transition name="overlay-fade">
-        <div
-          v-if="animation.showBriefingOverlay.value"
-          class="briefing-overlay"
-          :class="{ 'briefing-overlay-leaving': animation.overlayLeaving.value }"
-        >
-          <div class="briefing-overlay-card">
-            <Sparkles :size="18" />
-            <span>有新的每日简报可供查看</span>
-          </div>
-        </div>
-      </Transition>
 
       <!-- 主区域：简报 + 侧栏 -->
       <div class="dashboard-main" :class="{ 'no-sidebar': data.isSpecialState.value }">

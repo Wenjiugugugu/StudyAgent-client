@@ -426,7 +426,20 @@ impl DashboardAggregator {
                                  name: Option<&String>,
                                  subj: &crate::data::state::SubjectState,
                                  subj_key: SubjectKey| {
-            let completion = if !subj.completed.is_empty() {
+            let version = subj.version.as_deref().unwrap_or("");
+            let seq_total = crate::core::chapter_seq::total_count(subject_key, version);
+            let completion = if !subj.completed.is_empty() && seq_total > 0 {
+                // 按已完成内容在章节顺序表中的最高位置计算进度（完成到第 N 章 = N/总数）
+                let max_pos = subj
+                    .completed
+                    .iter()
+                    .filter_map(|c| crate::core::chapter_seq::position(subject_key, version, c))
+                    .max()
+                    .map(|p| (p + 1) as f64)
+                    .unwrap_or(0.0);
+                (max_pos / seq_total as f64 * 100.0).min(100.0)
+            } else if !subj.completed.is_empty() {
+                // 无章节表时兜底：按已完成条目数估算（沿用旧口径，每科约 50 章）
                 (subj.completed.len() as f64 / 50.0 * 100.0).min(100.0)
             } else {
                 0.0

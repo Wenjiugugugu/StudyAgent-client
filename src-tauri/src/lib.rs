@@ -247,12 +247,27 @@ impl AppSettings {
     ///
     /// AI 在生成周/日计划时应据此控制每天的任务条数（每科约一条，
     /// 同时遵循各科开始学习日期，未开始的科目不安排）。
+    ///
+    /// 注意：实际规划以派生条数为准（`daily_target_hours × 效率 ÷ 标准粒度`），
+    /// 本字段仅作为旧配置的兼容读取与任务数告警上限的参考。
     pub fn daily_task_count(&self) -> i64 {
         self.study_schedule
             .get("daily_task_count")
             .and_then(|v| v.as_i64())
             .filter(|n| *n > 0)
             .unwrap_or(3)
+    }
+
+    /// 标准任务粒度（小时/条），默认 1.5。
+    ///
+    /// 每日任务条数由「每日目标学时 × 效率 ÷ 标准粒度」确定性派生，
+    /// 因此调整学时会自动影响每日任务数；本值可在高级设置中调整。
+    pub fn standard_granularity(&self) -> f64 {
+        self.study_schedule
+            .get("standard_granularity")
+            .and_then(|v| v.as_f64())
+            .filter(|n| *n > 0.0)
+            .unwrap_or(1.5)
     }
 
     /// 是否允许 AI 在计划中安排总结/复习任务（默认 true）。

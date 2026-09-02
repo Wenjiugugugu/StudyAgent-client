@@ -2,7 +2,6 @@
 import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
-import { useAssistantStore } from "@/stores/assistant";
 import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
 import * as api from "@/api";
@@ -21,7 +20,6 @@ import {
 const route = useRoute();
 const router = useRouter();
 const settingsStore = useSettingsStore();
-const assistantStore = useAssistantStore();
 const updateStore = useUpdateStore();
 useTheme();
 
@@ -73,6 +71,8 @@ async function listenCloseEvents() {
   try {
     const { listen } = await import("@tauri-apps/api/event");
     closeUnlisten = await listen("close-requested", () => {
+      // 强制更新模式下阻止窗口关闭，保持更新弹窗常驻
+      if (updateStore.forceUpdate) return;
       closeDialogVisible.value = true;
     });
     trayMinimizeUnlisten = await listen("window-minimized-to-tray", () => {
@@ -154,6 +154,14 @@ import { VERSION_CHANGELOGS } from "@/changelogs";
 
 const changelogContent = ref("");
 
+/** 根据版本号查找内置更新日志：优先精确匹配，其次去掉 `-indev`/`-beta` 等后缀后匹配 */
+function findChangelog(version: string): string | string[] | undefined {
+  if (VERSION_CHANGELOGS[version]) return VERSION_CHANGELOGS[version];
+  const base = version.replace(/-[a-zA-Z0-9.]+$/, "");
+  if (base !== version) return VERSION_CHANGELOGS[base];
+  return undefined;
+}
+
 async function checkChangelog() {
   if (!isTauri()) return;
   try {
@@ -165,11 +173,11 @@ async function checkChangelog() {
       lastSeen = localStorage.getItem(`studyagent.${lastSeenKey}`) ?? "";
     }
 
-    // 首次启动或版本升级时展示对应版本的更新日志
-    if (lastSeen !== currentVersion && VERSION_CHANGELOGS[currentVersion]) {
+    // 首次启动或版本升级时展示对应版本的更新日志（0.6.1-indev 等 indev 版本命中正式版的日志内容）
+    const changelog = findChangelog(currentVersion);
+    if (lastSeen !== currentVersion && changelog) {
       changelogVersion.value = currentVersion;
-      const raw = VERSION_CHANGELOGS[currentVersion];
-      changelogContent.value = Array.isArray(raw) ? raw.join("\n") : raw;
+      changelogContent.value = Array.isArray(changelog) ? changelog.join("\n") : changelog;
       changelogVisible.value = true;
       await api.setUiFlag(lastSeenKey, currentVersion);
     } else if (lastSeen !== currentVersion) {
@@ -282,8 +290,6 @@ onMounted(async () => {
     router.replace("/onboarding");
     return;
   }
-
-  assistantStore.setContext({ current_view: "dashboard" });
 
   // 监听关闭事件、检查更新日志、检查更新（仅在 Tauri 环境下）
   await listenCloseEvents();

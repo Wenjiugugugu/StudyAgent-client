@@ -30,57 +30,6 @@
   width: 100%;
 }
 
-/* ── 简报提示全屏遮罩 ── */
-.briefing-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /* 仅整体压暗，不做全屏模糊（全屏 backdrop-filter 在背景图+动画页面上很吃性能） */
-  background: rgba(0, 0, 0, 0.45);
-  transition: opacity 0.35s ease;
-}
-
-/* 闪烁完成后遮罩淡出，恢复背景 */
-.briefing-overlay-leaving {
-  opacity: 0;
-}
-
-.briefing-overlay-card {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-6);
-  /* 毛玻璃卡片：只在这一小块模糊背景，兼顾视觉与性能 */
-  background: color-mix(in srgb, var(--bg-elevated) 62%, transparent);
-  backdrop-filter: blur(12px) saturate(160%);
-  -webkit-backdrop-filter: blur(12px) saturate(160%);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-lg);
-  font-size: var(--text-base);
-  color: var(--text-primary);
-  font-weight: var(--font-semibold);
-  box-shadow: var(--shadow-lg);
-  /* 快速闪烁三次（约 0.75 秒内完成），随后保持显示 */
-  animation: hint-flash-3x 0.25s ease-in-out 3;
-}
-
-@keyframes hint-flash-3x {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.15; }
-}
-
-.overlay-fade-enter-active,
-.overlay-fade-leave-active {
-  transition: opacity 0.35s ease;
-}
-.overlay-fade-enter-from,
-.overlay-fade-leave-to {
-  opacity: 0;
-}
-
 /* ── 入场动画：简报左侧滑入，侧栏右侧滑入 ── */
 .briefing-card {
   opacity: 0;

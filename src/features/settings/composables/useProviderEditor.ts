@@ -60,6 +60,27 @@ export function useProviderEditor() {
     ollama: "http://localhost:11434/v1",
   };
   const knownBaseUrls = Object.values(providerBaseUrlDefaults);
+
+  /** 各 Provider 类型的默认显示名称（与 providerTypeOptions.label 保持一致） */
+  const providerNameDefaults: Partial<Record<ProviderType, string>> = {
+    openai: "OpenAI",
+    gemini: "Gemini",
+    anthropic: "Anthropic",
+    ollama: "Ollama (本地)",
+    openrouter: "OpenRouter",
+    siliconflow: "硅基流动",
+    dashscope: "通义千问",
+    volcengine: "火山引擎",
+    zhipu: "智谱 GLM",
+    kimi: "Kimi (月之暗面)",
+    longcat: "LongCat (美团)",
+    minimax: "MiniMax",
+    mimo: "MiMo (小米)",
+    custom: "自定义",
+  };
+  // 名称是否由「自动填入」产生的标记：true 时表示当前 name 跟随所选类型自动生成，
+  // 切换类型可覆盖；用户手动编辑 name 后置为 false，不再被自动覆盖。
+  const nameAutoFilled = ref(false);
   watch(
     () => providerForm.value.type,
     (t) => {
@@ -68,6 +89,12 @@ export function useProviderEditor() {
       const current = providerForm.value.base_url.trim();
       if (!current || knownBaseUrls.includes(current)) {
         providerForm.value.base_url = def;
+      }
+      // 自动填入名称：仅在 name 为空、或此前由自动填入产生时覆盖
+      const defaultName = providerNameDefaults[t];
+      if (defaultName && (!providerForm.value.name.trim() || nameAutoFilled.value)) {
+        providerForm.value.name = defaultName;
+        nameAutoFilled.value = true;
       }
     },
   );
@@ -276,6 +303,8 @@ export function useProviderEditor() {
     editingProviderId.value = null;
     editingOriginalKey.value = "";
     providerForm.value = emptyProvider();
+    // 新增时 name 为空，选择类型后由自动填入接管
+    nameAutoFilled.value = false;
     testResult.value = null;
     modelList.value = [];
     modelListError.value = null;
@@ -289,6 +318,8 @@ export function useProviderEditor() {
     // C5：不回显原 api_key 到表单；仅在内存保留，供未重输时测试/保存沿用。
     editingOriginalKey.value = p.api_key || "";
     providerForm.value = { ...p, api_key: "" };
+    // 编辑已保存的 Provider：name 由用户既有值决定，不视为自动填入
+    nameAutoFilled.value = false;
     testResult.value = null;
     modelList.value = [];
     modelListError.value = null;
@@ -302,6 +333,12 @@ export function useProviderEditor() {
     editingProviderId.value = null;
     editingOriginalKey.value = "";
     testResult.value = null;
+    nameAutoFilled.value = false;
+  }
+
+  /** 名称输入框获得焦点/用户编辑时，解除自动填入标记（之后切换类型不再覆盖） */
+  function markNameEdited() {
+    nameAutoFilled.value = false;
   }
 
   async function saveProvider() {
@@ -345,6 +382,7 @@ export function useProviderEditor() {
     await settingsStore.save();
     editingProviderId.value = null;
     testResult.value = null;
+    nameAutoFilled.value = false;
   }
 
   async function removeProvider(id: string) {
@@ -438,6 +476,8 @@ export function useProviderEditor() {
     modelContextLength,
     formatContextLength,
     providerTypeOptions,
+    nameAutoFilled,
+    markNameEdited,
     startAddProvider,
     editProvider,
     cancelProviderForm,

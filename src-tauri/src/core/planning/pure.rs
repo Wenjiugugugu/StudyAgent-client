@@ -3,6 +3,62 @@
 use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, SubjectKey};
 
+// ── 任务粒度与条数派生常量 ──
+
+/// 标准任务粒度（小时/条）：默认 1.5h ≈ 2 个番茄钟（学习 50min×2 + 短休）。
+pub(crate) const STANDARD_GRANULARITY_HOURS: f64 = 1.5;
+/// 单条任务时长下限（小时）：低于该值且为同动作小项时合并。
+pub(crate) const TASK_MIN_HOURS: f64 = 0.5;
+/// 单条任务时长上限（小时）：超过则必须拆分。
+pub(crate) const TASK_MAX_HOURS: f64 = 3.0;
+/// 每日任务条数上限（认知负荷兜底）。
+pub(crate) const MAX_DAILY_TASKS: i64 = 8;
+
+/// 由「每日目标学时 × 效率系数」确定性派生每日任务条数。
+///
+/// 公式：`task_count = round(每日目标学时 × 效率 ÷ 标准任务粒度)`，
+/// 再 clamp 到 `[活跃科目数, MAX_DAILY_TASKS]`。
+/// 这样"每日 N 个任务"恒等于"N × 标准粒度"小时，含义稳定可复现；
+/// 调学时即调条数，换算确定，避免条数与时长两套指标解耦。
+pub(crate) fn derive_task_count(
+    daily_target_hours: f64,
+    efficiency: f64,
+    active_subject_count: i64,
+) -> i64 {
+    let target = daily_target_hours.max(0.0);
+    let eff = efficiency.clamp(0.0, 1.0);
+    let raw = (target * eff) / STANDARD_GRANULARITY_HOURS;
+    let count = raw.round() as i64;
+    count.clamp(active_subject_count.max(1), MAX_DAILY_TASKS)
+}
+
+/// 活跃科目数：科目 active 且（未设置开始日期 或 开始日期不晚于 week_end）。
+pub(crate) fn active_subject_count_for(
+    state: &StudyState,
+    week_end: &str,
+    subject_start_dates: &[(&'static str, String)],
+) -> i64 {
+    let subjects = [
+        ("math", &state.subjects.math),
+        ("english", &state.subjects.english),
+        ("politics", &state.subjects.politics),
+        ("professional", &state.subjects.professional),
+    ];
+    let mut n = 0i64;
+    for (key, subj) in subjects {
+        if !subj.active {
+            continue;
+        }
+        if let Some((_, start)) = subject_start_dates.iter().find(|(k, _)| *k == key) {
+            if !start.is_empty() && start.as_str() > week_end {
+                continue;
+            }
+        }
+        n += 1;
+    }
+    n.max(1)
+}
+
 pub(crate) fn weekly_self_calibration(prev_week_reviews: &[ReviewFile]) -> f64 {
     prev_week_calibration_stats_impl(prev_week_reviews).0
 }
@@ -33,13 +89,9 @@ pub(crate) fn prev_week_calibration_stats_impl(prev_week_reviews: &[ReviewFile])
         return (1.0, 0.0);
     }
     let avg_rate = (sum_done as f64 / sum_total as f64) * 100.0;
-    let coeff = if avg_rate >= 90.0 {
-        1.0
-    } else if avg_rate >= 70.0 {
-        0.9
-    } else {
-        0.8
-    };
+    // 连续系数（替代原离散三档 1.0/0.9/0.8）：90%→0.95、70%→0.85、50%→0.75、0%→0.5，
+    // 消除跨阈值（如 89.9%↔90%）时任务量的跳变失真。
+    let coeff = (0.5 + avg_rate / 200.0).clamp(0.5, 1.0);
     (coeff, avg_rate)
 }
 
@@ -190,7 +242,14 @@ pub(crate) fn subject_task_budget(
                 continue;
             }
         }
-        weights.push((key, subject.weekly_hours.max(1.0)));
+        // 权重用各科周学时；0 学时（新开始科目）给最低权重 0.5，
+        // 避免被 max(1.0) 抬成与高时长科目同权而多分任务条数。
+        let weight = if subject.weekly_hours > 0.0 {
+            subject.weekly_hours
+        } else {
+            0.5
+        };
+        weights.push((key, weight));
     }
 
     if weights.is_empty() {
@@ -321,4 +380,40 @@ pub(crate) fn matches_completed(title: &str, completed: &str) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_task_count_basic() {
+        // 5h 目标 ÷ 1.5h 粒度 ≈ 3.33 → 3
+        assert_eq!(derive_task_count(5.0, 1.0, 2), 3);
+        // 6h ÷ 1.5 = 4
+        assert_eq!(derive_task_count(6.0, 1.0, 2), 4);
+        // 3h ÷ 1.5 = 2
+        assert_eq!(derive_task_count(3.0, 1.0, 2), 2);
+    }
+
+    #[test]
+    fn derive_task_count_applies_efficiency() {
+        // 效率 0.8：5×0.8=4h ÷1.5 ≈ 2.67 → 3
+        assert_eq!(derive_task_count(5.0, 0.8, 2), 3);
+        // 效率 0.9：5×0.9=4.5h ÷1.5 = 3
+        assert_eq!(derive_task_count(5.0, 0.9, 2), 3);
+        // 效率 0（异常）→ 0 → clamp 到活跃科目数
+        assert_eq!(derive_task_count(5.0, 0.0, 2), 2);
+    }
+
+    #[test]
+    fn derive_task_count_clamps() {
+        // 下限：目标太小 → clamp 到活跃科目数
+        assert_eq!(derive_task_count(0.5, 1.0, 2), 2);
+        assert_eq!(derive_task_count(0.0, 1.0, 3), 3);
+        // 上限：目标太大 → clamp 到 8
+        assert_eq!(derive_task_count(20.0, 1.0, 2), 8);
+        // 活跃科目数为 0（异常）→ 至少 1
+        assert_eq!(derive_task_count(5.0, 1.0, 0), 3);
+    }
 }

@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, watch, nextTick } from "vue";
 import { useRoute } from "vue-router";
-import { useAssistantStore } from "@/stores/assistant";
 import { useSettingsStore } from "@/stores/settings";
 import SideBar from "./SideBar.vue";
-import AssistantPanel from "@/components/assistant/AssistantPanel.vue";
 import TitleBar from "@/components/TitleBar.vue";
 
 const route = useRoute();
-const assistantStore = useAssistantStore();
 const settingsStore = useSettingsStore();
 const titleBarRef = ref<InstanceType<typeof TitleBar> | null>(null);
 const isMaximized = ref(false);
@@ -119,7 +116,7 @@ onMounted(() => {
 <template>
   <div class="app-layout" :class="{ 'is-maximized': isMaximized, 'sidebar-floating': isFloating }">
     <!-- 自定义背景图层（由设置中的 background_image 驱动） -->
-    <div class="app-background-layer" aria-hidden="true" />
+    <div class="app-background-layer" aria-hidden="true"></div>
     <!-- 液态玻璃 SVG 边缘折射 filter — 仅折射边缘，中间无变形 -->
     <svg class="liquid-glass-svg" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -181,21 +178,6 @@ onMounted(() => {
             <span v-if="isReserved" class="reserved-badge">预留</span>
           </div>
           <div class="header-right">
-            <button
-              class="assistant-toggle"
-              :class="{ active: assistantStore.panelOpen }"
-              @click="assistantStore.togglePanel()"
-              title="AI 助手"
-              data-tauri-drag-region="ignore"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 8V4H8" />
-                <rect width="16" height="12" x="4" y="8" rx="2" />
-                <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
-              </svg>
-              <span>助手</span>
-            </button>
-
             <TitleBar
               ref="titleBarRef"
               @update:is-maximized="isMaximized = $event"
@@ -211,11 +193,6 @@ onMounted(() => {
           </router-view>
         </div>
       </main>
-
-      <!-- Right Assistant Panel -->
-      <transition name="slide">
-        <AssistantPanel v-if="assistantStore.panelOpen" />
-      </transition>
     </div>
   </div>
 </template>
@@ -337,34 +314,6 @@ onMounted(() => {
   align-items: stretch;
   height: 100%;
   gap: var(--space-1);
-}
-
-/* Apple-style: capsule toggle, restrained */
-.assistant-toggle {
-  display: flex;
-  align-items: center;
-  align-self: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  transition: background-color var(--transition-fast), color var(--transition-fast);
-  letter-spacing: -0.01em;
-}
-
-.assistant-toggle:hover {
-  background: var(--sidebar-item-hover);
-  color: var(--text-primary);
-}
-
-.assistant-toggle.active {
-  background: var(--accent-subtle);
-  color: var(--accent);
 }
 
 .content-body {

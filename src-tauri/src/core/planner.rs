@@ -268,7 +268,8 @@ impl<'a> Planner<'a> {
         let settings = crate::load_settings(data_dir);
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
-        let daily_task_count = settings.daily_task_count();
+        let daily_target_hours = settings.daily_target_hours();
+        let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
 
         // 6. 构建 prompt
@@ -282,7 +283,8 @@ impl<'a> Planner<'a> {
             &week_plan.meta.week_start,
             &rest_days,
             &subject_start_dates,
-            daily_task_count,
+            daily_target_hours,
+            standard_granularity,
             enable_review_tasks,
             &week_plan.data.excluded_days,
         );
@@ -597,7 +599,8 @@ impl<'a> Planner<'a> {
         let settings = crate::load_settings(data_dir);
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
-        let daily_task_count = settings.daily_task_count();
+        let daily_target_hours = settings.daily_target_hours();
+        let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
 
         // 8. 构建 prompt
@@ -611,7 +614,8 @@ impl<'a> Planner<'a> {
             &week_plan.meta.week_start,
             &rest_days,
             &subject_start_dates,
-            daily_task_count,
+            daily_target_hours,
+            standard_granularity,
             enable_review_tasks,
             &week_plan.data.excluded_days,
         );
@@ -841,8 +845,14 @@ impl<'a> Planner<'a> {
         // 2. 构建周计划 prompt
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
-        let daily_task_count = settings.daily_task_count();
+        let daily_target_hours = settings.daily_target_hours();
+        let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
+        let active_count = crate::core::planning::pure::active_subject_count_for(
+            &state,
+            &week_end,
+            &subject_start_dates,
+        );
         let prompt = self.build_week_plan_prompt(
             &state,
             &user_model,
@@ -853,7 +863,8 @@ impl<'a> Planner<'a> {
             &week_end,
             &rest_days,
             &subject_start_dates,
-            daily_task_count,
+            daily_target_hours,
+            standard_granularity,
             enable_review_tasks,
             &prev_week_daily_plans,
             &prev_week_reviews,
@@ -913,18 +924,27 @@ impl<'a> Planner<'a> {
             &empty_declared,
         );
 
+        // 3.4b 任务粒度规范化：时长上限拆分 / 下限合并 / 原子性拆分（兜底 AI 不规范输出）
+        normalize_task_granularity(&mut week_plan);
+
         // 3.3 持久化用户本周配置（排除日 + 任务量调整）
         week_plan.data.excluded_days = excluded_days.to_vec();
         week_plan.data.workload_adjustment = workload_adjustment.cloned();
 
         // 3.5 持久化本周任务量自校准元数据（供周计划页解释为什么每天任务数变少/多）
+        // 自校准系数作用于「每日目标学时」，再由标准粒度派生条数。
         let calib_coeff = weekly_self_calibration(&prev_week_reviews);
         let (_, calib_avg_rate) = prev_week_calibration_stats(&prev_week_reviews);
-        let calib_effective = ((daily_task_count as f64) * calib_coeff).floor() as i64;
-        let calib_effective = calib_effective.clamp(1, 8);
-        if calib_effective != daily_task_count {
+        let calib_base_count =
+            crate::core::planning::pure::derive_task_count(daily_target_hours, 1.0, active_count);
+        let calib_effective = crate::core::planning::pure::derive_task_count(
+            daily_target_hours,
+            calib_coeff,
+            active_count,
+        );
+        if calib_effective != calib_base_count {
             week_plan.data.calibration = Some(crate::data::plan::WeekCalibration {
-                base_daily_task_count: daily_task_count,
+                base_daily_task_count: calib_base_count,
                 effective_daily_task_count: calib_effective,
                 coefficient: calib_coeff,
                 avg_completion_rate: calib_avg_rate,
@@ -1102,7 +1122,8 @@ impl<'a> Planner<'a> {
         week_end: &str,
         rest_days: &[String],
         subject_start_dates: &[(&'static str, String)],
-        daily_task_count: i64,
+        daily_target_hours: f64,
+        standard_granularity: f64,
         enable_review_tasks: bool,
         prev_week_daily_plans: &[DailyPlanFile],
         prev_week_reviews: &[crate::data::records::ReviewFile],
@@ -1112,13 +1133,20 @@ impl<'a> Planner<'a> {
         let remaining = days_between(&state.meta.exam_date, week_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
 
-        // 每周总量自校准（确定性公式）：基于上周复盘的完成率推导任务量系数，
-        // 乘以基准每日任务数得到本周有效每日任务数。用 floor() 保证 0.9 档在低基数
-        // （默认 3/日）也能产生真实减量；clamp 到 1..=8 兜底避免系数把任务数压到 0。
+        // 每周总量自校准（确定性公式）：基于上周复盘的完成率推导效率系数，
+        // 作用于「每日目标学时」得到有效目标学时，再由标准任务粒度派生每日任务条数
+        // （学时 ÷ 粒度，clamp 到 [活跃科目数, 8]）。调学时即调条数，换算确定。
         let self_coeff = weekly_self_calibration(prev_week_reviews);
-        let effective_daily_task_count = ((daily_task_count as f64) * self_coeff)
-            .floor()
-            .clamp(1.0, 8.0) as i64;
+        let effective_target_hours = daily_target_hours * self_coeff;
+        let effective_daily_task_count = crate::core::planning::pure::derive_task_count(
+            daily_target_hours,
+            self_coeff,
+            crate::core::planning::pure::active_subject_count_for(
+                state,
+                week_end,
+                subject_start_dates,
+            ),
+        );
 
         let mut prompt = String::new();
         prompt.push_str(&format!(
@@ -1135,13 +1163,13 @@ impl<'a> Planner<'a> {
         ));
 
         // 本周任务量自动校准提示（仅当上周完成率触发真实减量时写入，说明系数来源）
-        if self_coeff < 1.0 && effective_daily_task_count < daily_task_count {
+        if self_coeff < 1.0 {
             prompt.push_str("## 本周任务量自动校准（基于上周完成情况）\n");
             prompt.push_str(&format!(
-                "- 上周平均完成率未达标，本周每日任务数已由 {} 自动下调至 {}（系数 {:.2}）。\n",
-                daily_task_count, effective_daily_task_count, self_coeff
+                "- 上周平均完成率未达标，本周每日有效目标学时已由 {:.2}h 自动下调至 {:.2}h（系数 {:.2}），每日任务数约 {} 个。\n",
+                daily_target_hours, effective_target_hours, self_coeff, effective_daily_task_count
             ));
-            prompt.push_str("- 请严格按新的每日任务数安排，优先推进上周未完成 / 巩固薄弱内容，避免任务量过大导致再次堆积。\n\n");
+            prompt.push_str("- 请严格按新的学时与任务数安排，优先推进上周未完成 / 巩固薄弱内容，避免任务量过大导致再次堆积。\n\n");
         }
 
         // 考试信息
@@ -1176,8 +1204,8 @@ impl<'a> Planner<'a> {
             ));
         }
         prompt.push_str(&format!(
-            "- 用户期望每日任务数量：{} 个（每科约一条；同时遵循各科开始学习日期，未开始的科目不安排任务，相应减少当日任务数）\n",
-            effective_daily_task_count
+            "- 每日任务数量：约 {} 个（由每日有效目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；每科约一条；同时遵循各科开始学习日期，未开始的科目不安排任务，相应减少当日任务数）\n",
+            effective_daily_task_count, effective_target_hours, standard_granularity
         ));
         prompt.push_str(&format!(
             "- 是否安排总结/复习任务：{}（{}）\n\n",
@@ -1188,6 +1216,23 @@ impl<'a> Planner<'a> {
                 "严禁安排任何形式的复习/巩固类任务，包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'/'巩固练习'等；每日任务必须推进新知识点、新章节或新习题"
             }
         ));
+
+        // 任务粒度与学时约束（确定性硬约束，替代仅"大致等于"的软约束）
+        prompt.push_str("## 任务粒度与学时约束（重要）\n");
+        prompt.push_str(&format!(
+            "- 每日有效目标学时：{:.2}h（= 每日目标学时 {:.2}h × 上周完成率系数 {:.2}）\n",
+            effective_target_hours, daily_target_hours, self_coeff
+        ));
+        prompt.push_str(&format!(
+            "- 每日任务数约 {} 个；每天所有任务 estimated_hours 总和须 ∈ [{:.2}h, {:.2}h]\n",
+            effective_daily_task_count,
+            effective_target_hours * 0.95,
+            effective_target_hours * 1.05
+        ));
+        prompt.push_str(
+            "- 单条任务 estimated_hours ∈ [1.0, 2.0]h（推荐），超过 3.0h 必须拆分为多条\n",
+        );
+        prompt.push_str("- 一条任务 = 单一主旨的同动作学习单元。不同学习动作（如背诵/阅读/分析/做题/听课）即使总时长合理也必须拆为独立任务，不得用 + 拼接；判定：该单元完成后能否单独勾选完成？能 → 独立成条。\n\n");
 
         // 每科任务数确定性预算（每科至少 1 条，条数多了才按时长权重分散）
         let per_subject_budget = subject_task_budget(
@@ -1747,11 +1792,23 @@ impl<'a> Planner<'a> {
 14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。同时以各科「当前重点」作为实际进度基准：不得在用户尚未到达的章节安排任务，计划的推进顺序必须以教材章节先后为准，不得跳过用户尚未学习的章节跳级到后面（若「当前重点」显示的进度落后于本周计划，以「当前重点」为准相应调整，而非沿用旧计划）。
 15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。**{}应作为本周的起始点**，从各科「已完成」之后的章节开始，逐天分配到剩余学习日（若为周中生成，起点为今天而非周一，已过去的日期不安排任务）。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
 "#,
-            week_start, week_end, week_end, daily_task_count,
+            week_start, week_end, week_end, effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
             if today == week_start { "周一" } else { "今天" },
             math = Self::math_syllabus_constraint(state),
         ));
+
+        // 英语单词每日安排约束：凡当天安排了英语任务，须至少包含 1 条背单词任务
+        if state.subjects.english.active {
+            prompt.push_str(&format!(
+                "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
+                if enable_review_tasks {
+                    "背 N 个新词（可含单词复习巩固）"
+                } else {
+                    "背 N 个新词（推进新词，不含复习字样）"
+                }
+            ));
+        }
 
         prompt
     }
@@ -1845,12 +1902,23 @@ impl<'a> Planner<'a> {
         week_start: &str,
         rest_days: &[String],
         subject_start_dates: &[(&'static str, String)],
-        daily_task_count: i64,
+        daily_target_hours: f64,
+        standard_granularity: f64,
         enable_review_tasks: bool,
         excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
+        // 任务条数由「每日目标学时 ÷ 标准粒度」确定性派生（重排沿用基准学时，不叠加自校准）
+        let effective_daily_task_count = crate::core::planning::pure::derive_task_count(
+            daily_target_hours,
+            1.0,
+            crate::core::planning::pure::active_subject_count_for(
+                state,
+                week_end,
+                subject_start_dates,
+            ),
+        );
 
         let mut prompt = String::new();
         prompt.push_str(&format!(
@@ -2017,8 +2085,8 @@ impl<'a> Planner<'a> {
             rest_days.join("、")
         ));
         prompt.push_str(&format!(
-            "- 每日任务数量: {} 个（每科约一条；未开始的科目不安排）\n",
-            daily_task_count
+            "- 每日任务数量: {} 个（由每日目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；每科约一条；未开始的科目不安排）\n",
+            effective_daily_task_count, daily_target_hours, standard_granularity
         ));
         prompt.push_str(&format!(
             "- 总结/复习任务: {}\n",
@@ -2175,10 +2243,22 @@ impl<'a> Planner<'a> {
 10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
 11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。若存在排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束7）仍须遵守。
 "#,
-            regen_start, week_end, daily_task_count,
+            regen_start, week_end, effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
             math = Self::math_syllabus_constraint(state),
         ));
+
+        // 英语单词每日安排约束：凡当天安排了英语任务，须至少包含 1 条背单词任务
+        if state.subjects.english.active {
+            prompt.push_str(&format!(
+                "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
+                if enable_review_tasks {
+                    "背 N 个新词（可含单词复习巩固）"
+                } else {
+                    "背 N 个新词（推进新词，不含复习字样）"
+                }
+            ));
+        }
 
         prompt
     }
@@ -2196,12 +2276,23 @@ impl<'a> Planner<'a> {
         week_start: &str,
         rest_days: &[String],
         subject_start_dates: &[(&'static str, String)],
-        daily_task_count: i64,
+        daily_target_hours: f64,
+        standard_granularity: f64,
         enable_review_tasks: bool,
         all_excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
+        // 任务条数由「每日目标学时 ÷ 标准粒度」确定性派生（重排沿用基准学时，不叠加自校准）
+        let effective_daily_task_count = crate::core::planning::pure::derive_task_count(
+            daily_target_hours,
+            1.0,
+            crate::core::planning::pure::active_subject_count_for(
+                state,
+                week_end,
+                subject_start_dates,
+            ),
+        );
 
         let type_label = match excluded_day.reason_type.as_str() {
             "travel" => "外出旅行",
@@ -2319,8 +2410,8 @@ impl<'a> Planner<'a> {
             rest_days.join("、")
         ));
         prompt.push_str(&format!(
-            "- 每日任务数量: {} 个（每科约一条；未开始的科目不安排）\n",
-            daily_task_count
+            "- 每日任务数量: {} 个（由每日目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；每科约一条；未开始的科目不安排）\n",
+            effective_daily_task_count, daily_target_hours, standard_granularity
         ));
         prompt.push_str(&format!(
             "- 总结/复习任务: {}\n",
@@ -2479,10 +2570,22 @@ impl<'a> Planner<'a> {
 "#,
             regen_start, week_end,
             all_excluded_days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>().join("、"),
-            daily_task_count,
+            effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
             math = Self::math_syllabus_constraint(state),
         ));
+
+        // 英语单词每日安排约束：凡当天安排了英语任务，须至少包含 1 条背单词任务
+        if state.subjects.english.active {
+            prompt.push_str(&format!(
+                "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
+                if enable_review_tasks {
+                    "背 N 个新词（可含单词复习巩固）"
+                } else {
+                    "背 N 个新词（推进新词，不含复习字样）"
+                }
+            ));
+        }
 
         prompt
     }
@@ -2764,6 +2867,145 @@ fn consistency_check_and_correct(
     warnings
 }
 
+/// 学习活动词库：用于原子性拆分判定（一条任务 = 单一主旨的同动作单元）。
+///
+/// 标题含并列连词（+/＋/、/与/及）且命中 ≥2 个不同活动词时，
+/// 判定为"多个独立学习单元"（如"背 250 词 + 阅读 1 篇 + 长难句 3 个"），
+/// 拆为独立任务——不同学习动作即使总时长合理也必须拆。
+const ACTIVITY_WORDS: [&str; 24] = [
+    "单词",
+    "词汇",
+    "背诵",
+    "默写",
+    "听写",
+    "阅读",
+    "精读",
+    "泛读",
+    "真题",
+    "听力",
+    "长难句",
+    "翻译",
+    "作文",
+    "完形",
+    "新题型",
+    "习题",
+    "刷题",
+    "做题",
+    "错题",
+    "例题",
+    "讲义",
+    "笔记",
+    "教材",
+    "章节",
+];
+
+/// 任务粒度规范化：AI 输出的兜底确定性后处理。
+///
+/// 1. 时长判据：单条 > TASK_MAX_HOURS 拆分为多条（每条 ≈ 原/ceil(原/1.5)）；
+///    单条 < TASK_MIN_HOURS 时合并到同科相邻任务（仅同 allocation 内）。
+/// 2. 原子性判据：标题含并列连词且命中多个活动词时拆为独立任务。
+/// 3. 拆分/合并后重算 allocation.hours（保持周计划层时长不失真）。
+fn normalize_task_granularity(week_plan: &mut WeekPlanFile) {
+    for day in week_plan.data.days.iter_mut() {
+        normalize_allocations(&mut day.subject_allocations);
+    }
+}
+
+/// 对单个 allocation 列表做任务粒度规范化。
+fn normalize_allocations(allocations: &mut [crate::data::plan::DaySubjectAllocation]) {
+    for alloc in allocations.iter_mut() {
+        let mut expanded: Vec<crate::data::plan::TaskTemplate> = Vec::new();
+        for t in alloc.task_templates.drain(..) {
+            expanded.extend(split_task_by_atomicity(&t.title, t.estimated_hours));
+        }
+
+        // 时长上限拆分（> TASK_MAX_HOURS → 按 1.5h 粒度切分）
+        let mut after_cap: Vec<crate::data::plan::TaskTemplate> = Vec::new();
+        for t in expanded {
+            if t.estimated_hours > crate::core::planning::pure::TASK_MAX_HOURS {
+                let n = (t.estimated_hours / 1.5).ceil() as usize;
+                let each = t.estimated_hours / n as f64;
+                for i in 0..n {
+                    let mut sub = t.clone();
+                    sub.title = format!("{}({})", t.title, i + 1);
+                    sub.estimated_hours = if i == n - 1 {
+                        t.estimated_hours - each * (n as f64 - 1.0)
+                    } else {
+                        each
+                    };
+                    after_cap.push(sub);
+                }
+            } else {
+                after_cap.push(t);
+            }
+        }
+
+        // 时长下限合并（< TASK_MIN_HOURS 且存在前一条时并入，标题用 + 拼接）
+        let mut merged: Vec<crate::data::plan::TaskTemplate> = Vec::new();
+        for t in after_cap {
+            if t.estimated_hours < crate::core::planning::pure::TASK_MIN_HOURS {
+                if let Some(last) = merged.last_mut() {
+                    last.title = format!("{} + {}", t.title, last.title);
+                    last.estimated_hours += t.estimated_hours;
+                    continue;
+                }
+            }
+            merged.push(t);
+        }
+        alloc.task_templates = merged;
+        let sum: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
+        if sum > 0.0 {
+            alloc.hours = sum;
+        }
+    }
+}
+
+/// 原子性拆分：标题含并列连词且命中 ≥2 个不同学习活动词时，按连接符拆为多条。
+fn split_task_by_atomicity(title: &str, hours: f64) -> Vec<crate::data::plan::TaskTemplate> {
+    let single = || {
+        vec![crate::data::plan::TaskTemplate {
+            title: title.to_string(),
+            estimated_hours: hours,
+            ..Default::default()
+        }]
+    };
+    if !title.contains(['+', '＋', '、', '与', '及']) {
+        return single();
+    }
+    let matched: Vec<&str> = ACTIVITY_WORDS
+        .iter()
+        .filter(|w| title.contains(**w))
+        .copied()
+        .collect();
+    let mut unique: Vec<&str> = Vec::new();
+    for w in matched {
+        if !unique.contains(&w) {
+            unique.push(w);
+        }
+    }
+    // 命中不同活动词 < 2 时不拆（如"行列式定义与性质"只有一个活动，是同一单元）
+    if unique.len() < 2 {
+        return single();
+    }
+    let parts: Vec<&str> = title
+        .split(['+', '＋', '、', '与', '及'])
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return single();
+    }
+    let each = hours / parts.len() as f64;
+    parts
+        .into_iter()
+        .map(|p| crate::data::plan::TaskTemplate {
+            title: p.to_string(),
+            estimated_hours: each,
+            ..Default::default()
+        })
+        .collect()
+}
+
 /// 找出声明了实际进度、但重排后剩余安排与重排前完全一致的科目（进度未生效）。
 ///
 /// 返回科目 key 列表（math/english/politics/professional）。
@@ -2886,6 +3128,8 @@ fn update_week_plan_remaining_days(week_plan: &mut WeekPlanFile, updated_days: &
                 continue;
             }
             day.subject_allocations = updated.subject_allocations.clone();
+            // 任务粒度规范化：兜底 AI 重排输出的不规范粒度
+            normalize_allocations(&mut day.subject_allocations);
             log::info!(
                 "更新周计划: {} 的 subject_allocations 已更新（{} 个科目分配）",
                 updated.date,

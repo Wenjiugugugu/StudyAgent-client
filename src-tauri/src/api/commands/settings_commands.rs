@@ -452,6 +452,23 @@ pub async fn sync_dida_now(state: State<'_, Mutex<AppState>>) -> Result<String, 
     ))
 }
 
+/// 清理滴答中过往（已过期）未完成的 studyagent 任务
+///
+/// 供复盘提交流程末尾调用：只删带 `studyagent` 标签、任务日期早于今天且未完成的任务，
+/// 已完成任务保留完成历史。清理失败仅记录日志，不影响复盘提交。
+/// 返回删除数量摘要文本。
+/// 前端调用: `invoke('cleanup_dida_stale')`
+#[tauri::command]
+pub async fn cleanup_dida_stale(state: State<'_, Mutex<AppState>>) -> Result<String, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let deleted = crate::sync::dida::cleanup_stale_tasks(&data_dir).await;
+    if deleted > 0 {
+        Ok(format!("已清理 {} 条过往未完成任务", deleted))
+    } else {
+        Ok("没有需要清理的过往未完成任务".to_string())
+    }
+}
+
 /// 回读滴答清单当日已完成任务标题（带 studyagent 标签，已还原为计划原标题）
 ///
 /// 复盘页加载时调用，用于把手机端已勾选的任务自动标记为完成。

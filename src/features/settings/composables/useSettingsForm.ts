@@ -23,6 +23,7 @@ export interface SettingsForm {
   review_reminder_time: string;
   rest_days: string[];
   daily_task_count: number;
+  standard_granularity: number;
   enable_review_tasks: boolean;
   enable_time_tracking: boolean;
   subject_start_dates: {
@@ -193,6 +194,7 @@ export function useSettingsForm() {
       review_reminder_time: s.study_schedule?.review_reminder_time ?? "23:00",
       rest_days: s.study_schedule?.rest_days?.length ? [...s.study_schedule.rest_days] : ["周日"],
       daily_task_count: s.study_schedule?.daily_task_count ?? 3,
+      standard_granularity: s.study_schedule?.standard_granularity ?? 1.5,
       enable_review_tasks: s.study_schedule?.enable_review_tasks ?? true,
       enable_time_tracking: s.study_schedule?.enable_time_tracking ?? false,
       subject_start_dates: {
@@ -251,6 +253,7 @@ export function useSettingsForm() {
         rest_days: [...form.value.rest_days],
         study_days_per_week: 7 - form.value.rest_days.length,
         daily_task_count: form.value.daily_task_count,
+        standard_granularity: form.value.standard_granularity,
         enable_review_tasks: form.value.enable_review_tasks,
         enable_time_tracking: form.value.enable_time_tracking,
         subject_start_dates: { ...form.value.subject_start_dates },

@@ -102,6 +102,10 @@ export interface UpdateCheckResult {
   assets: UpdateAsset[];
   /** 用户可读的提示信息（不包含技术细节） */
   message: string;
+  /** 是否强制更新（当前版本被远端策略清单禁用时为 true） */
+  force_update?: boolean;
+  /** 强制更新原因（force_update=true 时展示给用户） */
+  force_update_reason?: string;
 }
 
 /** 下载进度事件 payload（`update-download-progress` 事件） */

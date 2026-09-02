@@ -199,7 +199,7 @@ async function runSync() {
             type="password"
             class="form-input"
             :class="{ 'form-input-ok': hasToken && !token }"
-            :placeholder="hasToken ? '已保存（输入可替换）' : '网页版滴答清单 → 设置 → 账户与安全 → API 口令'"
+            :placeholder="hasToken ? '已保存（输入可替换）' : '粘贴 API 口令'"
             autocomplete="off"
           />
           <Button variant="primary" size="sm" :loading="tokenSaving" :disabled="!token.trim()" @click="saveToken">
@@ -207,6 +207,9 @@ async function runSync() {
             <span>{{ tokenSavedFlash ? "已保存" : "保存" }}</span>
           </Button>
         </div>
+        <span class="item-sub field-hint token-hint">
+          获取方式：登录滴答清单网页版（dida365.com）→ 右上角头像 → 设置 → 账户与安全 → API 口令 → 生成并复制。该口令用于读写你账户下的任务。
+        </span>
         <span v-if="tokenError" class="item-sub field-hint token-error">{{ tokenError }}</span>
       </div>
     </div>
@@ -274,6 +277,12 @@ async function runSync() {
 
 .token-error {
   color: var(--color-danger);
+}
+
+/* 获取方式提示：次级文本色，置于输入框下方 */
+.token-hint {
+  color: var(--text-tertiary);
+  line-height: var(--leading-relaxed);
 }
 
 /* 归属清单选择：与输入框同宽，右侧对齐。

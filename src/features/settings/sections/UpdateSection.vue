@@ -155,7 +155,7 @@ const resetUpdate = () => updateStore.resetUpdate();
       <!-- 下载完成 -->
       <div v-if="downloadState === 'downloaded'" class="download-complete">
         <CheckCircle :size="16" class="status-icon-ok" />
-        <span>下载完成，点击下方按钮立即安装</span>
+        <span>下载完成，正在启动安装程序…</span>
       </div>
 
       <!-- 安装中 -->

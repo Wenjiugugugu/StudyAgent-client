@@ -880,6 +880,11 @@ export async function syncDidaNow(): Promise<string> {
   return invokeDirect<string>("sync_dida_now");
 }
 
+/** 清理滴答中过往（已过期）未完成的 studyagent 任务，返回清理数量摘要（复盘提交流程末尾调用） */
+export async function cleanupDidaStale(): Promise<string> {
+  return invokeDirect<string>("cleanup_dida_stale");
+}
+
 /** 回读滴答清单指定日期已完成任务标题（复盘页加载时用于自动勾选完成状态） */
 export async function fetchDidaCompletedTitles(date: string): Promise<string[]> {
   return invokeDirect<string[]>("fetch_dida_completed_titles", { date });
