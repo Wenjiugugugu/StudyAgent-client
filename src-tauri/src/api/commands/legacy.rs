@@ -1273,6 +1273,39 @@ pub(super) fn compare_prerelease(a: &str, b: &str) -> i32 {
     a.cmp(b) as i32
 }
 
+/// 自动禁用规则：正式版发布后，旧版预发布（`-indev` 等）自动进入强制更新
+///
+/// 纯客户端规则（无需维护 version-policy.json，发布正式版即自动生效）：
+/// 当前版本带预发布后缀（如 `0.6.1-indev`），且远端 latest 为正式版（无后缀），
+/// 且正式版版本号 ≥ 当前版本去掉后缀后的基础版本号时，说明该 indev 所对应（或
+/// 更早）的功能已随正式版发布，旧 indev 被自动禁用，强制升级到正式版。
+///
+/// 超前开发中的更高版本 indev（如 `0.7.0-indev` 之于已发布的正式版 `0.6.1`）
+/// 不受影响；远端 latest 本身仍是预发布（正式版尚未发布）时也不触发。
+///
+/// 返回禁用原因文案（供 `force_update_reason` 展示）；不满足条件返回 `None`。
+pub(super) fn auto_block_prerelease(latest: &str, current: &str) -> Option<String> {
+    let (current_main, current_pre) = split_version(current);
+    let (latest_main, latest_pre) = split_version(latest);
+
+    // 当前必须是预发布版本（-indev / -beta / -rc 等）
+    if current_pre.is_none() {
+        return None;
+    }
+    // 远端 latest 必须是正式版（无预发布后缀）才触发自动禁用
+    if latest_pre.is_some() {
+        return None;
+    }
+    // 正式版版本号 < 当前基础版本号（超前开发）→ 不触发
+    if is_newer_version(&current_main, &latest_main) {
+        return None;
+    }
+    Some(format!(
+        "当前版本 {} 为内部测试版本，正式版 {} 已发布，请立即更新到正式版后继续使用。",
+        current, latest
+    ))
+}
+
 // ============================================================================
 // 版本策略（禁用版本清单）
 // ============================================================================
@@ -1668,6 +1701,63 @@ mod tests {
         assert_eq!(map.get("StudyAgent_0.6.1_x64-setup.exe").map(|s| s.as_str()), Some(hex));
         assert_eq!(map.get("StudyAgent_0.6.1_x64_en-US.msi").map(|s| s.as_str()), Some(hex));
         assert_eq!(map.get("StudyAgent_0.6.1_other.exe").map(|s| s.as_str()), Some(hex));
+    }
+
+    // ── 自动禁用旧版 indev / 预发布版本的单元测试 ──────────────
+
+    /// 发布正式版后，旧 indev 版本被自动禁用（对应/更早的正式版已发布）
+    #[test]
+    fn auto_block_prerelease_disables_old_indev() {
+        // 发布 0.6.1：0.6.1-indev（同基础号）被禁用
+        assert!(
+            auto_block_prerelease("0.6.1", "0.6.1-indev").is_some(),
+            "0.6.1-indev 在 0.6.1 正式版发布后应被禁用"
+        );
+        // 发布 0.6.1：0.6.0-indev（更早基础号）被禁用
+        assert!(
+            auto_block_prerelease("0.6.1", "0.6.0-indev").is_some(),
+            "0.6.0-indev 在 0.6.1 正式版发布后应被禁用"
+        );
+        // 发布更高正式版 0.6.2：0.6.1-indev 也被禁用
+        assert!(
+            auto_block_prerelease("0.6.2", "0.6.1-indev").is_some(),
+            "0.6.1-indev 在更高正式版 0.6.2 发布后应被禁用"
+        );
+        // 其它预发布后缀（beta）同样适用
+        assert!(auto_block_prerelease("0.6.1", "0.6.1-beta").is_some());
+    }
+
+    /// 超前开发中的更高版本 indev（0.7.0-indev > 0.6.1 latest）不受影响
+    #[test]
+    fn auto_block_prerelease_keeps_ahead_indev() {
+        assert!(
+            auto_block_prerelease("0.6.1", "0.7.0-indev").is_none(),
+            "超前开发的 0.7.0-indev 不应被 0.6.1 正式版禁用"
+        );
+        assert!(
+            auto_block_prerelease("0.6.1", "0.7.1-indev").is_none(),
+            "超前开发的 0.7.1-indev 不应被 0.6.1 正式版禁用"
+        );
+    }
+
+    /// 正式版（无后缀）不触发自动禁用；远端 latest 仍为预发布时不触发
+    #[test]
+    fn auto_block_prerelease_ignores_release_and_remote_pre() {
+        // 当前就是正式版：不自动禁用（0.6.1 发布后 0.6.1 / 0.6.0 正常继续使用）
+        assert!(auto_block_prerelease("0.6.1", "0.6.1").is_none());
+        assert!(auto_block_prerelease("0.6.1", "0.6.0").is_none());
+        // 远端 latest 本身是预发布（正式版尚未发布）→ 不触发自动禁用
+        assert!(auto_block_prerelease("0.6.1-indev", "0.6.0-indev").is_none());
+        // 远端版本比当前基础号还旧 → 不触发
+        assert!(auto_block_prerelease("0.6.0", "0.6.1-indev").is_none());
+    }
+
+    /// 返回的禁用原因文案应包含当前版本与最新版本信息
+    #[test]
+    fn auto_block_prerelease_reason_readable() {
+        let reason = auto_block_prerelease("0.6.1", "0.6.1-indev").expect("应命中");
+        assert!(reason.contains("0.6.1-indev"), "文案应包含当前版本，实际: {}", reason);
+        assert!(reason.contains("0.6.1"), "文案应包含最新版本，实际: {}", reason);
     }
 
     // ── 教材 OCR 容错检索的单元测试 ──────────────────────────────

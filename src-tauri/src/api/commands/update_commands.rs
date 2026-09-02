@@ -139,11 +139,14 @@ pub async fn check_for_updates(state: State<'_, Mutex<AppState>>) -> Result<Upda
     // 兜底过滤：仍缺有效 SHA-256 的资源不可安全下载，从更新列表剔除
     assets.retain(|a| a.sha256.as_ref().is_some_and(|hex| is_valid_sha256(hex)));
 
-    // ── 版本策略：判断当前版本是否被远端禁用 ──
-    // 远端成功则写本地缓存；失败则读缓存兜底（缓存 updated_at 在 7 天内有效）。
+    // ── 版本策略：判断当前版本是否被禁用（强制更新）──
+    // 两类规则，命中任一即强制更新：
+    //   1) 手动策略清单（version-policy.json blocked_versions）精确禁用某版本；
+    //   2) 自动规则：正式版发布后自动禁用旧版 -indev 等预发布版本。
+    // 策略清单远端成功则写本地缓存；失败则读缓存兜底（缓存 updated_at 在 7 天内有效）。
     // 设计原则：有据才阻断，无据则放行，避免误锁离线用户。
     let data_dir = get_data_dir(state.inner()).ok();
-    let (force_update, force_update_reason) = match fetch_version_policy(&client).await {
+    let (mut force_update, mut force_update_reason) = match fetch_version_policy(&client).await {
         Ok(Some((policy, raw))) => {
             if let Some(dir) = &data_dir {
                 save_cached_policy(dir, &raw);
@@ -166,11 +169,30 @@ pub async fn check_for_updates(state: State<'_, Mutex<AppState>>) -> Result<Upda
         }
     };
 
+    // ── 自动禁用旧版 indev（纯客户端规则，latest 已成功获取才可评估）──
+    // 走到此处说明 latest release 已获取成功；未被手动策略禁用时叠加自动规则：
+    // 当前为 -indev 等预发布版本且正式版已发布（版本不低于其基础号）→ 自动禁用。
+    if !force_update {
+        if let Some(reason) = auto_block_prerelease(&latest_version, &current_version) {
+            log::info!(
+                "[Update] 自动禁用旧版预发布版本：当前 {}，最新正式版 {}",
+                current_version,
+                latest_version
+            );
+            force_update = true;
+            force_update_reason = reason;
+        }
+    }
+
     // 被禁用的版本必须更新（即使远端 latest 与当前版本号相同也算有更新）
     let has_update = has_update || force_update;
 
     let message = if force_update {
-        format!("当前版本 {} 存在已知问题，必须更新", current_version)
+        if force_update_reason.is_empty() {
+            format!("当前版本 {} 存在已知问题，必须更新", current_version)
+        } else {
+            format!("当前版本 {} 必须更新：{}", current_version, force_update_reason)
+        }
     } else if has_update {
         format!("发现新版本 {}（当前 {}）", latest_version, current_version)
     } else {
