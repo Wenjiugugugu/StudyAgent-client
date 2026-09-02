@@ -1292,9 +1292,7 @@ pub(super) fn auto_block_prerelease(latest: &str, current: &str) -> Option<Strin
     let (latest_main, latest_pre) = split_version(latest);
 
     // 当前必须是预发布版本（-indev / -beta / -rc 等）
-    if current_pre.is_none() {
-        return None;
-    }
+    current_pre.as_ref()?;
     // 远端 latest 必须是正式版（无预发布后缀）才触发自动禁用
     if latest_pre.is_some() {
         return None;

@@ -2912,7 +2912,7 @@ fn normalize_task_granularity(week_plan: &mut WeekPlanFile) {
 }
 
 /// 对单个 allocation 列表做任务粒度规范化。
-fn normalize_allocations(allocations: &mut Vec<crate::data::plan::DaySubjectAllocation>) {
+fn normalize_allocations(allocations: &mut [crate::data::plan::DaySubjectAllocation]) {
     for alloc in allocations.iter_mut() {
         let mut expanded: Vec<crate::data::plan::TaskTemplate> = Vec::new();
         for t in alloc.task_templates.drain(..) {
