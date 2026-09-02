@@ -485,13 +485,25 @@ function startQuickReview() {
   step.value = 3;
 }
 
-function goNext() { if (step.value < totalSteps - 1) step.value++; }
+function goNext() {
+  if (step.value >= totalSteps - 1) return;
+  // 若所有任务均已完成，则跳过「未完成原因」步骤
+  if (step.value === 0 && incompleteTasks.value.length === 0) {
+    step.value = 2;
+    return;
+  }
+  step.value++;
+}
 function goPrev() {
   if (quickMode.value && step.value === 3) {
     quickMode.value = false;
     step.value = 0;
   } else if (step.value > 0) {
     step.value--;
+    // 若所有任务均已完成，则跳过「未完成原因」步骤
+    if (step.value === 1 && incompleteTasks.value.length === 0) {
+      step.value = 0;
+    }
   }
 }
 
@@ -506,7 +518,9 @@ async function doSubmit() {
       task_id: t.id,
       status: taskCompleted.value[t.id] ? "completed" : "incomplete",
       completion: taskCompleted.value[t.id] ? 1.0 : 0.0,
-      mastery: taskMastery.value[t.id] || "",
+      // 快速复盘会跳过「掌握情况」步骤：已完成任务若未手动选择，默认视为已掌握
+      mastery: taskMastery.value[t.id]
+        || (quickMode.value && taskCompleted.value[t.id] ? "mastered" : ""),
       blockers: taskBlockers.value[t.id] || [],
       blocker_note: blockerNotes.value[t.id] || undefined,
       title: t.title,
@@ -1141,7 +1155,10 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             :class="{ active: i - 1 === step, done: i - 1 < step }" />
         </div>
         <span class="step-label">{{ step + 1 }} / {{ totalSteps }}</span>
-        <Button v-if="step === 0" variant="ghost" size="sm" @click="startQuickReview">
+        <Button v-if="step === 0" variant="ghost" size="sm"
+          :disabled="doneTasks.length === 0"
+          title="请先勾选已完成的任务（滴答清单同步的勾选同样生效）后再使用快速复盘"
+          @click="startQuickReview">
           <Clock :size="14" /> 快速复盘（约 30 秒）
         </Button>
       </div>
@@ -1197,13 +1214,6 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           </div>
           <input v-if="(taskBlockers[task.id] ?? []).includes('other')"
             v-model="blockerNotes[task.id]" type="text" class="field-input" placeholder="请说明具体原因..." />
-        </div>
-      </Card>
-
-      <Card v-if="step === 1 && incompleteTasks.length === 0" padding="lg" class="step-card">
-        <div class="empty-step">
-          <CheckCircle2 :size="32" class="empty-icon" />
-          <p>所有任务均已完成，无需填写原因。</p>
         </div>
       </Card>
 
