@@ -15,6 +15,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use studyagent_desktop_lib::api::commands::*;
+use studyagent_desktop_lib::data::app_log_path;
 use studyagent_desktop_lib::get_default_data_dir;
 use studyagent_desktop_lib::init_app_state;
 use tauri::{
@@ -24,16 +25,57 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 
+/// 日志双写 writer：同时写入 stderr（开发控制台可见）与 `logs/app.log`（生产落盘）
+///
+/// Release 构建启用 `windows_subsystem = "windows"` 后没有控制台窗口，env_logger
+/// 若只输出 stderr，所有运行时日志（含更新链路）都会丢失，问题无法排查。
+/// 这里把日志同时落到 `{data_dir}/logs/app.log`，供 `read_app_log` 命令读取。
+struct DualWriter {
+    file: Option<std::fs::File>,
+}
+
+impl std::io::Write for DualWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // stderr 仅在开发控制台可见，失败（release 无控制台）不影响文件写入
+        let _ = std::io::stderr().write(buf);
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.write(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stderr().flush();
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.flush();
+        }
+        Ok(())
+    }
+}
+
 fn main() {
-    // 初始化日志
+    // 默认数据目录（开发模式自动定位项目根目录，生产模式使用 exe 同级 data/）
+    // 需在日志初始化前确定：日志文件要落到该目录下的 logs/ 子目录
+    let default_data_dir = get_default_data_dir();
+
+    // 初始化日志：stderr + {data_dir}/logs/app.log 双写
+    let log_path = app_log_path(&default_data_dir);
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+    let writer = DualWriter { file: log_file };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_secs()
+        .target(env_logger::Target::Pipe(Box::new(writer)))
         .init();
 
     log::info!("StudyAgent Desktop 启动中...");
-
-    // 默认数据目录（开发模式自动定位项目根目录，生产模式使用 exe 同级 data/）
-    let default_data_dir = get_default_data_dir();
+    log::info!("运行时日志文件: {}", log_path.display());
 
     // 检查数据目录是否存在
     if !default_data_dir.exists() {
