@@ -69,6 +69,15 @@ pub fn ai_debug_log_path(data_dir: &Path) -> PathBuf {
     data_dir.join("logs").join("ai-debug.log")
 }
 
+/// 获取运行时日志文件路径（env_logger 落盘输出）
+///
+/// 生产版无控制台窗口（`windows_subsystem = "windows"`），env_logger 若只输出
+/// stderr 则日志完全丢失。主进程启动时将 env_logger 同时写入该文件，
+/// `read_app_log` 命令可读取以排查更新等运行时问题。
+pub fn app_log_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs").join("app.log")
+}
+
 /// 将 AI 调试信息追加写入 {data_dir}/logs/ai-debug.log
 ///
 /// 生产环境下 env_logger 输出到 stderr 不可见，此函数用于在 AI 调用失败时

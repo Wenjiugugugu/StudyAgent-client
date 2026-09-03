@@ -131,6 +131,14 @@ export const useUpdateStore = defineStore("update", () => {
     downloadError.value = null;
     downloadedFilePath.value = null;
 
+    // 防御：后端已过滤缺 SHA-256 的资源，正常情况下走到这里 asset.sha256 必有值；
+    // 若仍缺失（如数据异常），给出明确提示而不是把 null 传给后端被笼统拒绝。
+    if (!asset.sha256) {
+      downloadError.value = "该安装包缺少校验信息（SHA-256），暂时无法下载，请尝试重新检查更新或稍后再试";
+      downloadState.value = "error";
+      return;
+    }
+
     try {
       await ensureProgressListener();
       const path = await api.downloadUpdate(asset.download_url, asset.name, asset.sha256);

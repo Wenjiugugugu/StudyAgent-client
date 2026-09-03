@@ -1059,8 +1059,12 @@ pub(super) fn extract_install_assets(assets: &serde_json::Value) -> Vec<UpdateAs
 /// GitCode release API 的 assets 不提供 digest，完整性校验依赖发版时随附的
 /// checksums 文件（sha256sum 格式：`<hex>  <filename>` 或 `<hex> *<filename>`）。
 /// 任何失败（附件缺失 / 请求失败 / 格式不符）均返回空映射，不阻断主流程。
+///
+/// 注意：函数内部**自建独立 HTTP client**（30 秒超时），不复用调用方传入的
+/// `check_for_updates` client——该 client 仅 15 秒短超时，GitCode checksums
+/// 附件需 302 重定向到 `file-cdn.gitcode.com` 预签名 CDN，握手链路较长时
+/// 容易在 15 秒内超时导致 SHA-256 补齐失败（曾造成应用内下载被拒绝）。
 pub(super) async fn fetch_checksums(
-    client: &reqwest::Client,
     release_json: &serde_json::Value,
 ) -> std::collections::HashMap<String, String> {
     let map = std::collections::HashMap::new();
@@ -1079,6 +1083,7 @@ pub(super) async fn fetch_checksums(
             })
             .unwrap_or(false)
     }) else {
+        log::warn!("[Update] release 中未找到 checksums 附件（*sha256.txt），SHA-256 补齐跳过");
         return map;
     };
 
@@ -1087,14 +1092,41 @@ pub(super) async fn fetch_checksums(
         .and_then(|v| v.as_str())
     {
         Some(u) => u.to_string(),
-        None => return map,
+        None => {
+            log::warn!("[Update] checksums 附件缺少 browser_download_url，SHA-256 补齐跳过");
+            return map;
+        }
     };
 
-    // 短超时 + 大小上限，防止被异常大文件拖住
-    let response = match client.get(&url).send().await {
-        Ok(r) if r.status().is_success() => r,
-        _ => return map,
+    // 独立长超时 client：30s 总超时 + 15s 连接超时，覆盖 GitCode 302 → CDN 握手耗时
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .user_agent(format!("StudyAgent/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[Update] 构造 checksums 下载 client 失败: {}", e);
+            return map;
+        }
     };
+
+    let response = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[Update] checksums 附件下载请求失败: {}（{}）", e, url);
+            return map;
+        }
+    };
+    if !response.status().is_success() {
+        log::warn!(
+            "[Update] checksums 附件返回 HTTP {}（{}）",
+            response.status(),
+            url
+        );
+        return map;
+    }
     const MAX_CHECKSUMS_BYTES: u64 = 1024 * 1024;
     if response.content_length().unwrap_or(0) > MAX_CHECKSUMS_BYTES {
         log::warn!("[Update] checksums 附件过大，已忽略");
@@ -1109,7 +1141,11 @@ pub(super) async fn fetch_checksums(
     };
 
     let map = parse_checksums_text(&text);
-    log::info!("[Update] checksums 附件解析到 {} 条记录", map.len());
+    log::info!(
+        "[Update] checksums 附件解析到 {} 条记录（{} 字节）",
+        map.len(),
+        text.len()
+    );
     map
 }
 

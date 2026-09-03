@@ -29,10 +29,25 @@ use crate::{
 
 use super::legacy::*;
 
-/// 读取应用日志文件内容（`logs/ai-debug.log`）
+/// 收集应展示/清空的日志文件候选
+///
+/// 返回顺序：当前 data_dir 的运行时日志 `app.log` → 默认 data_dir 的 `app.log`
+/// （用户自定义 data_dir 时 env_logger 仍写在默认目录）→ AI 调试日志 `ai-debug.log`。
+fn collect_log_candidates(data_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    paths.push(crate::data::app_log_path(data_dir));
+    let default_dir = crate::get_default_data_dir();
+    if default_dir != data_dir {
+        paths.push(crate::data::app_log_path(&default_dir));
+    }
+    paths.push(crate::data::ai_debug_log_path(data_dir));
+    paths
+}
+
+/// 读取应用日志文件内容（运行时 `logs/app.log` + AI 调试 `logs/ai-debug.log`）
 ///
 /// 返回日志的原始文本。为避免一次性加载超大文件，仅返回末尾 `max_chars` 字符
-/// （默认 200_000，约 200KB）。文件不存在或为空时返回空字符串。
+/// （默认 200_000，约 200KB）。所有候选文件均不存在或为空时返回空字符串。
 ///
 /// 前端调用: `invoke('read_app_log', { maxChars })`
 #[tauri::command]
@@ -41,12 +56,17 @@ pub async fn read_app_log(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<String, String> {
     let data_dir = get_data_dir(state.inner())?;
-    let log_path = crate::data::ai_debug_log_path(&data_dir);
-    if !log_path.exists() {
-        return Ok(String::new());
+    let mut parts = Vec::new();
+    for log_path in collect_log_candidates(&data_dir) {
+        if log_path.exists() {
+            if let Ok(content) = crate::data::read_file_content(&log_path) {
+                if !content.trim().is_empty() {
+                    parts.push(content);
+                }
+            }
+        }
     }
-    let content = crate::data::read_file_content(&log_path)
-        .map_err(|e| format!("读取日志文件失败: {}", e))?;
+    let content = parts.join("\n");
     let max = max_chars.unwrap_or(200_000);
     // 取末尾 max 字符，且尽量从字符边界截断
     if content.chars().count() <= max {
@@ -57,7 +77,7 @@ pub async fn read_app_log(
     }
 }
 
-/// 清空应用日志文件（`logs/ai-debug.log`）
+/// 清空应用日志文件（运行时 `logs/app.log` + AI 调试 `logs/ai-debug.log`）
 ///
 /// 前端调用: `invoke('clear_app_log')`
 #[tauri::command]
@@ -66,10 +86,11 @@ pub async fn clear_app_log(state: State<'_, Mutex<AppState>>) -> Result<(), Stri
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
-    let log_path = crate::data::ai_debug_log_path(&data_dir);
-    if log_path.exists() {
-        std::fs::write(&log_path, "")
-            .map_err(|e| format!("清空日志文件失败 {:?}: {}", log_path, e))?;
+    for log_path in collect_log_candidates(&data_dir) {
+        if log_path.exists() {
+            std::fs::write(&log_path, "")
+                .map_err(|e| format!("清空日志文件失败 {:?}: {}", log_path, e))?;
+        }
     }
     Ok(())
 }

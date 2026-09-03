@@ -80,8 +80,8 @@ export interface UpdateAsset {
   size: number;
   /** 资源类型推测：`inno` / `nsis`（旧版）/ `msi` / `exe` / `unknown` */
   kind: string;
-  /** 必填的文件 SHA-256；后端会过滤缺少校验值的资产 */
-  sha256: string;
+  /** 文件 SHA-256（十六进制）；缺失时为 null，后端会过滤/拒绝缺少校验值的资源 */
+  sha256: string | null;
 }
 
 /** 检查更新结果（与后端 `UpdateCheckResult` 对应） */

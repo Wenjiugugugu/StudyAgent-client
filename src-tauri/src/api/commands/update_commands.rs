@@ -126,7 +126,7 @@ pub async fn check_for_updates(
 
     // GitCode 的 assets 无 digest 字段：从同 release 的 checksums 附件补齐 SHA-256
     if assets.iter().any(|a| a.sha256.is_none()) {
-        let sums = fetch_checksums(&client, &release_json).await;
+        let sums = fetch_checksums(&release_json).await;
         if !sums.is_empty() {
             for asset in &mut assets {
                 if asset.sha256.is_none() {
@@ -140,6 +140,17 @@ pub async fn check_for_updates(
 
     // 兜底过滤：仍缺有效 SHA-256 的资源不可安全下载，从更新列表剔除
     assets.retain(|a| a.sha256.as_ref().is_some_and(|hex| is_valid_sha256(hex)));
+
+    // 诊断日志：打印最终返回给前端的 assets 明细
+    log::info!("[Update] 最终 assets 数量={}（retain 后）", assets.len());
+    for a in &assets {
+        log::info!(
+            "[Update]   asset: name={} kind={} sha256={}",
+            a.name,
+            a.kind,
+            a.sha256.as_deref().unwrap_or("(none)")
+        );
+    }
 
     // ── 版本策略：判断当前版本是否被禁用（强制更新）──
     // 两类规则，命中任一即强制更新：
@@ -237,16 +248,31 @@ pub async fn download_update(
     app: tauri::AppHandle,
 ) -> Result<String, String> {
     log::info!("[Update] 开始下载: {}", url);
+    log::info!(
+        "[Update] download_update 收到 expected_sha256=[{:?}] (is_some={})",
+        expected_sha256,
+        expected_sha256.is_some()
+    );
 
     let parsed_url = reqwest::Url::parse(&url).map_err(|_| "无效的下载地址".to_string())?;
     if !is_allowed_update_url(&parsed_url, true) {
         return Err("仅允许从 StudyAgent 官方 Release（GitHub / GitCode）下载更新".to_string());
     }
 
-    let expected = expected_sha256
-        .map(|value| value.trim().to_lowercase())
-        .filter(|value| is_valid_sha256(value))
-        .ok_or_else(|| "该安装包缺少有效的 SHA-256，已拒绝下载".to_string())?;
+    let expected = {
+        let raw_len = expected_sha256.as_deref().map_or(0, |s| s.trim().len());
+        expected_sha256
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| is_valid_sha256(value))
+            .ok_or_else(|| {
+                log::warn!(
+                    "[Update] 拒绝下载：缺少有效 SHA-256（raw_len={}），url={}",
+                    raw_len,
+                    url
+                );
+                "该安装包缺少有效的 SHA-256，已拒绝下载".to_string()
+            })?
+    };
 
     // 防御路径穿越：仅允许安全的 Windows 安装包文件名。
     let lower_filename = filename.to_lowercase();
