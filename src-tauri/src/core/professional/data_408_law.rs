@@ -2,7 +2,7 @@
 //!
 //! 依据：全国统一命题统考大纲（随大纲逐年核对微调）。教材为统考公认参考书目。
 
-use super::{book, ProfBook, ProfExam, ProfSection};
+use super::{book, ProfExam, ProfSection};
 
 pub(crate) fn group() -> Vec<ProfExam> {
     vec![exam_408(), exam_fashuo()]

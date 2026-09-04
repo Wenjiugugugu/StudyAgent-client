@@ -65,7 +65,7 @@ impl DailyScheduler {
         let subject_start_dates = settings.subject_start_dates();
 
         // 收集（科目，任务模板），统一做「防重复已完成内容 / 确定性排序」后再落 ID
-        let mut pending: Vec<(SubjectKey, &TaskTemplate)> = Vec::new();
+        let mut pending: Vec<(SubjectKey, TaskTemplate)> = Vec::new();
         for allocation in &day_plan.subject_allocations {
             // 兜底：若该科目在当天还未到开始学习日期，则跳过
             if subject_not_started(&allocation.subject, date, &subject_start_dates) {
@@ -75,6 +75,48 @@ impl DailyScheduler {
                     date
                 );
                 continue;
+            }
+            // 截止日规划区间：该科目当天有「生效区间」时，用倒排知识点任务接管，
+            // 跳过周计划中该科的 task_templates（分区间的科目不占按学习时长的份额）。
+            if let Some(goal) = crate::data::goal::active_goal_for(data_dir, &allocation.subject, date)
+            {
+                let version = goal_subject_version(&state, &allocation.subject);
+                match crate::core::goal_planner::plan_goal_tasks_sync(data_dir, &goal, date, &version)
+                {
+                    Ok(goal_tasks) if !goal_tasks.is_empty() => {
+                        log::info!(
+                            "科目 {:?} 在 {} 处于截止日规划区间，任务由目标倒排接管（{} 条）",
+                            allocation.subject,
+                            date,
+                            goal_tasks.len()
+                        );
+                        // 将倒排任务视为模板加入 pending，走后续统一定序/预算裁剪
+                        let owned: Vec<TaskTemplate> = goal_tasks
+                            .into_iter()
+                            .map(|t| TaskTemplate {
+                                title: t.title,
+                                priority: t.priority,
+                                estimated_hours: t.estimated_hours,
+                                goal: t.goal,
+                                completion_criteria: t.completion_criteria,
+                                ..Default::default()
+                            })
+                            .collect();
+                        pending.extend(
+                            owned
+                                .into_iter()
+                                .map(|tp| (allocation.subject.clone(), tp)),
+                        );
+                        continue;
+                    }
+                    other => {
+                        log::warn!(
+                            "科目 {:?} 目标倒排生成失败或不含任务（{:?}），回退周计划任务",
+                            allocation.subject,
+                            other.map(|v| v.is_empty())
+                        );
+                    }
+                }
             }
             // 排程可行性校验：过滤已完成章节的重复任务（防重复安排已完成内容）
             // 用边界匹配，避免把"矩阵的特征值"这类新子主题误判为已完成"矩阵"
@@ -92,7 +134,7 @@ impl DailyScheduler {
                     );
                     continue;
                 }
-                pending.push((allocation.subject.clone(), template));
+                pending.push((allocation.subject.clone(), template.clone()));
             }
         }
 
@@ -118,7 +160,7 @@ impl DailyScheduler {
 
         let mut tasks = Vec::new();
         for (seq, (subject, template)) in (1i32..).zip(pending) {
-            let task = template_to_task(template, &subject, date, seq);
+            let task = template_to_task(&template, &subject, date, seq);
             tasks.push(task);
         }
 
@@ -277,6 +319,15 @@ fn find_day_plan<'a>(week_plan: &'a WeekPlanFile, date: &str) -> DataResult<&'a 
         })
 }
 
+/// 取科目的版本标签（用于 chapter_seq 定位目标章节位置）
+fn goal_subject_version(state: &crate::data::state::StudyState, subject: &SubjectKey) -> String {
+    match subject {
+        SubjectKey::Math => state.subjects.math.version.clone().unwrap_or_default(),
+        SubjectKey::English => state.subjects.english.version.clone().unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
 fn subject_display_name(subject: &SubjectKey) -> &'static str {
     match subject {
         SubjectKey::Math => "数学",
@@ -285,8 +336,6 @@ fn subject_display_name(subject: &SubjectKey) -> &'static str {
         SubjectKey::Professional => "专业课",
     }
 }
-
-/// 将 SubjectKey 转为设置中使用的字符串键
 fn subject_key_str(subject: &SubjectKey) -> &'static str {
     match subject {
         SubjectKey::Math => "math",

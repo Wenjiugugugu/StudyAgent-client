@@ -3,7 +3,7 @@
 //!
 //! 依据：全国统一命题统考大纲（随大纲逐年核对微调）。
 
-use super::{book, ProfBook, ProfExam, ProfSection};
+use super::{book, ProfExam, ProfSection};
 
 pub(crate) fn group() -> Vec<ProfExam> {
     vec![exam_311(), exam_312(), exam_313(), exam_333()]

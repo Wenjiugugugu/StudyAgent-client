@@ -360,6 +360,39 @@ pub async fn submit_review(
 
     log::info!("结构化复盘已保存: {}", payload.date);
 
+    // 2.5 复盘 → 进度表联动
+    // 今日完成的任务 → 对应知识点升级为「基础/掌握」；次日计划的任务 → 预置「学习中/强化中」。
+    // 只升不降；失败仅记日志，不影响复盘提交主流程。
+    {
+        let feeling = payload.daily_review.overall_feeling.clone();
+        let tomorrow_plan = crate::data::add_days(&payload.date, 1).ok().and_then(|d| {
+            crate::data::plan::read_daily_plan(&data_dir, &d).ok()
+        });
+        let tasks: Vec<crate::core::progress_sync::ReviewSyncTask> = payload
+            .task_reviews
+            .iter()
+            .map(|tr| crate::core::progress_sync::ReviewSyncTask {
+                subject: crate::core::progress_sync::progress_subject_key(&tr.subject),
+                title: tr.title.clone(),
+                completed: tr.status == "completed" || tr.status == "partial",
+                mastery: tr.mastery.clone(),
+            })
+            .collect();
+        match crate::core::progress_sync::sync_review_to_progress(
+            &data_dir,
+            &tasks,
+            &feeling,
+            tomorrow_plan.as_ref(),
+        ) {
+            Ok(n) => {
+                if n > 0 {
+                    log::info!("复盘进度表联动：更新 {} 个知识点节点", n);
+                }
+            }
+            Err(e) => log::warn!("复盘进度表联动失败: {}", e),
+        }
+    }
+
     // 3. 判断是否需要重新生成本周剩余天数计划
     let needs_regeneration = crate::core::planner::check_review_needs_regeneration(&review);
     let mut regen_reasons = Vec::new();

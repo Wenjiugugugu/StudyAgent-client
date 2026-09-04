@@ -212,6 +212,19 @@ impl<'a> Planner<'a> {
         // 1. 读取复盘
         let review = crate::data::records::read_review(data_dir, review_date)?;
 
+        // 1.5 截止日规划区间科目「双轨重排-确定性轨」：
+        // 用复盘实际进度更新各目标区间的 current_position（完成多→前进多、少→前进少），
+        // 达标或已过截止日则提前退出（回退默认按学习时长）。后续每日任务由 scheduler
+        // 按新的 progress + 目标差距确定性倒排生成，无需 AI 参与内容生成。
+        let state_snapshot = crate::data::state::read_state_or_default(data_dir);
+        let _goal_updates = crate::core::goal_planner::replan_goals_after_review(
+            data_dir,
+            &state_snapshot,
+            &review.overcompletion,
+            &review.task_reviews,
+            &crate::data::today_string(),
+        );
+
         // 2. 判断是否需要重排
         let needs_regen = check_review_needs_regeneration(&review);
         if !needs_regen {
@@ -273,6 +286,12 @@ impl<'a> Planner<'a> {
         let daily_target_hours = settings.daily_target_hours();
         let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
+        // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
+        // （区间科目内容由 scheduler 确定性倒排接管）。
+        let week_start = &week_plan.meta.week_start;
+        let goal_subjects = goal_active_subjects(data_dir, &state, review_date, week_start, &week_end);
+        let (subject_time_allocation, daily_target_hours) =
+            deduct_goal_allocations(subject_time_allocation, daily_target_hours, &goal_subjects);
 
         // 6. 构建 prompt
         let prompt = self.build_regenerate_prompt(
@@ -876,6 +895,14 @@ impl<'a> Planner<'a> {
         let daily_target_hours = settings.daily_target_hours();
         let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
+        // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
+        // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
+        let goal_subjects = goal_active_subjects(data_dir, &state, &today, week_start, &week_end);
+        let (subject_time_allocation, daily_target_hours) = deduct_goal_allocations(
+            subject_time_allocation,
+            daily_target_hours,
+            &goal_subjects,
+        );
         let active_count = crate::core::planning::pure::active_subject_count_for(
             &state,
             &week_end,
@@ -3357,6 +3384,91 @@ fn subject_version(state: &StudyState, key: &str) -> String {
         "english" => state.subjects.english.version.clone().unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+/// 收集本周处于「截止日规划区间」的科目键集合。
+///
+/// 区间生效判定：该科目存在 active 目标且其 deadline 不早于本周开始。
+/// （deadline 落在本周内或更远则视为本周区间内；已过期不在其中。）
+fn goal_active_subjects(
+    data_dir: &Path,
+    _state: &StudyState,
+    today: &str,
+    week_start: &str,
+    week_end: &str,
+) -> Vec<String> {
+    use crate::data::state::SubjectKey;
+    let order = [
+        SubjectKey::Math,
+        SubjectKey::English,
+        SubjectKey::Politics,
+        SubjectKey::Professional,
+    ];
+    order
+        .into_iter()
+        .filter(|subject| {
+            let goal = crate::data::goal::active_goal_for(data_dir, subject, today);
+            match goal {
+                Some(g) => {
+                    // deadline 不在本周开始之前（即尚未过期于本周）
+                    !g.deadline.is_empty()
+                        && (g.deadline.as_str() >= week_start
+                            || crate::data::days_between(&g.deadline, week_end).unwrap_or(0) <= 0)
+                }
+                None => false,
+            }
+        })
+        .map(|subject| planner_subject_key_str(&subject).to_string())
+        .collect()
+}
+
+/// 扣除截止日规划区间的科目学时，并把剩余科目占比重新归一化。
+///
+/// 返回调整后的 subject_time_allocation 与每日目标学时。
+/// 全部科目都在区间内时，保留原始值（无法扣到 0，避免计划为空）。
+fn deduct_goal_allocations(
+    subject_time_allocation: Option<std::collections::HashMap<String, f64>>,
+    daily_target_hours: f64,
+    goal_subjects: &[String],
+) -> (Option<std::collections::HashMap<String, f64>>, f64) {
+    if goal_subjects.is_empty() {
+        return (subject_time_allocation, daily_target_hours);
+    }
+    // 保留原始配置，供「全部科目都在区间内/剩余占比为 0」时原样退回
+    let original = subject_time_allocation.clone();
+    let Some(mut alloc) = subject_time_allocation else {
+        // 无显式占比配置：仅按科目数先扣除一个均摊份额的直观近似。
+        // 由于无占比无从精确扣减，这里不改变学时，交由 scheduler 直接替换任务。
+        return (None, daily_target_hours);
+    };
+
+    // 累计区间科目占比
+    let mut deducted_share = 0.0;
+    for key in goal_subjects {
+        if let Some(share) = alloc.get(key) {
+            deducted_share += *share;
+        }
+        alloc.remove(key);
+    }
+    if alloc.is_empty() {
+        // 全部科目都在区间内：保留原始配置，避免零学时
+        return (original, daily_target_hours);
+    }
+
+    // 重新归一化剩余科目占比到 100%
+    let remaining_sum: f64 = alloc.values().sum();
+    if remaining_sum <= 0.0 {
+        return (original, daily_target_hours);
+    }
+    for v in alloc.values_mut() {
+        *v = *v / remaining_sum * 100.0;
+    }
+
+    // 每日目标学时：扣除区间科目份额
+    let adjusted_hours = (daily_target_hours * (100.0 - deducted_share.min(100.0)) / 100.0)
+        .max(1.0)
+        .max(daily_target_hours * 0.2); // 保底不低于原来的 20%，避免计划过空
+    (Some(alloc), adjusted_hours)
 }
 
 /// 确定性超前剔除：对声明了实际进度的科目，用内置章节顺序表定位，

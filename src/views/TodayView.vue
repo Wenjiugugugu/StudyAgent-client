@@ -33,7 +33,7 @@ import {
   Ban,
   AlertTriangle,
 } from "lucide-vue-next";
-import type { PlanTask, SubjectKey, ExcludedReasonType } from "@/types";
+import type { PlanTask, SubjectKey, ExcludedReasonType, Goal } from "@/types";
 
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
@@ -54,6 +54,22 @@ const canModifyTasks = computed(() =>
 const plan = computed(() => todayStore.plan);
 const planData = computed(() => plan.value?.data ?? null);
 const tasks = computed(() => todayStore.allTasks);
+
+// ── 目标/截止日模式：当前日期生效的目标区间科目标记 ──
+const goalActive = ref<Goal[]>([]);
+async function loadActiveGoals() {
+  goalActive.value = [];
+  try {
+    const file = await api.listGoals();
+    const today = currentDate.value;
+    goalActive.value = (file?.data?.goals ?? []).filter(
+      (g) => g.active && g.status === "active" && g.deadline >= today,
+    );
+  } catch {
+    // 获取失败不影响主流程
+    goalActive.value = [];
+  }
+}
 
 const source = computed(() => route.query.from as string | undefined);
 
@@ -104,6 +120,10 @@ function subjectBadgeVariant(
     professional: "professional",
   };
   return map[subject];
+}
+
+function subjectName(subject: SubjectKey): string {
+  return { math: "数学", english: "英语", politics: "政治", professional: "专业课" }[subject];
 }
 
 async function completeTask(task: PlanTask) {
@@ -229,6 +249,8 @@ async function loadPlan() {
   await loadTaskTimers();
   // 检查当前日期是否为排除日
   await checkExcludedDay();
+  // 加载目标/截止日模式标记
+  await loadActiveGoals();
 }
 
 // ── 每日开始时间前不展示今日计划 ──
@@ -489,6 +511,24 @@ onUnmounted(() => {
         <AlertTriangle :size="16" />
         <span>昨日复盘尚未完成，建议先完成复盘再开始今日学习。</span>
         <Button variant="ghost" size="sm" @click="goToReview">去复盘</Button>
+      </div>
+
+      <div
+        v-if="goalActive.length"
+        class="goal-mode-banner"
+        role="note"
+      >
+        <Target :size="16" class="goal-mode-icon" />
+        <div class="goal-mode-body">
+          <span class="goal-mode-label">目标模式</span>
+          <div class="goal-mode-list">
+            <span v-for="g in goalActive" :key="g.id" class="goal-mode-chip">
+              <Badge :variant="g.subject" size="sm">{{ subjectName(g.subject) }}</Badge>
+              <span class="goal-mode-title">{{ g.title }}</span>
+              <span class="goal-mode-deadline">截止 {{ g.deadline }}</span>
+            </span>
+          </div>
+        </div>
       </div>
 
       <!-- Strategy area -->
@@ -778,6 +818,57 @@ onUnmounted(() => {
   color: var(--color-warning, var(--text-secondary));
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
+}
+
+/* Goal mode banner */
+.goal-mode-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--accent-subtle);
+}
+.goal-mode-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.goal-mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.goal-mode-label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.goal-mode-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.goal-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 3px 10px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-full);
+}
+.goal-mode-title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+.goal-mode-deadline {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 /* Strategy card */

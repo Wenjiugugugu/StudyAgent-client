@@ -217,6 +217,13 @@ fn main() {
             generate_daily_plan,
             generate_week_plan,
             add_excluded_day_and_regenerate,
+            // Goal（目标与截止日规划区间）
+            list_goals,
+            create_goal,
+            update_goal,
+            delete_goal,
+            generate_goal_plan,
+            get_goal_start_chapter,
             // Analytics
             get_analytics,
             // Review
@@ -240,8 +247,14 @@ fn main() {
             list_progress_tables,
             save_progress_table,
             delete_progress_table,
+            delete_builtin_progress_tables,
             set_active_progress_table,
+            set_active_progress_variant,
             generate_progress_table,
+            builtin_progress_table,
+            estimate_progress_from_state,
+            apply_progress_statuses,
+            default_progress_variants,
             get_progress_settings,
             set_progress_settings,
             // Background image

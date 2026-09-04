@@ -406,9 +406,22 @@ fn seq_for(subject: &str, version: &str) -> Option<&'static [&'static str]> {
             continue;
         }
         let maybe = match subj.as_str() {
-            "math" => ver == v || v.contains(ver) || ver.contains(v),
-            "english" => ver.is_empty() || v.is_empty() || v == "英一" || v == "英二",
-            "politics" => true,
+            "math" => {
+                ver == v
+                    || (!v.is_empty() && v.contains(ver))
+                    || (!ver.is_empty() && ver.contains(v))
+            }
+            // 英语一/二共用同一套顺序表；空版本也视为匹配，但禁止把非英语版本匹配进来
+            "english" => {
+                ver.is_empty()
+                    || v.is_empty()
+                    || v.contains("英")
+                    || v.contains("英语")
+            }
+            // 政治只有一套顺序表；空版本匹配，但禁止把非政治版本匹配进来
+            "politics" => {
+                ver.is_empty() || v.is_empty() || v.contains("政治")
+            }
             _ => false,
         };
         if maybe {

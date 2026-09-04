@@ -6,7 +6,6 @@ import Button from "@/components/ui/Button.vue";
 import Select from "@/components/ui/Select.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
-import ProgressTableView from "@/components/progress/ProgressTableView.vue";
 import {
   Search,
   BookOpen,
@@ -19,7 +18,6 @@ import {
   PanelLeftClose,
   Pencil,
   X,
-  ListChecks,
 } from "lucide-vue-next";
 import type { TextbookInfo, TextbookContent, TextbookSearchHit } from "@/types";
 import { escapeHtml as escapeSafeHtml } from "@/utils/markdown";
@@ -30,32 +28,6 @@ const loadingList = ref(false);
 const current = ref<TextbookContent | null>(null);
 const loadingContent = ref(false);
 const currentMeta = ref<TextbookInfo | null>(null);
-
-// ── 右侧视图：教材阅读 / 进度表 ──
-type RightView = "reader" | "progress";
-const rightView = ref<RightView>("reader");
-const progressSubject = ref<string | null>(null);
-/** 打开某学科的进度表编辑面板 */
-function openProgress(subject: string) {
-  progressSubject.value = subject;
-  rightView.value = "progress";
-}
-/** 切回教材阅读 */
-function backToReader() {
-  rightView.value = "reader";
-}
-/** 当前可查看进度表的学科：选中教材或手动打开进度表时取对应学科 */
-const subjectContext = computed<string | null>(
-  () => progressSubject.value ?? currentMeta.value?.subject ?? null
-);
-/** 教材 → 学科考试类型（用于 AI 生成进度表时定位考纲版本） */
-function subjectExamType(subject: string): string {
-  if (subject === "math") return "数学二";
-  if (subject === "english") return "英语一";
-  if (subject === "politics") return "";
-  if (subject === "professional" || subject === "408") return "";
-  return "";
-}
 
 // ── 操作错误提示（列表加载 / 全文搜索 / 正文读取失败时展示） ──
 const errorMessage = ref("");
@@ -532,8 +504,6 @@ async function loadTextbooks() {
 
 async function selectTextbook(t: TextbookInfo) {
   currentMeta.value = t;
-  progressSubject.value = t.subject;
-  rightView.value = "reader";
   loadingContent.value = true;
   current.value = null;
   activeTocId.value = null;
@@ -760,15 +730,6 @@ onUnmounted(() => {
             <div class="subject-header">
               <span class="subject-dot" :class="subjectVariant(group.subject)" />
               <span class="subject-name">{{ subjectLabel(group.subject) }}</span>
-              <button
-                type="button"
-                class="subject-progress-btn"
-                :class="{ active: progressSubject === group.subject && rightView === 'progress' }"
-                :title="`${subjectLabel(group.subject)}进度表`"
-                @click.stop="openProgress(group.subject)"
-              >
-                <ListChecks :size="13" />
-              </button>
               <span class="subject-count">{{ group.items.length }}</span>
             </div>
 
@@ -808,39 +769,8 @@ onUnmounted(() => {
       </template>
     </aside>
 
-    <!-- 右侧：阅读器 / 进度表 -->
+    <!-- 右侧：教材阅读器 -->
     <section class="reader-panel">
-      <!-- 视图切换条：教材阅读 ↔ 进度表 -->
-      <div v-if="subjectContext" class="view-switch-bar">
-        <div class="view-switch">
-          <button
-            class="view-switch-btn"
-            :class="{ active: rightView === 'reader' }"
-            @click="backToReader"
-          >
-            <BookOpen :size="13" />
-            教材阅读
-          </button>
-          <button
-            class="view-switch-btn"
-            :class="{ active: rightView === 'progress' }"
-            @click="openProgress(subjectContext)"
-          >
-            <ListChecks :size="13" />
-            {{ subjectLabel(subjectContext) }}进度表
-          </button>
-        </div>
-      </div>
-
-      <!-- 进度表编辑器 -->
-      <ProgressTableView
-        v-if="rightView === 'progress' && subjectContext"
-        :subject="subjectContext"
-        :exam-type="subjectExamType(subjectContext)"
-        class="progress-host"
-      />
-
-      <template v-else>
         <div v-if="loadingContent" class="reader-empty">
           <LoadingSpinner :size="28" label="加载教材内容..." />
         </div>
@@ -848,7 +778,7 @@ onUnmounted(() => {
         <div v-else-if="!current" class="reader-empty">
           <EmptyState
             title="选择一本教材"
-            description="从左侧列表中选择教材开始阅读，或点击「导入教材」添加新教材；也可使用各学科旁的进度表按钮查看/编辑学习进度。"
+            description="从左侧列表中选择教材开始阅读，或点击「导入教材」添加新教材；学习进度请前往侧边栏「进度」页查看/编辑。"
           >
             <template #actions>
               <div class="empty-hint">
@@ -895,7 +825,6 @@ onUnmounted(() => {
             </nav>
           </aside>
         </div>
-      </template>
     </section>
 
     <!-- 导入教材对话框 -->
