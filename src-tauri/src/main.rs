@@ -213,6 +213,7 @@ fn main() {
             list_plan_dates,
             list_plan_summaries,
             get_week_summaries,
+            get_week_planning_analysis,
             generate_daily_plan,
             generate_week_plan,
             add_excluded_day_and_regenerate,

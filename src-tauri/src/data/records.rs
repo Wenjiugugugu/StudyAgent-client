@@ -165,6 +165,12 @@ pub struct DailyReviewInput {
     /// understanding | problems | memorization | attention | time_management | environment | other
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub main_difficulty: String,
+    /// too_little | reasonable | too_much；用于周级计划量自适应
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub workload_feedback: String,
+    /// none | sick | travel | exam | family | environment | other；临时外部异常
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub external_interference: String,
 }
 
 /// 计划外学习记录条目（用户实际进度领先于计划进度时填写）

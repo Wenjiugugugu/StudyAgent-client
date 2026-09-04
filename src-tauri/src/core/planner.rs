@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::api::commands::legacy::RegenDayChange;
+use crate::core::adaptive_planner::AdaptivePlanParameters;
 use crate::core::scheduler::DailyScheduler;
 use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment};
 use crate::data::state::StudyState;
@@ -842,6 +843,29 @@ impl<'a> Planner<'a> {
         let prev_week_reviews =
             Self::read_reviews_in_range(data_dir, &prev_week_start, &prev_week_end);
 
+        // 周级自适应参数由确定性算法计算；AI 只负责在固定预算内生成具体学习内容。
+        let mut adaptive_parameters =
+            match crate::core::adaptive_planner::prepare_next_week(
+                data_dir,
+                week_start,
+                &prev_week_start,
+                &state,
+                &settings,
+            ) {
+                Ok(parameters) => parameters,
+                Err(e) => {
+                    log::warn!("周级自适应分析失败，保持用户配置: {}", e);
+                    crate::core::adaptive_planner::baseline_parameters(&state, &settings)
+                }
+            };
+        if let Some(adjustment) = workload_adjustment {
+            crate::core::adaptive_planner::apply_manual_workload_override(
+                &mut adaptive_parameters,
+                adjustment,
+                &settings,
+            );
+        }
+
         // 2. 构建周计划 prompt
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
@@ -870,6 +894,7 @@ impl<'a> Planner<'a> {
             &prev_week_reviews,
             excluded_days,
             workload_adjustment,
+            &adaptive_parameters,
         );
 
         // 3. 调用 AI 生成周计划 JSON
@@ -927,26 +952,28 @@ impl<'a> Planner<'a> {
         // 3.4b 任务粒度规范化：时长上限拆分 / 下限合并 / 原子性拆分（兜底 AI 不规范输出）
         normalize_task_granularity(&mut week_plan);
 
+        // AI 输出之后再次应用确定性预算，避免模型自由改变自适应算法给出的数字参数。
+        apply_adaptive_parameters(&mut week_plan, &adaptive_parameters);
+
         // 3.3 持久化用户本周配置（排除日 + 任务量调整）
         week_plan.data.excluded_days = excluded_days.to_vec();
         week_plan.data.workload_adjustment = workload_adjustment.cloned();
 
-        // 3.5 持久化本周任务量自校准元数据（供周计划页解释为什么每天任务数变少/多）
-        // 自校准系数作用于「每日目标学时」，再由标准粒度派生条数。
-        let calib_coeff = weekly_self_calibration(&prev_week_reviews);
-        let (_, calib_avg_rate) = prev_week_calibration_stats(&prev_week_reviews);
+        // 3.5 持久化任务量调整元数据，供周计划页解释本周任务数变化。
+        // coefficient 来自自适应算法的综合任务量系数；完成率仅作为历史参考展示，
+        // 不再单独决定下一周计划量。
         let calib_base_count =
             crate::core::planning::pure::derive_task_count(daily_target_hours, 1.0, active_count);
-        let calib_effective = crate::core::planning::pure::derive_task_count(
-            daily_target_hours,
-            calib_coeff,
-            active_count,
-        );
-        if calib_effective != calib_base_count {
+        let calib_effective = adaptive_parameters.daily_task_count;
+        let (_, calib_avg_rate) = prev_week_calibration_stats(&prev_week_reviews);
+        if calib_effective != calib_base_count
+            || adaptive_parameters.capacity_adjustment.abs() >= 0.005
+            || adaptive_parameters.workload_factor != 1.0
+        {
             week_plan.data.calibration = Some(crate::data::plan::WeekCalibration {
                 base_daily_task_count: calib_base_count,
                 effective_daily_task_count: calib_effective,
-                coefficient: calib_coeff,
+                coefficient: adaptive_parameters.workload_factor,
                 avg_completion_rate: calib_avg_rate,
             });
         }
@@ -1129,24 +1156,18 @@ impl<'a> Planner<'a> {
         prev_week_reviews: &[crate::data::records::ReviewFile],
         excluded_days: &[ExcludedDay],
         workload_adjustment: Option<&WorkloadAdjustment>,
+        adaptive_parameters: &AdaptivePlanParameters,
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, week_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
 
-        // 每周总量自校准（确定性公式）：基于上周复盘的完成率推导效率系数，
-        // 作用于「每日目标学时」得到有效目标学时，再由标准任务粒度派生每日任务条数
-        // （学时 ÷ 粒度，clamp 到 [活跃科目数, 8]）。调学时即调条数，换算确定。
-        let self_coeff = weekly_self_calibration(prev_week_reviews);
-        let effective_target_hours = daily_target_hours * self_coeff;
-        let effective_daily_task_count = crate::core::planning::pure::derive_task_count(
-            daily_target_hours,
-            self_coeff,
-            crate::core::planning::pure::active_subject_count_for(
-                state,
-                week_end,
-                subject_start_dates,
-            ),
-        );
+        // 任务数量只是固定时间预算下的软提示，不能再作为唯一自校准对象。
+        let effective_daily_task_count = adaptive_parameters
+            .daily_task_count
+            .clamp(1, 8);
+        let study_days = 7usize.saturating_sub(rest_days.len()).max(1) as f64;
+        let effective_target_hours = adaptive_parameters.nominal_total_hours / study_days;
+        let self_coeff = adaptive_parameters.workload_factor;
 
         let mut prompt = String::new();
         prompt.push_str(&format!(
@@ -1162,15 +1183,50 @@ impl<'a> Planner<'a> {
             today, today_weekday, today, week_end
         ));
 
-        // 本周任务量自动校准提示（仅当上周完成率触发真实减量时写入，说明系数来源）
-        if self_coeff < 1.0 {
-            prompt.push_str("## 本周任务量自动校准（基于上周完成情况）\n");
-            prompt.push_str(&format!(
-                "- 上周平均完成率未达标，本周每日有效目标学时已由 {:.2}h 自动下调至 {:.2}h（系数 {:.2}），每日任务数约 {} 个。\n",
-                daily_target_hours, effective_target_hours, self_coeff, effective_daily_task_count
-            ));
-            prompt.push_str("- 请严格按新的学时与任务数安排，优先推进上周未完成 / 巩固薄弱内容，避免任务量过大导致再次堆积。\n\n");
+        // 确定性算法给出数字预算；AI 不得自行改变总量和学科预算。
+        prompt.push_str("## 确定性自适应计划参数（必须遵守）\n");
+        prompt.push_str(&format!(
+            "- 下一周名义计划总时长目标：{:.2} 小时；有效容量目标：{:.2} 小时。\n",
+            adaptive_parameters.nominal_total_hours, adaptive_parameters.capacity_hours
+        ));
+        prompt.push_str(&format!(
+            "- 每日任务数量仅作为软提示：约 {} 个；真正硬约束是每日时长上限和下列学科预算。\n",
+            effective_daily_task_count
+        ));
+        if !adaptive_parameters.subject_hours.is_empty() {
+            let mut budgets: Vec<String> = adaptive_parameters
+                .subject_hours
+                .iter()
+                .map(|(subject, hours)| {
+                    format!(
+                        "{} {:.2}h（占比 {:.0}% ，估时系数×{:.2}）",
+                        planner_subject_cn_from_str(subject),
+                        hours,
+                        adaptive_parameters
+                            .subject_shares
+                            .get(subject)
+                            .copied()
+                            .unwrap_or(0.0)
+                            * 100.0,
+                        adaptive_parameters
+                            .estimation_factors
+                            .get(subject)
+                            .copied()
+                            .unwrap_or(1.0)
+                    )
+                })
+                .collect();
+            budgets.sort();
+            prompt.push_str(&format!("- 学科预算：{}。\n", budgets.join("，")));
         }
+        prompt.push_str("- 不得因为自然语言判断而额外增加总时长；预算不足时优先保留高优先级和必要的复习任务。\n");
+        if !adaptive_parameters.reasons.is_empty() {
+            prompt.push_str(&format!(
+                "- 参数依据：{}\n",
+                adaptive_parameters.reasons.join("；")
+            ));
+        }
+        prompt.push('\n');
 
         // 考试信息
         prompt.push_str("## 考试信息\n");
@@ -1220,7 +1276,7 @@ impl<'a> Planner<'a> {
         // 任务粒度与学时约束（确定性硬约束，替代仅"大致等于"的软约束）
         prompt.push_str("## 任务粒度与学时约束（重要）\n");
         prompt.push_str(&format!(
-            "- 每日有效目标学时：{:.2}h（= 每日目标学时 {:.2}h × 上周完成率系数 {:.2}）\n",
+            "- 每日有效目标学时：{:.2}h（用户基础目标 {:.2}h；由近期有效容量、任务量反馈和估时校准共同计算；任务量系数 {:.2}）\n",
             effective_target_hours, daily_target_hours, self_coeff
         ));
         prompt.push_str(&format!(
@@ -2604,11 +2660,6 @@ fn parse_week_plan_json(
     )
 }
 
-/// 每周总量自校准（确定性公式）：根据上周复盘的完成率推导本周任务量系数。
-fn weekly_self_calibration(prev_week_reviews: &[crate::data::records::ReviewFile]) -> f64 {
-    crate::core::planning::pure::weekly_self_calibration(prev_week_reviews)
-}
-
 /// 每周自校准统计：返回 (系数, 上周复盘平均完成率%)。
 /// 实现见 `pure::prev_week_calibration_stats_impl`（按任务数加权的平均完成率）。
 fn prev_week_calibration_stats(
@@ -2616,6 +2667,15 @@ fn prev_week_calibration_stats(
 ) -> (f64, f64) {
     crate::core::planning::pure::prev_week_calibration_stats_impl(prev_week_reviews)
 }
+
+/// 今日/近期强度预测（E）：基于最近的复盘完成率与精力值，得出今日强度建议。
+///
+/// 规则（确定性）：
+/// - 无复盘 → 返回空串；
+/// - 平均完成率 < 60% 或精力均值 ≤ 1.5 → 偏轻（优先完成而非加量）；
+/// - 完成率 ≥ 90% 且精力均值 ≥ 4 → 可加量；
+/// - 完成率 < 75% → 适中；否则 → 正常。
+///   完成率取有效复盘 completion rate（0-100）均值，精力取 `data.energy_level` 均值。
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
     crate::core::planning::pure::today_intensity_label(reviews)
 }
@@ -2625,6 +2685,135 @@ fn planner_subject_key_str(subject: &crate::data::state::SubjectKey) -> &'static
 fn planner_subject_cn(subject: &crate::data::state::SubjectKey) -> &'static str {
     crate::core::planning::pure::subject_cn(subject)
 }
+fn planner_subject_cn_from_str(subject: &str) -> &'static str {
+    match subject {
+        "math" => "数学",
+        "english" => "英语",
+        "politics" => "政治",
+        "professional" => "专业课",
+        _ => "其他",
+    }
+}
+
+/// 将确定性算法给出的学科预算和估时系数应用到 AI 的内容结果。
+///
+/// AI 仍然负责选择具体章节/任务，但不能通过返回更大的 estimated_hours
+/// 绕过 AdaptivePlanner 的周预算。系数只应用一次，最后只做全周归一化，
+/// 从而保留不同学科之间的估时差异，不把 estimation_factor 在学科内抵消掉。
+fn apply_adaptive_parameters(
+    plan: &mut WeekPlanFile,
+    parameters: &AdaptivePlanParameters,
+) {
+    use std::collections::HashMap;
+
+    let mut current_total = 0.0f64;
+
+    for day in &mut plan.data.days {
+        if day.is_rest_day {
+            continue;
+        }
+        for allocation in &mut day.subject_allocations {
+            let subject = planner_subject_key_str(&allocation.subject).to_string();
+            let estimation_factor = parameters
+                .estimation_factors
+                .get(&subject)
+                .copied()
+                .unwrap_or(1.0)
+                .clamp(0.8, 1.25);
+            for template in &mut allocation.task_templates {
+                if template.estimated_hours > 0.0 {
+                    template.estimated_hours *= estimation_factor;
+                }
+            }
+            let total: f64 = allocation
+                .task_templates
+                .iter()
+                .map(|task| task.estimated_hours.max(0.0))
+                .sum();
+            current_total += total;
+        }
+    }
+
+    // 只做全周归一化，确保 sum(subject hours) 不膨胀，同时保留学科估时系数
+    // 造成的相对时长差异。AI 已在 prompt 中拿到各科预算，异常偏离时由这一
+    // 步骤将全周总量拉回确定性预算。
+    let global_scale = if current_total > 0.0 && parameters.nominal_total_hours > 0.0 {
+        // AI 低于预算时保持保守，不为了填满预算而人为拉长任务；
+        // 只有超预算时才做确定性缩减。
+        (parameters.nominal_total_hours / current_total).min(1.0)
+    } else {
+        1.0
+    };
+    let mut final_subject_totals: HashMap<String, f64> = HashMap::new();
+    for day in &mut plan.data.days {
+        if day.is_rest_day {
+            continue;
+        }
+        for allocation in &mut day.subject_allocations {
+            let subject = planner_subject_key_str(&allocation.subject).to_string();
+            for template in &mut allocation.task_templates {
+                template.estimated_hours = (template.estimated_hours * global_scale).max(0.0);
+            }
+            allocation.hours = allocation
+                .task_templates
+                .iter()
+                .map(|task| task.estimated_hours.max(0.0))
+                .sum();
+            *final_subject_totals.entry(subject).or_insert(0.0) += allocation.hours;
+        }
+    }
+
+    // 对明显超出学科预算的科目只做向下投影；预算未填满时不人为拉长，
+    // 贯彻“宁可保守，不制造新的计划压力”。
+    let subject_scales: HashMap<String, f64> = final_subject_totals
+        .iter()
+        .filter_map(|(subject, current)| {
+            let target = parameters.subject_hours.get(subject).copied()?;
+            if *current > target * 1.05 && *current > 0.0 {
+                Some((subject.clone(), target / current))
+            } else {
+                Some((subject.clone(), 1.0))
+            }
+        })
+        .collect();
+    if subject_scales.values().any(|scale| *scale < 0.999_999) {
+        final_subject_totals.clear();
+        for day in &mut plan.data.days {
+            if day.is_rest_day {
+                continue;
+            }
+            for allocation in &mut day.subject_allocations {
+                let subject = planner_subject_key_str(&allocation.subject).to_string();
+                let scale = subject_scales.get(&subject).copied().unwrap_or(1.0);
+                for template in &mut allocation.task_templates {
+                    template.estimated_hours = (template.estimated_hours * scale).max(0.0);
+                }
+                allocation.hours = allocation
+                    .task_templates
+                    .iter()
+                    .map(|task| task.estimated_hours.max(0.0))
+                    .sum();
+                *final_subject_totals.entry(subject).or_insert(0.0) += allocation.hours;
+            }
+        }
+    }
+
+    for subject_plan in &mut plan.data.subjects {
+        let subject = planner_subject_key_str(&subject_plan.subject);
+        if let Some(final_total) = final_subject_totals.get(subject) {
+            subject_plan.weekly_hours = *final_total;
+        } else if let Some(target) = parameters.subject_hours.get(subject) {
+            subject_plan.weekly_hours = *target;
+        }
+    }
+}
+
+/// 每科每日任务数确定性分配（"每科至少一条，条数多了才按时长权重分散"）。
+///
+/// 规则：
+/// - 仅计入本周已开课科目（active 且开始日期 ≤ week_end，或无开始日期约束）；
+/// - 若每日任务总数 >= 科目数：先给每科保底 1 条，多余条数按 weekly_hours 权重分摊；
+/// - 若总数 < 科目数：只按权重分配总数（高时长科目优先占名额）。
 fn subject_task_budget(
     state: &StudyState,
     total: i64,

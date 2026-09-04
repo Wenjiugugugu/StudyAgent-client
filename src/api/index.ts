@@ -256,6 +256,13 @@ export async function getWeekSummaries(weekStart: string): Promise<PlanSummary[]
   });
 }
 
+/** 获取确定性周计划自适应分析 */
+export async function getWeekPlanningAnalysis(
+  weekStart: string,
+): Promise<import("@/types").WeekPlanningAnalysis> {
+  return invokeDirect("get_week_planning_analysis", { weekStart });
+}
+
 export async function getWeekPlan(weekStart: string): Promise<WeekPlan> {
   // 必须使用真实后端数据，避免无周计划时回退到 mock 数据（mock 默认周末休息，与用户设置冲突）
   return invokeDirect<WeekPlan>("get_week_plan", { weekStart });

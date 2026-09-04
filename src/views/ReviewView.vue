@@ -252,6 +252,10 @@ const overallFeeling = ref("normal");
 // Step 5: main difficulty
 const mainDifficulty = ref("");
 
+// Step 4: 任务量合理性与临时外部异常
+const workloadFeedback = ref("reasonable");
+const externalInterference = ref("none");
+
 // ── 任务计时（仅当设置启用 enable_time_tracking 时启用）──
 const timeTrackingEnabled = computed(
   () => !!settingsStore.settings?.study_schedule?.enable_time_tracking
@@ -319,6 +323,22 @@ const feelingOptions = [
   { value: "smooth", label: "很顺利", icon: "😊" },
   { value: "normal", label: "一般", icon: "😐" },
   { value: "hard", label: "比较困难", icon: "😣" },
+];
+
+const workloadOptions = [
+  { value: "too_little", label: "偏少" },
+  { value: "reasonable", label: "合理" },
+  { value: "too_much", label: "偏多" },
+];
+
+const externalOptions = [
+  { value: "none", label: "无" },
+  { value: "sick", label: "生病" },
+  { value: "travel", label: "外出" },
+  { value: "exam", label: "临时考试" },
+  { value: "family", label: "家庭事务" },
+  { value: "environment", label: "环境中断" },
+  { value: "other", label: "其他" },
 ];
 
 const difficultyOptions = [
@@ -450,6 +470,8 @@ function initFromReview(review: ReviewRecord) {
   if (review.daily_review) {
     overallFeeling.value = review.daily_review.overall_feeling || "normal";
     mainDifficulty.value = review.daily_review.main_difficulty || "";
+    workloadFeedback.value = review.daily_review.workload_feedback || "reasonable";
+    externalInterference.value = review.daily_review.external_interference || "none";
   }
   // 计划外学习记录（仅用于只读展示）
   if (review.overcompletion?.length) {
@@ -467,6 +489,8 @@ function resetForm() {
   taskMastery.value = {};
   overallFeeling.value = "normal";
   mainDifficulty.value = "";
+  workloadFeedback.value = "reasonable";
+  externalInterference.value = "none";
   hasOvercompletion.value = false;
   overcompletions.value = [];
 }
@@ -534,6 +558,8 @@ async function doSubmit() {
     const dailyReview: DailyReviewInput = {
       overall_feeling: overallFeeling.value,
       main_difficulty: mainDifficulty.value,
+      workload_feedback: workloadFeedback.value,
+      external_interference: externalInterference.value,
     };
 
     // 仅在用户开启计划外学习且填写了有效章节时提交
@@ -667,20 +693,30 @@ async function loadTaskActualMinutes() {
     return;
   }
   try {
-    const state = await api.getState();
     const map: Record<string, number> = {};
-    for (const st of state.current_task?.tasks ?? []) {
-      if (!st.task_id) continue;
-      let total = st.accumulated_minutes ?? 0;
-      // 若任务正在计时，加上当前进行中的时段
-      if (st.started_at) {
-        const start = new Date(st.started_at).getTime();
-        const now = Date.now();
-        if (!isNaN(start) && now > start) {
-          total += Math.floor((now - start) / 60000);
+    if (selectedDate.value === todayDate) {
+      const state = await api.getState();
+      for (const st of state.current_task?.tasks ?? []) {
+        if (!st.task_id) continue;
+        let total = st.accumulated_minutes ?? 0;
+        // 若任务正在计时，加上当前进行中的时段
+        if (st.started_at) {
+          const start = new Date(st.started_at).getTime();
+          const now = Date.now();
+          if (!isNaN(start) && now > start) {
+            total += Math.floor((now - start) / 60000);
+          }
         }
+        map[st.task_id] = total;
       }
-      map[st.task_id] = total;
+    } else {
+      // State 只保留当前日；历史日从带 task_id 的 Focus 会话恢复任务用时。
+      const sessions = await api.getFocusSessions(selectedDate.value);
+      for (const session of sessions) {
+        if (session.status !== "completed" || !session.task_id) continue;
+        if (session.type !== "focus" && session.type !== "stopwatch") continue;
+        map[session.task_id] = (map[session.task_id] ?? 0) + Math.max(0, session.duration_minutes);
+      }
     }
     taskActualMinutes.value = map;
   } catch {
@@ -1253,6 +1289,28 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             <span>{{ opt.label }}</span>
           </button>
         </div>
+
+        <div class="review-subsection">
+          <h3 class="subsection-title">今天的任务安排量是否合理？</h3>
+          <p class="step-desc">这个反馈会参与下周计划量校准，不会因为一次反馈大幅改变计划。</p>
+          <div class="difficulty-grid">
+            <button v-for="opt in workloadOptions" :key="opt.value" type="button" class="difficulty-chip"
+              :aria-pressed="workloadFeedback === opt.value"
+              :class="{ active: workloadFeedback === opt.value }"
+              @click="workloadFeedback = opt.value">{{ opt.label }}</button>
+          </div>
+        </div>
+
+        <div class="review-subsection">
+          <h3 class="subsection-title">今天是否有临时外部影响？</h3>
+          <p class="step-desc">外部异常不会被当成你的长期学习能力。</p>
+          <div class="difficulty-grid">
+            <button v-for="opt in externalOptions" :key="opt.value" type="button" class="difficulty-chip"
+              :aria-pressed="externalInterference === opt.value"
+              :class="{ active: externalInterference === opt.value }"
+              @click="externalInterference = opt.value">{{ opt.label }}</button>
+          </div>
+        </div>
       </Card>
 
       <!-- Step 5: Main Difficulty -->
@@ -1517,6 +1575,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 
 .step-card { display: flex; flex-direction: column; gap: var(--space-5); }
+.review-subsection {
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding-top: var(--space-3); border-top: 1px solid var(--border-color);
+}
+.subsection-title {
+  font-size: var(--text-base); font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
 .step-title {
   font-size: var(--text-xl); font-weight: var(--font-bold);
   color: var(--text-primary); letter-spacing: -0.01em;

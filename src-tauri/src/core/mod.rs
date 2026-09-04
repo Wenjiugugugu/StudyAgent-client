@@ -10,6 +10,7 @@
 //! - Analytics：学习数据分析聚合
 
 pub mod analytics;
+pub mod adaptive_planner;
 pub mod briefing;
 pub mod chapter_seq;
 pub mod dashboard;
