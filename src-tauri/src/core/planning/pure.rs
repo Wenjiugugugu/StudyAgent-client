@@ -59,10 +59,6 @@ pub(crate) fn active_subject_count_for(
     n.max(1)
 }
 
-pub(crate) fn weekly_self_calibration(prev_week_reviews: &[ReviewFile]) -> f64 {
-    prev_week_calibration_stats_impl(prev_week_reviews).0
-}
-
 /// 每周自校准统计：返回 (系数, 上周复盘平均完成率%)。
 ///
 /// 平均完成率按任务数加权（总完成 / 总计划），
