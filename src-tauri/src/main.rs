@@ -235,6 +235,14 @@ fn main() {
             delete_textbook,
             rename_textbook,
             search_in_textbook,
+            // Progress Table（各科进度表）
+            list_progress_tables,
+            save_progress_table,
+            delete_progress_table,
+            set_active_progress_table,
+            generate_progress_table,
+            get_progress_settings,
+            set_progress_settings,
             // Background image
             save_background_image,
             delete_background_image,

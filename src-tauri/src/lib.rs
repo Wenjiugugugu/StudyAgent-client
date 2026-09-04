@@ -291,6 +291,38 @@ impl AppSettings {
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
     }
+
+    /// 读取各科学习时间占比（百分比，活跃科目合计应为 100），未配置返回 None。
+    ///
+    /// 返回 key → 占比 的映射（含 0 占比科目；缺失 key 表示该科占比 0）。
+    /// 容错：配置值全部缺失/非正 → None（回退各科周学时权重）；
+    /// 配置值之和不为 100 时按比例归一化到 100（容忍手写/旧数据）。
+    pub fn subject_time_allocation(&self) -> Option<std::collections::HashMap<String, f64>> {
+        let obj = self
+            .study_schedule
+            .get("subject_time_allocation")?
+            .as_object()?;
+        let mut values: Vec<(String, f64)> = Vec::new();
+        for key in ["math", "english", "politics", "professional"] {
+            if let Some(v) = obj.get(key).and_then(|v| v.as_f64()) {
+                if v.is_finite() && v >= 0.0 {
+                    values.push((key.to_string(), v));
+                }
+            }
+        }
+        if values.is_empty() {
+            return None;
+        }
+        let sum: f64 = values.iter().map(|(_, v)| *v).sum();
+        if sum <= 0.0 {
+            return None; // 全部 0 占比（异常配置）→ 回退
+        }
+        let mut map = std::collections::HashMap::new();
+        for (key, v) in values {
+            map.insert(key, v / sum * 100.0);
+        }
+        Some(map)
+    }
 }
 
 impl Default for AppSettings {
@@ -782,5 +814,56 @@ mod tests {
         assert!(out.contains("exam_type"));
         assert!(out.contains("exam_date"));
         assert!(out.contains("target_score"));
+    }
+
+    #[test]
+    fn subject_time_allocation_reads_and_normalizes() {
+        // 含占比（合计恰为 100）：原样返回
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"daily_target_hours":5,"subject_time_allocation":{"math":40,"english":30,"politics":20,"professional":10}}}"#,
+        )
+        .expect("应能解析");
+        let alloc = s.subject_time_allocation().expect("应返回 Some");
+        assert_eq!(alloc.get("math").copied().unwrap_or(0.0), 40.0);
+        assert_eq!(alloc.get("english").copied().unwrap_or(0.0), 30.0);
+        assert_eq!(alloc.get("politics").copied().unwrap_or(0.0), 20.0);
+        assert_eq!(alloc.get("professional").copied().unwrap_or(0.0), 10.0);
+
+        // 和为 95 → 归一化：40/95*100 ≈ 42.105…
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"subject_time_allocation":{"math":40,"english":30,"politics":20,"professional":5}}}"#,
+        )
+        .expect("应能解析");
+        let alloc = s.subject_time_allocation().expect("应返回 Some");
+        let math = alloc.get("math").copied().unwrap_or(0.0);
+        assert!((math - 42.10526315789473).abs() < 1e-9);
+
+        // null → None（前端「恢复默认」语义）
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"subject_time_allocation":null}}"#,
+        )
+        .expect("应能解析");
+        assert!(s.subject_time_allocation().is_none());
+
+        // 未配置 → None
+        let s: AppSettings = serde_json::from_str(r#"{"study_schedule":{"daily_target_hours":5}}"#)
+            .expect("应能解析");
+        assert!(s.subject_time_allocation().is_none());
+
+        // 全 0 占比（异常配置）→ None
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"subject_time_allocation":{"math":0,"english":0}}}"#,
+        )
+        .expect("应能解析");
+        assert!(s.subject_time_allocation().is_none());
+
+        // 部分科目缺失 → 仅返回存在的 key
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"subject_time_allocation":{"math":60,"english":40}}}"#,
+        )
+        .expect("应能解析");
+        let alloc = s.subject_time_allocation().expect("应返回 Some");
+        assert_eq!(alloc.len(), 2);
+        assert!(!alloc.contains_key("politics"));
     }
 }

@@ -221,6 +221,7 @@ pub(crate) fn subject_task_budget(
     total: i64,
     week_end: &str,
     subject_start_dates: &[(&'static str, String)],
+    allocation: Option<&std::collections::HashMap<String, f64>>,
 ) -> Vec<(SubjectKey, i64)> {
     let subjects = [
         (SubjectKey::Math, &state.subjects.math),
@@ -242,9 +243,16 @@ pub(crate) fn subject_task_budget(
                 continue;
             }
         }
-        // 权重用各科周学时；0 学时（新开始科目）给最低权重 0.5，
+        // 权重来源：配置了占比 → 用占比（0 占比 = 0 权重，缺失 key 视为 0）；
+        // 未配置 → 回退各科周学时；0 学时（新开始科目）给最低权重 0.5，
         // 避免被 max(1.0) 抬成与高时长科目同权而多分任务条数。
-        let weight = if subject.weekly_hours > 0.0 {
+        let weight = if let Some(allocation) = allocation {
+            allocation
+                .get(key_str)
+                .copied()
+                .unwrap_or(0.0)
+                .max(0.0)
+        } else if subject.weekly_hours > 0.0 {
             subject.weekly_hours
         } else {
             0.5
@@ -255,21 +263,31 @@ pub(crate) fn subject_task_budget(
     if weights.is_empty() {
         return Vec::new();
     }
-    let subject_count = weights.len() as i64;
+    // 占比模式下，0 占比科目剔除出分配池（不给条数、不出现在结果）；
+    // 未配置占比时 pool = weights，与旧行为逐字等价。
+    let pool: Vec<(SubjectKey, f64)> = if allocation.is_some() {
+        weights.into_iter().filter(|(_, w)| *w > 0.0).collect()
+    } else {
+        weights
+    };
+    if pool.is_empty() {
+        return Vec::new(); // 全部 0 占比（异常配置）→ 无预算
+    }
+    let subject_count = pool.len() as i64;
     let mut result: Vec<(SubjectKey, i64)> = Vec::new();
     if total >= subject_count {
-        for (key, _) in &weights {
+        for (key, _) in &pool {
             result.push((key.clone(), 1));
         }
-        for (index, extra) in weighted_spread(total - subject_count, &weights)
+        for (index, extra) in weighted_spread(total - subject_count, &pool)
             .iter()
             .enumerate()
         {
             result[index].1 += extra;
         }
     } else {
-        let allocation = weighted_spread(total, &weights);
-        for (index, (key, _)) in weights.iter().enumerate() {
+        let allocation = weighted_spread(total, &pool);
+        for (index, (key, _)) in pool.iter().enumerate() {
             result.push((key.clone(), allocation[index]));
         }
     }
@@ -415,5 +433,87 @@ mod tests {
         assert_eq!(derive_task_count(20.0, 1.0, 2), 8);
         // 活跃科目数为 0（异常）→ 至少 1
         assert_eq!(derive_task_count(5.0, 1.0, 0), 3);
+    }
+
+    /// 构造 4 科全活跃的 State（周学时 14/7/5/10）
+    fn allocation_state() -> StudyState {
+        let mut s = StudyState {
+            subjects: Default::default(),
+            ..Default::default()
+        };
+        s.subjects.math.active = true;
+        s.subjects.math.weekly_hours = 14.0;
+        s.subjects.english.active = true;
+        s.subjects.english.weekly_hours = 7.0;
+        s.subjects.politics.active = true;
+        s.subjects.politics.weekly_hours = 5.0;
+        s.subjects.professional.active = true;
+        s.subjects.professional.weekly_hours = 10.0;
+        s
+    }
+
+    #[test]
+    fn subject_task_budget_allocation_zeros_excluded() {
+        let s = allocation_state();
+        let mut alloc = std::collections::HashMap::new();
+        alloc.insert("math".to_string(), 60.0);
+        alloc.insert("english".to_string(), 40.0);
+        alloc.insert("politics".to_string(), 0.0);
+        alloc.insert("professional".to_string(), 0.0);
+        let budget = subject_task_budget(&s, 4, "2026-08-09", &[], Some(&alloc));
+        // 0 占比科目剔除出分配池
+        assert!(!budget.iter().any(|(k, _)| *k == SubjectKey::Politics));
+        assert!(!budget.iter().any(|(k, _)| *k == SubjectKey::Professional));
+        let sum: i64 = budget.iter().map(|(_, n)| n).sum();
+        assert_eq!(sum, 4, "总条数守恒");
+        // 数学占比最高，应 ≥ 英语
+        let m = budget
+            .iter()
+            .find(|(k, _)| *k == SubjectKey::Math)
+            .unwrap()
+            .1;
+        let e = budget
+            .iter()
+            .find(|(k, _)| *k == SubjectKey::English)
+            .unwrap()
+            .1;
+        assert!(m >= e);
+    }
+
+    #[test]
+    fn subject_task_budget_allocation_missing_key_zero() {
+        let s = allocation_state();
+        // 只有数学/英语配置了占比 → 政治/专业课缺失 key 权重 0，不进预算
+        let mut alloc = std::collections::HashMap::new();
+        alloc.insert("math".to_string(), 60.0);
+        alloc.insert("english".to_string(), 40.0);
+        let budget = subject_task_budget(&s, 4, "2026-08-09", &[], Some(&alloc));
+        assert_eq!(budget.len(), 2);
+        assert!(!budget.iter().any(|(k, _)| *k == SubjectKey::Politics));
+        assert!(!budget.iter().any(|(k, _)| *k == SubjectKey::Professional));
+    }
+
+    #[test]
+    fn subject_task_budget_allocation_all_zero_empty() {
+        let s = allocation_state();
+        let mut alloc = std::collections::HashMap::new();
+        alloc.insert("math".to_string(), 0.0);
+        alloc.insert("english".to_string(), 0.0);
+        let budget = subject_task_budget(&s, 4, "2026-08-09", &[], Some(&alloc));
+        assert!(budget.is_empty(), "全部 0 占比 → 无预算");
+    }
+
+    #[test]
+    fn subject_task_budget_allocation_fallback_matches_weekly_hours() {
+        let s = allocation_state();
+        // None 与 Some(按周学时推导的占比) 应得到相同的条数分配（权重成比例等价）
+        let weekly_budget = subject_task_budget(&s, 4, "2026-08-09", &[], None);
+        let mut alloc = std::collections::HashMap::new();
+        alloc.insert("math".to_string(), 14.0);
+        alloc.insert("english".to_string(), 7.0);
+        alloc.insert("politics".to_string(), 5.0);
+        alloc.insert("professional".to_string(), 10.0);
+        let alloc_budget = subject_task_budget(&s, 4, "2026-08-09", &[], Some(&alloc));
+        assert_eq!(weekly_budget, alloc_budget);
     }
 }
