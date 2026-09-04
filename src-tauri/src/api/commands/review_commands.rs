@@ -219,6 +219,7 @@ pub async fn submit_review(
         },
         data: crate::data::records::ReviewData {
             total_hours: total_actual_hours,
+            external_interference: payload.daily_review.external_interference.clone(),
             completion: crate::data::records::ReviewCompletion {
                 priority_a_total: ca_total,
                 priority_a_done: ca_done,
@@ -236,6 +237,16 @@ pub async fn submit_review(
 
     // 1. 保存 Review JSON
     crate::data::records::save_review(&data_dir, &review)?;
+
+    // 复盘提交后刷新当周分析，但不在日复盘阶段更新长期 EMA；
+    // 长期参数只在生成下一周计划时按周幂等更新一次。
+    if let Ok(week_start) = crate::data::get_week_start(&payload.date) {
+        if let Err(e) =
+            crate::core::adaptive_planner::refresh_week_planning_analysis(&data_dir, &week_start)
+        {
+            log::warn!("刷新周计划分析失败 {}: {}", week_start, e);
+        }
+    }
 
     // 2. 同步更新 State：标记任务完成/放弃 + 记录掌握程度
     if let Ok(mut state) = crate::data::state::read_state(&data_dir) {

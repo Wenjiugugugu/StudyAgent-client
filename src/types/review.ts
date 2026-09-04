@@ -127,6 +127,10 @@ export interface DailyReviewInput {
   overall_feeling: string;
   /** understanding | problems | memorization | attention | time_management | environment | other */
   main_difficulty: string;
+  /** too_little | reasonable | too_much */
+  workload_feedback?: string;
+  /** none | sick | travel | exam | family | environment | other */
+  external_interference?: string;
 }
 
 /** 计划外学习记录条目（用户实际进度领先计划时填写） */

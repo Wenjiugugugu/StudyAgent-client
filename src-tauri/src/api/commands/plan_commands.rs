@@ -284,6 +284,23 @@ pub async fn get_week_summaries(
     Ok(summaries)
 }
 
+/// 获取指定周的确定性学习计划分析。
+///
+/// 若该周尚未生成持久化分析，则只计算并返回原始分析，不更新自适应状态。
+/// 前端调用: `invoke('get_week_planning_analysis', { weekStart: '2026-07-21' })`
+#[tauri::command]
+pub async fn get_week_planning_analysis(
+    week_start: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::core::adaptive_planner::WeekPlanningAnalysis, String> {
+    crate::data::validate_date(&week_start)?;
+    let data_dir = get_data_dir(state.inner())?;
+    match crate::core::adaptive_planner::read_week_planning_analysis(&data_dir, &week_start) {
+        Ok(analysis) => Ok(analysis),
+        Err(_) => crate::core::adaptive_planner::analyze_week(&data_dir, &week_start),
+    }
+}
+
 /// AI 生成日计划
 ///
 /// 调用 Planner Agent 读取 State + User Model + 昨日复盘，

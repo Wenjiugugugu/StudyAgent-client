@@ -9,6 +9,7 @@
 //! - User Model：用户画像读取
 //! - Analytics：学习数据分析聚合
 
+pub mod adaptive_planner;
 pub mod analytics;
 pub mod briefing;
 pub mod chapter_seq;
