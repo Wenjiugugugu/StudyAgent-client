@@ -39,11 +39,16 @@ pub struct ProfSection {
     pub items: &'static [&'static str],
 }
 
-/// 教材进度表：sections 为教材内部的篇/章分组（多数教材单组「全书章节」，长篇教材按篇分节）
+/// 教材进度表：sections 为教材内部的章分组——每章一个 `ProfSection`
+/// （phase=章节名，items=该章下的小节/考点知识点），构成「章节 → 知识点」两级进度表。
 #[derive(Clone, Copy)]
 pub struct ProfBook {
     pub name: &'static str,
     pub sections: &'static [ProfSection],
+    /// 该教材对应的总表板块（考纲板块 phase 列表，如 408《数据结构》→ ["数据结构"]）。
+    /// 批量更改进度时，总专业课进度表据此由教材进度自动推导（书本更改 → 总表联动）。
+    /// 通过 `attach_master_links` 按 books 顺序登记；未登记的教材不影响总表。
+    pub master_links: &'static [&'static str],
 }
 
 /// 一门统考专业课的内置数据
@@ -61,23 +66,47 @@ pub struct ProfExam {
     pub books: Vec<ProfBook>,
 }
 
-/// 构造「全书章节」单一分组的教材：展开为直接内联数组字面量（编译期可提升）
+/// 构造「章节」分组：一章一个 ProfSection（phase=章节名，items=该章小节/知识点）
+#[macro_export]
+macro_rules! ch {
+    ($name:expr, [$($p:expr),* $(,)?]) => {
+        $crate::core::professional::ProfSection {
+            phase: $name,
+            items: &[$($p),*],
+        }
+    };
+}
+#[allow(unused_imports)]
+pub(crate) use ch;
+
+/// 构造教材进度表：sections 为按章节组织的 ProfSection 列表（每章 → 知识点）。
+/// master_links（教材对应的总表板块）由 `attach_master_links` 单独登记，此处默认为空。
 #[macro_export]
 macro_rules! book {
-    ($name:expr, [$($ch:expr),* $(,)?]) => {
+    ($name:expr, [$($sec:expr),* $(,)?]) => {
         $crate::core::professional::ProfBook {
             name: $name,
-            sections: &[
-                $crate::core::professional::ProfSection {
-                    phase: "全书章节",
-                    items: &[$($ch),*],
-                }
-            ],
+            sections: &[$($sec),*],
+            master_links: &[],
         }
     };
 }
 #[allow(unused_imports)]
 pub(crate) use book;
+
+/// 按 books 顺序为教材登记其对应的总表板块（`ProfBook::master_links`）。
+/// links 长度小于 books 时，未登记位置的教材保持空（不影响总表）。
+pub fn attach_master_links(
+    mut exam: ProfExam,
+    links: &'static [&'static [&'static str]],
+) -> ProfExam {
+    for (i, book) in exam.books.iter_mut().enumerate() {
+        if let Some(l) = links.get(i) {
+            book.master_links = l;
+        }
+    }
+    exam
+}
 
 /// 全部内置统考专业课（惰性构建一次）
 fn all() -> &'static [ProfExam] {
@@ -129,7 +158,7 @@ pub fn build_tables(exam: &ProfExam) -> Vec<ProgressTable> {
     tables
 }
 
-/// 装配一张教材进度表：每个分组(篇/章)作为章节节点，其下章节条目作为知识点子节点
+/// 装配一张教材进度表：每章作为章节节点，其下小节/知识点作为知识点子节点
 fn build_book(exam: &ProfExam, book: &ProfBook) -> ProgressTable {
     let mut nodes = Vec::new();
     for sec in book.sections {
@@ -262,5 +291,82 @@ mod tests {
             assert!(!shorts.contains(&e.short), "短名重复: {}", e.short);
             shorts.push(e.short);
         }
+    }
+
+    #[test]
+    fn book_tables_are_chapter_to_knowledge_two_level() {
+        let exam = find("408计算机").expect("408 应可识别");
+        let tables = build_tables(&exam);
+        // 第 1 份为总表，其后为教材表
+        assert!(tables.len() > 1);
+        for t in &tables[1..] {
+            let chapters: Vec<&crate::data::progress_tables::ProgressNode> = t
+                .nodes
+                .iter()
+                .filter(|n| n.level == NodeLevel::Chapter)
+                .collect();
+            // 教材表应逐章展开，而非旧的「全书章节」单一分组
+            assert!(chapters.len() >= 3, "「{}」章节过少: {}", t.name, chapters.len());
+            for ch in &chapters {
+                assert!(
+                    t.nodes
+                        .iter()
+                        .any(|n| n.parent_id.as_deref() == Some(ch.id.as_str())),
+                    "章节「{}」应至少包含一个知识点，当前表：{}",
+                    ch.title,
+                    t.name
+                );
+            }
+            // 每个知识点都必须归属对应章节
+            for node in &t.nodes {
+                if node.level == NodeLevel::Knowledge {
+                    assert!(
+                        node.parent_id.is_some(),
+                        "「{}」知识点「{}」缺少所属章节",
+                        t.name,
+                        node.title
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_book_master_links_refer_to_valid_sections() {
+        // 教材 → 总表板块登记必须与 books 顺序一一对应，且板块名存在于总表 master 中。
+        // 反之（存在总表板块但没有任何教材登记）是允许的（如 396/199/农学无指定教材）。
+        let exams = all();
+        for e in exams {
+            let section_phases: Vec<&str> = e.master.iter().map(|s| s.phase).collect();
+            for (i, b) in e.books.iter().enumerate() {
+                for link in b.master_links {
+                    assert!(
+                        section_phases.contains(link),
+                        "「{}」第 {} 本教材「{}」登记的总表板块「{}」不存在于总表 \
+                         （总表板块: {}）",
+                        e.name,
+                        i + 1,
+                        b.name,
+                        link,
+                        section_phases.join("、")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn representative_books_have_master_links() {
+        // 抽查：408 与法硕的关键教材应已登记总表板块（批量更改进度总表联动依赖此关系）
+        let e408 = find("408计算机").expect("408 应可识别");
+        assert_eq!(e408.books.len(), 4);
+        assert_eq!(e408.books[0].master_links, &["数据结构"]);
+        assert_eq!(e408.books[3].master_links, &["计算机网络"]);
+        let law = find("法硕").expect("法硕应可识别");
+        assert_eq!(law.books.len(), 3);
+        assert_eq!(
+            law.books[2].master_links,
+            &["专业综合课·法理学", "专业综合课·宪法学", "专业综合课·中国法制史"]
+        );
     }
 }

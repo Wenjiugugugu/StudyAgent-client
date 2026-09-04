@@ -47,7 +47,7 @@ const routes: RouteRecordRaw[] = [
     path: "/textbooks",
     name: "textbooks",
     component: () => import("@/views/TextbooksView.vue"),
-    meta: { title: "进度与教材", icon: "BookOpen" },
+    meta: { title: "教材", icon: "BookOpen" },
   },
   {
     path: "/progress",

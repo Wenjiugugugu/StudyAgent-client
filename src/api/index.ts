@@ -933,6 +933,42 @@ export function applyProgressStatuses(
   return invokeDirect<number>("apply_progress_statuses", { subject, changes });
 }
 
+/** 单张进度表的「学到第几章」覆盖输入（批量更改进度） */
+export interface BatchTableCoverage {
+  table_id: string;
+  /** 当前学到哪一章（章节节点 id）；null = 本轮未推进该表 */
+  reached_chapter: string | null;
+  /** 当前章是否整章学完（true 时忽略 current_points） */
+  current_full: boolean;
+  /** 当前章内已学到的知识点 id（current_full=false 时生效） */
+  current_points: string[];
+}
+
+/** 某科某轮（基础/强化）的批量覆盖输入 */
+export interface BatchSubjectUpdate {
+  subject: string;
+  /** 本轮目标状态："basic" / "reinforcing" */
+  round: ProgressNodeStatus;
+  tables: BatchTableCoverage[];
+}
+
+/** 批量更改进度的结果 */
+export interface BatchUpdateResult {
+  tables_updated: number;
+  nodes_changed: number;
+}
+
+/**
+ * 批量更改进度：对各科各表按「学到第几章」整表向前推进（只升不降）；
+ * 专业课内置场景下，总专业课进度表再按教材覆盖度自动联动。
+ * 前端调用: `invoke('batch_update_progress', { updates })`
+ */
+export function batchUpdateProgress(
+  updates: BatchSubjectUpdate[]
+): Promise<BatchUpdateResult> {
+  return invokeDirect<BatchUpdateResult>("batch_update_progress", { updates });
+}
+
 /**
  * 把设置中的考试类型解析为各科默认考纲方案（科目 → 方案）。
  * 前端调用: `invoke('default_progress_variants')`

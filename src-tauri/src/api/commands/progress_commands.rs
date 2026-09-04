@@ -301,6 +301,21 @@ pub fn apply_progress_statuses(
     crate::core::progress_sync::apply_estimated_statuses(&data_dir, &subject, &changes)
 }
 
+/// 批量更改进度：对各科各表按「学到第几章」整表向前推进（只升不降）；
+/// 专业课内置场景下，总专业课进度表再按教材覆盖度自动联动。
+/// 前端调用: `invoke('batch_update_progress', { updates })`
+#[tauri::command]
+pub fn batch_update_progress(
+    updates: Vec<crate::core::progress_sync::BatchRoundUpdate>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::core::progress_sync::BatchRoundResult, String> {
+    for u in &updates {
+        validate_subject(&u.subject)?;
+    }
+    let data_dir = get_data_dir(state.inner())?;
+    crate::core::progress_sync::apply_batch_round(&data_dir, &updates)
+}
+
 /// 把设置中的考试类型解析为各科默认考纲方案（科目 → 方案）。
 /// 前端调用: `invoke('default_progress_variants')`
 #[tauri::command]

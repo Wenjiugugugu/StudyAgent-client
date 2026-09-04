@@ -8,7 +8,7 @@
 //! 3. `apply_estimated_statuses`：把用户在确认弹窗里勾选的结果批量落盘。
 //! 4. `default_progress_variants`：把设置中的 `exam_type` 解析为各科默认考纲方案。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::data::plan::DailyPlanFile;
 use crate::data::progress_tables::{
     load_progress_index, parse_node_status, save_progress_index, NodeLevel, NodeStatus,
-    ProgressIndex, ProgressNode,
+    ProgressIndex, ProgressNode, ProgressTable,
 };
 use crate::data::state::{read_state_or_default, StudyState, SubjectKey, SubjectState};
 
@@ -371,6 +371,330 @@ pub fn apply_estimated_statuses(
     Ok(changed)
 }
 
+// ============================================================================
+// 批量更改进度（整表按「学到第几章」向前推进 + 总专业课进度表联动）
+// ============================================================================
+
+/// 单张进度表的「学到第几章」覆盖输入
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TableCoverage {
+    pub table_id: String,
+    /// 当前学到哪一章（章节节点 id）；None = 本轮未推进该表
+    pub reached_chapter: Option<String>,
+    /// 当前章是否整章学完（true 时忽略 current_points，整章覆盖）
+    pub current_full: bool,
+    /// 当前章内已学到的知识点 id（current_full=false 时生效）
+    pub current_points: Vec<String>,
+}
+
+/// 某科某轮（基础/强化）的批量覆盖输入
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BatchRoundUpdate {
+    pub subject: String,
+    /// 本轮目标状态："basic" / "reinforcing"（也接受 learning/mastered）
+    pub round: String,
+    pub tables: Vec<TableCoverage>,
+}
+
+/// 批量更改进度的结果
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BatchRoundResult {
+    /// 状态发生变化的表数（含被联动更新的总专业课进度表）
+    pub tables_updated: usize,
+    /// 被推进状态的知识点/章节节点总数（只升不降）
+    pub nodes_changed: usize,
+}
+
+/// 批量更改进度：对每张表按「本章及之前全部覆盖，当前章勾选部分覆盖」向前推进（只升不降）。
+/// 专业课内置场景下，总专业课进度表的节点再由各教材覆盖度自动推导（书本更改 → 总表联动）。
+pub fn apply_batch_round(
+    data_dir: &Path,
+    updates: &[BatchRoundUpdate],
+) -> Result<BatchRoundResult, String> {
+    let mut index = load_progress_index(data_dir);
+    let mut tables_updated = 0usize;
+    let mut nodes_changed = 0usize;
+
+    for u in updates {
+        let target = parse_node_status(&u.round);
+        if target == NodeStatus::Pending {
+            continue; // 本轮的无效目标状态：跳过
+        }
+
+        // 1) 各表「学到第几章」覆盖推进（只升不降）
+        {
+            let Some(set) = index.subjects.get_mut(&u.subject) else {
+                continue;
+            };
+            for tc in &u.tables {
+                let Some(table) = set.tables.iter_mut().find(|t| t.id == tc.table_id) else {
+                    continue;
+                };
+                let changed = apply_table_coverage(table, tc, target);
+                if changed > 0 {
+                    table.updated_at = crate::data::now_string();
+                    tables_updated += 1;
+                    nodes_changed += changed;
+                }
+            }
+        }
+
+        // 2) 总专业课进度表联动：本次更新涉及的各方案，按教材覆盖度重新推导总表
+        let variants: Vec<String> = {
+            let set = index.subjects.get(&u.subject);
+            let mut v: Vec<String> = Vec::new();
+            if let Some(set) = set {
+                for tc in &u.tables {
+                    if let Some(t) = set.tables.iter().find(|t| t.id == tc.table_id) {
+                        if !t.variant.is_empty() && !v.contains(&t.variant) {
+                            v.push(t.variant.clone());
+                        }
+                    }
+                }
+            }
+            v
+        };
+        for variant in &variants {
+            let changed = apply_master_derivation(&mut index, &u.subject, variant, target);
+            if changed > 0 {
+                tables_updated += 1;
+                nodes_changed += changed;
+            }
+        }
+    }
+
+    if tables_updated > 0 || nodes_changed > 0 {
+        save_progress_index(data_dir, &index)?;
+    }
+    Ok(BatchRoundResult {
+        tables_updated,
+        nodes_changed,
+    })
+}
+
+/// 单表覆盖推进：覆盖知识点 → max(现状, target)；未覆盖不变。
+/// 章节节点：其下知识点全部将 ≥ target → max(现状, target)，否则不变。
+fn apply_table_coverage(table: &mut ProgressTable, tc: &TableCoverage, target: NodeStatus) -> usize {
+    // 章节顺序 = 存储顺序；收集「章节 id → 知识点 id」
+    let mut chapter_ids: Vec<String> = Vec::new();
+    let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
+    for n in &table.nodes {
+        if n.level == NodeLevel::Chapter {
+            chapter_ids.push(n.id.clone());
+        } else if let Some(pid) = &n.parent_id {
+            children_of.entry(pid.clone()).or_default().push(n.id.clone());
+        }
+    }
+
+    let Some(ri) = tc
+        .reached_chapter
+        .as_ref()
+        .and_then(|id| chapter_ids.iter().position(|c| c == id))
+    else {
+        return 0; // 未选择「学到第几章」：本轮不处理该表
+    };
+
+    // 覆盖集合 = 之前章节全部 + 当前章（整章或按勾选知识点）
+    let mut covered: HashSet<String> = HashSet::new();
+    for cid in chapter_ids.iter().take(ri) {
+        if let Some(kids) = children_of.get(cid) {
+            covered.extend(kids.iter().cloned());
+        }
+    }
+    if let Some(cur) = chapter_ids.get(ri) {
+        if tc.current_full {
+            if let Some(kids) = children_of.get(cur) {
+                covered.extend(kids.iter().cloned());
+            }
+        } else {
+            covered.extend(tc.current_points.iter().cloned());
+        }
+    }
+
+    // 预判：各章节是否「全部知识点将 ≥ target」（被本轮覆盖或原本已达标）
+    let mut full_chapters: HashSet<&str> = HashSet::new();
+    for (cid, kids) in &children_of {
+        if kids.is_empty() {
+            continue;
+        }
+        let all = kids.iter().all(|kid| {
+            if covered.contains(kid) {
+                return true;
+            }
+            table
+                .nodes
+                .iter()
+                .find(|n| n.id == *kid)
+                .map(|n| n.status.rank() >= target.rank())
+                .unwrap_or(false)
+        });
+        if all {
+            full_chapters.insert(cid.as_str());
+        }
+    }
+
+    let mut changed = 0usize;
+    for n in table.nodes.iter_mut() {
+        if n.level == NodeLevel::Knowledge {
+            if covered.contains(&n.id) {
+                let ns = n.status.max_with(target);
+                if ns != n.status {
+                    n.status = ns;
+                    changed += 1;
+                }
+            }
+        } else if full_chapters.contains(n.id.as_str()) {
+            let ns = n.status.max_with(target);
+            if ns != n.status {
+                n.status = ns;
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
+/// 总专业课进度表联动：某方案下，按各教材当前覆盖度（rank ≥ target 的知识点占比）
+/// 推导总表每个板块的推进量 —— 板块内前 `round(fraction × K)` 个知识点推进，其余不变；
+/// 板块章节节点在板块全部覆盖时才推进。返回变更节点数。
+fn apply_master_derivation(
+    index: &mut ProgressIndex,
+    subject: &str,
+    variant: &str,
+    target: NodeStatus,
+) -> usize {
+    let Some(exam) = crate::core::professional::find(variant) else {
+        return 0;
+    };
+    if exam.books.is_empty() {
+        return 0;
+    }
+    let master_prefix = format!("{} · 总专业课进度表", exam.name);
+
+    // 1) 统计每本内置教材表（匹配考书名）当前的知识点覆盖度（rank ≥ target）
+    let mut idx_of: HashMap<&str, usize> = HashMap::new();
+    for (i, b) in exam.books.iter().enumerate() {
+        idx_of.insert(b.name, i);
+    }
+    let mut book_cov: HashMap<usize, (usize, usize)> = HashMap::new(); // book_idx -> (advanced, total)
+    if let Some(set) = index.subjects.get(subject) {
+        for t in &set.tables {
+            if t.variant != variant {
+                continue;
+            }
+            let Some(rest) = t.name.strip_prefix(&format!("{} · 教材：", exam.name)) else {
+                continue;
+            };
+            let Some(&bi) = idx_of.get(rest) else {
+                continue;
+            };
+            let nodes: Vec<&ProgressNode> = t
+                .nodes
+                .iter()
+                .filter(|n| n.level == NodeLevel::Knowledge)
+                .collect();
+            let adv = nodes
+                .iter()
+                .filter(|n| n.status.rank() >= target.rank())
+                .count();
+            let entry = book_cov.entry(bi).or_insert((0, 0));
+            entry.0 += adv;
+            entry.1 += nodes.len();
+        }
+    }
+    if book_cov.is_empty() {
+        return 0;
+    }
+
+    // 2) 板块 → 覆盖度（教材按知识点数加权平均）
+    let mut sec_avg: HashMap<&'static str, f64> = HashMap::new(); // section phase -> 覆盖度
+    let mut sec_cnt: HashMap<&'static str, usize> = HashMap::new();
+    for (bi, (adv, total)) in &book_cov {
+        let frac = if *total == 0 {
+            0.0
+        } else {
+            *adv as f64 / *total as f64
+        };
+        for link in exam.books[*bi].master_links {
+            let e = sec_avg.entry(link).or_insert(0.0);
+            *e += frac;
+            *sec_cnt.entry(link).or_insert(0) += 1;
+        }
+    }
+
+    // 3) 更新总表：板块内前 round(fraction × K) 个知识点 → max(现状, target)
+    let Some(set) = index.subjects.get_mut(subject) else {
+        return 0;
+    };
+    let Some(master) = set
+        .tables
+        .iter_mut()
+        .find(|t| t.variant == variant && t.name == master_prefix)
+    else {
+        return 0;
+    };
+
+    let mut kids_of: HashMap<String, Vec<String>> = HashMap::new();
+    let mut chapter_of_phase: HashMap<&'static str, String> = HashMap::new();
+    for n in &master.nodes {
+        if n.level == NodeLevel::Chapter {
+            if let Some(s) = exam.master.iter().find(|s| s.phase == n.phase) {
+                chapter_of_phase.insert(s.phase, n.id.clone());
+            }
+        } else if let Some(pid) = &n.parent_id {
+            kids_of.entry(pid.clone()).or_default().push(n.id.clone());
+        }
+    }
+
+    let mut changed = 0usize;
+    for section in exam.master {
+        let (&sum, &n) = match (sec_avg.get(section.phase), sec_cnt.get(section.phase)) {
+            (Some(s), Some(n)) => (s, n),
+            _ => continue, // 该板块无教材登记：不动
+        };
+        let Some(cid) = chapter_of_phase.get(section.phase) else {
+            continue;
+        };
+        let kids = kids_of.get(cid).cloned().unwrap_or_default();
+        if kids.is_empty() {
+            continue;
+        }
+        let k = kids.len() as f64;
+        let n_adv = (k * (sum / n as f64)).round().min(k) as usize;
+
+        for (i, kid_id) in kids.iter().enumerate() {
+            if i >= n_adv {
+                break;
+            }
+            let n = match master.nodes.iter_mut().find(|n| n.id == *kid_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            let ns = n.status.max_with(target);
+            if ns != n.status {
+                n.status = ns;
+                changed += 1;
+            }
+        }
+        if n_adv >= kids.len() {
+            if let Some(ch) = master.nodes.iter_mut().find(|n| n.id == *cid) {
+                let ns = ch.status.max_with(target);
+                if ns != ch.status {
+                    ch.status = ns;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    if changed > 0 {
+        master.updated_at = crate::data::now_string();
+    }
+    changed
+}
+
 /// 把设置中的 `exam_type` 解析为「科目 → 默认考纲方案」，用于：
 /// - ProgressView 未设置启用方案时按用户考试类型自动选中
 /// - 只对用户选择/输入的科目自动同步内置考纲表
@@ -488,5 +812,182 @@ mod tests {
 
         let m2 = default_progress_variants("");
         assert!(m2.is_empty());
+    }
+
+    // ── 批量更改进度 ──
+
+    /// 构造知识点 + 章节的两级节点表
+    fn table_with_chapters(chapters: &[&str], per_chapter: usize) -> ProgressTable {
+        use crate::data::progress_tables::new_progress_id;
+        let mut nodes = Vec::new();
+        for (ci, ch_title) in chapters.iter().enumerate() {
+            let cid = new_progress_id("c", &format!("c{}", ci));
+            nodes.push(ProgressNode {
+                id: cid.clone(),
+                title: ch_title.to_string(),
+                level: NodeLevel::Chapter,
+                parent_id: None,
+                phase: ch_title.to_string(),
+                status: NodeStatus::Pending,
+                planned_date: None,
+                note: String::new(),
+            });
+            for pi in 0..per_chapter {
+                nodes.push(ProgressNode {
+                    id: new_progress_id("n", &format!("{}-{}", ci, pi)),
+                    title: format!("知识点 {}-{}", ci, pi),
+                    level: NodeLevel::Knowledge,
+                    parent_id: Some(cid.clone()),
+                    phase: ch_title.to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                });
+            }
+        }
+        ProgressTable {
+            id: "t1".into(),
+            subject: "math".into(),
+            variant: "数二".into(),
+            name: "测试表".into(),
+            origin: crate::data::progress_tables::TableOrigin::Custom,
+            created_at: String::new(),
+            updated_at: String::new(),
+            nodes,
+        }
+    }
+
+    fn chapter_ids(t: &ProgressTable) -> Vec<String> {
+        t.nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Chapter)
+            .map(|n| n.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn batch_table_coverage_marks_before_reached_chapter() {
+        let mut t = table_with_chapters(&["第一章", "第二章", "第三章"], 2);
+        let chs = chapter_ids(&t);
+        // 布局：ch0, k00, k01, ch1, k10, k11, ch2, k20, k21（每章 2 个知识点）
+        // 学到第二章：第一章全部 + 第二章勾选第 1 个知识点（k10 = index 4）
+        let tc = TableCoverage {
+            table_id: "t1".into(),
+            reached_chapter: Some(chs[1].clone()),
+            current_full: false,
+            current_points: vec![t.nodes[4].id.clone()], // k10
+        };
+        let changed = apply_table_coverage(&mut t, &tc, NodeStatus::Basic);
+        assert_eq!(changed, 4, "第一章 2 个 + k10 + 第一章章节节点 = 4 处推进");
+        // 第一章的知识点已为基础
+        let s0 = t.nodes.iter().find(|n| n.id == t.nodes[2].id).unwrap().status;
+        assert_eq!(s0, NodeStatus::Basic);
+        // 第二章未勾选的另一个知识点（k11 = index 5）保持待学
+        let s4 = t.nodes.iter().find(|n| n.id == t.nodes[5].id).unwrap().status;
+        assert_eq!(s4, NodeStatus::Pending);
+        // 第三章保持待学
+        assert!(t
+            .nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Knowledge)
+            .skip(4)
+            .all(|n| n.status == NodeStatus::Pending));
+    }
+
+    #[test]
+    fn batch_table_coverage_full_chapter_and_no_downgrade() {
+        let mut t = table_with_chapters(&["第一章", "第二章"], 2);
+        let chs = chapter_ids(&t);
+        // 先把某知识点手动设为「掌握」
+        let mastered_idx = 1; // 第一章第 2 个知识点
+        t.nodes[mastered_idx].status = NodeStatus::Mastered;
+        // 学到第二章且整章学完；但目标为「基础」——已掌握的不能被降级
+        let tc = TableCoverage {
+            table_id: "t1".into(),
+            reached_chapter: Some(chs[1].clone()),
+            current_full: true,
+            current_points: vec![],
+        };
+        let changed = apply_table_coverage(&mut t, &tc, NodeStatus::Basic);
+        // k01/k10/k11 →基础（3），两章章节节点全覆盖 →基础（2）＝ 5 处；
+        // k00 已「掌握」不会被降级
+        assert_eq!(changed, 5);
+        assert_eq!(t.nodes[0].status, NodeStatus::Basic); // 第一章章节节点
+        assert_eq!(t.nodes[1].status, NodeStatus::Mastered); // 已掌握不被降级
+        assert_eq!(t.nodes[2].status, NodeStatus::Basic);
+        assert_eq!(t.nodes[3].status, NodeStatus::Basic); // 第二章章节节点
+    }
+
+    #[test]
+    fn batch_master_derivation_follows_book_coverage() {
+        use crate::core::professional::{build_tables, find};
+        let exam = find("408计算机").expect("408 应可识别");
+        let mut index = ProgressIndex::default();
+        {
+            let set = index.subjects.entry("professional".to_string()).or_default();
+            set.active_variant = exam.short.to_string();
+            // 总表 + 教材表入库（id 分配）
+            let mut tables = build_tables(&exam);
+            for t in tables.iter_mut() {
+                t.id = crate::data::progress_tables::new_progress_id("p", &t.name);
+            }
+            set.tables = tables;
+        }
+
+        // 数据结构教材：学到最后一章（整本书覆盖，基础）；其余教材保持待学
+        let book_name = format!("{} · 教材：{}", exam.name, exam.books[0].name);
+        let (book_id, reached) = {
+            let set = index.subjects.get("professional").unwrap();
+            let book = set.tables.iter().find(|t| t.name == book_name).unwrap();
+            let chs = chapter_ids(book);
+            (book.id.clone(), chs.last().expect("教材应有章节").clone())
+        };
+        {
+            let set = index.subjects.get_mut("professional").unwrap();
+            let book = set.tables.iter_mut().find(|t| t.id == book_id).unwrap();
+            apply_table_coverage(
+                book,
+                &TableCoverage {
+                    table_id: book_id.clone(),
+                    reached_chapter: Some(reached),
+                    current_full: true,
+                    current_points: vec![],
+                },
+                NodeStatus::Basic,
+            );
+        }
+
+        let changed =
+            apply_master_derivation(&mut index, "professional", &exam.short, NodeStatus::Basic);
+        assert!(changed > 0, "总表应随教材推进而变化");
+
+        // 数据结构板块：整本书覆盖 → 该板块全部知识点为基础，板块章节节点同步推进
+        let master = index
+            .subjects
+            .get("professional")
+            .and_then(|s| s.tables.iter().find(|t| t.name.contains("总专业课进度表")))
+            .unwrap();
+        let data_struct_chapter = master
+            .nodes
+            .iter()
+            .find(|n| n.level == NodeLevel::Chapter && n.phase == "数据结构")
+            .unwrap();
+        assert_eq!(data_struct_chapter.status, NodeStatus::Basic);
+        assert!(master
+            .nodes
+            .iter()
+            .filter(|n| n.parent_id.as_deref() == Some(data_struct_chapter.id.as_str()))
+            .all(|n| n.status == NodeStatus::Basic));
+        // 其他板块（计算机组成原理，对应教材未推进）不受影响
+        let other_chapter = master
+            .nodes
+            .iter()
+            .find(|n| n.level == NodeLevel::Chapter && n.phase == "计算机组成原理")
+            .unwrap();
+        assert!(master
+            .nodes
+            .iter()
+            .filter(|n| n.parent_id.as_deref() == Some(other_chapter.id.as_str()))
+            .all(|n| n.status == NodeStatus::Pending));
     }
 }

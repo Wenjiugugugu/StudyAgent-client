@@ -8,9 +8,11 @@
  */
 import { ref, computed, onMounted } from "vue";
 import * as api from "@/api";
+import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import ProgressTableView from "@/components/progress/ProgressTableView.vue";
-import { ChevronRight, ChevronDown, FolderOpen } from "lucide-vue-next";
+import BatchProgressModal from "@/components/progress/BatchProgressModal.vue";
+import { ChevronRight, ChevronDown, FolderOpen, ListChecks } from "lucide-vue-next";
 import type { ProgressIndex } from "@/types";
 
 const SUBJECTS: { key: string; label: string; desc: string }[] = [
@@ -81,6 +83,17 @@ function pickProfessional(variant: string) {
   pickVariant("professional", variant);
 }
 
+// ── 批量更改进度（标题右侧入口） ──
+const showBatchModal = ref(false);
+/** 弹窗内各科当前启用方案 */
+const batchVariants = computed<Record<string, string>>(() =>
+  Object.fromEntries(SUBJECTS.map((s) => [s.key, activeVariantOf(s.key)]))
+);
+/** 应用批量进度后刷新数据，保持弹窗打开展示结果 */
+async function onBatchApplied() {
+  await reload();
+}
+
 onMounted(reload);
 </script>
 
@@ -88,8 +101,17 @@ onMounted(reload);
   <div class="progress-page">
     <header class="page-head">
       <h1 class="page-title">进度</h1>
-      <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
+      <Button
+        variant="secondary"
+        size="sm"
+        class="batch-btn"
+        title="快速批量调整各科每本书的进度（选择学到第几章）"
+        @click="showBatchModal = true"
+      >
+        <ListChecks :size="14" /> 批量更改进度
+      </Button>
     </header>
+    <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
 
     <LoadingSpinner v-if="loading" :size="30" label="加载进度..." class="page-loading" />
 
@@ -160,6 +182,15 @@ onMounted(reload);
         </div>
       </section>
     </div>
+
+    <!-- 批量更改进度：选择每本书「学到第几章」，总表按教材自动推导 -->
+    <BatchProgressModal
+      :open="showBatchModal"
+      :index="index"
+      :variants="batchVariants"
+      @close="showBatchModal = false"
+      @applied="onBatchApplied"
+    />
   </div>
 </template>
 
@@ -175,8 +206,9 @@ onMounted(reload);
 }
 .page-head {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 .page-title {
@@ -185,6 +217,9 @@ onMounted(reload);
   font-weight: var(--font-bold);
   color: var(--text-primary);
   letter-spacing: -0.02em;
+}
+.batch-btn {
+  flex-shrink: 0;
 }
 .page-sub {
   margin: 0;
