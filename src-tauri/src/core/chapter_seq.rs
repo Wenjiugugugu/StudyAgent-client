@@ -454,6 +454,14 @@ pub fn total_count(subject: &str, version: &str) -> usize {
     seq_for(subject, version).map_or(0, |seq| seq.len())
 }
 
+/// 公开访问：返回某科目在指定版本下的内置考纲知识点顺序表（官方考研考纲）。
+///
+/// 供「进度表」的 AI 生成使用，作为不联网时的可靠考纲来源。
+/// 未命中（未知科目/版本）返回 None。
+pub fn syllabus_points(subject: &str, version: &str) -> Option<&'static [&'static str]> {
+    seq_for(subject, version)
+}
+
 /// 判断某任务标题是否**早于**用户实际进度（即已学过、不应再排）。
 pub fn is_ahead_of_progress(
     subject: &str,

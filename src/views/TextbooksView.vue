@@ -6,6 +6,7 @@ import Button from "@/components/ui/Button.vue";
 import Select from "@/components/ui/Select.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import ProgressTableView from "@/components/progress/ProgressTableView.vue";
 import {
   Search,
   BookOpen,
@@ -18,6 +19,7 @@ import {
   PanelLeftClose,
   Pencil,
   X,
+  ListChecks,
 } from "lucide-vue-next";
 import type { TextbookInfo, TextbookContent, TextbookSearchHit } from "@/types";
 import { escapeHtml as escapeSafeHtml } from "@/utils/markdown";
@@ -28,6 +30,32 @@ const loadingList = ref(false);
 const current = ref<TextbookContent | null>(null);
 const loadingContent = ref(false);
 const currentMeta = ref<TextbookInfo | null>(null);
+
+// ── 右侧视图：教材阅读 / 进度表 ──
+type RightView = "reader" | "progress";
+const rightView = ref<RightView>("reader");
+const progressSubject = ref<string | null>(null);
+/** 打开某学科的进度表编辑面板 */
+function openProgress(subject: string) {
+  progressSubject.value = subject;
+  rightView.value = "progress";
+}
+/** 切回教材阅读 */
+function backToReader() {
+  rightView.value = "reader";
+}
+/** 当前可查看进度表的学科：选中教材或手动打开进度表时取对应学科 */
+const subjectContext = computed<string | null>(
+  () => progressSubject.value ?? currentMeta.value?.subject ?? null
+);
+/** 教材 → 学科考试类型（用于 AI 生成进度表时定位考纲版本） */
+function subjectExamType(subject: string): string {
+  if (subject === "math") return "数学二";
+  if (subject === "english") return "英语一";
+  if (subject === "politics") return "";
+  if (subject === "professional" || subject === "408") return "";
+  return "";
+}
 
 // ── 操作错误提示（列表加载 / 全文搜索 / 正文读取失败时展示） ──
 const errorMessage = ref("");
@@ -504,6 +532,8 @@ async function loadTextbooks() {
 
 async function selectTextbook(t: TextbookInfo) {
   currentMeta.value = t;
+  progressSubject.value = t.subject;
+  rightView.value = "reader";
   loadingContent.value = true;
   current.value = null;
   activeTocId.value = null;
@@ -730,6 +760,15 @@ onUnmounted(() => {
             <div class="subject-header">
               <span class="subject-dot" :class="subjectVariant(group.subject)" />
               <span class="subject-name">{{ subjectLabel(group.subject) }}</span>
+              <button
+                type="button"
+                class="subject-progress-btn"
+                :class="{ active: progressSubject === group.subject && rightView === 'progress' }"
+                :title="`${subjectLabel(group.subject)}进度表`"
+                @click.stop="openProgress(group.subject)"
+              >
+                <ListChecks :size="13" />
+              </button>
               <span class="subject-count">{{ group.items.length }}</span>
             </div>
 
@@ -769,62 +808,94 @@ onUnmounted(() => {
       </template>
     </aside>
 
-    <!-- 右侧：阅读器 -->
+    <!-- 右侧：阅读器 / 进度表 -->
     <section class="reader-panel">
-      <div v-if="loadingContent" class="reader-empty">
-        <LoadingSpinner :size="28" label="加载教材内容..." />
+      <!-- 视图切换条：教材阅读 ↔ 进度表 -->
+      <div v-if="subjectContext" class="view-switch-bar">
+        <div class="view-switch">
+          <button
+            class="view-switch-btn"
+            :class="{ active: rightView === 'reader' }"
+            @click="backToReader"
+          >
+            <BookOpen :size="13" />
+            教材阅读
+          </button>
+          <button
+            class="view-switch-btn"
+            :class="{ active: rightView === 'progress' }"
+            @click="openProgress(subjectContext)"
+          >
+            <ListChecks :size="13" />
+            {{ subjectLabel(subjectContext) }}进度表
+          </button>
+        </div>
       </div>
 
-      <div v-else-if="!current" class="reader-empty">
-        <EmptyState
-          title="选择一本教材"
-          description="从左侧列表中选择教材开始阅读，或点击「导入教材」添加新教材。"
-        >
-          <template #actions>
-            <div class="empty-hint">
-              <BookOpen :size="20" />
-              <span>共 {{ textbooks.length }} 本教材</span>
-            </div>
-          </template>
-        </EmptyState>
-      </div>
+      <!-- 进度表编辑器 -->
+      <ProgressTableView
+        v-if="rightView === 'progress' && subjectContext"
+        :subject="subjectContext"
+        :exam-type="subjectExamType(subjectContext)"
+        class="progress-host"
+      />
 
-      <div v-else class="reader-layout">
-        <!-- 阅读区 -->
-        <div class="textbook-reader" @scroll="onReaderScroll">
-          <div class="reader-header">
-            <h1 class="reader-title">{{ currentMeta?.title ?? "教材" }}</h1>
-            <div class="reader-badges">
-              <Badge v-if="currentMeta" :variant="subjectVariant(currentMeta.subject)">
-                {{ subjectLabel(currentMeta.subject) }}
-              </Badge>
-              <Badge v-if="currentMeta" variant="default">{{ currentMeta.filename }}</Badge>
-            </div>
-          </div>
-
-          <div class="markdown-body" v-html="renderedHtml" />
+      <template v-else>
+        <div v-if="loadingContent" class="reader-empty">
+          <LoadingSpinner :size="28" label="加载教材内容..." />
         </div>
 
-        <!-- 目录侧栏 -->
-        <aside v-if="toc.length > 0" class="toc-panel">
-          <div class="toc-head">
-            <List :size="15" class="toc-icon" />
-            <span>目录</span>
+        <div v-else-if="!current" class="reader-empty">
+          <EmptyState
+            title="选择一本教材"
+            description="从左侧列表中选择教材开始阅读，或点击「导入教材」添加新教材；也可使用各学科旁的进度表按钮查看/编辑学习进度。"
+          >
+            <template #actions>
+              <div class="empty-hint">
+                <BookOpen :size="20" />
+                <span>共 {{ textbooks.length }} 本教材</span>
+              </div>
+            </template>
+          </EmptyState>
+        </div>
+
+        <div v-else class="reader-layout">
+          <!-- 阅读区 -->
+          <div class="textbook-reader" @scroll="onReaderScroll">
+            <div class="reader-header">
+              <h1 class="reader-title">{{ currentMeta?.title ?? "教材" }}</h1>
+              <div class="reader-badges">
+                <Badge v-if="currentMeta" :variant="subjectVariant(currentMeta.subject)">
+                  {{ subjectLabel(currentMeta.subject) }}
+                </Badge>
+                <Badge v-if="currentMeta" variant="default">{{ currentMeta.filename }}</Badge>
+              </div>
+            </div>
+
+            <div class="markdown-body" v-html="renderedHtml" />
           </div>
-          <nav class="toc-list">
-            <button
-              v-for="item in toc"
-              :key="item.id"
-              class="toc-item"
-              :class="[`toc-l${item.level}`, { active: activeTocId === item.id }]"
-              @click="scrollToHeading(item)"
-            >
-              <Hash v-if="item.level <= 2" :size="12" class="toc-hash" />
-              <span class="toc-text">{{ item.text }}</span>
-            </button>
-          </nav>
-        </aside>
-      </div>
+
+          <!-- 目录侧栏 -->
+          <aside v-if="toc.length > 0" class="toc-panel">
+            <div class="toc-head">
+              <List :size="15" class="toc-icon" />
+              <span>目录</span>
+            </div>
+            <nav class="toc-list">
+              <button
+                v-for="item in toc"
+                :key="item.id"
+                class="toc-item"
+                :class="[`toc-l${item.level}`, { active: activeTocId === item.id }]"
+                @click="scrollToHeading(item)"
+              >
+                <Hash v-if="item.level <= 2" :size="12" class="toc-hash" />
+                <span class="toc-text">{{ item.text }}</span>
+              </button>
+            </nav>
+          </aside>
+        </div>
+      </template>
     </section>
 
     <!-- 导入教材对话框 -->
@@ -1257,6 +1328,31 @@ onUnmounted(() => {
   flex: 1;
 }
 
+.subject-progress-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.subject-progress-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+}
+
+.subject-progress-btn.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
 .subject-count {
   font-size: var(--text-xs);
   color: var(--text-quaternary);
@@ -1370,6 +1466,63 @@ onUnmounted(() => {
   min-width: 0;
   overflow: hidden;
   display: flex;
+  flex-direction: column;
+}
+
+/* 视图切换条：教材阅读 ↔ 进度表 */
+.view-switch-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--divider-color);
+  background: var(--bg-elevated);
+}
+
+.view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.view-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.view-switch-btn:hover {
+  color: var(--text-primary);
+}
+
+.view-switch-btn.active {
+  background: var(--bg-elevated);
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-xs);
+}
+
+/* 进度表编辑器占满右侧剩余空间 */
+.progress-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .reader-empty {

@@ -32,6 +32,13 @@ export interface SettingsForm {
     politics: string;
     professional: string;
   };
+  /** 各科学习时间占比（百分比，活跃科目合计 100；null = 未配置，按各科周学时推导） */
+  subject_time_allocation: {
+    math: number;
+    english: number;
+    politics: number;
+    professional: number;
+  } | null;
 }
 
 /** 教材表单结构（独立保存，不走 settingsStore） */
@@ -203,6 +210,9 @@ export function useSettingsForm() {
         politics: s.study_schedule?.subject_start_dates?.politics ?? "",
         professional: s.study_schedule?.subject_start_dates?.professional ?? "",
       },
+      subject_time_allocation: s.study_schedule?.subject_time_allocation
+        ? { ...s.study_schedule.subject_time_allocation }
+        : null,
     };
   }
 
@@ -257,6 +267,9 @@ export function useSettingsForm() {
         enable_review_tasks: form.value.enable_review_tasks,
         enable_time_tracking: form.value.enable_time_tracking,
         subject_start_dates: { ...form.value.subject_start_dates },
+        subject_time_allocation: form.value.subject_time_allocation
+          ? { ...form.value.subject_time_allocation }
+          : null,
       };
       await settingsStore.save();
       await settingsStore.load();

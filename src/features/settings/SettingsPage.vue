@@ -22,6 +22,7 @@ import AppearanceSection from "./sections/AppearanceSection.vue";
 import GoalsSection from "./sections/GoalsSection.vue";
 import ScheduleSection from "./sections/ScheduleSection.vue";
 import RhythmSection from "./sections/RhythmSection.vue";
+import TimeAllocationSection from "./sections/TimeAllocationSection.vue";
 import TextbooksSection from "./sections/TextbooksSection.vue";
 import AIProviderSection from "./sections/AIProviderSection.vue";
 import DidaSyncSection from "./sections/DidaSyncSection.vue";
@@ -131,6 +132,12 @@ watch(
         />
         <RhythmSection
           :form="form"
+          :subject-active="subjectActive"
+          :professional-name="professionalName"
+        />
+        <TimeAllocationSection
+          :form="form"
+          :study-state="studyState"
           :subject-active="subjectActive"
           :professional-name="professionalName"
         />
