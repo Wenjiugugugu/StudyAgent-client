@@ -848,20 +848,19 @@ impl<'a> Planner<'a> {
             Self::read_reviews_in_range(data_dir, &prev_week_start, &prev_week_end);
 
         // 周级自适应参数由确定性算法计算；AI 只负责在固定预算内生成具体学习内容。
-        let mut adaptive_parameters =
-            match crate::core::adaptive_planner::prepare_next_week(
-                data_dir,
-                week_start,
-                &prev_week_start,
-                &state,
-                &settings,
-            ) {
-                Ok(parameters) => parameters,
-                Err(e) => {
-                    log::warn!("周级自适应分析失败，保持用户配置: {}", e);
-                    crate::core::adaptive_planner::baseline_parameters(&state, &settings)
-                }
-            };
+        let mut adaptive_parameters = match crate::core::adaptive_planner::prepare_next_week(
+            data_dir,
+            week_start,
+            &prev_week_start,
+            &state,
+            &settings,
+        ) {
+            Ok(parameters) => parameters,
+            Err(e) => {
+                log::warn!("周级自适应分析失败，保持用户配置: {}", e);
+                crate::core::adaptive_planner::baseline_parameters(&state, &settings)
+            }
+        };
         if let Some(adjustment) = workload_adjustment {
             crate::core::adaptive_planner::apply_manual_workload_override(
                 &mut adaptive_parameters,
@@ -1169,9 +1168,7 @@ impl<'a> Planner<'a> {
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
 
         // 任务数量只是固定时间预算下的软提示，不能再作为唯一自校准对象。
-        let effective_daily_task_count = adaptive_parameters
-            .daily_task_count
-            .clamp(1, 8);
+        let effective_daily_task_count = adaptive_parameters.daily_task_count.clamp(1, 8);
         let study_days = 7usize.saturating_sub(rest_days.len()).max(1) as f64;
         let effective_target_hours = adaptive_parameters.nominal_total_hours / study_days;
         let self_coeff = adaptive_parameters.workload_factor;
@@ -2810,10 +2807,7 @@ fn planner_subject_cn_from_str(subject: &str) -> &'static str {
 /// AI 仍然负责选择具体章节/任务，但不能通过返回更大的 estimated_hours
 /// 绕过 AdaptivePlanner 的周预算。系数只应用一次，最后只做全周归一化，
 /// 从而保留不同学科之间的估时差异，不把 estimation_factor 在学科内抵消掉。
-fn apply_adaptive_parameters(
-    plan: &mut WeekPlanFile,
-    parameters: &AdaptivePlanParameters,
-) {
+fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanParameters) {
     use std::collections::HashMap;
 
     let mut current_total = 0.0f64;

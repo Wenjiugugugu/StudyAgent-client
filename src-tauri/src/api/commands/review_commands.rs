@@ -241,10 +241,9 @@ pub async fn submit_review(
     // 复盘提交后刷新当周分析，但不在日复盘阶段更新长期 EMA；
     // 长期参数只在生成下一周计划时按周幂等更新一次。
     if let Ok(week_start) = crate::data::get_week_start(&payload.date) {
-        if let Err(e) = crate::core::adaptive_planner::refresh_week_planning_analysis(
-            &data_dir,
-            &week_start,
-        ) {
+        if let Err(e) =
+            crate::core::adaptive_planner::refresh_week_planning_analysis(&data_dir, &week_start)
+        {
             log::warn!("刷新周计划分析失败 {}: {}", week_start, e);
         }
     }

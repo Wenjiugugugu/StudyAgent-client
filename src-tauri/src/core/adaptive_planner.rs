@@ -288,8 +288,8 @@ pub fn read_adaptive_state(data_dir: &Path) -> DataResult<AdaptiveState> {
 
 fn save_adaptive_state(data_dir: &Path, state: &AdaptiveState) -> DataResult<()> {
     let path = adaptive_state_path(data_dir);
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("序列化自适应状态失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(state).map_err(|e| format!("序列化自适应状态失败: {}", e))?;
     atomic_write(&path, &json).map_err(|e| format!("写入自适应状态失败: {}", e))
 }
 
@@ -316,10 +316,7 @@ pub fn refresh_week_planning_analysis(
     Ok(analysis)
 }
 
-fn save_week_planning_analysis(
-    data_dir: &Path,
-    analysis: &WeekPlanningAnalysis,
-) -> DataResult<()> {
+fn save_week_planning_analysis(data_dir: &Path, analysis: &WeekPlanningAnalysis) -> DataResult<()> {
     let path = analysis_path(data_dir, &analysis.week_start)?;
     let json = serde_json::to_string_pretty(analysis)
         .map_err(|e| format!("序列化周计划分析失败: {}", e))?;
@@ -333,7 +330,13 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
     let week_plan = plan::read_week_plan(data_dir, &iso_week).ok();
     let excluded_days: HashSet<String> = week_plan
         .as_ref()
-        .map(|wp| wp.data.excluded_days.iter().map(|d| d.date.clone()).collect())
+        .map(|wp| {
+            wp.data
+                .excluded_days
+                .iter()
+                .map(|d| d.date.clone())
+                .collect()
+        })
         .unwrap_or_default();
     let rest_days: HashSet<String> = week_plan
         .as_ref()
@@ -399,12 +402,15 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
         let focus_stats_hours = crate::data::focus::focus_day_stats(data_dir, date)
             .map(|stats| stats.focus_minutes.max(0) as f64 / 60.0)
             .unwrap_or(0.0);
-        let unlinked_focus_hours = crate::data::focus::day_unlinked_focus_minutes(data_dir, date)
-            .max(0) as f64
-            / 60.0;
+        let unlinked_focus_hours =
+            crate::data::focus::day_unlinked_focus_minutes(data_dir, date).max(0) as f64 / 60.0;
         let has_structured_task_actual = review
             .as_ref()
-            .map(|r| r.task_reviews.iter().any(|entry| entry.actual_minutes.is_some()))
+            .map(|r| {
+                r.task_reviews
+                    .iter()
+                    .any(|entry| entry.actual_minutes.is_some())
+            })
             .unwrap_or(false);
         let actual_day_hours = if review_actual > 0.0 {
             // 结构化复盘的 total_hours 来自任务实际时间，不包含未关联任务的
@@ -611,7 +617,11 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
         0.0
     };
     let review_confidence = clamp(analysis.valid_review_days as f64 / 3.0, 0.0, 1.0);
-    let time_confidence = if analysis.actual_data_days > 0 { 1.0 } else { 0.35 };
+    let time_confidence = if analysis.actual_data_days > 0 {
+        1.0
+    } else {
+        0.35
+    };
     analysis.confidence = clamp(
         (0.45 * review_confidence + 0.35 * feedback_confidence + 0.20 * time_confidence)
             * clamp(analysis.valid_days as f64 / 3.0, 0.0, 1.0),
@@ -672,7 +682,11 @@ fn robust_capacity_observation(observation: f64, state: &AdaptiveState) -> (f64,
 
 fn active_subject_hours(state: &StudyState) -> Vec<(String, f64)> {
     let candidates = [
-        ("math", state.subjects.math.active, state.subjects.math.weekly_hours),
+        (
+            "math",
+            state.subjects.math.active,
+            state.subjects.math.weekly_hours,
+        ),
         (
             "english",
             state.subjects.english.active,
@@ -726,7 +740,10 @@ fn projected_shares(
         .iter()
         .map(|(subject, share)| {
             let projected = raw.get(subject).copied().unwrap_or(*share) / raw_sum;
-            (subject.clone(), share + clamp(projected - share, -0.05, 0.05))
+            (
+                subject.clone(),
+                share + clamp(projected - share, -0.05, 0.05),
+            )
         })
         .collect();
     let sum: f64 = result.values().sum();
@@ -744,9 +761,8 @@ fn build_parameters(
     study_state: &StudyState,
     settings: &AppSettings,
 ) -> AdaptivePlanParameters {
-    let configured_capacity = (settings.daily_target_hours()
-        * settings.study_days_per_week().max(1) as f64)
-        .max(2.0);
+    let configured_capacity =
+        (settings.daily_target_hours() * settings.study_days_per_week().max(1) as f64).max(2.0);
     let active = active_subject_hours(study_state);
     let configured_subject_hours: f64 = active.iter().map(|(_, hours)| *hours).sum();
     let baseline_capacity = if configured_subject_hours > 0.0 {
@@ -776,7 +792,11 @@ fn build_parameters(
         let adaptive = state.subjects.get(subject).cloned().unwrap_or_default();
         estimation_factors.insert(
             subject.clone(),
-            clamp(adaptive.estimation_factor, MIN_ESTIMATION_FACTOR, MAX_ESTIMATION_FACTOR),
+            clamp(
+                adaptive.estimation_factor,
+                MIN_ESTIMATION_FACTOR,
+                MAX_ESTIMATION_FACTOR,
+            ),
         );
         load_factors.insert(subject.clone(), clamp(adaptive.load_factor, 0.85, 1.15));
     }
@@ -874,9 +894,8 @@ pub fn prepare_next_week(
     }
 
     let mut analysis = analyze_week(data_dir, previous_week_start)?;
-    let configured_capacity = (settings.daily_target_hours()
-        * settings.study_days_per_week().max(1) as f64)
-        .max(2.0);
+    let configured_capacity =
+        (settings.daily_target_hours() * settings.study_days_per_week().max(1) as f64).max(2.0);
     let baseline_subject_hours: f64 = active_subject_hours(study_state)
         .iter()
         .map(|(_, hours)| *hours)
@@ -908,8 +927,7 @@ pub fn prepare_next_week(
         let sample_weight = clamp(subject_analysis.valid_time_tasks as f64 / 4.0, 0.0, 1.0);
         let old_factor = entry.estimation_factor;
         entry.estimation_factor = clamp(
-            entry.estimation_factor
-                + 0.25 * sample_weight * (ratio - entry.estimation_factor),
+            entry.estimation_factor + 0.25 * sample_weight * (ratio - entry.estimation_factor),
             MIN_ESTIMATION_FACTOR,
             MAX_ESTIMATION_FACTOR,
         );
@@ -934,7 +952,8 @@ pub fn prepare_next_week(
     } else {
         analysis.completed_planned_hours
     };
-    let (robust_observation, was_anomaly) = robust_capacity_observation(capacity_observation, &adaptive);
+    let (robust_observation, was_anomaly) =
+        robust_capacity_observation(capacity_observation, &adaptive);
     analysis.capacity_before = capacity_before;
     analysis.capacity_observation = robust_observation;
     let eligible_history_count = adaptive
@@ -943,7 +962,11 @@ pub fn prepare_next_week(
         .filter(|sample| sample.eligible)
         .count();
     let capacity_confidence = clamp(analysis.valid_days as f64 / 3.0, 0.0, 1.0)
-        * if analysis.actual_data_days > 0 { 1.0 } else { 0.45 };
+        * if analysis.actual_data_days > 0 {
+            1.0
+        } else {
+            0.45
+        };
     if robust_observation > 0.0
         && analysis.valid_days >= 3
         && eligible_history_count >= 1
@@ -981,11 +1004,7 @@ pub fn prepare_next_week(
         adaptive.workload_ema = 0.65 * adaptive.workload_ema + 0.35 * feedback_week;
         analysis.feedback.ema = adaptive.workload_ema;
 
-        let completion_signal = clamp(
-            (analysis.planned_completion_rate - 0.85) / 0.15,
-            -1.0,
-            1.0,
-        );
+        let completion_signal = clamp((analysis.planned_completion_rate - 0.85) / 0.15, -1.0, 1.0);
         let expected_actual: f64 = analysis
             .subjects
             .iter()
@@ -1008,16 +1027,14 @@ pub fn prepare_next_week(
             0.0
         };
         let load_signal = clamp(
-            0.60 * adaptive.workload_ema
-                + 0.25 * completion_signal
-                + 0.15 * residual_signal,
+            0.60 * adaptive.workload_ema + 0.25 * completion_signal + 0.15 * residual_signal,
             -1.0,
             1.0,
         );
         let direction = sign(load_signal);
         if direction != 0 {
-            let reversing = adaptive.workload_direction != 0
-                && adaptive.workload_direction != direction;
+            let reversing =
+                adaptive.workload_direction != 0 && adaptive.workload_direction != direction;
             if adaptive.workload_direction == direction {
                 adaptive.workload_streak = adaptive.workload_streak.saturating_add(1);
             } else {
@@ -1045,7 +1062,11 @@ pub fn prepare_next_week(
                 let direction_label = if delta > 0.0 { "增加" } else { "降低" };
                 analysis.reasons.push(format!(
                     "任务量反馈与执行数据连续指向{}，下一周自动任务量系数{}至 {:.1}%",
-                    if delta > 0.0 { "仍有余量" } else { "偏多" },
+                    if delta > 0.0 {
+                        "仍有余量"
+                    } else {
+                        "偏多"
+                    },
                     direction_label,
                     adaptive.workload_factor * 100.0
                 ));
@@ -1081,9 +1102,7 @@ pub fn prepare_next_week(
             let factor = entry.estimation_factor.max(0.5);
             let residual_signal = if subject_analysis.actual_hours > 0.0 {
                 clamp(
-                    subject_analysis.actual_hours
-                        / (subject_analysis.planned_hours * factor)
-                        - 1.0,
+                    subject_analysis.actual_hours / (subject_analysis.planned_hours * factor) - 1.0,
                     -0.5,
                     0.5,
                 )
@@ -1095,7 +1114,11 @@ pub fn prepare_next_week(
                 subject_signal *= 0.5;
             }
             let confidence = clamp(subject_analysis.task_count as f64 / 5.0, 0.0, 1.0);
-            entry.load_factor = clamp(entry.load_factor + 0.06 * subject_signal * confidence, 0.85, 1.15);
+            entry.load_factor = clamp(
+                entry.load_factor + 0.06 * subject_signal * confidence,
+                0.85,
+                1.15,
+            );
         }
     }
 
@@ -1120,7 +1143,9 @@ pub fn prepare_next_week(
     };
     analysis.workload_adjustment = adaptive.workload_factor - 1.0;
     analysis.reasons.extend(parameters.reasons.iter().cloned());
-    analysis.warnings.extend(parameters.warnings.iter().cloned());
+    analysis
+        .warnings
+        .extend(parameters.warnings.iter().cloned());
     analysis.reasons.sort();
     analysis.reasons.dedup();
     analysis.warnings.sort();
@@ -1161,9 +1186,8 @@ pub fn apply_manual_workload_override(
         ("decrease", _) => 0.80,
         _ => 1.0,
     };
-    let hard_max = (settings.daily_target_hours()
-        * settings.study_days_per_week().max(1) as f64)
-        .max(2.0);
+    let hard_max =
+        (settings.daily_target_hours() * settings.study_days_per_week().max(1) as f64).max(2.0);
     let next_total = clamp(parameters.nominal_total_hours * multiplier, 1.0, hard_max);
     let ratio = next_total / parameters.nominal_total_hours;
     parameters.nominal_total_hours = next_total;
@@ -1175,7 +1199,11 @@ pub fn apply_manual_workload_override(
         .clamp(1.0, 8.0) as i64;
     parameters.reasons.push(format!(
         "用户显式要求本周任务量{}，已应用 {:.0}% 覆盖（仍受每日/每周硬上限约束）",
-        if adjustment.direction == "increase" { "增加" } else { "减少" },
+        if adjustment.direction == "increase" {
+            "增加"
+        } else {
+            "减少"
+        },
         multiplier * 100.0
     ));
 }
@@ -1204,14 +1232,8 @@ mod tests {
 
     #[test]
     fn subject_share_shift_is_bounded_and_normalized() {
-        let base = HashMap::from([
-            ("math".to_string(), 0.5),
-            ("english".to_string(), 0.5),
-        ]);
-        let factors = HashMap::from([
-            ("math".to_string(), 1.15),
-            ("english".to_string(), 0.85),
-        ]);
+        let base = HashMap::from([("math".to_string(), 0.5), ("english".to_string(), 0.5)]);
+        let factors = HashMap::from([("math".to_string(), 1.15), ("english".to_string(), 0.85)]);
         let result = projected_shares(&base, &factors);
         let sum: f64 = result.values().sum();
         assert!((sum - 1.0).abs() < 1e-9);
