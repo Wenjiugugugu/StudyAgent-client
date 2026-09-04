@@ -24,10 +24,11 @@ pub const PROGRESS_DIR: &str = "progress_tables";
 pub const PROGRESS_INDEX_FILE: &str = "progress_index.json";
 
 /// 节点学习状态
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeStatus {
     /// 待学
+    #[default]
     Pending,
     /// 学习中
     Learning,
@@ -42,12 +43,6 @@ impl NodeStatus {
             NodeStatus::Learning => "learning",
             NodeStatus::Mastered => "mastered",
         }
-    }
-}
-
-impl Default for NodeStatus {
-    fn default() -> Self {
-        NodeStatus::Pending
     }
 }
 
@@ -83,7 +78,7 @@ impl Default for ProgressNode {
 }
 
 /// 进度表
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", default)]
 pub struct ProgressTable {
     pub id: String,
@@ -92,19 +87,6 @@ pub struct ProgressTable {
     pub created_at: String,
     pub updated_at: String,
     pub nodes: Vec<ProgressNode>,
-}
-
-impl Default for ProgressTable {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            subject: String::new(),
-            name: String::new(),
-            created_at: String::new(),
-            updated_at: String::new(),
-            nodes: Vec::new(),
-        }
-    }
 }
 
 /// 单一科目的进度表集合

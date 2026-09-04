@@ -31,10 +31,7 @@ fn validate_subject(subject: &str) -> Result<(), String> {
 
 /// 获取某科目的进度表集合；不存在则返回空集合
 fn subject_set<'a>(index: &'a mut ProgressIndex, subject: &str) -> &'a mut SubjectProgressSet {
-    index
-        .subjects
-        .entry(subject.to_string())
-        .or_insert_with(SubjectProgressSet::default)
+    index.subjects.entry(subject.to_string()).or_default()
 }
 
 /// 生成校验唯一性的简单节点 id
