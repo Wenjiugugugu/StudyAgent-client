@@ -1293,10 +1293,7 @@ impl<'a> Planner<'a> {
                     "- 每日任务在各科的分布参考：{}\n",
                     distribution_note
                 ));
-                prompt.push_str(&format!(
-                    "  具体条数：{}\n",
-                    nonzero.join("，")
-                ));
+                prompt.push_str(&format!("  具体条数：{}\n", nonzero.join("，")));
             }
         }
 

@@ -247,11 +247,7 @@ pub(crate) fn subject_task_budget(
         // 未配置 → 回退各科周学时；0 学时（新开始科目）给最低权重 0.5，
         // 避免被 max(1.0) 抬成与高时长科目同权而多分任务条数。
         let weight = if let Some(allocation) = allocation {
-            allocation
-                .get(key_str)
-                .copied()
-                .unwrap_or(0.0)
-                .max(0.0)
+            allocation.get(key_str).copied().unwrap_or(0.0).max(0.0)
         } else if subject.weekly_hours > 0.0 {
             subject.weekly_hours
         } else {

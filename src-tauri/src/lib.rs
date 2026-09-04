@@ -839,10 +839,9 @@ mod tests {
         assert!((math - 42.10526315789473).abs() < 1e-9);
 
         // null → None（前端「恢复默认」语义）
-        let s: AppSettings = serde_json::from_str(
-            r#"{"study_schedule":{"subject_time_allocation":null}}"#,
-        )
-        .expect("应能解析");
+        let s: AppSettings =
+            serde_json::from_str(r#"{"study_schedule":{"subject_time_allocation":null}}"#)
+                .expect("应能解析");
         assert!(s.subject_time_allocation().is_none());
 
         // 未配置 → None

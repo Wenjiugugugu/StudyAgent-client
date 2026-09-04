@@ -168,8 +168,8 @@ pub fn load_progress_index(data_dir: &Path) -> ProgressIndex {
 /// 保存索引
 pub fn save_progress_index(data_dir: &Path, index: &ProgressIndex) -> DataResult<()> {
     let path = progress_index_path(data_dir);
-    let json = serde_json::to_string_pretty(index)
-        .map_err(|e| format!("序列化进度表索引失败: {}", e))?;
+    let json =
+        serde_json::to_string_pretty(index).map_err(|e| format!("序列化进度表索引失败: {}", e))?;
     atomic_write(&path, &json)
 }
 

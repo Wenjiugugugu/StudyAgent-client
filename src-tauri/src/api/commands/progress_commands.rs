@@ -146,11 +146,7 @@ pub fn delete_progress_table(
                 set.tables.retain(|t| t.id != id);
                 let removed_any = set.tables.len() != before;
                 if set.active_id == id {
-                    set.active_id = set
-                        .tables
-                        .first()
-                        .map(|t| t.id.clone())
-                        .unwrap_or_default();
+                    set.active_id = set.tables.first().map(|t| t.id.clone()).unwrap_or_default();
                 }
                 removed_any
             }
@@ -190,9 +186,7 @@ pub fn set_active_progress_table(
 /// 读取进度表相关的设置（目前为联网搜索配置）
 /// 前端调用: `invoke('get_progress_settings')`
 #[tauri::command]
-pub fn get_progress_settings(
-    state: State<'_, Mutex<AppState>>,
-) -> Result<WebSearchConfig, String> {
+pub fn get_progress_settings(state: State<'_, Mutex<AppState>>) -> Result<WebSearchConfig, String> {
     let data_dir = get_data_dir(state.inner())?;
     Ok(load_progress_index(&data_dir).web_search)
 }
@@ -255,7 +249,11 @@ fn version_for(subject: &str, exam_type: &str) -> Option<String> {
 /// 内置考纲兜底：从 chapter_seq 取有序知识点列表
 fn builtin_syllabus(subject: &str, version: &str) -> Option<Vec<String>> {
     // 兼容旧键：408 视为 professional（无内置表）
-    let resolved = if subject == "408" { "professional" } else { subject };
+    let resolved = if subject == "408" {
+        "professional"
+    } else {
+        subject
+    };
     crate::core::chapter_seq::syllabus_points(resolved, version)
         .map(|seq| seq.iter().map(|s| s.to_string()).collect())
 }
@@ -308,8 +306,10 @@ async fn web_search_syllabus(
     }
 
     let mut out = String::new();
-    if let Some(pages) = json.pointer("/data/webPages/learning")
-        .or_else(|| json.pointer("/data/webPages")) {
+    if let Some(pages) = json
+        .pointer("/data/webPages/learning")
+        .or_else(|| json.pointer("/data/webPages"))
+    {
         if let Some(arr) = pages.as_array() {
             for item in arr.iter().take(5) {
                 let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
