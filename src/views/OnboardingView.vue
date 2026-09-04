@@ -438,6 +438,8 @@ async function finish() {
     });
 
     await settingsStore.completeOnboarding();
+    // 标记「待展示新手产品导览」：进入工作台后展示一次，仅对首次配置用户生效
+    await api.setUiFlag("studyagent.tour.pending", "1").catch(() => {});
     router.replace("/dashboard");
   } catch (err) {
     console.error("初始化失败:", err);

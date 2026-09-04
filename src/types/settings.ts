@@ -85,6 +85,9 @@ export interface StudySchedule {
   review_reminder_time: string;
   /** 各科开始学习日期 (YYYY-MM-DD)，未到该日期前不为该科安排任务 */
   subject_start_dates?: SubjectStartDates;
+  /** 各科学习时间占比（百分比，活跃科目合计 100；null/未配置时按各科周学时权重，等价旧行为）。
+   *  影响周计划生成与复盘重排的任务条数分布与各科学时。 */
+  subject_time_allocation?: SubjectTimeAllocation | null;
   /** 用户期望每日任务数量（默认 3，每科约一条，未开始的科目不安排）。
    *  注意：实际规划以派生条数为准（每日目标学时 ÷ 标准任务粒度）。 */
   daily_task_count?: number;
@@ -106,6 +109,18 @@ export interface SubjectStartDates {
   politics?: string;
   /** 专业课开始日期 */
   professional?: string;
+}
+
+/** 各科学习时间占比（百分比，活跃科目合计 100；未配置时后端回退各科周学时权重） */
+export interface SubjectTimeAllocation {
+  /** 数学占比 (%) */
+  math: number;
+  /** 英语占比 (%) */
+  english: number;
+  /** 政治占比 (%) */
+  politics: number;
+  /** 专业课占比 (%) */
+  professional: number;
 }
 
 /** TickTick 配置 */

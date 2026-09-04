@@ -11,6 +11,7 @@ export * from "./settings";
 export * from "./analytics";
 export * from "./briefing";
 export * from "./adaptive";
+export * from "./progress";
 
 /** 统一 API 响应包装 */
 export interface ApiResponse<T = unknown> {

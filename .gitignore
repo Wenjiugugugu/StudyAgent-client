@@ -67,6 +67,11 @@ src-tauri/gen/
 # Inno Setup 打包前的暂存目录
 installer/staging/
 
+# Release 核验临时产物（下载的旧版本源码 / 校验和 / 一次性调试脚本）
+installer/tmp_*
+installer/StudyAgent-client-*/
+installer/StudyAgent-*-sha256.txt
+
 # Runtime data（仅仓库根目录的运行数据，不误伤 src-tauri/src/data/ 源码）
 /data/
 .cache/

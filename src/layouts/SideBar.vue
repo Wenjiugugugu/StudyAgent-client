@@ -310,6 +310,13 @@ function onPlanClick() {
   border-right-color: var(--border-color);
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.4);
   user-select: none;
+  /* 展开/收起时裁切仍在滑动的文字，避免溢出到内容区 */
+  overflow: hidden;
+  /* 宽度过渡（Apple motion curve）：flex 布局会逐帧重算，
+     右侧内容随之平滑让位，无需对内容区单独加动画 */
+  transition: flex-basis var(--transition-slow),
+    width var(--transition-slow),
+    min-width var(--transition-slow);
 }
 
 /* 收起态：仅显示图标 */
@@ -318,13 +325,43 @@ function onPlanClick() {
   width: var(--sidebar-collapsed-width);
   min-width: var(--sidebar-collapsed-width);
 }
+/* 收起时「计划」内联二级菜单不再展示（由 plan-cols 分裂图标替代） */
+.sidebar.collapsed .nav-children {
+  display: none;
+}
+
+/* ── 展开/收起文字动画 ──
+   展开：宽度先展开（Apple motion curve），文字随后淡入并自右滑入；
+   收起：文字先淡出、滑向右缘，宽度再收窄，避免文字被挤压硬切。
+   图标本身固定不动，与 Finder 侧边栏一致。 */
+.brand-text,
+.nav-label,
+.nav-badge {
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 0.2s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
+    transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s;
+}
 .sidebar.collapsed .brand-text,
 .sidebar.collapsed .nav-label,
-.sidebar.collapsed .nav-badge,
-.sidebar.collapsed .nav-chevron,
-.sidebar.collapsed .nav-children,
+.sidebar.collapsed .nav-badge {
+  opacity: 0;
+  transform: translateX(12px);
+  transition: opacity 0.1s ease, transform 0.1s ease;
+}
+/* 版本行收起时同步收起自身高度，避免底部留空 */
 .sidebar.collapsed .version-label {
-  display: none;
+  opacity: 0;
+  transform: translateX(12px);
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  transition: opacity 0.1s ease, transform 0.1s ease,
+    max-height var(--transition-slow), padding var(--transition-slow);
+}
+/* 折叠箭头仅淡出（保留其自身的旋转过渡） */
+.sidebar.collapsed .nav-chevron {
+  opacity: 0;
 }
 
 /* 悬浮岛式侧边栏：四边留白 + 苹果规范大圆角 + 阴影，像一块悬浮在背景上的圆角面板 */
@@ -378,6 +415,8 @@ function onPlanClick() {
   flex-direction: column;
   line-height: 1.25;
   min-width: 0;
+  /* 收起动画滑动时裁切，避免品牌文字溢出侧边栏 */
+  overflow: hidden;
 }
 
 .brand-text.no-logo {
@@ -538,7 +577,8 @@ function onPlanClick() {
   border-right: 1.5px solid var(--text-tertiary);
   border-bottom: 1.5px solid var(--text-tertiary);
   transform: rotate(45deg);
-  transition: transform var(--transition-fast);
+  transition: transform var(--transition-fast), opacity 0.1s ease;
+  opacity: 1;
   flex-shrink: 0;
 }
 .nav-chevron.open {
@@ -603,11 +643,33 @@ function onPlanClick() {
   cursor: pointer;
   font-family: inherit;
   border-radius: var(--radius-xs);
-  transition: background var(--transition-fast), color var(--transition-fast);
+  /* 收起/展开：跟随文字动画 + 自身高度联动 */
+  max-height: 48px;
+  overflow: hidden;
+  opacity: 1;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    opacity 0.2s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
+    transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
+    max-height var(--transition-slow), padding var(--transition-slow);
 }
 
 .version-label:hover:not(:disabled) {
   background: var(--sidebar-item-hover);
   color: var(--text-secondary);
+}
+
+/* 系统开启「减弱动态效果」时关闭全部收起/展开过渡，直接切换 */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .brand-text,
+  .nav-label,
+  .nav-badge,
+  .nav-chevron,
+  .version-label,
+  .plan-cols,
+  .nav-children {
+    transition: none;
+    animation: none;
+  }
 }
 </style>

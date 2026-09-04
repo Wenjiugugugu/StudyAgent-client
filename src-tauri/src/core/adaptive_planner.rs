@@ -598,7 +598,6 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
             time_ratio,
             planned_completion_rate: completion,
             task_count: acc.task_count,
-            reviewed_task_count: acc.reviewed_task_count,
             completed_task_count: acc.completed_task_count,
             unfinished_task_count: acc.unfinished_task_count,
             valid_time_tasks: acc.valid_time_tasks,
@@ -1065,7 +1064,7 @@ pub fn prepare_next_week(
     if analysis.external_day_count == 0 && !analysis.manual_override {
         for subject_analysis in &analysis.subjects {
             if subject_analysis.task_count < 3
-                || subject_analysis.reviewed_task_count <= 0
+                || subject_analysis.completed_task_count <= 0
                 || subject_analysis.planned_hours <= 0.0
             {
                 continue;

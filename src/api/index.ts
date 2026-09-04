@@ -15,6 +15,7 @@ import {
   mockMCPServerStatus,
 } from "./mock-data";
 import { useAiDebugStore } from "@/stores/aiDebug";
+import type { ProgressIndex, ProgressTable, ProgressWebSearchConfig, ProgressNode } from "@/types/progress";
 
 /** AI 请求取消键（与后端 agent 类型小写对应） */
 export const AI_CANCEL_KEYS = {
@@ -726,6 +727,119 @@ export async function renameTextbook(id: string, newTitle: string): Promise<Text
 export async function searchInTextbook(query: string): Promise<TextbookSearchHit[]> {
   if (!query.trim()) return [];
   return invokeWithFallback("search_in_textbook", { query }, async () => []);
+}
+
+// ── Progress Tables（各科进度表） ──
+
+/** 列出全部进度表索引 */
+export async function listProgressTables(): Promise<ProgressIndex> {
+  return invokeWithFallback("list_progress_tables", undefined, async () => ({
+    subjects: {},
+    web_search: { enabled: false, provider: "bocha", base_url: "", api_key: "" },
+  }));
+}
+
+/** 新增 or 更新一份进度表；makeActive=true 时设为该科唯一启用 */
+export async function saveProgressTable(
+  subject: string,
+  table: ProgressTable,
+  makeActive: boolean
+): Promise<void> {
+  return invokeDirect<void>("save_progress_table", { subject, table, makeActive });
+}
+
+/** 删除某科的一份进度表 */
+export async function deleteProgressTable(subject: string, id: string): Promise<void> {
+  return invokeDirect<void>("delete_progress_table", { subject, id });
+}
+
+/** 设定某科启用哪份进度表 */
+export async function setActiveProgressTable(subject: string, id: string): Promise<void> {
+  return invokeDirect<void>("set_active_progress_table", { subject, id });
+}
+
+/** 读取进度表相关设置（联网搜索配置） */
+export async function getProgressSettings(): Promise<ProgressWebSearchConfig> {
+  return invokeWithFallback("get_progress_settings", undefined, async () => ({
+    enabled: false,
+    provider: "bocha",
+    base_url: "",
+    api_key: "",
+  }));
+}
+
+/** 保存进度表相关设置（联网搜索配置） */
+export async function setProgressSettings(
+  webSearch: ProgressWebSearchConfig
+): Promise<void> {
+  return invokeDirect<void>("set_progress_settings", { webSearch });
+}
+
+/**
+ * AI 生成一份进度表草稿（不自动落盘，预览确认后再 saveProgressTable）。
+ * useWeb=true 时联网查询最新考研大纲；未配置联网则回退内置考纲。
+ */
+export function generateProgressTable(
+  subject: string,
+  examType: string,
+  name: string,
+  useWeb: boolean
+): Promise<ProgressTable> {
+  return aiInvoke<ProgressTable>({
+    command: "generate_progress_table",
+    label: `AI 生成进度表（${subject}）`,
+    args: { subject, examType, name, useWeb },
+    cancelKey: AI_CANCEL_KEYS.assistant,
+    timeoutMs: 240_000,
+    timeoutMessage: `AI 生成进度表超时（超过 240 秒）。请检查 AI Provider 配置或网络连接。`,
+  });
+}
+
+/** 供导出：构造便携格式的 JSON 字符串 */
+export function serializeProgressTableExport(
+  subject: string,
+  name: string,
+  nodes: ProgressNode[]
+): string {
+  const payload = {
+    type: "studyagent.progress_table",
+    version: 1,
+    subject,
+    name,
+    nodes,
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+/** 校验并解析导入的进度表 JSON 文本 */
+export function parseProgressTableExport(raw: string): {
+  subject: string;
+  name: string;
+  nodes: ProgressNode[];
+} {
+  const data = JSON.parse(raw);
+  if (!data || (data as any).type !== "studyagent.progress_table") {
+    throw new Error("不是有效的进度表文件");
+  }
+  if (!Array.isArray(data.nodes)) {
+    throw new Error("进度表文件缺少节点数据");
+  }
+  const normSubject = (data.subject as string) || "";
+  const nodes: ProgressNode[] = (data.nodes as any[]).map((n) => ({
+    id: "",
+    title: (n.title ?? "").toString(),
+    phase: (n.phase ?? "").toString(),
+    status: ["pending", "learning", "mastered"].includes(n.status)
+      ? n.status
+      : "pending",
+    planned_date: n.planned_date ?? null,
+    note: (n.note ?? "").toString(),
+  }));
+  return {
+    subject: normSubject,
+    name: (data.name ?? `${normSubject || "科目"}进度表`).toString(),
+    nodes,
+  };
 }
 
 // ── Onboarding ──

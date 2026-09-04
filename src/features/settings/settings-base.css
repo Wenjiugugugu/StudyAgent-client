@@ -1664,3 +1664,79 @@
 .settings-view .mcp-tips-fade-leave-from {
   max-height: 600px;
 }
+
+/* ── 学科时间分配 ── */
+.settings-view .alloc-total-hint {
+  margin: 0 0 var(--space-3);
+}
+
+.settings-view .alloc-row {
+  padding-bottom: 2px;
+}
+
+.settings-view .alloc-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.settings-view .alloc-slider {
+  flex: 1;
+  width: 100%;
+  appearance: auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.settings-view .alloc-percent {
+  min-width: 3.5em;
+  text-align: right;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.settings-view .alloc-bar {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.settings-view .alloc-bar-seg {
+  height: 100%;
+  min-width: 0;
+  transition: width var(--transition-fast);
+}
+
+.settings-view .alloc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.settings-view .alloc-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.settings-view .alloc-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.settings-view .alloc-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+

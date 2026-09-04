@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import SideBar from "./SideBar.vue";
 import TitleBar from "@/components/TitleBar.vue";
+import ProductTour from "@/features/tour/ProductTour.vue";
 
 const route = useRoute();
 const settingsStore = useSettingsStore();
@@ -194,6 +195,9 @@ onMounted(() => {
         </div>
       </main>
     </div>
+
+    <!-- 新手产品导览（首次完成引导后展示一次） -->
+    <ProductTour />
   </div>
 </template>
 

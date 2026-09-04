@@ -269,6 +269,7 @@ impl<'a> Planner<'a> {
         let settings = crate::load_settings(data_dir);
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
+        let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
         let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
@@ -284,6 +285,7 @@ impl<'a> Planner<'a> {
             &week_plan.meta.week_start,
             &rest_days,
             &subject_start_dates,
+            subject_time_allocation.as_ref(),
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
@@ -600,6 +602,7 @@ impl<'a> Planner<'a> {
         let settings = crate::load_settings(data_dir);
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
+        let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
         let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
@@ -615,6 +618,7 @@ impl<'a> Planner<'a> {
             &week_plan.meta.week_start,
             &rest_days,
             &subject_start_dates,
+            subject_time_allocation.as_ref(),
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
@@ -869,6 +873,7 @@ impl<'a> Planner<'a> {
         // 2. 构建周计划 prompt
         let rest_days = settings.rest_days();
         let subject_start_dates = settings.subject_start_dates();
+        let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
         let standard_granularity = settings.standard_granularity();
         let enable_review_tasks = settings.enable_review_tasks();
@@ -887,6 +892,7 @@ impl<'a> Planner<'a> {
             &week_end,
             &rest_days,
             &subject_start_dates,
+            subject_time_allocation.as_ref(),
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
@@ -1149,6 +1155,7 @@ impl<'a> Planner<'a> {
         week_end: &str,
         rest_days: &[String],
         subject_start_dates: &[(&'static str, String)],
+        subject_time_allocation: Option<&std::collections::HashMap<String, f64>>,
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
@@ -1290,12 +1297,40 @@ impl<'a> Planner<'a> {
         );
         prompt.push_str("- 一条任务 = 单一主旨的同动作学习单元。不同学习动作（如背诵/阅读/分析/做题/听课）即使总时长合理也必须拆为独立任务，不得用 + 拼接；判定：该单元完成后能否单独勾选完成？能 → 独立成条。\n\n");
 
+        // 各科学时分配（用户配置占比，重要约束）：按占比给出每科每周/每日学时，
+        // 并要求各科 subject_allocations 的 hours 按占比分配
+        if let Some(allocation) = subject_time_allocation {
+            let study_days = 7usize.saturating_sub(rest_days.len());
+            prompt.push_str("## 各科学时分配（用户配置，重要）\n");
+            prompt.push_str(&format!(
+                "- 用户为各科配置了学习时间占比（合计 100%，基准：每日有效目标学时 {:.2}h × 每周 {} 个学习日）：\n",
+                effective_target_hours, study_days
+            ));
+            for (key, cn) in [
+                ("math", "数学"),
+                ("english", "英语"),
+                ("politics", "政治"),
+                ("professional", "专业课"),
+            ] {
+                if let Some(share) = allocation.get(key) {
+                    let weekly = effective_target_hours * study_days as f64 * share / 100.0;
+                    let daily = effective_target_hours * share / 100.0;
+                    prompt.push_str(&format!(
+                        "- {}：占比 {:.0}%（每周约 {:.1}h，每日约 {:.1}h）\n",
+                        cn, share, weekly, daily
+                    ));
+                }
+            }
+            prompt.push_str("- 要求：各科 subject_allocations 的 hours 之和应按上述占比分配；占比为 0 的科目本周不安排任务；未开始的科目（开始日期晚于本周日）即使占比 > 0 也不得安排。\n\n");
+        }
+
         // 每科任务数确定性预算（每科至少 1 条，条数多了才按时长权重分散）
         let per_subject_budget = subject_task_budget(
             state,
             effective_daily_task_count,
             week_end,
             subject_start_dates,
+            subject_time_allocation,
         );
         if !per_subject_budget.is_empty() {
             // 去掉分配数为 0 的科目，避免给 AI 造成"竟有空科"的误导
@@ -1305,10 +1340,16 @@ impl<'a> Planner<'a> {
                 .map(|(k, n)| format!("{} {} 条", planner_subject_cn(k), n))
                 .collect();
             if !nonzero.is_empty() {
+                let distribution_note = if subject_time_allocation.is_some() {
+                    "（按用户配置的占比分配；占比为 0 的科目不安排；每日总数不足以覆盖所有科目时，优先高占比科目）"
+                } else {
+                    "（每科至少 1 条；每日总数不足以覆盖所有科目时，优先高时长科目）"
+                };
                 prompt.push_str(&format!(
-                    "- 每日任务在各科的分布参考：{}（每科至少 1 条；每日总数不足以覆盖所有科目时，优先高时长科目）\n",
-                    nonzero.join("，")
+                    "- 每日任务在各科的分布参考：{}\n",
+                    distribution_note
                 ));
+                prompt.push_str(&format!("  具体条数：{}\n", nonzero.join("，")));
             }
         }
 
@@ -1453,6 +1494,21 @@ impl<'a> Planner<'a> {
 
         // 各科状态
         prompt.push_str("## 当前各科状态\n\n");
+        // 每周时长展示：配置了占比时按「每日有效目标学时 × 学习日 × 占比」推导；
+        // 未配置时回退 State 中的周学时（旧行为）
+        let study_days_total = 7usize.saturating_sub(rest_days.len());
+        let weekly_display = |key: &str, fallback: f64| -> String {
+            subject_time_allocation
+                .and_then(|a| a.get(key))
+                .map(|share| {
+                    format!(
+                        "{:.1}h（占比 {:.0}%）",
+                        effective_target_hours * study_days_total as f64 * share / 100.0,
+                        share
+                    )
+                })
+                .unwrap_or_else(|| format!("{}h", fallback))
+        };
         let math_label = state
             .subjects
             .math
@@ -1462,10 +1518,10 @@ impl<'a> Planner<'a> {
             .map(|v| format!("数学（{}）", v))
             .unwrap_or_else(|| "数学".to_string());
         prompt.push_str(&format!(
-            "### {}\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            "### {}\n- 阶段: {:?}\n- 每周时长: {}\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
             math_label,
             state.subjects.math.phase,
-            state.subjects.math.weekly_hours,
+            weekly_display("math", state.subjects.math.weekly_hours),
             state.subjects.math.target_score,
             state.subjects.math.current_focus,
             state.subjects.math.weak_chapters,
@@ -1474,9 +1530,9 @@ impl<'a> Planner<'a> {
             if state.subjects.math.active { "活跃" } else { "未启动" }
         ));
         prompt.push_str(&format!(
-            "### 英语\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            "### 英语\n- 阶段: {:?}\n- 每周时长: {}\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
             state.subjects.english.phase,
-            state.subjects.english.weekly_hours,
+            weekly_display("english", state.subjects.english.weekly_hours),
             state.subjects.english.target_score,
             state.subjects.english.current_focus,
             state.subjects.english.weak_chapters,
@@ -1485,10 +1541,10 @@ impl<'a> Planner<'a> {
             if state.subjects.english.active { "活跃" } else { "未启动" }
         ));
         prompt.push_str(&format!(
-            "### 专业课（{}）\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
+            "### 专业课（{}）\n- 阶段: {:?}\n- 每周时长: {}\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: {}\n\n",
             state.subjects.professional.name.as_ref().unwrap_or(&"专业课".to_string()),
             state.subjects.professional.phase,
-            state.subjects.professional.weekly_hours,
+            weekly_display("professional", state.subjects.professional.weekly_hours),
             state.subjects.professional.target_score,
             state.subjects.professional.current_focus,
             state.subjects.professional.weak_chapters,
@@ -1498,9 +1554,9 @@ impl<'a> Planner<'a> {
         ));
         if state.subjects.politics.active {
             prompt.push_str(&format!(
-                "### 政治\n- 阶段: {:?}\n- 每周时长: {}h\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: 活跃\n\n",
+                "### 政治\n- 阶段: {:?}\n- 每周时长: {}\n- 目标分数: {}\n- 当前重点: {}\n- 薄弱章节: {:?}\n- 已完成: {:?}\n- 教材: {}\n- 状态: 活跃\n\n",
                 state.subjects.politics.phase,
-                state.subjects.politics.weekly_hours,
+                weekly_display("politics", state.subjects.politics.weekly_hours),
                 state.subjects.politics.target_score,
                 state.subjects.politics.current_focus,
                 state.subjects.politics.weak_chapters,
@@ -1958,6 +2014,7 @@ impl<'a> Planner<'a> {
         week_start: &str,
         rest_days: &[String],
         subject_start_dates: &[(&'static str, String)],
+        subject_time_allocation: Option<&std::collections::HashMap<String, f64>>,
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
@@ -2153,6 +2210,32 @@ impl<'a> Planner<'a> {
             }
         ));
 
+        // 各科学时分配（用户配置占比，重要约束）：重排剩余天数时按占比分配各科学时
+        if let Some(allocation) = subject_time_allocation {
+            let study_days = 7usize.saturating_sub(rest_days.len());
+            prompt.push_str("## 各科学时分配（用户配置，重要）\n");
+            prompt.push_str(&format!(
+                "- 用户为各科配置了学习时间占比（合计 100%，基准：每日目标学时 {:.2}h × 每周 {} 个学习日）：\n",
+                daily_target_hours, study_days
+            ));
+            for (key, cn) in [
+                ("math", "数学"),
+                ("english", "英语"),
+                ("politics", "政治"),
+                ("professional", "专业课"),
+            ] {
+                if let Some(share) = allocation.get(key) {
+                    let weekly = daily_target_hours * study_days as f64 * share / 100.0;
+                    let daily = daily_target_hours * share / 100.0;
+                    prompt.push_str(&format!(
+                        "- {}：占比 {:.0}%（每周约 {:.1}h，每日约 {:.1}h）\n",
+                        cn, share, weekly, daily
+                    ));
+                }
+            }
+            prompt.push_str("- 要求：重排后各科 subject_allocations 的 hours 之和应按上述占比分配；占比为 0 的科目不安排任务；未开始的科目（开始日期晚于本周日）即使占比 > 0 也不得安排。\n\n");
+        }
+
         // 本周特殊情况排除日期（重排时也必须遵守）
         if !excluded_days.is_empty() {
             prompt.push_str("\n### 本周特殊情况排除日期\n");
@@ -2332,6 +2415,7 @@ impl<'a> Planner<'a> {
         week_start: &str,
         rest_days: &[String],
         subject_start_dates: &[(&'static str, String)],
+        subject_time_allocation: Option<&std::collections::HashMap<String, f64>>,
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
@@ -2477,6 +2561,32 @@ impl<'a> Planner<'a> {
                 "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）"
             }
         ));
+
+        // 各科学时分配（用户配置占比，重要约束）：分摊排除日任务时也须按占比分配各科学时
+        if let Some(allocation) = subject_time_allocation {
+            let study_days = 7usize.saturating_sub(rest_days.len());
+            prompt.push_str("## 各科学时分配（用户配置，重要）\n");
+            prompt.push_str(&format!(
+                "- 用户为各科配置了学习时间占比（合计 100%，基准：每日目标学时 {:.2}h × 每周 {} 个学习日）：\n",
+                daily_target_hours, study_days
+            ));
+            for (key, cn) in [
+                ("math", "数学"),
+                ("english", "英语"),
+                ("politics", "政治"),
+                ("professional", "专业课"),
+            ] {
+                if let Some(share) = allocation.get(key) {
+                    let weekly = daily_target_hours * study_days as f64 * share / 100.0;
+                    let daily = daily_target_hours * share / 100.0;
+                    prompt.push_str(&format!(
+                        "- {}：占比 {:.0}%（每周约 {:.1}h，每日约 {:.1}h）\n",
+                        cn, share, weekly, daily
+                    ));
+                }
+            }
+            prompt.push_str("- 要求：分摊后各科 subject_allocations 的 hours 之和应按上述占比分配；占比为 0 的科目不安排任务；未开始的科目（开始日期晚于本周日）即使占比 > 0 也不得安排。\n\n");
+        }
 
         // 本周所有排除日（重排时必须遵守）
         if !all_excluded_days.is_empty() {
@@ -2819,8 +2929,15 @@ fn subject_task_budget(
     total: i64,
     week_end: &str,
     subject_start_dates: &[(&'static str, String)],
+    allocation: Option<&std::collections::HashMap<String, f64>>,
 ) -> Vec<(crate::data::state::SubjectKey, i64)> {
-    crate::core::planning::pure::subject_task_budget(state, total, week_end, subject_start_dates)
+    crate::core::planning::pure::subject_task_budget(
+        state,
+        total,
+        week_end,
+        subject_start_dates,
+        allocation,
+    )
 }
 type MemoryReviewItem = crate::core::planning::pure::MemoryReviewItem;
 fn memory_curve_review_items(
@@ -3770,7 +3887,7 @@ mod tests {
     fn test_subject_task_budget_at_least_one_when_slots_available() {
         let s = task_budget_state();
         // 3 个已开课科目，每日 3 条：正好每科 1 条
-        let budget = subject_task_budget(&s, 3, "2026-08-09", &[]);
+        let budget = subject_task_budget(&s, 3, "2026-08-09", &[], None);
         assert_eq!(budget.len(), 3);
         let sum: i64 = budget.iter().map(|(_, n)| n).sum();
         assert_eq!(sum, 3);
@@ -3781,7 +3898,7 @@ mod tests {
     fn test_subject_task_budget_spreads_extra_by_weight() {
         let s = task_budget_state();
         // 每日 6 条：先每科 1 条，多余 3 条按 10/5/8 权重分摊，总和严格等于 6
-        let budget = subject_task_budget(&s, 6, "2026-08-09", &[]);
+        let budget = subject_task_budget(&s, 6, "2026-08-09", &[], None);
         let sum: i64 = budget.iter().map(|(_, n)| n).sum();
         assert_eq!(sum, 6);
         assert!(budget.iter().all(|(_, n)| *n >= 1), "每科至少 1 条");
@@ -3803,7 +3920,7 @@ mod tests {
     fn test_subject_task_budget_fewer_slots_than_subjects_weights_only() {
         let s = task_budget_state();
         // 每日 1 条 < 3 个科目：只按权重给 1 条给时长最高的数学
-        let budget = subject_task_budget(&s, 1, "2026-08-09", &[]);
+        let budget = subject_task_budget(&s, 1, "2026-08-09", &[], None);
         let sum: i64 = budget.iter().map(|(_, n)| n).sum();
         assert_eq!(sum, 1);
         let math = budget
@@ -3819,7 +3936,7 @@ mod tests {
         let s = task_budget_state();
         // 数学开始日期晚于本周，应被排除
         let starts = vec![("math", "2026-08-12".to_string())];
-        let budget = subject_task_budget(&s, 4, "2026-08-09", &starts);
+        let budget = subject_task_budget(&s, 4, "2026-08-09", &starts, None);
         assert!(
             !budget.iter().any(|(k, _)| *k == SubjectKey::Math),
             "未开课的数学不应进入分配"
