@@ -933,6 +933,32 @@ export function applyProgressStatuses(
   return invokeDirect<number>("apply_progress_statuses", { subject, changes });
 }
 
+/**
+ * 由「学到第几章」构建单张表的状态变更（onboarding 引导用）：
+ * 选中章节 id 之前的全部知识点 → basic（已学），选中章节节点本身 → learning。
+ * 表中节点数组顺序即学习顺序；节点 id 须为已落盘表返回的真实 id。
+ */
+export function buildChangesFromReachedChapter(
+  table: ProgressTable,
+  reachedChapterId: string
+): ProgressStatusChange[] {
+  const changes: ProgressStatusChange[] = [];
+  const chIdx = table.nodes.findIndex(
+    (n) => n.id === reachedChapterId && n.level === "chapter"
+  );
+  if (chIdx < 0) return changes;
+  for (let i = 0; i < chIdx; i++) {
+    const n = table.nodes[i];
+    if (n.level !== "knowledge") continue;
+    changes.push({ table_id: table.id, node_id: n.id, status: "basic" });
+  }
+  const ch = table.nodes[chIdx];
+  if (ch && ch.status === "pending") {
+    changes.push({ table_id: table.id, node_id: ch.id, status: "learning" });
+  }
+  return changes;
+}
+
 /** 单张进度表的「学到第几章」覆盖输入（批量更改进度） */
 export interface BatchTableCoverage {
   table_id: string;
@@ -1022,6 +1048,10 @@ export function parseProgressTableExport(raw: string): {
       : "pending",
     planned_date: n.planned_date ?? null,
     note: (n.note ?? "").toString(),
+    estimated_hours:
+      typeof n.estimated_hours === "number" && Number.isFinite(n.estimated_hours)
+        ? n.estimated_hours
+        : null,
   }));
   return {
     subject: normSubject,

@@ -17,7 +17,8 @@ use std::path::Path;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
-use crate::data::briefing::{BriefingData, BriefingFile, BriefingMeta};
+use crate::data::briefing::{BriefingData, BriefingFile, BriefingMeta, SubjectEstimation};
+use crate::data::progress_tables::{NodeLevel, NodeStatus, ProgressIndex};
 use crate::data::records::ReviewFile;
 use crate::data::state::StudyState;
 use crate::data::{now_string, DataResult};
@@ -83,6 +84,9 @@ impl<'a> BriefingAgent<'a> {
         // 4. 读取设置（用于考试日期、每周学习时长等）
         let settings = crate::load_settings(data_dir);
 
+        // 4.5 读取进度表索引（供「阶段估时」按已完成/剩余知识点数估时）
+        let progress_index = crate::data::progress_tables::load_progress_index(data_dir);
+
         // 5. 构建简报 prompt
         let prompt = self.build_briefing_prompt(
             &state,
@@ -91,6 +95,7 @@ impl<'a> BriefingAgent<'a> {
             target_date,
             based_on_review_date,
             &settings,
+            &progress_index,
         );
 
         crate::data::write_ai_debug_log(
@@ -182,6 +187,7 @@ impl<'a> BriefingAgent<'a> {
         target_date: &str,
         based_on_review_date: &str,
         settings: &crate::AppSettings,
+        progress_index: &ProgressIndex,
     ) -> String {
         let mut prompt = String::new();
 
@@ -328,6 +334,19 @@ impl<'a> BriefingAgent<'a> {
                     subj.completed.len(),
                     subj.completed
                 ));
+                // 进度表统计：已完成/剩余知识点数 + 剩余预估总时长（供 AI 更准确地估时）
+                if let Some((done, total)) = progress_table_summary(progress_index, key) {
+                    let remain_hours = progress_table_remaining_hours(progress_index, key)
+                        .map(|h| format!("，预估共需约 {} 小时", h))
+                        .unwrap_or_default();
+                    p.push_str(&format!(
+                        "- 进度表: 已完成 {}/{} 个知识点（剩余 {} 个{}）\n",
+                        done,
+                        total,
+                        total.saturating_sub(done),
+                        remain_hours
+                    ));
+                }
                 if !subj.weak_chapters.is_empty() {
                     p.push_str(&format!("- 薄弱章节: {:?}\n", subj.weak_chapters));
                 }
@@ -356,30 +375,193 @@ impl<'a> BriefingAgent<'a> {
 
         // 生成要求
         prompt.push_str("## 生成要求\n");
-        prompt.push_str("1. **greeting**：2-3 句的今日寄语，理性策略型文风。");
-        if yesterday_review.is_some() {
-            prompt.push_str("前句客观点出昨日情况（用完成率/困难类型/亮点等具体数据，不用「加油」「你可以的」等空泛口号），");
-            prompt.push_str(
-                "中句给出今日具体策略（先做什么、再做什么、注意什么，含章节名或动作动词），",
-            );
-            prompt.push_str("末句可给一句简短方向性提示（如剩余天数、节奏建议）。");
-            prompt.push_str(
-                "若依据中没有提供学习时长数据，则在寄语中不要提及时间/时长相关内容（如「昨日未计时」「没有计时记录」等表述一律不要出现）。\n",
-            );
-        } else {
-            prompt.push_str("用户昨日未提交复盘，前句客观说明未复盘这一事实（不虚构数据），");
-            prompt.push_str("中句给出今日策略，末句提醒今日记得完成复盘。\n");
-        }
-        prompt.push_str("2. **estimations**：为每个 active 科目估算「学完当前阶段还需多少天」。");
+        prompt.push_str("1. **estimations**：为每个 active 科目估算「学完当前阶段还需多少天」。");
         prompt.push_str(&format!(
-            "参考因素：剩余备考天数（{} 天）、每周学习天数（{}）、各科每周时长、当前已完成章节数与教材总体量。",
+            "参考因素：剩余备考天数（{} 天）、每周学习天数（{}）、各科每周时长、各科进度表的已完成/剩余知识点数（优先按剩余知识点数与每知识点所需的专注时长估算）。",
             remaining_days, study_days_per_week
         ));
         prompt.push_str("estimated_days_to_finish 为正整数；note 用一句话说明依据（如「按每周 6h 推进，约 2 周完成基础阶段」）。\n");
-        prompt.push_str("3. 严格输出 JSON，不包裹 ```json 代码块。结构：{\"greeting\": \"...\", \"estimations\": [{\"subject\": \"...\", \"current_chapter\": \"...\", \"estimated_days_to_finish\": N, \"note\": \"...\"}]}。\n");
+        prompt.push_str("2. 严格输出 JSON，不包裹 ```json 代码块。结构：{\"estimations\": [{\"subject\": \"...\", \"current_chapter\": \"...\", \"estimated_days_to_finish\": N, \"note\": \"...\"}]}。\n");
 
         prompt
     }
+}
+
+// ============================================================================
+// 进度表统计（供「阶段估时」参考）
+// ============================================================================
+
+/// 从进度表索引统计某科进度，返回 `(已完成知识点数, 总知识点数)`。
+///
+/// 统计该科全部进度表（专业课含总表与各教材表）的 knowledge 节点；
+/// "已完成" = 状态达「基础」及以上（basic/reinforcing/mastered），
+/// learning/pending 视为剩余。无进度表或无知识点时返回 None。
+fn progress_table_summary(
+    index: &ProgressIndex,
+    subject: &str,
+) -> Option<(usize, usize)> {
+    let set = index.subjects.get(subject)?;
+    if set.tables.is_empty() {
+        return None;
+    }
+    let mut done = 0usize;
+    let mut total = 0usize;
+    for table in &set.tables {
+        for node in &table.nodes {
+            if node.level != NodeLevel::Knowledge {
+                continue;
+            }
+            total += 1;
+            if node.status.rank() >= NodeStatus::Basic.rank() {
+                done += 1;
+            }
+        }
+    }
+    if total == 0 {
+        None
+    } else {
+        Some((done, total))
+    }
+}
+
+/// 统计某科**启用**进度表剩余（pending/learning）知识点的预估总时长（小时）。
+///
+/// 依据节点的隐藏预估值 `estimated_hours`（缺失时按标题确定性估算回退），
+/// 供简报 AI prompt 与无 AI 兜底估时共用，保证「阶段估时」口径一致。
+/// 无启用表或无剩余知识点时返回 None。
+fn progress_table_remaining_hours(index: &ProgressIndex, subject: &str) -> Option<f64> {
+    use crate::data::progress_tables::ProgressNode;
+
+    let set = index.subjects.get(subject)?;
+    let active_id = if set.active_id.is_empty() {
+        set.tables.first()?.id.clone()
+    } else {
+        set.active_id.clone()
+    };
+    let table = set.tables.iter().find(|t| t.id == active_id)?;
+    let remaining: Vec<&ProgressNode> = table
+        .nodes
+        .iter()
+        .filter(|n| n.level == NodeLevel::Knowledge)
+        .filter(|n| matches!(n.status, NodeStatus::Pending | NodeStatus::Learning))
+        .collect();
+    if remaining.is_empty() {
+        return None;
+    }
+    let total: f64 = remaining
+        .iter()
+        .map(|n| {
+            n.estimated_hours.unwrap_or_else(|| {
+                crate::core::estimated_time::estimate_knowledge_hours(subject, &n.title)
+            })
+        })
+        .sum();
+    Some(crate::core::estimated_time::round1(total))
+}
+
+// ============================================================================
+// 确定性「阶段估时」（无 AI 兜底）
+// ============================================================================
+
+/// 无 AI 时的确定性「阶段估时」兜底，供首页在未配置 AI / AI 不可用 / 未生成简报时正常显示估时。
+///
+/// 依据内置/启用进度表的**隐藏预估时长**（`ProgressNode.estimated_hours`，缺失时按标题
+/// 确定性估算），逐知识点按自适应周计划学到的复合调整系数（`EstimateAdjustment`：
+/// 实际/预估时间比效率 + 任务量反馈 + 完成率 + 置信度）校准后求和得到「剩余预估总时长」，
+/// 再除以该科每日学习时长，得到「预计还需多少天学完剩余内容」。
+///
+/// 与 AI 简报 `estimations` 结构一致，前端无需区分来源即可展示。
+/// 仅在某科存在启用进度表且有剩余知识点时返回该科；无任何数据时返回空。
+pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
+    use crate::core::estimated_time::{adjust_hours, estimate_knowledge_hours, EstimateAdjustment};
+    use crate::data::progress_tables::{load_progress_index, NodeLevel, NodeStatus, ProgressNode};
+
+    let state = crate::data::state::read_state_or_default(data_dir);
+    let settings = crate::load_settings(data_dir);
+    let index = load_progress_index(data_dir);
+    let adaptive = crate::core::adaptive_planner::read_adaptive_state(data_dir).unwrap_or_default();
+    let study_days = (7usize.saturating_sub(settings.rest_days().len())).max(1) as f64;
+
+    let subjects = [
+        ("math", &state.subjects.math),
+        ("english", &state.subjects.english),
+        ("politics", &state.subjects.politics),
+        ("professional", &state.subjects.professional),
+    ];
+    let mut out = Vec::new();
+    for (key, subj) in subjects {
+        if !subj.active {
+            continue;
+        }
+        let Some(set) = index.subjects.get(key) else {
+            continue;
+        };
+        let active_id = if set.active_id.is_empty() {
+            match set.tables.first() {
+                Some(t) => t.id.clone(),
+                None => continue,
+            }
+        } else {
+            set.active_id.clone()
+        };
+        let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+            continue;
+        };
+        // 待学知识点（pending/learning 视为剩余）
+        let pending: Vec<&ProgressNode> = table
+            .nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Knowledge)
+            .filter(|n| matches!(n.status, NodeStatus::Pending | NodeStatus::Learning))
+            .collect();
+        if pending.is_empty() {
+            continue;
+        }
+        // 复合调整系数：从自适应周计划状态读取（效率 + 反馈），完成率无周分析上下文时取中性 0.85
+        let entry = adaptive.subjects.get(key).cloned().unwrap_or_default();
+        let adjustment = EstimateAdjustment {
+            efficiency_factor: entry.estimation_factor,
+            feedback_signal: adaptive.workload_ema,
+            completion_rate: 0.85,
+            confidence: if entry.estimation_samples > 0.0 { 0.6 } else { 0.35 },
+        };
+        // 剩余预估总时长（逐知识点调整后求和）
+        let remaining_hours: f64 = pending
+            .iter()
+            .map(|n| {
+                let base = n
+                    .estimated_hours
+                    .unwrap_or_else(|| estimate_knowledge_hours(key, &n.title));
+                adjust_hours(base, &adjustment, &n.title)
+            })
+            .sum();
+        // 该科每日学习时长：周学时 / 每周学习天数
+        let daily_hours = if subj.weekly_hours > 0.0 {
+            subj.weekly_hours / study_days
+        } else {
+            0.0
+        };
+        if daily_hours <= 0.0 || remaining_hours <= 0.0 {
+            continue;
+        }
+        let days = (remaining_hours / daily_hours).ceil() as i32;
+        let current_chapter = pending
+            .iter()
+            .find(|n| !n.phase.trim().is_empty())
+            .map(|n| n.phase.trim().to_string())
+            .unwrap_or_default();
+        let note = format!(
+            "按内置考纲预估（含效率校准），剩余约 {:.0}h，日均约 {:.1}h",
+            remaining_hours, daily_hours
+        );
+        out.push(SubjectEstimation {
+            subject: key.to_string(),
+            current_chapter,
+            estimated_days_to_finish: days,
+            note,
+        });
+    }
+    out
 }
 
 // ============================================================================
@@ -477,5 +659,117 @@ mod tests {
         let data = parse_briefing_json(json).unwrap();
         assert_eq!(data.estimations[0].subject, "english");
         assert_eq!(data.estimations[0].estimated_days_to_finish, 0);
+    }
+
+    #[test]
+    fn progress_table_summary_counts_done_and_total() {
+        use crate::data::progress_tables::{
+            ProgressNode, ProgressTable, SubjectProgressSet, WebSearchConfig,
+        };
+        use std::collections::HashMap;
+
+        let node = |title: &str, level: NodeLevel, status: NodeStatus| ProgressNode {
+            id: title.to_string(),
+            title: title.to_string(),
+            level,
+            parent_id: None,
+            phase: "章".to_string(),
+            status,
+            planned_date: None,
+            note: String::new(),
+            estimated_hours: None,
+        };
+        let table = ProgressTable {
+            id: "t1".into(),
+            subject: "math".into(),
+            variant: "数二".into(),
+            name: "测试".into(),
+            origin: crate::data::progress_tables::TableOrigin::Custom,
+            created_at: String::new(),
+            updated_at: String::new(),
+            nodes: vec![
+                node("章节", NodeLevel::Chapter, NodeStatus::Pending),
+                node("k1", NodeLevel::Knowledge, NodeStatus::Basic),
+                node("k2", NodeLevel::Knowledge, NodeStatus::Pending),
+                node("k3", NodeLevel::Knowledge, NodeStatus::Mastered),
+            ],
+        };
+        let mut subjects = HashMap::new();
+        subjects.insert(
+            "math".to_string(),
+            SubjectProgressSet {
+                active_variant: "数二".into(),
+                active_id: "t1".into(),
+                tables: vec![table],
+            },
+        );
+        let index = ProgressIndex {
+            subjects,
+            web_search: WebSearchConfig::default(),
+        };
+        // basic + mastered = 2 个已完成；章节节点不计入总数
+        let (done, total) = progress_table_summary(&index, "math").expect("应有统计");
+        assert_eq!(done, 2);
+        assert_eq!(total, 3);
+        // 无进度表的科目返回 None
+        assert!(progress_table_summary(&index, "english").is_none());
+    }
+
+    #[test]
+    fn deterministic_estimations_falls_back_without_ai() {
+        // 构造临时数据目录：state（math 启用，周学时 12）+ 内置考纲进度表
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent_briefing_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("state")).unwrap();
+        std::fs::create_dir_all(dir.join("progress_tables")).unwrap();
+
+        std::fs::write(
+            dir.join("state").join("current.state"),
+            "[subjects.math]\nactive = true\nweekly_hours = 12.0\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("progress_tables").join("progress_index.json"),
+            r#"{
+  "subjects": {
+    "math": {
+      "active_variant": "数二",
+      "active_id": "t1",
+      "tables": [
+        {
+          "id": "t1", "subject": "math", "variant": "数二", "name": "数学内置",
+          "origin": "builtin", "created_at": "", "updated_at": "",
+          "nodes": [
+            {"id":"c1","title":"第一章","level":"chapter","parent_id":null,"phase":"第一章","status":"pending","planned_date":null,"note":"","estimated_hours":4.5},
+            {"id":"n1","title":"函数的概念","level":"knowledge","parent_id":"c1","phase":"第一章","status":"pending","planned_date":null,"note":"","estimated_hours":1.0},
+            {"id":"n2","title":"数列极限","level":"knowledge","parent_id":"c1","phase":"第一章","status":"basic","planned_date":null,"note":"","estimated_hours":1.5},
+            {"id":"n3","title":"微分中值定理","level":"knowledge","parent_id":"c1","phase":"第一章","status":"pending","planned_date":null,"note":"","estimated_hours":2.0}
+          ]
+        }
+      ]
+    }
+  },
+  "web_search": {"enabled": false, "provider": "", "base_url": "", "api_key": ""}
+}"#,
+        )
+        .unwrap();
+
+        let est = deterministic_estimations(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 仅 math 有启用表且有剩余知识点；n2 为 basic（已完成）不计入剩余
+        let math = est
+            .iter()
+            .find(|e| e.subject == "math")
+            .expect("应有 math 估时");
+        assert_eq!(math.current_chapter, "第一章");
+        // 剩余 = n1(1.0) + n3(2.0) = 3.0h；默认学习天数 6，math 日均 12/6=2h → 2 天
+        assert_eq!(math.estimated_days_to_finish, 2);
+        assert!(math.note.contains("内置考纲"));
+        // 无进度表的科目不输出
+        assert!(!est.iter().any(|e| e.subject == "english"));
     }
 }

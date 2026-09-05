@@ -4,6 +4,7 @@ import { useAnalyticsStore } from "@/stores/analytics";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import {
@@ -466,7 +467,39 @@ const showEmpty = computed(
 );
 const hasNoData = computed(() => {
   const t = store.learningTrend;
-  return !t || t.points.length === 0 || t.study_days === 0;
+  if (!t || t.points.length === 0) return true;
+  // 范围内存在计划/完成任务即视为有学习数据；
+  // study_days 统计有复盘或实际时长>0 的天，未记录时长时也可能为 0，故仍需兜底判断
+  return (
+    t.study_days === 0 &&
+    t.total_completed_tasks === 0 &&
+    t.total_planned_tasks === 0
+  );
+});
+
+// 全库是否存在任何学习记录（用于所选范围无数据时的引导）
+const hasAnyData = computed(
+  () => !!store.summary?.data_earliest_date || !!store.summary?.data_latest_date
+);
+
+/** 计算 YYYY-MM-DD 距今多少天（基于 UTC 换算，避免时区偏差） */
+function daysAgo(dateStr: string): number {
+  const now = new Date();
+  const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+    now.getDate()
+  ).padStart(2, "0")}`;
+  const ms = (a: string) => new Date(`${a}T00:00:00Z`).getTime();
+  return Math.round((ms(todayKey) - ms(dateStr)) / 86400000);
+}
+
+const emptyDescription = computed(() => {
+  const latest = store.summary?.data_latest_date;
+  if (!latest) {
+    return "尝试切换时间范围，或开始学习并提交复盘后再来查看";
+  }
+  const ago = daysAgo(latest);
+  const when = ago <= 0 ? "今天" : `${ago} 天前`;
+  return `所选范围内没有学习记录，你最近一次学习记录在 ${latest}（${when}）。可切换到「全部」查看历史分析。`;
 });
 
 async function refresh() {
@@ -532,8 +565,14 @@ onMounted(() => {
       <EmptyState
         v-if="hasNoData"
         title="所选范围内暂无学习数据"
-        description="尝试切换时间范围，或开始学习并提交复盘后再来查看"
-      />
+        :description="emptyDescription"
+      >
+        <template v-if="store.currentRange !== 'all' && hasAnyData" #actions>
+          <Button variant="primary" @click="store.setRange('all')">
+            查看全部历史数据
+          </Button>
+        </template>
+      </EmptyState>
 
       <template v-else>
         <!-- 区块1：学习量趋势 -->
@@ -545,10 +584,9 @@ onMounted(() => {
               class="exclude-toggle"
               title="开启后将从下方两个图表中排除休息日和特殊情况排除日（如出差/生病）"
             >
-              <input
-                type="checkbox"
-                :checked="store.excludeExemptDates"
-                @change="store.setExcludeExemptDates(($event.target as HTMLInputElement).checked)"
+              <Checkbox
+                :model-value="store.excludeExemptDates"
+                @change="(v) => store.setExcludeExemptDates(v)"
               />
               <span class="exclude-toggle-label">排除休息日/特殊情况</span>
             </label>
@@ -765,11 +803,6 @@ onMounted(() => {
 }
 .exclude-toggle:hover {
   background: var(--bg-tertiary);
-}
-.exclude-toggle input {
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--accent, #6366f1);
 }
 .exclude-toggle-label {
   font-weight: 500;

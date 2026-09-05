@@ -118,7 +118,7 @@ watch(
         target?.focus();
       });
     } else {
-      previouslyFocused?.focus();
+      previouslyFocused?.focus({ preventScroll: true });
       previouslyFocused = null;
     }
   }

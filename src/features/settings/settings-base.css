@@ -432,13 +432,6 @@
   cursor: pointer;
 }
 
-.settings-view .form-checkbox {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
 .settings-view .test-result {
   display: flex;
   align-items: center;

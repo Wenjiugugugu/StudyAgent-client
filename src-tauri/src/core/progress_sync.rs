@@ -664,30 +664,50 @@ fn apply_master_derivation(
         if kids.is_empty() {
             continue;
         }
+        let frac = sum / n as f64;
         let k = kids.len() as f64;
-        let n_adv = (k * (sum / n as f64)).round().min(k) as usize;
+        let n_adv = (k * frac).round().min(k) as usize;
 
+        // 板块内前 n_adv 个知识点 → max(现状, target)
         for (i, kid_id) in kids.iter().enumerate() {
             if i >= n_adv {
                 break;
             }
-            let n = match master.nodes.iter_mut().find(|n| n.id == *kid_id) {
-                Some(n) => n,
-                None => continue,
-            };
-            let ns = n.status.max_with(target);
-            if ns != n.status {
-                n.status = ns;
-                changed += 1;
-            }
-        }
-        if n_adv >= kids.len() {
-            if let Some(ch) = master.nodes.iter_mut().find(|n| n.id == *cid) {
-                let ns = ch.status.max_with(target);
-                if ns != ch.status {
-                    ch.status = ns;
+            if let Some(n) = master.nodes.iter_mut().find(|n| n.id == *kid_id) {
+                let ns = n.status.max_with(target);
+                if ns != n.status {
+                    n.status = ns;
                     changed += 1;
                 }
+            }
+        }
+        // 有推进但不足以推进最前一项到目标状态（如只学到第一章第几节）：把最前
+        // 一项标记为「学习中」，让总表体现「正在学」的阶段，而不是停留在待学。
+        if frac > 0.0 && n_adv == 0 {
+            if let Some(kid_id) = kids.first() {
+                if let Some(n) = master.nodes.iter_mut().find(|n| n.id == *kid_id) {
+                    let ns = n.status.max_with(NodeStatus::Learning);
+                    if ns != n.status {
+                        n.status = ns;
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        // 板块章节节点：聚合其下知识点当前最高状态（部分推进 → 学习中，全推进 → target）
+        let max_item = kids.iter().fold(NodeStatus::Pending, |acc, kid_id| {
+            master
+                .nodes
+                .iter()
+                .find(|n| n.id == *kid_id)
+                .map(|n| acc.max_with(n.status))
+                .unwrap_or(acc)
+        });
+        if let Some(ch) = master.nodes.iter_mut().find(|n| n.id == *cid) {
+            let ns = ch.status.max_with(max_item);
+            if ns != ch.status {
+                ch.status = ns;
+                changed += 1;
             }
         }
     }
@@ -783,6 +803,7 @@ mod tests {
             status: NodeStatus::Pending,
             planned_date: None,
             note: String::new(),
+            estimated_hours: None,
         };
         assert!(node_matches(
             &n,
@@ -804,6 +825,7 @@ mod tests {
             status: NodeStatus::Pending,
             planned_date: None,
             note: String::new(),
+            estimated_hours: None,
         };
         assert!(!node_matches(&n, &n.phase, "树与二叉树（二叉树遍历）"));
     }
@@ -840,6 +862,7 @@ mod tests {
                 status: NodeStatus::Pending,
                 planned_date: None,
                 note: String::new(),
+                estimated_hours: None,
             });
             for pi in 0..per_chapter {
                 nodes.push(ProgressNode {
@@ -851,6 +874,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 });
             }
         }
@@ -925,6 +949,89 @@ mod tests {
         assert_eq!(t.nodes[1].status, NodeStatus::Mastered); // 已掌握不被降级
         assert_eq!(t.nodes[2].status, NodeStatus::Basic);
         assert_eq!(t.nodes[3].status, NodeStatus::Basic); // 第二章章节节点
+    }
+
+    #[test]
+    fn batch_master_partial_learning_marks_learning_status() {
+        use crate::core::professional::{build_tables, find};
+        let exam = find("408计算机").expect("408 应可识别");
+        let mut index = ProgressIndex::default();
+        {
+            let set = index.subjects.entry("professional".to_string()).or_default();
+            set.active_variant = exam.short.to_string();
+            let mut tables = build_tables(&exam);
+            for t in tables.iter_mut() {
+                t.id = crate::data::progress_tables::new_progress_id("p", &t.name);
+            }
+            set.tables = tables;
+        }
+
+        // 操作系统教材（books[2]）：只学到第一章第 1 个知识点，本轮 = 学习中
+        let book_name = format!("{} · 教材：{}", exam.name, exam.books[2].name);
+        let (book_id, first_kid) = {
+            let set = index.subjects.get("professional").unwrap();
+            let book = set.tables.iter().find(|t| t.name == book_name).unwrap();
+            let first: &ProgressNode = book
+                .nodes
+                .iter()
+                .find(|n| n.level == NodeLevel::Chapter)
+                .unwrap();
+            let kid = book
+                .nodes
+                .iter()
+                .find(|n| {
+                    n.level == NodeLevel::Knowledge
+                        && n.parent_id.as_deref() == Some(first.id.as_str())
+                })
+                .unwrap();
+            (book.id.clone(), kid.id.clone())
+        };
+        {
+            let set = index.subjects.get_mut("professional").unwrap();
+            let book = set.tables.iter_mut().find(|t| t.id == book_id).unwrap();
+            let chs = chapter_ids(book);
+            apply_table_coverage(
+                book,
+                &TableCoverage {
+                    table_id: book_id.clone(),
+                    reached_chapter: Some(chs[0].clone()),
+                    current_full: false,
+                    current_points: vec![first_kid],
+                },
+                NodeStatus::Learning,
+            );
+        }
+
+        let changed = apply_master_derivation(
+            &mut index,
+            "professional",
+            &exam.short,
+            NodeStatus::Learning,
+        );
+        assert!(changed > 0, "部分学习也应推动总表进入「学习中」状态");
+
+        let master = index
+            .subjects
+            .get("professional")
+            .and_then(|s| s.tables.iter().find(|t| t.name.contains("总专业课进度表")))
+            .unwrap();
+        let os_chapter = master
+            .nodes
+            .iter()
+            .find(|n| n.level == NodeLevel::Chapter && n.phase == "操作系统")
+            .unwrap();
+        // 板块章节节点聚合其知识点状态 → 学习中
+        assert_eq!(os_chapter.status, NodeStatus::Learning);
+        // 板块内最前一项 → 学习中（体现「正在学」阶段，而非停留在待学）
+        let first_item = master
+            .nodes
+            .iter()
+            .find(|n| {
+                n.level == NodeLevel::Knowledge
+                    && n.parent_id.as_deref() == Some(os_chapter.id.as_str())
+            })
+            .unwrap();
+        assert_eq!(first_item.status, NodeStatus::Learning);
     }
 
     #[test]

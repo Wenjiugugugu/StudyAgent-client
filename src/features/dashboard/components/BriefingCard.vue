@@ -35,7 +35,6 @@ export interface BriefingView {
   regenerating: boolean;
   needYesterdayReview: boolean;
   withinMakeupWindow: boolean;
-  greeting: string;
   estimations: (SubjectEstimation & { subjectLabel: string })[];
   animated: boolean;
 }
@@ -174,13 +173,6 @@ defineEmits<{
         </Button>
       </div>
 
-      <!-- AI 寄语（大字引言式） -->
-      <div v-if="briefing.greeting" class="briefing-quote">
-        <span class="briefing-quote-mark">"</span>
-        <p class="briefing-quote-text">{{ briefing.greeting }}</p>
-        <span class="briefing-quote-mark closing">"</span>
-      </div>
-
       <!-- 今日任务清单 -->
       <div v-if="today.tasks.length > 0" class="briefing-section" @click="$emit('goToday')">
         <div class="briefing-section-title clickable-title">
@@ -210,8 +202,8 @@ defineEmits<{
         </ul>
       </div>
 
-      <!-- AI 各科估时 -->
-      <div v-if="briefing.estimations.length > 0 && briefing.yesterdayReviewExists" class="briefing-section">
+      <!-- AI 各科估时 / 确定性阶段估时（无 AI 时基于内置考纲隐藏预估时长兜底，不依赖昨日复盘） -->
+      <div v-if="briefing.estimations.length > 0" class="briefing-section">
         <div class="briefing-section-title">
           <TrendingUp :size="13" />
           <span>阶段估时</span>

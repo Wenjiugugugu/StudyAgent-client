@@ -1338,7 +1338,7 @@ pub(super) fn auto_block_prerelease(latest: &str, current: &str) -> Option<Strin
         return None;
     }
     Some(format!(
-        "当前版本 {} 为内部测试版本，正式版 {} 已发布，请立即更新到正式版后继续使用。",
+        "当前版本 {} 为内部测试版本，正式版 {} 已发布，请更新到正式版后继续使用。",
         current, latest
     ))
 }

@@ -27,12 +27,28 @@ const error = ref("");
 const index = ref<ProgressIndex | null>(null);
 /** 设置中考试类型解析出的「科目 → 默认方案」（如 数二 → math/数二） */
 const settingsVariants = ref<Record<string, string>>({});
+/** 首屏是否已加载完成：后续刷新走静默模式（保留现有 DOM 与滚动位置），避免切换方案时页面跳回顶部 */
+const initialLoaded = ref(false);
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
 async function reload() {
+  // 非首屏：静默刷新，不收起已验证的内容，避免切方案（英一↔英二等）整页弹回顶部
+  if (initialLoaded.value) {
+    try {
+      const [idx, variants] = await Promise.all([
+        api.listProgressTables(),
+        api.defaultProgressVariants(),
+      ]);
+      index.value = idx;
+      settingsVariants.value = variants;
+    } catch (e) {
+      error.value = `加载进度失败：${errMsg(e)}`;
+    }
+    return;
+  }
   loading.value = true;
   error.value = "";
   try {
@@ -46,6 +62,7 @@ async function reload() {
     error.value = `加载进度失败：${errMsg(e)}`;
   } finally {
     loading.value = false;
+    initialLoaded.value = true;
   }
 }
 
@@ -172,7 +189,10 @@ onMounted(reload);
         </div>
 
         <!-- 启用方案的进度表编辑器（不随方案重挂载，避免切方案时跳回顶部；组件内部监听 variant 静默刷新） -->
-        <div class="variant-panel">
+        <div
+          class="variant-panel"
+          :class="{ 'variant-panel--professional': s.key === 'professional' }"
+        >
           <ProgressTableView
             :key="s.key"
             :subject="s.key"
@@ -333,5 +353,11 @@ onMounted(reload);
 .variant-panel :deep(.progress-view) {
   height: 420px;
   min-height: 420px;
+}
+
+/* 专业课节点多（总表 + 各教材表），面板加高展示更多内容 */
+.variant-panel--professional :deep(.progress-view) {
+  height: 720px;
+  min-height: 720px;
 }
 </style>

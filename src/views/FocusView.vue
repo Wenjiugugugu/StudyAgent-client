@@ -235,7 +235,7 @@ onMounted(async () => {
           <Select
             v-model="focus.linkedTaskId"
             :disabled="todayTasks.length === 0"
-            :max-width="'240px'"
+            class="select-autowidth"
           >
             <option :value="null">不关联任务</option>
             <option v-for="t in todayTasks" :key="t.id" :value="t.id">
@@ -365,9 +365,8 @@ onMounted(async () => {
           </span>
           <Select
             v-else-if="canLink(s)"
-            class="session-link"
+            class="session-link select-autowidth"
             placeholder="关联任务"
-            :max-width="'150px'"
             :model-value="''"
             @update:model-value="(v) => linkSession(s, String(v ?? ''))"
           >

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import Card from "@/components/ui/Card.vue";
+import Select from "@/components/ui/Select.vue";
 import DatePicker from "@/components/ui/DatePicker.vue";
 import { Gauge } from "lucide-vue-next";
 import type { SettingsForm } from "../composables/useSettingsForm";
@@ -18,6 +19,20 @@ const derivedTaskCount = computed(() => {
   const gran = Math.max(0.5, props.form.standard_granularity || 1.5);
   return Math.max(1, Math.min(8, Math.round(target / gran)));
 });
+
+// Select 组件以字符串下发值，这里做 number ↔ string 转换
+const granularityDisplay = computed<string>({
+  get: () => String(props.form.standard_granularity ?? 1.5),
+  set: (v: string) => {
+    props.form.standard_granularity = Number(v);
+  },
+});
+const GRANULARITY_OPTIONS = [
+  { value: "1", label: "1 小时/条" },
+  { value: "1.25", label: "1.25 小时/条" },
+  { value: "1.5", label: "1.5 小时/条" },
+  { value: "2", label: "2 小时/条" },
+];
 </script>
 
 <template>
@@ -54,12 +69,11 @@ const derivedTaskCount = computed(() => {
           标准任务粒度
           <span class="field-hint">（高级设置，默认 1.5h/条 ≈ 2 个番茄钟）</span>
         </label>
-        <select v-model.number="form.standard_granularity" class="form-input">
-          <option :value="1">1 小时/条</option>
-          <option :value="1.25">1.25 小时/条</option>
-          <option :value="1.5">1.5 小时/条</option>
-          <option :value="2">2 小时/条</option>
-        </select>
+        <Select v-model="granularityDisplay">
+          <option v-for="opt in GRANULARITY_OPTIONS" :key="opt.value" :value="opt.value">
+            {{ opt.label }}
+          </option>
+        </Select>
         <p class="field-hint">粒度越小任务拆得越细（条数越多），越大越粗（条数越少）。</p>
       </div>
       <div class="form-field form-field-full">

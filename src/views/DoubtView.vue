@@ -320,7 +320,7 @@ async function handleSend() {
           id="textbook-select"
           v-model="selectedTextbookId"
           :disabled="textbooksLoading"
-          :max-width="'300px'"
+          class="select-autowidth"
         >
           <option value="">
             {{ textbooks.length > 0 ? "全部已导入教材（自动检索）" : "未导入教材（不检索，直接作答）" }}

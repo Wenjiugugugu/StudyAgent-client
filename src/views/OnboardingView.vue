@@ -5,7 +5,6 @@ import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
 import Select from "@/components/ui/Select.vue";
-import DatePicker from "@/components/ui/DatePicker.vue";
 import TimePicker from "@/components/ui/TimePicker.vue";
 import {
   Sparkles,
@@ -27,6 +26,16 @@ import {
   KeyRound,
 } from "lucide-vue-next";
 import type { AIProviderConfig, ProviderType } from "@/types";
+import type { SubjectTimeAllocation } from "@/types/settings";
+import type { SubjectKey } from "@/types/state";
+import type { ProgressNode, ProgressTable } from "@/types/progress";
+import {
+  ALLOCATION_KEYS,
+  SLIDER_STEP,
+  adjustAllocation,
+  deriveFromWeeklyHours,
+  normalizeAllocation,
+} from "@/features/settings/composables/timeAllocation";
 import * as api from "@/api";
 
 const router = useRouter();
@@ -109,14 +118,35 @@ const userName = ref("");
 const targetSchool = ref("");
 const targetMajor = ref("");
 // Subjects
+// 数学/英语/政治/专业课均为必考科目：数学/英语需选择版本，政治无版本概念，
+// 专业课需从统考科目或「其他/自命题」中选择
 const mathVersion = ref<"数一" | "数二" | "数三" | "">("");
-const englishVersion = ref<"英一" | "英二" | "英三" | "">("");
-const hasPolitics = ref(false);
-const hasProfessional = ref(false);
+const englishVersion = ref<"英一" | "英二" | "">("");
+const hasPolitics = ref(true);
+const hasProfessional = ref(true);
+// 专业课：从支持的统考科目中下拉选择；PROFESSIONAL_OTHER = 其他/自命题（可自由填写，不加载内置进度表）
+const professionalOptions = api.PROGRESS_VARIANTS.professional;
+const PROFESSIONAL_OTHER = "其他/自命题";
 const professionalName = ref("");
+const professionalCustomName = ref("");
+const professionalIsCustom = computed(
+  () => professionalName.value === PROFESSIONAL_OTHER
+);
+/** 专业课显示名：统考科目名 或 自定义名 */
+const professionalDisplayName = computed(() =>
+  professionalIsCustom.value
+    ? professionalCustomName.value.trim()
+    : professionalName.value
+);
 // Progress (per subject)
 const progressPhase = ref<Record<string, string>>({});
-const progressTextbook = ref<Record<string, string>>({});
+// 各科内置进度表草稿缓存（key = math/english/politics/professional）
+const progressTables = ref<Record<string, ProgressTable[]>>({});
+// 各科选中的书本（表索引，草稿表 id 为空故用索引定位）与章节（章节节点 id，空 = 尚未开始）
+const progressBook = ref<Record<string, string>>({});
+const progressReached = ref<Record<string, string>>({});
+const progressTablesLoading = ref<Record<string, boolean>>({});
+const progressTablesError = ref<Record<string, string>>({});
 // Exam
 const examYear = ref(new Date().getFullYear());
 const targetScore = ref<number | null>(null);
@@ -126,17 +156,83 @@ const restDays = ref<string[]>(["周日"]);
 const startTime = ref("09:00");
 const endTime = ref("22:00");
 const studyDaysPerWeek = computed(() => 7 - restDays.value.length);
-// 各科开始学习日期（留空表示立即开始）
-const subjectStartDates = ref<{ math: string; english: string; politics: string; professional: string }>({
-  math: "",
-  english: "",
-  politics: "",
-  professional: "",
+// 标准任务粒度（小时/条，默认 1.5）；每日任务数由「每日目标学时 ÷ 粒度」自动派生
+// 用字符串承载（Select 组件以字符串下发值），持久化时转数字
+const standardGranularity = ref<string>("1.5");
+/** 每日任务数 = 每日目标学时 ÷ 标准任务粒度（效率系数由后端按上周完成率自校准，此处按 1.0 展示基准值） */
+const derivedTaskCount = computed(() => {
+  const target = Math.max(0, dailyTargetHours.value || 0);
+  const gran = Math.max(0.5, Number(standardGranularity.value) || 1.5);
+  return Math.max(1, Math.min(8, Math.round(target / gran)));
 });
-// 用户期望每日任务数量（默认 4，每科约一条，未开始的科目不安排）
-const dailyTaskCount = ref(4);
+const GRANULARITY_OPTIONS = [
+  { value: "1", label: "1 小时/条" },
+  { value: "1.25", label: "1.25 小时/条" },
+  { value: "1.5", label: "1.5 小时/条" },
+  { value: "2", label: "2 小时/条" },
+];
 // 每日目标学习时长（小时，默认 5，可在引导中调整）
 const dailyTargetHours = ref(5);
+// 各科学时占比（百分比，活跃科目合计 100；null = 按各科默认周学时权重推导，等价旧行为）
+const subjectTimeAllocation = ref<SubjectTimeAllocation | null>(null);
+/** 引导内各科默认周学时（与 finish() 写入 initState 的 weekly_hours 一致，用于推导默认占比） */
+const ALLOCATION_WEEKLY_DEFAULTS: Record<SubjectKey, number> = {
+  math: 14, english: 7, politics: 5, professional: 10,
+};
+/** 各科是否活跃（数英政必考，专业课为必考中的必选科目） */
+const allocationActive = computed<Record<SubjectKey, boolean>>(() => ({
+  math: Boolean(mathVersion.value),
+  english: Boolean(englishVersion.value),
+  politics: true,
+  professional: true,
+}));
+const activeAllocationKeys = computed<SubjectKey[]>(() =>
+  ALLOCATION_KEYS.filter((k) => allocationActive.value[k]),
+);
+/** 生效占比：已配置则归一化存储值；未配置则按默认周学时推导 */
+const effectiveAllocation = computed<SubjectTimeAllocation>(() => {
+  if (!subjectTimeAllocation.value) {
+    return deriveFromWeeklyHours(ALLOCATION_WEEKLY_DEFAULTS, allocationActive.value);
+  }
+  return normalizeAllocation(
+    subjectTimeAllocation.value,
+    ALLOCATION_WEEKLY_DEFAULTS,
+    allocationActive.value,
+  );
+});
+/** 每日学时 = 每日目标学时 × 占比 */
+const allocDailyHours = (key: SubjectKey): string => {
+  const share = effectiveAllocation.value[key] ?? 0;
+  return (((dailyTargetHours.value || 0) * share) / 100).toFixed(1);
+};
+/** 每周学时 = 每日学时 × 每周学习天数 */
+const allocWeeklyHours = (key: SubjectKey): string => {
+  const studyDays = Math.max(0, 7 - restDays.value.length);
+  const share = effectiveAllocation.value[key] ?? 0;
+  return ((((dailyTargetHours.value || 0) * share) / 100) * studyDays).toFixed(1);
+};
+/** 滑块联动：调大该科时其余科目等比缩放，总和恒 100 */
+function onAllocationSlide(key: SubjectKey, rawValue: string) {
+  subjectTimeAllocation.value = adjustAllocation(
+    effectiveAllocation.value,
+    key,
+    Number(rawValue),
+    allocationActive.value,
+  );
+}
+/** 恢复默认占比：置 null，回退为按默认周学时推导 */
+function resetAllocation() {
+  subjectTimeAllocation.value = null;
+}
+const ALLOC_SUBJECT_LABELS: Record<SubjectKey, () => string> = {
+  math: () => "数学",
+  english: () => "英语",
+  politics: () => "政治",
+  professional: () => professionalDisplayName.value || "专业课",
+};
+const ALLOC_SUBJECT_COLORS: Record<SubjectKey, string> = {
+  math: "#5b8def", english: "#22c55e", politics: "#f59e0b", professional: "#a78bfa",
+};
 // 是否允许 AI 安排总结/复习任务（默认 true，关闭时只推进新知识点）
 const enableReviewTasks = ref(true);
 // 是否启用任务计时（默认 false，开启后任务卡显示开始/暂停按钮，记录专注时长）
@@ -146,8 +242,8 @@ const autostartEnabled = ref(false);
 const autostartLoading = ref(false);
 // AI
 const providerForm = ref<AIProviderConfig>({
-  id: "", name: "我的 Provider", type: "openai", base_url: "", api_key: "", model: "",
-  temperature: 0.7, max_tokens: 4096, enabled: true, is_default: true,
+  id: "", name: "", type: "openai", base_url: "", api_key: "", model: "",
+  temperature: 0.7, max_tokens: 8192, enabled: true, is_default: true,
 });
 // 滴答清单同步
 const didaSyncEnabled = ref(false);
@@ -166,7 +262,7 @@ const providerTypeOptions: { value: ProviderType; label: string }[] = [
   { value: "custom", label: "自定义" },
 ];
 
-// 与设置页一致：切换类型且 Base URL 为空时自动填充默认地址
+// 与设置页一致：切换类型时自动填充默认 Base URL 与默认名称（名称在用户手动编辑后不再覆盖）
 const providerBaseUrlDefaults: Partial<Record<ProviderType, string>> = {
   openai: "https://api.openai.com/v1",
   gemini: "https://generativelanguage.googleapis.com",
@@ -182,30 +278,152 @@ const providerBaseUrlDefaults: Partial<Record<ProviderType, string>> = {
   mimo: "https://api.xiaomimimo.com/v1",
   ollama: "http://localhost:11434/v1",
 };
+const knownProviderBaseUrls = Object.values(providerBaseUrlDefaults);
+/** 各 Provider 类型的默认显示名称（与 providerTypeOptions.label 保持一致，对齐设置页） */
+const providerNameDefaults: Partial<Record<ProviderType, string>> = {
+  openai: "OpenAI",
+  gemini: "Gemini",
+  anthropic: "Anthropic",
+  ollama: "Ollama (本地)",
+  openrouter: "OpenRouter",
+  siliconflow: "硅基流动",
+  dashscope: "通义千问",
+  volcengine: "火山引擎",
+  zhipu: "智谱 GLM",
+  kimi: "Kimi (月之暗面)",
+  longcat: "LongCat (美团)",
+  minimax: "MiniMax",
+  mimo: "MiMo (小米)",
+  custom: "自定义",
+};
+// 名称是否由「自动填入」产生：true 时切换类型会覆盖；用户手动编辑后置 false 不再覆盖
+const nameAutoFilled = ref(false);
 watch(
   () => providerForm.value.type,
   (t) => {
     const def = providerBaseUrlDefaults[t];
-    if (def && !providerForm.value.base_url.trim()) {
+    if (!def) return;
+    const current = providerForm.value.base_url.trim();
+    if (!current || knownProviderBaseUrls.includes(current)) {
       providerForm.value.base_url = def;
     }
+    const defaultName = providerNameDefaults[t];
+    if (defaultName && (!providerForm.value.name.trim() || nameAutoFilled.value)) {
+      providerForm.value.name = defaultName;
+      nameAutoFilled.value = true;
+    }
   },
+  { immediate: true },
 );
+function markNameEdited() {
+  nameAutoFilled.value = false;
+}
 
 // ── Helpers ──
 const phaseOptions = ["foundation", "strengthen", "sprint", "mock"];
 const phaseLabels: Record<string, string> = { foundation: "基础阶段", strengthen: "强化阶段", sprint: "冲刺阶段", mock: "模拟阶段" };
 
-/** 各科目教材输入框的占位示例 */
-const textbookPlaceholders: Record<string, string> = {
-  math: "如：张宇高数18讲 / 李永乐复习全书",
-  english: "如：考研英语真题黄皮书 / 唐迟阅读",
-  politics: "如：肖秀荣精讲精练 / 徐涛核心考案",
-  professional: "如：王道408计算机综合",
-};
-function textbookPlaceholder(key: string): string {
-  return textbookPlaceholders[key] ?? "如：教材名称";
+/** 拼接 exam_type 各科部分（供持久化与 finish 复用） */
+function buildExamTypeParts(): string[] {
+  const parts: string[] = [];
+  if (mathVersion.value) parts.push(mathVersion.value);
+  if (englishVersion.value) parts.push(englishVersion.value);
+  if (hasPolitics.value) parts.push("政治");
+  if (hasProfessional.value) parts.push(professionalDisplayName.value || "专业课");
+  return parts;
 }
+
+/** 各科内置考纲方案的 variant（专业课为所选统考科目名） */
+function variantForSubjectKey(key: string): string {
+  switch (key) {
+    case "math": return mathVersion.value;
+    case "english": return englishVersion.value;
+    case "politics": return "政治";
+    case "professional": return professionalName.value;
+  }
+  return "";
+}
+
+/** 该科是否可加载内置进度表（「其他/自命题」专业课不可） */
+function canLoadBuiltin(key: string): boolean {
+  if (key === "professional") return professionalOptions.includes(professionalName.value);
+  return true;
+}
+
+/** 加载该科内置进度表草稿（缓存命中跳过；失败降级为只选阶段，不阻塞引导） */
+async function ensureProgressTable(key: string) {
+  if (progressTables.value[key] || progressTablesLoading.value[key]) return;
+  const variant = variantForSubjectKey(key);
+  if (!canLoadBuiltin(key) || !variant) {
+    progressTables.value[key] = [];
+    return;
+  }
+  progressTablesLoading.value[key] = true;
+  progressTablesError.value[key] = "";
+  try {
+    progressTables.value[key] = await api.builtinProgressTable(key, variant);
+    // 默认选中第一张表（数英政唯一表；专业课 = 总专业课进度表），用索引定位（草稿表 id 为空）
+    if (progressTables.value[key].length > 0) {
+      progressBook.value[key] = "0";
+    }
+  } catch (e) {
+    progressTables.value[key] = [];
+    progressTablesError.value[key] = e instanceof Error ? e.message : String(e);
+  } finally {
+    progressTablesLoading.value[key] = false;
+  }
+}
+
+/** 该科书本（表）下拉选项 */
+function tableOptions(key: string): ProgressTable[] {
+  return progressTables.value[key] ?? [];
+}
+
+/** 选中书本下的章节下拉选项（章节节点；无章节节点时按 phase 去重取伪章节） */
+function chapterOptions(key: string): ProgressNode[] {
+  const tables = progressTables.value[key] ?? [];
+  const bookIdx = Number(progressBook.value[key] ?? "0");
+  const book = tables[bookIdx] ?? tables[0];
+  if (!book) return [];
+  const chapters = book.nodes.filter((n) => n.level === "chapter");
+  if (chapters.length > 0) return chapters;
+  const seen = new Set<string>();
+  const pseudo: ProgressNode[] = [];
+  for (const n of book.nodes) {
+    if (n.level === "knowledge" && !seen.has(n.phase)) {
+      seen.add(n.phase);
+      pseudo.push(n);
+    }
+  }
+  return pseudo;
+}
+
+/** 进入 progress 步骤时预加载各科内置进度表（并行，失败各自降级） */
+watch(
+  () => step.value.key,
+  async (key) => {
+    if (key !== "progress") return;
+    await Promise.allSettled(activeSubjects.value.map((s) => ensureProgressTable(s.key)));
+  },
+);
+
+/** 科目配置变化时失效全部进度缓存（回退修改科目后重新拉取） */
+watch(
+  () => [
+    mathVersion.value,
+    englishVersion.value,
+    hasPolitics.value,
+    hasProfessional.value,
+    professionalName.value,
+  ],
+  () => {
+    progressTables.value = {};
+    progressBook.value = {};
+    progressReached.value = {};
+    progressTablesLoading.value = {};
+    progressTablesError.value = {};
+  },
+);
 
 /** 当前用户选择的所有活跃科目 */
 const activeSubjects = computed(() => {
@@ -213,7 +431,7 @@ const activeSubjects = computed(() => {
   if (mathVersion.value) list.push({ key: "math", label: "数学", version: mathVersion.value });
   if (englishVersion.value) list.push({ key: "english", label: "英语", version: englishVersion.value });
   if (hasPolitics.value) list.push({ key: "politics", label: "政治", version: "" });
-  if (hasProfessional.value) list.push({ key: "professional", label: professionalName.value || "专业课", version: "" });
+  if (hasProfessional.value) list.push({ key: "professional", label: professionalDisplayName.value || "专业课", version: "" });
   return list;
 });
 
@@ -225,8 +443,12 @@ const validationMessage = computed(() => {
       break;
     case "subjects":
     case "progress":
+      if (!mathVersion.value) return "请选择数学版本（必考）。";
+      if (!englishVersion.value) return "请选择英语版本（必考）。";
       if (activeSubjects.value.length === 0) return "请至少选择一个考试科目。";
-      if (hasProfessional.value && !professionalName.value.trim()) return "请填写专业课名称。";
+      if (hasProfessional.value && !professionalName.value) return "请选择专业课科目。";
+      if (hasProfessional.value && professionalIsCustom.value && !professionalCustomName.value.trim())
+        return "请填写专业课名称。";
       break;
     case "date": {
       const year = new Date().getFullYear();
@@ -237,7 +459,6 @@ const validationMessage = computed(() => {
       if (studyDaysPerWeek.value < 1) return "每周至少保留 1 个学习日。";
       if (startTime.value >= endTime.value) return "每日结束时间必须晚于开始时间。";
       if (dailyTargetHours.value < 1 || dailyTargetHours.value > 16) return "每日学习时长需在 1–16 小时之间。";
-      if (dailyTaskCount.value < 1 || dailyTaskCount.value > 8) return "每日任务数需在 1–8 之间。";
       break;
     case "ai": {
       const provider = providerForm.value;
@@ -305,14 +526,7 @@ function persistCurrentStep() {
     case "date": s.exam_date = `${examYear.value}-12-20`; break;
     case "subjects":
       // H40：科目选择持久化到 exam_type，中断引导后不丢失
-      {
-        const examTypeParts: string[] = [];
-        if (mathVersion.value) examTypeParts.push(mathVersion.value);
-        if (englishVersion.value) examTypeParts.push(englishVersion.value);
-        if (hasPolitics.value) examTypeParts.push("政治");
-        if (hasProfessional.value) examTypeParts.push(professionalName.value || "专业课");
-        s.exam_type = examTypeParts.join(" / ");
-      }
+      s.exam_type = buildExamTypeParts().join(" / ");
       break;
     case "progress":
       // H40：进度/教材选择仅在 finish() 时写入 initState（Settings 无对应字段），
@@ -326,8 +540,9 @@ function persistCurrentStep() {
         study_days_per_week: 7 - restDays.value.length,
         rest_days: [...restDays.value],
         review_reminder_time: "23:00",
-        subject_start_dates: { ...subjectStartDates.value },
-        daily_task_count: dailyTaskCount.value,
+        standard_granularity: Number(standardGranularity.value),
+        subject_time_allocation:
+          subjectTimeAllocation.value ? { ...subjectTimeAllocation.value } : null,
         enable_review_tasks: enableReviewTasks.value,
         enable_time_tracking: enableTimeTracking.value,
       };
@@ -366,20 +581,49 @@ async function saveDidaToken() {
   }
 }
 
+/** 逐科落盘内置进度表：清理 → 逐份保存（首份启用）→ 按「书本 + 章节」标记已学。失败不阻塞引导 */
+async function persistProgressTables() {
+  for (const subj of activeSubjects.value) {
+    const drafts = progressTables.value[subj.key];
+    if (!drafts || drafts.length === 0) continue; // 未加载 / 「其他」专业课 / 加载失败
+    const variant = variantForSubjectKey(subj.key);
+    if (!variant) continue;
+    try {
+      await api.deleteBuiltinProgressTables(subj.key, variant);
+      const saved: ProgressTable[] = [];
+      let first = true;
+      for (const d of drafts) {
+        saved.push(await api.saveProgressTable(subj.key, variant, d, first));
+        first = false;
+      }
+      const reached = progressReached.value[subj.key];
+      if (reached) {
+        const bookIdx = Number(progressBook.value[subj.key] ?? 0);
+        const book = saved[bookIdx];
+        if (book) {
+          const changes = api.buildChangesFromReachedChapter(book, reached);
+          if (changes.length > 0) await api.applyProgressStatuses(subj.key, changes);
+        }
+      }
+    } catch (e) {
+      console.warn(`[Onboarding] 落盘 ${subj.label} 内置进度表失败:`, e);
+      // 不阻塞：该科仍以 State 中的阶段信息启用，稍后可在进度页补生成
+    }
+  }
+}
+
 async function finish() {
   const currentYear = new Date().getFullYear();
   const invalidCore =
     (!quickMode.value && !userName.value.trim()) ||
     activeSubjects.value.length === 0 ||
-    (hasProfessional.value && !professionalName.value.trim()) ||
+    (hasProfessional.value && !professionalDisplayName.value.trim()) ||
     examYear.value < currentYear ||
     examYear.value > currentYear + 3 ||
     studyDaysPerWeek.value < 1 ||
     startTime.value >= endTime.value ||
     dailyTargetHours.value < 1 ||
-    dailyTargetHours.value > 16 ||
-    dailyTaskCount.value < 1 ||
-    dailyTaskCount.value > 8;
+    dailyTargetHours.value > 16;
   if (invalidCore) {
     errorMessage.value = "基础信息不完整，请返回前面的步骤补全后再完成配置。";
     return;
@@ -401,32 +645,28 @@ async function finish() {
       study_days_per_week: studyDaysPerWeek.value,
       rest_days: [...restDays.value],
       review_reminder_time: s.study_schedule?.review_reminder_time ?? "23:00",
-      subject_start_dates: { ...subjectStartDates.value },
-      daily_task_count: dailyTaskCount.value,
+      standard_granularity: Number(standardGranularity.value),
+      subject_time_allocation:
+        subjectTimeAllocation.value ? { ...subjectTimeAllocation.value } : null,
       enable_review_tasks: enableReviewTasks.value,
       enable_time_tracking: enableTimeTracking.value,
     };
     // 设置 exam_type 用于记录
-    const examTypeParts: string[] = [];
-    if (mathVersion.value) examTypeParts.push(mathVersion.value);
-    if (englishVersion.value) examTypeParts.push(englishVersion.value);
-    if (hasPolitics.value) examTypeParts.push("政治");
-    if (hasProfessional.value) examTypeParts.push(professionalName.value || "专业课");
-    s.exam_type = examTypeParts.join(" / ");
+    s.exam_type = buildExamTypeParts().join(" / ");
 
     // 初始化 State 文件
     const subjects: api.InitStatePayload["subjects"] = [];
     if (mathVersion.value) {
-      subjects.push({ subject: "math", version: mathVersion.value, active: true, phase: (progressPhase.value.math || "foundation"), weekly_hours: 14.0, target_score: 120, textbook: progressTextbook.value.math || undefined });
+      subjects.push({ subject: "math", version: mathVersion.value, active: true, phase: (progressPhase.value.math || "foundation"), weekly_hours: 14.0, target_score: 120 });
     }
     if (englishVersion.value) {
-      subjects.push({ subject: "english", version: englishVersion.value, active: true, phase: (progressPhase.value.english || "foundation"), weekly_hours: 7.0, target_score: 75, textbook: progressTextbook.value.english || undefined });
+      subjects.push({ subject: "english", version: englishVersion.value, active: true, phase: (progressPhase.value.english || "foundation"), weekly_hours: 7.0, target_score: 75 });
     }
     if (hasPolitics.value) {
-      subjects.push({ subject: "politics", active: true, phase: (progressPhase.value.politics || "foundation"), weekly_hours: 5.0, target_score: 70, textbook: progressTextbook.value.politics || undefined });
+      subjects.push({ subject: "politics", active: true, phase: (progressPhase.value.politics || "foundation"), weekly_hours: 5.0, target_score: 70 });
     }
     if (hasProfessional.value) {
-      subjects.push({ subject: "professional", active: true, phase: (progressPhase.value.professional || "foundation"), weekly_hours: 10.0, target_score: 120, textbook: progressTextbook.value.professional || undefined });
+      subjects.push({ subject: "professional", active: true, phase: (progressPhase.value.professional || "foundation"), weekly_hours: 10.0, target_score: 120, textbook: professionalDisplayName.value || undefined });
     }
 
     await api.initState({
@@ -434,8 +674,11 @@ async function finish() {
       target_major: targetMajor.value.trim(),
       exam_date: `${examYear.value}-12-20`,
       subjects,
-      professional_name: professionalName.value || undefined,
+      professional_name: professionalDisplayName.value || undefined,
     });
+
+    // 落盘各科内置进度表并标记已学进度（失败不阻塞引导，可稍后在进度页补）
+    await persistProgressTables();
 
     await settingsStore.completeOnboarding();
     // 标记「待展示新手产品导览」：进入工作台后展示一次，仅对首次配置用户生效
@@ -471,27 +714,34 @@ function initFormFromSettings() {
   }
   // Exam type parsing
   if (s.exam_type) {
+    // 归一化历史全称（如「数学二」「英语一」）为引导内使用的简称，避免被误判为专业课自命题
+    const normalize = (raw: string): string => {
+      const strip = raw.trim();
+      const map: Record<string, string> = {
+        "数学一": "数一", "数学二": "数二", "数学三": "数三",
+        "英语一": "英一", "英语二": "英二",
+      };
+      return map[strip] ?? strip;
+    };
     const parts = s.exam_type.split(" / ");
-    for (const p of parts) {
+    for (const raw of parts) {
+      const p = normalize(raw);
       if (p === "数一" || p === "数二" || p === "数三") mathVersion.value = p as "数一" | "数二" | "数三";
-      else if (p === "英一" || p === "英二" || p === "英三") englishVersion.value = p as "英一" | "英二" | "英三";
+      else if (p === "英一" || p === "英二") englishVersion.value = p as "英一" | "英二";
       else if (p === "政治") hasPolitics.value = true;
-      else if (p && p !== "政治") { hasProfessional.value = true; professionalName.value = p; }
+      else if (professionalOptions.includes(p)) { hasProfessional.value = true; professionalName.value = p; }
+      // 历史自由文本（如"408计算机综合"）精确匹配失败 → 归入「其他/自命题」并回填自定义名
+      else if (p) { hasProfessional.value = true; professionalName.value = PROFESSIONAL_OTHER; professionalCustomName.value = p; }
     }
   }
-  // 读取各科开始学习日期与每日任务数
+  // 读取每日任务数、学科占比与其他安排配置
   const ssSchedule = s.study_schedule;
   if (ssSchedule) {
-    if (ssSchedule.subject_start_dates) {
-      subjectStartDates.value = {
-        math: ssSchedule.subject_start_dates.math ?? "",
-        english: ssSchedule.subject_start_dates.english ?? "",
-        politics: ssSchedule.subject_start_dates.politics ?? "",
-        professional: ssSchedule.subject_start_dates.professional ?? "",
-      };
+    if (ssSchedule.subject_time_allocation) {
+      subjectTimeAllocation.value = { ...ssSchedule.subject_time_allocation };
     }
-    if (typeof ssSchedule.daily_task_count === "number" && ssSchedule.daily_task_count > 0) {
-      dailyTaskCount.value = ssSchedule.daily_task_count;
+    if (typeof ssSchedule.standard_granularity === "number" && ssSchedule.standard_granularity > 0) {
+      standardGranularity.value = String(ssSchedule.standard_granularity);
     }
     if (typeof ssSchedule.enable_review_tasks === "boolean") {
       enableReviewTasks.value = ssSchedule.enable_review_tasks;
@@ -670,40 +920,46 @@ onUnmounted(() => {
                     <p class="form-desc">{{ step.description }}</p>
                   </div>
                 </div>
-                <!-- 数学 -->
+                <!-- 数学（必考） -->
                 <div class="subject-block">
-                  <label class="field-label">数学</label>
-                  <div class="option-grid cols-4">
-                    <button type="button" class="option-chip" :aria-pressed="mathVersion === ''" :class="{ active: mathVersion === '' }" @click="mathVersion = ''">不考</button>
+                  <label class="field-label">数学 <span class="subject-required">必考</span></label>
+                  <div class="option-grid cols-3">
                     <button type="button" class="option-chip" :aria-pressed="mathVersion === '数一'" :class="{ active: mathVersion === '数一' }" @click="mathVersion = '数一'">数一</button>
                     <button type="button" class="option-chip" :aria-pressed="mathVersion === '数二'" :class="{ active: mathVersion === '数二' }" @click="mathVersion = '数二'">数二</button>
                     <button type="button" class="option-chip" :aria-pressed="mathVersion === '数三'" :class="{ active: mathVersion === '数三' }" @click="mathVersion = '数三'">数三</button>
                   </div>
                 </div>
-                <!-- 英语 -->
+                <!-- 英语（必考） -->
                 <div class="subject-block">
-                  <label class="field-label">英语</label>
-                  <div class="option-grid cols-4">
-                    <button type="button" class="option-chip" :aria-pressed="englishVersion === ''" :class="{ active: englishVersion === '' }" @click="englishVersion = ''">不考</button>
+                  <label class="field-label">英语 <span class="subject-required">必考</span></label>
+                  <div class="option-grid cols-2">
                     <button type="button" class="option-chip" :aria-pressed="englishVersion === '英一'" :class="{ active: englishVersion === '英一' }" @click="englishVersion = '英一'">英一</button>
                     <button type="button" class="option-chip" :aria-pressed="englishVersion === '英二'" :class="{ active: englishVersion === '英二' }" @click="englishVersion = '英二'">英二</button>
-                    <button type="button" class="option-chip" :aria-pressed="englishVersion === '英三'" :class="{ active: englishVersion === '英三' }" @click="englishVersion = '英三'">英三</button>
                   </div>
                 </div>
-                <!-- 政治 -->
+                <!-- 政治（必考，无版本配置） -->
                 <div class="subject-block">
-                  <label class="field-label">政治</label>
-                  <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="hasPolitics" :class="{ active: hasPolitics }" @click="hasPolitics = !hasPolitics">{{ hasPolitics ? '已选择' : '不考' }}</button>
-                  </div>
+                  <label class="field-label">政治 <span class="subject-required">必考</span></label>
+                  <button type="button" class="option-chip active" disabled title="考研必考科目，无需配置">必考</button>
+                  <p class="field-hint" style="margin: 0">政治为必考科目，无需选择版本，将自动纳入学习计划与进度管理。</p>
                 </div>
-                <!-- 专业课 -->
+                <!-- 专业课（必考） -->
                 <div class="subject-block">
-                  <label class="field-label">专业课</label>
-                  <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="hasProfessional" :class="{ active: hasProfessional }" @click="hasProfessional = !hasProfessional">{{ hasProfessional ? '已选择' : '不考' }}</button>
-                  </div>
-                  <input v-if="hasProfessional" v-model="professionalName" type="text" class="field-input" placeholder="如：408计算机综合" style="margin-top: var(--space-2)" />
+                  <label class="field-label">专业课 <span class="subject-required">必考</span></label>
+                  <Select v-model="professionalName" :max-width="'100%'" placeholder="选择统考科目或自命题">
+                    <option v-for="opt in professionalOptions" :key="opt" :value="opt">{{ opt }}</option>
+                    <option :value="PROFESSIONAL_OTHER">其他/自命题</option>
+                  </Select>
+                  <input
+                    v-if="professionalIsCustom"
+                    v-model="professionalCustomName"
+                    type="text"
+                    class="field-input"
+                    placeholder="如：车辆工程（自命题）"
+                  />
+                  <p class="field-hint" style="margin-top: var(--space-1)">
+                    专业课为必考科目。选择统考科目后可使用随包内置考纲进度表；「其他/自命题」暂不提供内置进度表。
+                  </p>
                 </div>
               </div>
             </template>
@@ -735,10 +991,38 @@ onUnmounted(() => {
                       </button>
                     </div>
                   </div>
-                  <div class="field">
-                    <label class="field-label">教材（选填）</label>
-                    <input v-model="progressTextbook[subj.key]" type="text" class="field-input" :placeholder="textbookPlaceholder(subj.key)" />
-                  </div>
+                  <p v-if="progressTablesLoading[subj.key]" class="field-hint">正在加载内置考纲进度表…</p>
+                  <template v-else-if="tableOptions(subj.key).length > 0">
+                    <!-- 多本书（专业课）：书本 + 知识点 横向二级菜单 -->
+                    <div v-if="tableOptions(subj.key).length > 1" class="field-row">
+                      <div class="field">
+                        <label class="field-label">书本</label>
+                        <Select v-model="progressBook[subj.key]" :max-width="'100%'" @change="progressReached[subj.key] = ''">
+                          <option v-for="(t, i) in tableOptions(subj.key)" :key="i" :value="String(i)">{{ t.name }}</option>
+                        </Select>
+                      </div>
+                      <div class="field">
+                        <label class="field-label">当前学到的知识点</label>
+                        <Select v-model="progressReached[subj.key]" :max-width="'100%'" placeholder="尚未开始（不标记已学）">
+                          <option v-for="ch in chapterOptions(subj.key)" :key="ch.id" :value="ch.id">{{ ch.title }}</option>
+                        </Select>
+                      </div>
+                    </div>
+                    <!-- 单本书（数学/英语/政治）：仅知识点下拉 -->
+                    <div v-else class="field">
+                      <label class="field-label">当前学到的知识点</label>
+                      <Select v-model="progressReached[subj.key]" :max-width="'100%'" placeholder="尚未开始（不标记已学）">
+                        <option v-for="ch in chapterOptions(subj.key)" :key="ch.id" :value="ch.id">{{ ch.title }}</option>
+                      </Select>
+                    </div>
+                    <p class="field-hint">选择目前学习到的知识点，以往的内容全部会被标记为已学。</p>
+                  </template>
+                  <p v-else-if="progressTablesError[subj.key]" class="field-hint">
+                    内置进度表加载失败（{{ progressTablesError[subj.key] }}），可跳过该科章节选择。
+                  </p>
+                  <p v-else-if="subj.key === 'professional'" class="field-hint">
+                    自命题专业课暂无内置考纲进度表，可在进入工作台后在「进度」页使用 AI 生成。
+                  </p>
                 </div>
               </div>
             </template>
@@ -873,26 +1157,100 @@ onUnmounted(() => {
                 <div class="field-row">
                   <div class="field">
                     <label class="field-label">每日开始时间</label>
-                    <TimePicker v-model="startTime" :minute-step="15" />
+                    <TimePicker v-model="startTime" :minute-step="5" />
                   </div>
                   <div class="field">
                     <label class="field-label">每日结束时间</label>
-                    <TimePicker v-model="endTime" :minute-step="15" />
+                    <TimePicker v-model="endTime" :minute-step="5" />
                   </div>
                 </div>
                 <div class="field">
                   <label class="field-label">
-                    每天安排多少任务
-                    <span class="field-hint">（每科约一条；未开始的科目不安排，相应减少当日任务数）</span>
+                    每天任务数（自动计算）
+                    <span class="field-hint">（由「每日目标学时 ÷ 标准任务粒度」得出，调整学时时自动变化）</span>
                   </label>
                   <input
-                    v-model.number="dailyTaskCount"
+                    :value="derivedTaskCount"
                     type="number"
                     min="1"
                     max="8"
                     class="field-input"
+                    readonly
+                    tabindex="-1"
                   />
-                  <p class="field-hint">默认 4 个。例如政治未到开始日期时，当天不会排政治任务。</p>
+                  <p class="field-hint">
+                    当前目标学时 {{ dailyTargetHours }}h ÷ 粒度 {{ standardGranularity }}h/条 ≈
+                    {{ derivedTaskCount }} 个任务（每科约一条；未开始的科目不安排，实际会相应减少）
+                  </p>
+                </div>
+                <div class="field">
+                  <label class="field-label">
+                    标准任务粒度
+                    <span class="field-hint">（细粒度设置，默认 1.5h/条 ≈ 2 个番茄钟）</span>
+                  </label>
+                  <Select v-model="standardGranularity" :max-width="'100%'">
+                    <option v-for="opt in GRANULARITY_OPTIONS" :key="opt.value" :value="opt.value">
+                      {{ opt.label }}
+                    </option>
+                  </Select>
+                  <p class="field-hint">粒度越小任务拆得越细（条数越多），越大越粗（条数越少）。</p>
+                </div>
+                <!-- 学科时间分配：细粒度按科目占比分配每日学时（与设置页一致） -->
+                <div class="field">
+                  <label class="field-label">
+                    学科时间分配
+                    <span class="field-hint">（按占比分配每日约 {{ dailyTargetHours || 0 }}h 学习时长；活跃科目合计恒为 100%）</span>
+                  </label>
+                  <div v-if="activeAllocationKeys.length === 0" class="field-hint">
+                    请先在「考试科目」步骤选择科目后再配置占比。
+                  </div>
+                  <template v-else>
+                    <div
+                      v-for="key in activeAllocationKeys"
+                      :key="key"
+                      class="alloc-row"
+                    >
+                      <label class="alloc-label">
+                        {{ ALLOC_SUBJECT_LABELS[key]() }}
+                        <span class="field-hint">每日约 {{ allocDailyHours(key) }}h · 每周约 {{ allocWeeklyHours(key) }}h</span>
+                      </label>
+                      <div class="alloc-slider-row">
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          :step="SLIDER_STEP"
+                          :value="effectiveAllocation[key]"
+                          class="alloc-slider"
+                          :style="{ accentColor: ALLOC_SUBJECT_COLORS[key] }"
+                          @input="onAllocationSlide(key, ($event.target as HTMLInputElement).value)"
+                        />
+                        <span class="alloc-percent">{{ Math.round(effectiveAllocation[key] ?? 0) }}%</span>
+                      </div>
+                    </div>
+                    <!-- 占比可视化条 -->
+                    <div class="alloc-bar" role="img" aria-label="各科学时占比条形图">
+                      <div
+                        v-for="key in activeAllocationKeys"
+                        :key="key"
+                        class="alloc-bar-seg"
+                        :style="{
+                          width: (effectiveAllocation[key] ?? 0) + '%',
+                          background: ALLOC_SUBJECT_COLORS[key],
+                        }"
+                      />
+                    </div>
+                    <div class="alloc-legend">
+                      <span v-for="key in activeAllocationKeys" :key="key" class="alloc-legend-item">
+                        <i class="alloc-legend-dot" :style="{ background: ALLOC_SUBJECT_COLORS[key] }" />
+                        {{ ALLOC_SUBJECT_LABELS[key]() }} {{ Math.round(effectiveAllocation[key] ?? 0) }}%
+                      </span>
+                    </div>
+                    <button type="button" class="option-chip" style="align-self: flex-start" @click="resetAllocation">
+                      恢复默认（按各科学时权重推导）
+                    </button>
+                    <p class="field-hint">调整任一科目时其余科目等比缩放；占比为 0 的科目不安排任务。</p>
+                  </template>
                 </div>
                 <div class="field">
                   <label class="field-label">是否安排总结/复习任务</label>
@@ -909,31 +1267,6 @@ onUnmounted(() => {
                     <button type="button" class="option-chip" :aria-pressed="!enableTimeTracking" :class="{ active: !enableTimeTracking }" @click="enableTimeTracking = false">不开启（默认）</button>
                   </div>
                   <p class="field-hint">开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。</p>
-                </div>
-                <div class="field">
-                  <label class="field-label">
-                    各科开始学习日期
-                    <span class="field-hint">（留空表示立即开始；未到日期前不为该科安排任务）</span>
-                  </label>
-                  <div class="subject-start-grid">
-                    <div v-if="mathVersion" class="subject-start-item">
-                      <span class="subject-start-label">数学</span>
-                      <DatePicker v-model="subjectStartDates.math" placeholder="立即开始" />
-                    </div>
-                    <div v-if="englishVersion" class="subject-start-item">
-                      <span class="subject-start-label">英语</span>
-                      <DatePicker v-model="subjectStartDates.english" placeholder="立即开始" />
-                    </div>
-                    <div v-if="hasPolitics" class="subject-start-item">
-                      <span class="subject-start-label">政治</span>
-                      <DatePicker v-model="subjectStartDates.politics" placeholder="立即开始" />
-                    </div>
-                    <div v-if="hasProfessional" class="subject-start-item">
-                      <span class="subject-start-label">{{ professionalName || '专业课' }}</span>
-                      <DatePicker v-model="subjectStartDates.professional" placeholder="立即开始" />
-                    </div>
-                  </div>
-                  <p class="field-hint">例如政治计划 8 月中旬开始，可将政治开始日期设为 2026-08-15，此前不会安排政治任务。</p>
                 </div>
                 <div class="field">
                   <label class="field-label">开机启动</label>
@@ -978,6 +1311,16 @@ onUnmounted(() => {
                   <p class="ai-notice-foot">可在此填写任一兼容 OpenAI 接口的服务（OpenAI、火山引擎、硅基流动、Ollama 等）；稍后可在「设置 → AI Provider」中添加、修改或切换。</p>
                 </div>
 
+                <div class="field">
+                  <label class="field-label">名称</label>
+                  <input
+                    v-model="providerForm.name"
+                    type="text"
+                    class="field-input"
+                    :placeholder="nameAutoFilled ? '' : '我的 Provider'"
+                    @input="markNameEdited"
+                  />
+                </div>
                 <div class="field">
                   <label class="field-label">Provider 类型</label>
                   <Select v-model="providerForm.type" :max-width="'100%'">
@@ -1080,7 +1423,6 @@ onUnmounted(() => {
   overflow-y: auto;
   background: var(--bg-primary);
   display: flex;
-  align-items: center;
   justify-content: center;
   padding: var(--space-8) var(--space-4);
 }
@@ -1091,6 +1433,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  /* 子项 margin 自动居中：容器有剩余空间时垂直居中；
+     内容超高时 auto margin 归零、顶部对齐，容器自身滚动，顶部/底部均可达 */
+  margin-block: auto;
 }
 
 /* Brand */
@@ -1536,28 +1881,106 @@ onUnmounted(() => {
   grid-template-columns: repeat(4, 1fr);
 }
 
+.option-grid.cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
 .option-grid.cols-2 {
   grid-template-columns: repeat(2, 1fr);
 }
 
-/* Subject start dates grid */
-.subject-start-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-3);
-  margin-top: var(--space-2);
-}
-
-.subject-start-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.subject-start-label {
+/* 必考科目徽标（数学/英语/政治） */
+.subject-required {
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  color: var(--text-tertiary);
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--space-2);
+  vertical-align: 1px;
+  margin-left: var(--space-1);
+}
+
+/* 政治「必考」占位按钮：禁用但保持醒目，不参与交互 */
+.option-chip[disabled] {
+  opacity: 1;
+  cursor: default;
+}
+
+/* ── 学科时间分配（与设置页一致） ── */
+.alloc-row {
+  padding-bottom: 2px;
+}
+
+.alloc-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
+
+.alloc-slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.alloc-slider {
+  flex: 1;
+  width: 100%;
+  appearance: auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.alloc-percent {
+  min-width: 3.5em;
+  text-align: right;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.alloc-bar {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.alloc-bar-seg {
+  height: 100%;
+  min-width: 0;
+  transition: width var(--transition-fast);
+}
+
+.alloc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.alloc-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.alloc-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
 }
 
 .option-chip {
@@ -1684,9 +2107,6 @@ onUnmounted(() => {
     flex-wrap: wrap;
   }
   .field-row {
-    grid-template-columns: 1fr;
-  }
-  .subject-start-grid {
     grid-template-columns: 1fr;
   }
 }

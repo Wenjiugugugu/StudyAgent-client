@@ -14,6 +14,8 @@ import { ref, computed, watch, onMounted } from "vue";
 import * as api from "@/api";
 import Button from "@/components/ui/Button.vue";
 import Badge from "@/components/ui/Badge.vue";
+import Select from "@/components/ui/Select.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import Modal from "@/components/ui/Modal.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
@@ -37,7 +39,6 @@ import {
   FolderOpen,
   Layers,
 } from "lucide-vue-next";
-import { defineComponent, h } from "vue";
 import type {
   ProgressTable,
   ProgressNode,
@@ -46,54 +47,6 @@ import type {
   ProgressWebSearchConfig,
   ProgressIndex,
 } from "@/types";
-
-/** 简易“表”选择器：内置表/自定义表分组，展示当前启用并切换 */
-const SelectLikeList = defineComponent({
-  props: {
-    tables: { type: Array as () => ProgressTable[], default: () => [] },
-    activeId: { type: String, default: "" },
-  },
-  emits: ["switch"],
-  setup(props, { emit }) {
-    const builtin = props.tables.filter((t) => t.origin === "builtin");
-    const custom = props.tables.filter((t) => t.origin !== "builtin");
-    return () =>
-      h(
-        "select",
-        {
-          class: "table-select",
-          value: props.activeId,
-          onChange: (e: Event) => {
-            const v = (e.target as HTMLSelectElement).value;
-            if (v) emit("switch", v);
-          },
-        },
-        [
-          builtin.length
-            ? h(
-                "optgroup",
-                { label: "内置考纲表" },
-                builtin.map((t) => option(t, props.activeId))
-              )
-            : null,
-          custom.length
-            ? h(
-                "optgroup",
-                { label: "自定义表" },
-                custom.map((t) => option(t, props.activeId))
-              )
-            : null,
-        ]
-      );
-  },
-});
-function option(t: ProgressTable, activeId: string) {
-  return h(
-    "option",
-    { key: t.id, value: t.id, selected: t.id === activeId },
-    `${t.name} · ${t.nodes.length}节点${t.id === activeId ? " · 启用中" : ""}`
-  );
-}
 
 const props = defineProps<{
   subject: string;
@@ -158,6 +111,19 @@ function tableInVariantLoose(t: ProgressTable): boolean {
 const tablesForVariant = computed<ProgressTable[]>(() =>
   allTables.value.filter(tableInVariantLoose)
 );
+
+/** 表下拉分组：内置考纲表 / 自定义表 */
+const builtinTables = computed<ProgressTable[]>(() =>
+  tablesForVariant.value.filter((t) => t.origin === "builtin")
+);
+const customTables = computed<ProgressTable[]>(() =>
+  tablesForVariant.value.filter((t) => t.origin !== "builtin")
+);
+
+/** 表下拉选项文案（与旧版「X · N节点 · 启用中」一致） */
+function tableOptionLabel(t: ProgressTable): string {
+  return `${t.name} · ${t.nodes.length}节点${t.id === subjectSet.value?.active_id ? " · 启用中" : ""}`;
+}
 
 /** 启用表：优先精确匹配当前方案；无精确匹配时 fallback 旧数据空 variant */
 const activeTable = computed<ProgressTable | null>(() => {
@@ -283,15 +249,19 @@ const PROGRESS_STATUSES: ProgressNodeStatus[] = ["basic", "reinforcing", "master
 
 const stats = computed(() => {
   const nodes = activeTable.value?.nodes ?? [];
+  // 进度统计按「知识点」计算（章节节点仅作分组结构，不参与推进比例），
+  // 与界面逐条状态胶囊、章节小计口径保持一致，避免全推进后因章节节点达标不足而显示不足 100%。
+  const knowledge = nodes.filter((n) => n.level === "knowledge");
   return {
-    total: nodes.length,
-    pending: nodes.filter((n) => n.status === "pending").length,
-    learning: nodes.filter((n) => n.status === "learning").length,
-    mastered: nodes.filter((n) => n.status === "mastered").length,
-    advanced: nodes.filter((n) => PROGRESS_STATUSES.includes(n.status)).length,
-    pct: nodes.length
+    total: knowledge.length,
+    pending: knowledge.filter((n) => n.status === "pending").length,
+    learning: knowledge.filter((n) => n.status === "learning").length,
+    mastered: knowledge.filter((n) => n.status === "mastered").length,
+    advanced: knowledge.filter((n) => PROGRESS_STATUSES.includes(n.status)).length,
+    pct: knowledge.length
       ? Math.round(
-          (nodes.filter((n) => PROGRESS_STATUSES.includes(n.status)).length / nodes.length) * 100
+          (knowledge.filter((n) => PROGRESS_STATUSES.includes(n.status)).length / knowledge.length) *
+            100
         )
       : 0,
   };
@@ -640,6 +610,9 @@ const genName = ref("");
 const genUseWeb = ref(false);
 const generating = ref(false);
 const genPreview = ref<ProgressTable | null>(null);
+// AI 生成内容风险提示：首次点击「AI 生成」先弹警告，确认后本会话不再重复提醒
+const showAiRiskModal = ref(false);
+const aiRiskAccepted = ref(false);
 const webConfig = ref<ProgressWebSearchConfig>({
   enabled: false,
   provider: "bocha",
@@ -648,6 +621,21 @@ const webConfig = ref<ProgressWebSearchConfig>({
 });
 
 function openGenModal() {
+  // 首次先弹风险警告，确认后再进入配置弹窗
+  if (!aiRiskAccepted.value) {
+    showAiRiskModal.value = true;
+    return;
+  }
+  genName.value = "";
+  genUseWeb.value = webConfig.value.enabled;
+  genPreview.value = null;
+  showGenModal.value = true;
+}
+
+/** 确认风险提示：记录已接受，进入 AI 生成配置弹窗 */
+function confirmAiRisk() {
+  aiRiskAccepted.value = true;
+  showAiRiskModal.value = false;
   genName.value = "";
   genUseWeb.value = webConfig.value.enabled;
   genPreview.value = null;
@@ -700,9 +688,16 @@ async function loadBuiltin() {
     // 专业课可能返回多份（第 1 份为总专业课进度表，其后为各教材进度表），全部入库并启用总表
     let first = true;
     for (const d of drafts) {
-      await persistTable(d, first);
+      try {
+        await api.saveProgressTable(props.subject, props.variant, d, first);
+      } catch (e) {
+        error.value = `保存「${d.name}」失败：${errMsg(e)}`;
+        return;
+      }
       first = false;
     }
+    // 全部落盘后一次性刷新索引，保证表下拉立即展示「总表 + 各教材表」（逐份保存刷新无法保证最终一致）
+    await reload();
     if (drafts.length > 1) {
       saveMsg(
         `已加载内置考纲（${drafts.length} 份：总专业课进度表 + ${drafts.length - 1} 份教材进度表）`
@@ -982,11 +977,23 @@ async function loadWebConfig() {
         <div class="table-picker">
           <Badge variant="default" class="subj-badge">{{ subjectLabel }}</Badge>
           <Badge variant="info">{{ variant }}</Badge>
-          <SelectLikeList
-            :tables="tablesForVariant"
-            :activeId="subjectSet!.active_id"
-            @switch="switchActive"
-          />
+          <Select
+            :model-value="subjectSet?.active_id ?? ''"
+            placeholder="选择进度表"
+            class="table-picker-select"
+            @change="(v) => v != null && switchActive(String(v))"
+          >
+            <optgroup v-if="builtinTables.length" label="内置考纲表">
+              <option v-for="t in builtinTables" :key="t.id" :value="t.id">
+                {{ tableOptionLabel(t) }}
+              </option>
+            </optgroup>
+            <optgroup v-if="customTables.length" label="自定义表">
+              <option v-for="t in customTables" :key="t.id" :value="t.id">
+                {{ tableOptionLabel(t) }}
+              </option>
+            </optgroup>
+          </Select>
         </div>
         <div class="toolbar-actions">
           <Button variant="primary" size="sm" @click="openGenModal">
@@ -1115,7 +1122,16 @@ async function loadWebConfig() {
                   <button class="icon-btn" title="编辑" @click="beginEdit(node)"><Pencil :size="13" /></button>
                   <button class="icon-btn danger" title="删除" @click="removeNode(node)"><Trash2 :size="13" /></button>
                 </div>
-                <GripVertical :size="14" class="grip" />
+                <GripVertical
+                  :size="14"
+                  class="grip"
+                  draggable="true"
+                  title="按住拖拽，可在章节内调整顺序"
+                  @dragstart="onDragStart($event, node)"
+                  @dragover="onDragOver($event, node)"
+                  @drop="onDrop($event, node, g)"
+                  @dragend="onDragEnd"
+                />
               </template>
             </div>
           </div>
@@ -1159,7 +1175,7 @@ async function loadWebConfig() {
         <div v-for="[tableName, list] in estimateGroups" :key="tableName" class="confirm-group">
           <div class="confirm-table-name">{{ tableName }}</div>
           <label v-for="e in list" :key="changeKey(e)" class="confirm-row">
-            <input type="checkbox" :checked="!!selectedKeys[changeKey(e)]" @change="toggleEstimate(e)" />
+            <Checkbox :checked="!!selectedKeys[changeKey(e)]" @change="toggleEstimate(e)" />
             <span class="confirm-chapter">{{ e.chapter }}</span>
             <span class="confirm-title">{{ e.node_title }}</span>
             <span class="confirm-suggest" :class="`st-${e.suggested}`">{{ statusLabel(e.suggested) }}</span>
@@ -1226,6 +1242,22 @@ async function loadWebConfig() {
       </template>
     </Modal>
 
+    <!-- AI 生成内容风险提示（首次点击 AI 生成时弹出，确认后进入配置弹窗） -->
+    <Modal :open="showAiRiskModal" title="AI 生成内容风险提示" :width="560" @close="showAiRiskModal = false">
+      <div class="ai-risk-box">
+        <p class="ai-risk-title">⚠️ AI 生成内容风险提示</p>
+        <p>本功能目前处于早期开发阶段，AI 生成的内容具有一定随机性和不确定性，可能出现包括但不限于内容过时、信息缺失、曲解课程内容、AI 幻觉等问题。</p>
+        <p>此外，AI 服务通过 API 调用时，其生成效果可能与直接使用相关 AI 服务时存在差异。受模型版本、服务配置、上下文信息、可调用工具及工具权限等因素限制，AI 所能够获取和处理的信息可能受到限制，生成质量可能因此降低。同时，网络连接、API 服务状态及其他不可预见因素也可能导致无法连接、请求失败、响应异常或其他未列明的问题，从而导致生成内容不完整或不准确。</p>
+        <p>由于进度表中的内容可能进一步用于规划学习任务、分配学习内容以及预估学习和复习时间，错误的 AI 生成结果可能造成严重的规划偏差，并进一步影响后续学习安排。</p>
+        <p>因此，AI 生成的进度表仅供辅助参考，不应视为准确或权威的学习规划。请务必在使用前自行检查生成内容，并根据实际课程要求、教材、考试范围及个人学习情况进行核验和调整。</p>
+        <p class="ai-risk-agree">使用本功能即表示你已阅读并了解上述风险。</p>
+      </div>
+      <template #footer>
+        <Button variant="ghost" size="sm" @click="showAiRiskModal = false">取消</Button>
+        <Button variant="primary" size="sm" @click="confirmAiRisk">我已了解，继续</Button>
+      </template>
+    </Modal>
+
     <!-- AI 生成 -->
     <Modal :open="showGenModal" title="AI 生成进度表" :width="520" @close="showGenModal = false">
       <LoadingSpinner v-if="generating" :size="26" label="AI 依据考纲生成中..." />
@@ -1254,7 +1286,7 @@ async function loadWebConfig() {
           <input v-model="genName" class="form-input" placeholder="留空则自动命名，如「数学进度表」" />
         </div>
         <label class="web-toggle">
-          <input v-model="genUseWeb" type="checkbox" />
+          <Checkbox v-model="genUseWeb" />
           <span>联网查询最新考研大纲（未配置使用内置考纲）</span>
         </label>
         <p class="form-hint">将依据 {{ subjectLabel }}「{{ variant }}」的最新考研考纲，按章节先后顺序生成可供长期打卡的进度节点。</p>
@@ -1271,7 +1303,7 @@ async function loadWebConfig() {
     <Modal :open="showWebCfg" title="联网搜索最新考研大纲" :width="460" @close="showWebCfg = false">
       <div class="form-field">
         <label class="web-toggle">
-          <input v-model="webConfig.enabled" type="checkbox" />
+          <Checkbox v-model="webConfig.enabled" />
           <span>启用联网搜索</span>
         </label>
       </div>
@@ -1306,6 +1338,30 @@ async function loadWebConfig() {
 }
 .view-loading {
   margin: auto;
+}
+
+/* AI 生成内容风险提示弹窗 */
+.ai-risk-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.ai-risk-box p {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+.ai-risk-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--color-warning, #b45309);
+}
+.ai-risk-agree {
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
 }
 .error-banner {
   position: absolute;
@@ -1363,8 +1419,11 @@ async function loadWebConfig() {
 }
 .table-picker { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .subj-badge { flex-shrink: 0; }
-.table-picker .table-select {
-  max-width: 260px;
+/* 表下拉按内容自适应宽度（默认 100% 会让它占满整行，覆盖为 auto 并给最小/最大边界） */
+.table-picker .table-picker-select {
+  width: auto;
+  min-width: 200px;
+  max-width: 100%;
 }
 .toolbar-actions { display: flex; gap: var(--space-1); flex-wrap: wrap; }
 .table-head {
@@ -1466,6 +1525,8 @@ async function loadWebConfig() {
 .node-row.drag-over { border-color: var(--accent); background: var(--accent-subtle); }
 .node-row.dragging { opacity: 0.4; }
 .grip { color: var(--text-quaternary); cursor: grab; flex-shrink: 0; }
+.grip:active { cursor: grabbing; }
+.grip:hover { color: var(--text-secondary); }
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -1508,16 +1569,6 @@ async function loadWebConfig() {
 .edit-textarea { resize: vertical; }
 .edit-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
 .add-row { padding: var(--space-2) 0; }
-.table-select {
-  height: 32px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: var(--text-sm);
-}
 
 /* 表单 */
 .form-field { display: flex; flex-direction: column; gap: var(--space-1); }
@@ -1539,7 +1590,6 @@ async function loadWebConfig() {
 .confirm-table-name { font-size: var(--text-xs); font-weight: var(--font-semibold); color: var(--text-tertiary); padding: 4px 0 2px; }
 .confirm-row { display: flex; align-items: center; gap: var(--space-2); padding: 4px 6px; border-radius: var(--radius-sm); cursor: pointer; }
 .confirm-row:hover { background: var(--bg-tertiary); }
-.confirm-row input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; }
 .confirm-chapter { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-title { font-size: var(--text-sm); color: var(--text-primary); flex: 1; min-width: 0; }
 .confirm-suggest { font-size: var(--text-xs); border: 1px solid var(--border-color); border-radius: var(--radius-full); padding: 1px 6px; flex-shrink: 0; }

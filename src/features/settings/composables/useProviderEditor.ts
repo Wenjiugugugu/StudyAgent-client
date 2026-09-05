@@ -31,7 +31,7 @@ export function useProviderEditor() {
       api_key: "",
       model: "",
       temperature: 0.7,
-      max_tokens: 4096,
+      max_tokens: 8192,
       enabled: true,
       is_default: false,
     };

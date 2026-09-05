@@ -159,10 +159,18 @@ pub fn build_tables(exam: &ProfExam) -> Vec<ProgressTable> {
 }
 
 /// 装配一张教材进度表：每章作为章节节点，其下小节/知识点作为知识点子节点
+///
+/// 每个节点附带隐藏的预估学习时长（`estimated_hours`，不展示给用户）：
+/// 章节 = 其下知识点预估值之和。
 fn build_book(exam: &ProfExam, book: &ProfBook) -> ProgressTable {
     let mut nodes = Vec::new();
     for sec in book.sections {
         let chapter_id = new_progress_id("c", sec.phase);
+        let child_hours: Vec<f64> = sec
+            .items
+            .iter()
+            .map(|item| crate::core::estimated_time::estimate_knowledge_hours("professional", item))
+            .collect();
         nodes.push(ProgressNode {
             id: chapter_id.clone(),
             title: sec.phase.to_string(),
@@ -172,8 +180,13 @@ fn build_book(exam: &ProfExam, book: &ProfBook) -> ProgressTable {
             status: NodeStatus::Pending,
             planned_date: None,
             note: String::new(),
+            estimated_hours: Some(crate::core::estimated_time::estimate_chapter_hours(
+                "professional",
+                sec.phase,
+                &child_hours,
+            )),
         });
-        for item in sec.items {
+        for (item, hours) in sec.items.iter().zip(child_hours.iter()) {
             nodes.push(ProgressNode {
                 id: new_progress_id("n", item),
                 title: item.to_string(),
@@ -183,6 +196,7 @@ fn build_book(exam: &ProfExam, book: &ProfBook) -> ProgressTable {
                 status: NodeStatus::Pending,
                 planned_date: None,
                 note: String::new(),
+                estimated_hours: Some(*hours),
             });
         }
     }
@@ -203,6 +217,11 @@ fn build_master(exam: &ProfExam) -> ProgressTable {
     let mut nodes = Vec::new();
     for sec in exam.master {
         let chapter_id = new_progress_id("c", sec.phase);
+        let child_hours: Vec<f64> = sec
+            .items
+            .iter()
+            .map(|item| crate::core::estimated_time::estimate_knowledge_hours("professional", item))
+            .collect();
         nodes.push(ProgressNode {
             id: chapter_id.clone(),
             title: sec.phase.to_string(),
@@ -212,8 +231,13 @@ fn build_master(exam: &ProfExam) -> ProgressTable {
             status: NodeStatus::Pending,
             planned_date: None,
             note: String::new(),
+            estimated_hours: Some(crate::core::estimated_time::estimate_chapter_hours(
+                "professional",
+                sec.phase,
+                &child_hours,
+            )),
         });
-        for item in sec.items {
+        for (item, hours) in sec.items.iter().zip(child_hours.iter()) {
             nodes.push(ProgressNode {
                 id: new_progress_id("n", item),
                 title: item.to_string(),
@@ -223,6 +247,7 @@ fn build_master(exam: &ProfExam) -> ProgressTable {
                 status: NodeStatus::Pending,
                 planned_date: None,
                 note: String::new(),
+                estimated_hours: Some(*hours),
             });
         }
     }

@@ -6,14 +6,20 @@
  * 未学完的章节点开章节细则逐个勾选已学知识点；顶部选择本轮状态（基础 / 强化）。
  * 专业课内置场景下，总专业课进度表由各教材覆盖度自动推导（本弹窗不列总表供手动编辑）。
  * 提交后走后端 batch_update_progress（只升不降），父组件收到 applied 事件后刷新。
+ *
+ * 交互细节：
+ * - 章节可展开/收起（行首箭头，或点击当前章行头切换收起/展开）；
+ * - 「整章学完」按章节持久记录，切换当前章后前章的勾选不会消失；
+ * - 标记「整章学完」时该章知识点同步显示为已勾选（与保存结果一致）。
  */
 import { computed, ref, reactive, watch } from "vue";
 import * as api from "@/api";
 import Button from "@/components/ui/Button.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Modal from "@/components/ui/Modal.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
-import { BookOpen, CheckCircle2, Circle, CircleDot } from "lucide-vue-next";
+import { BookOpen, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot } from "lucide-vue-next";
 import type { ProgressIndex, ProgressNode, ProgressNodeStatus, ProgressTable } from "@/types";
 
 const props = withDefaults(
@@ -39,8 +45,9 @@ const SUBJECTS = [
   { key: "professional", label: "专业课" },
 ];
 
-/** 本轮状态：基础 / 强化 */
+/** 本轮状态：学习中 / 基础 / 强化 */
 const ROUNDS: { value: ProgressNodeStatus; label: string; hint: string }[] = [
+  { value: "learning", label: "学习中", hint: "当前正在进行第一遍学习" },
   { value: "basic", label: "基础", hint: "第一轮基础学习" },
   { value: "reinforcing", label: "强化", hint: "第二轮强化提高" },
 ];
@@ -56,16 +63,17 @@ const STATUS_RANK: Record<ProgressNodeStatus, number> = {
 const round = ref<ProgressNodeStatus>("basic");
 const applying = ref(false);
 const error = ref("");
-const resultMsg = ref("");
 
 /** 每张表的选中状态：key = `${subject}:${tableId}` */
 interface TableSel {
   /** 学到第几章（chapters 下标）；null = 未选择 */
   reached: number | null;
-  /** 当前章是否整章学完 */
-  fullCurrent: boolean;
+  /** 显式标记「整章学完」的章节下标集合（跨章节持久，不因切换当前章而消失） */
+  done: Set<number>;
   /** 当前章内已勾选的知识点 id（只对当前章生效） */
   checked: Set<string>;
+  /** 已折叠的章节下标集合 */
+  collapsed: Set<number>;
 }
 const sels = reactive<Record<string, TableSel>>({});
 
@@ -74,7 +82,7 @@ function selKey(subject: string, tableId: string): string {
 }
 function getSel(subject: string, tableId: string): TableSel {
   const k = selKey(subject, tableId);
-  if (!sels[k]) sels[k] = { reached: null, fullCurrent: false, checked: new Set() };
+  if (!sels[k]) sels[k] = { reached: null, done: new Set(), checked: new Set(), collapsed: new Set() };
   return sels[k];
 }
 function clearSel(subject: string, tableId: string) {
@@ -84,7 +92,6 @@ function clearSel(subject: string, tableId: string) {
 function resetAll() {
   Object.keys(sels).forEach((k) => delete sels[k]);
   error.value = "";
-  resultMsg.value = "";
 }
 
 watch(
@@ -108,6 +115,9 @@ function tablesOf(subject: string): ProgressTable[] {
   const set = props.index?.subjects[subject];
   if (!set) return [];
   return (set.tables ?? []).filter((t) => tableInVariant(t, subject));
+}
+function tableById(subject: string, tableId: string): ProgressTable | undefined {
+  return tablesOf(subject).find((t) => t.id === tableId);
 }
 const anyTables = computed(() => SUBJECTS.some((s) => tablesOf(s.key).length > 0));
 
@@ -142,43 +152,73 @@ function coveredCount(t: ProgressTable, sel: TableSel): number {
   for (let i = 0; i < sel.reached; i++) n += chs[i].kids.length;
   const cur = chs[sel.reached];
   if (cur) {
-    if (sel.fullCurrent) n += cur.kids.length;
+    if (sel.done.has(sel.reached)) n += cur.kids.length;
     else n += cur.kids.filter((k) => sel.checked.has(k.id)).length;
   }
   return n;
 }
 
-/** 章节行图标状态：已覆盖 / 正在学（部分覆盖）/ 未学 */
-function chapterIcon(subject: string, tableId: string, idx: number) {
-  const sel = getSel(subject, tableId);
-  if (sel.reached != null && idx < sel.reached) return CheckCircle2;
-  if (sel.reached === idx && sel.fullCurrent) return CheckCircle2;
-  if (sel.reached === idx) return CircleDot;
-  return Circle;
-}
-function chapterCovered(subject: string, tableId: string, idx: number) {
-  const sel = getSel(subject, tableId);
-  return (sel.reached != null && idx < sel.reached) || (sel.reached === idx && sel.fullCurrent);
-}
-function chapterCurrent(subject: string, tableId: string, idx: number) {
+// ── 章节行状态 ──
+function chapterCurrent(subject: string, tableId: string, idx: number): boolean {
   return getSel(subject, tableId).reached === idx;
 }
-
+function chapterCovered(subject: string, tableId: string, idx: number): boolean {
+  const sel = getSel(subject, tableId);
+  return (sel.reached != null && idx < sel.reached) || (sel.reached === idx && sel.done.has(idx));
+}
+function chapterIcon(subject: string, tableId: string, idx: number) {
+  if (chapterCovered(subject, tableId, idx)) return CheckCircle2;
+  if (chapterCurrent(subject, tableId, idx)) return CircleDot;
+  return Circle;
+}
+function isChapterExpanded(subject: string, tableId: string, idx: number): boolean {
+  return !getSel(subject, tableId).collapsed.has(idx);
+}
+function toggleCollapse(subject: string, tableId: string, idx: number) {
+  const sel = getSel(subject, tableId);
+  if (sel.collapsed.has(idx)) sel.collapsed.delete(idx);
+  else sel.collapsed.add(idx);
+}
+/** 点击章节行：非当前章设为「学到本章」并展开；当前章再点一次则收起/展开 */
 function pickChapter(subject: string, tableId: string, idx: number) {
   const sel = getSel(subject, tableId);
-  if (sel.reached === idx) return; // 已选中：重复点击不变化（可用「重置」清空）
+  if (sel.reached === idx) {
+    toggleCollapse(subject, tableId, idx);
+    return;
+  }
   sel.reached = idx;
-  sel.fullCurrent = false;
+  sel.collapsed.delete(idx);
 }
-function toggleFull(subject: string, tableId: string, idx: number) {
+/** 「整章学完」：标记持久保存；标记时自动勾选该章全部知识点（与保存结果一致） */
+function toggleDone(subject: string, tableId: string, idx: number) {
+  const t = tableById(subject, tableId);
+  if (!t) return;
   const sel = getSel(subject, tableId);
   sel.reached = idx;
-  sel.fullCurrent = !sel.fullCurrent;
+  sel.collapsed.delete(idx);
+  if (sel.done.has(idx)) {
+    sel.done.delete(idx);
+  } else {
+    sel.done.add(idx);
+    const ch = chaptersOf(t)[idx];
+    if (ch) ch.kids.forEach((k) => sel.checked.add(k.id));
+  }
 }
 function toggleKid(subject: string, tableId: string, kidId: string) {
   const sel = getSel(subject, tableId);
   if (sel.checked.has(kidId)) sel.checked.delete(kidId);
   else sel.checked.add(kidId);
+}
+/** 知识点勾选框是否可交互：仅当前章且未整章学完时可勾选 */
+function kidDisabled(subject: string, tableId: string, idx: number): boolean {
+  const sel = getSel(subject, tableId);
+  return !(sel.reached === idx && !sel.done.has(idx));
+}
+/** 知识点勾选状态：当前章（未整章学完）→ 用户勾选；已覆盖/整章学完 → 显示为已勾选 */
+function kidChecked(subject: string, tableId: string, idx: number, kidId: string): boolean {
+  const sel = getSel(subject, tableId);
+  if (sel.reached === idx && !sel.done.has(idx)) return sel.checked.has(kidId);
+  return chapterCovered(subject, tableId, idx);
 }
 
 // ── 提交 ──
@@ -194,11 +234,12 @@ function buildUpdates(): api.BatchSubjectUpdate[] {
       const chs = chaptersOf(t);
       if (sel.reached == null || !chs[sel.reached]) continue;
       const cur = chs[sel.reached];
+      const full = sel.done.has(sel.reached);
       list.push({
         table_id: t.id,
         reached_chapter: cur.id,
-        current_full: !!sel.fullCurrent,
-        current_points: sel.fullCurrent
+        current_full: full,
+        current_points: full
           ? []
           : Array.from(sel.checked).filter((id) => cur.kids.some((k) => k.id === id)),
       });
@@ -216,11 +257,10 @@ async function apply() {
   }
   applying.value = true;
   error.value = "";
-  resultMsg.value = "";
   try {
     const res = await api.batchUpdateProgress(updates);
-    resultMsg.value = `已更新 ${res.tables_updated} 张表，推进 ${res.nodes_changed} 个节点`;
     emit("applied", res);
+    emit("close"); // 应用成功后自动关闭弹窗
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -230,7 +270,6 @@ async function apply() {
 
 function emitClose() {
   error.value = "";
-  resultMsg.value = "";
   emit("close");
 }
 
@@ -248,7 +287,7 @@ const summary = computed(() => {
       let cov = 0;
       for (let i = 0; i < sel.reached; i++) cov += chs[i].kids.length;
       if (chs[sel.reached]) {
-        cov += sel.fullCurrent
+        cov += sel.done.has(sel.reached)
           ? chs[sel.reached].kids.length
           : chs[sel.reached].kids.filter((k) => sel.checked.has(k.id)).length;
       }
@@ -306,7 +345,6 @@ const summary = computed(() => {
       </p>
 
       <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
-      <p v-if="resultMsg" class="success-msg">{{ resultMsg }}</p>
 
       <EmptyState
         v-if="!anyTables"
@@ -360,30 +398,46 @@ const summary = computed(() => {
                   }"
                 >
                   <div class="chapter-line">
+                    <button
+                      type="button"
+                      class="collapse-btn"
+                      :title="isChapterExpanded(s.key, t.id, idx) ? '收起' : '展开'"
+                      @click="toggleCollapse(s.key, t.id, idx)"
+                    >
+                      <component
+                        :is="isChapterExpanded(s.key, t.id, idx) ? ChevronDown : ChevronRight"
+                        :size="14"
+                      />
+                    </button>
                     <button type="button" class="chapter-main" @click="pickChapter(s.key, t.id, idx)">
                       <component :is="chapterIcon(s.key, t.id, idx)" :size="14" class="ch-ic" />
                       <span class="ch-title" :title="ch.title">{{ ch.title }}</span>
                       <span class="ch-count">{{ ch.kids.length }} 点</span>
                     </button>
                     <label
+                      v-if="chapterCurrent(s.key, t.id, idx)"
                       class="full-toggle"
-                      :class="{ on: chapterCurrent(s.key, t.id, idx) && getSel(s.key, t.id).fullCurrent }"
+                      :class="{ on: getSel(s.key, t.id).done.has(idx) }"
                     >
-                      <input
-                        type="checkbox"
-                        :checked="chapterCurrent(s.key, t.id, idx) && getSel(s.key, t.id).fullCurrent"
-                        @change="toggleFull(s.key, t.id, idx)"
+                      <Checkbox
+                        :checked="getSel(s.key, t.id).done.has(idx)"
+                        @change="toggleDone(s.key, t.id, idx)"
                       />
                       <span>整章学完</span>
                     </label>
                   </div>
 
-                  <!-- 当前章：展开知识点供逐个勾选 -->
-                  <div v-if="chapterCurrent(s.key, t.id, idx) && ch.kids.length" class="kid-list">
-                    <label v-for="k in ch.kids" :key="k.id" class="kid-row">
-                      <input
-                        type="checkbox"
-                        :checked="sels[selKey(s.key, t.id)]?.checked.has(k.id)"
+                  <!-- 展开章节：显示其知识点（当前章可勾选；已覆盖/整章学完自动显示为已勾选） -->
+                  <div v-if="isChapterExpanded(s.key, t.id, idx) && ch.kids.length" class="kid-list">
+                    <label
+                      v-for="k in ch.kids"
+                      :key="k.id"
+                      class="kid-row"
+                      :class="{ readonly: kidDisabled(s.key, t.id, idx) }"
+                    >
+                      <Checkbox
+                        :checked="kidChecked(s.key, t.id, idx, k.id)"
+                        :disabled="kidDisabled(s.key, t.id, idx)"
                         @change="toggleKid(s.key, t.id, k.id)"
                       />
                       <span class="kid-title">{{ k.title }}</span>
@@ -463,11 +517,6 @@ const summary = computed(() => {
   color: var(--color-danger);
   font-size: 12px;
 }
-.success-msg {
-  margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-success, #16a34a);
-}
 .subj-block {
   display: flex;
   flex-direction: column;
@@ -543,9 +592,25 @@ const summary = computed(() => {
 .chapter-line {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 6px 10px;
+  gap: var(--space-1);
+  padding: 4px 8px;
 }
+.collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-quaternary);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.collapse-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 .chapter-main {
   display: flex;
   align-items: center;
@@ -555,7 +620,7 @@ const summary = computed(() => {
   border: none;
   background: transparent;
   cursor: pointer;
-  padding: 0;
+  padding: 2px 2px;
   font-family: inherit;
   text-align: left;
 }
@@ -590,7 +655,7 @@ const summary = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px 10px 8px 30px;
+  padding: 4px 10px 8px 34px;
   border-top: 1px dashed var(--divider-color);
   background: var(--bg-tertiary);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
@@ -604,6 +669,7 @@ const summary = computed(() => {
   cursor: pointer;
 }
 .kid-row:hover { background: var(--bg-elevated); }
+.kid-row.readonly { cursor: default; opacity: 0.9; }
 .kid-row input { accent-color: var(--accent); flex-shrink: 0; }
 .kid-title {
   font-size: var(--text-xs);

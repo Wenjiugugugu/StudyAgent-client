@@ -123,6 +123,13 @@ pub struct ProgressNode {
     pub planned_date: Option<String>,
     /// 备注
     pub note: String,
+    /// 预估学习时长（小时）——隐藏数据，不展示给用户。
+    ///
+    /// 内置考纲表与 AI 生成的进度表会写入基准预估值；周计划生成时可作为任务
+    /// 时长参考，并按自适应周计划学到的用户效率系数（estimation_factor）缩放。
+    /// 为空表示暂无预估值（自定义/手工节点）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_hours: Option<f64>,
 }
 
 impl Default for ProgressNode {
@@ -136,6 +143,7 @@ impl Default for ProgressNode {
             status: NodeStatus::Pending,
             planned_date: None,
             note: String::new(),
+            estimated_hours: None,
         }
     }
 }
@@ -373,6 +381,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 },
                 ProgressNode {
                     id: dup_id.clone(),
@@ -383,6 +392,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 },
                 ProgressNode {
                     id: "n1".to_string(),
@@ -393,6 +403,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 },
                 ProgressNode {
                     id: "n2".to_string(),
@@ -403,6 +414,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 },
             ],
         }
@@ -459,6 +471,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 },
                 ProgressNode {
                     id: "n1".to_string(),
@@ -469,6 +482,7 @@ mod tests {
                     status: NodeStatus::Pending,
                     planned_date: None,
                     note: String::new(),
+                    estimated_hours: None,
                 },
             ],
         };

@@ -31,7 +31,7 @@ export interface LearningTrend {
   total_planned_tasks: number;
   /** 累计完成任务数 */
   total_completed_tasks: number;
-  /** 学习天数（有实际时长>0 的天数） */
+  /** 学习天数（有复盘或实际时长>0 的天数） */
   study_days: number;
 }
 
@@ -85,7 +85,7 @@ export interface PeriodMetrics {
   total_tasks: number;
   /** 总完成任务数 */
   total_completed: number;
-  /** 学习天数 */
+  /** 学习天数（有复盘的天数） */
   study_days: number;
 }
 
@@ -131,4 +131,8 @@ export interface AnalyticsSummary {
   learning_trend: LearningTrend;
   review_quality: ReviewQuality;
   comparison: ComparisonAndPrediction;
+  /** 全库最早学习记录日期（复盘或计划），所选范围无数据时用于引导 */
+  data_earliest_date?: string;
+  /** 全库最近一次复盘日期（实际学习日），所选范围无数据时用于引导 */
+  data_latest_date?: string;
 }

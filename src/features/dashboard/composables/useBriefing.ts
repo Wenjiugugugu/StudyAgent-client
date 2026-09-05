@@ -83,8 +83,6 @@ export function useBriefing() {
   }
 
   // ── 简报展示辅助 ──
-  const briefingGreeting = computed(() => briefing.value?.data?.greeting?.trim() ?? "");
-
   // 科目估算展示：附中文科目名
   const estimationList = computed(() => {
     if (!briefing.value?.data?.estimations) return [];
@@ -102,7 +100,6 @@ export function useBriefing() {
     yesterdayReviewExists,
     needYesterdayReview,
     withinMakeupWindow,
-    briefingGreeting,
     estimationList,
     loadBriefing,
     regenerateBriefing,

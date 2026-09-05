@@ -18,8 +18,8 @@ export interface SubjectEstimation {
 
 /** 简报数据体 */
 export interface BriefingData {
-  /** AI 生成的「今日寄语」 */
-  greeting: string;
+  /** 兼容旧版数据；新版不再生成（旧文件可能仍包含） */
+  greeting?: string;
   /** 各科进度估算 */
   estimations: SubjectEstimation[];
 }
