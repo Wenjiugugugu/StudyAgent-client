@@ -428,7 +428,10 @@ mod tests {
         assert_ne!(chapters[0].id, chapters[1].id);
 
         let ds = chapters.iter().find(|c| c.title == "数据结构").unwrap();
-        let co = chapters.iter().find(|c| c.title == "计算机组成原理").unwrap();
+        let co = chapters
+            .iter()
+            .find(|c| c.title == "计算机组成原理")
+            .unwrap();
         let linear = table.nodes.iter().find(|n| n.title == "线性表").unwrap();
         let storage = table.nodes.iter().find(|n| n.title == "存储系统").unwrap();
 

@@ -10,8 +10,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{atomic_write, read_file_content, DataResult};
 use super::state::SubjectKey;
+use super::{atomic_write, read_file_content, DataResult};
 
 // ============================================================================
 // 结构
@@ -110,8 +110,7 @@ pub fn save_goals(data_dir: &Path, file: &GoalPlanFile) -> DataResult<()> {
     let path = goals_path(data_dir);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建 plan 目录失败: {}", e))?;
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建 plan 目录失败: {}", e))?;
         }
     }
     let json =
@@ -126,18 +125,11 @@ pub fn save_goals(data_dir: &Path, file: &GoalPlanFile) -> DataResult<()> {
 /// 判断某科目在指定日期是否有「生效区间」。
 ///
 /// 生效条件：goal.active == true 且 今天 <= deadline 且 goal 关联该科目。
-pub fn active_goal_for(
-    data_dir: &Path,
-    subject: &SubjectKey,
-    today: &str,
-) -> Option<Goal> {
+pub fn active_goal_for(data_dir: &Path, subject: &SubjectKey, today: &str) -> Option<Goal> {
     let file = read_goals(data_dir).ok()?;
-    file.data
-        .goals
-        .into_iter()
-        .find(|g| {
-            g.active && g.subject == *subject && !g.deadline.is_empty() && g.deadline.as_str() >= today
-        })
+    file.data.goals.into_iter().find(|g| {
+        g.active && g.subject == *subject && !g.deadline.is_empty() && g.deadline.as_str() >= today
+    })
 }
 
 // ============================================================================
@@ -190,7 +182,7 @@ mod tests {
         assert_eq!(read.data.goals.len(), 1);
         assert_eq!(read.data.goals[0].subject, SubjectKey::Math);
         assert_eq!(read.data.goals[0].target_position, Some(40));
-        assert_eq!(read.data.goals[0].active, true);
+        assert!(read.data.goals[0].active);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -211,7 +203,9 @@ mod tests {
         let file = GoalPlanFile {
             version: "1.0.0".to_string(),
             meta: GoalPlanMeta::default(),
-            data: GoalPlanData { goals: vec![active.clone()] },
+            data: GoalPlanData {
+                goals: vec![active.clone()],
+            },
         };
         save_goals(&tmp, &file).unwrap();
 
@@ -226,7 +220,9 @@ mod tests {
         let file2 = GoalPlanFile {
             version: "1.0.0".to_string(),
             meta: GoalPlanMeta::default(),
-            data: GoalPlanData { goals: vec![active] },
+            data: GoalPlanData {
+                goals: vec![active],
+            },
         };
         save_goals(&tmp, &file2).unwrap();
         assert!(active_goal_for(&tmp, &SubjectKey::Math, "2026-09-04").is_none());

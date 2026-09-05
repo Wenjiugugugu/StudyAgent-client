@@ -143,7 +143,9 @@ fn apply_task_to_subject(
             if set.active_variant.is_empty() {
                 set.tables.first_mut()
             } else {
-                set.tables.iter_mut().find(|t| t.variant == set.active_variant)
+                set.tables
+                    .iter_mut()
+                    .find(|t| t.variant == set.active_variant)
             }
         }
     };
@@ -180,7 +182,7 @@ fn apply_task_to_subject(
 /// - 今日完成的任务 → 对应知识点：mastered→掌握，basic/weak→基础
 /// - 次日计划的每个任务 → 对应知识点：预置为「强化中」（今日困难或存在掌握不足）
 ///   否则「学习中」；只升不降。
-/// 返回变更节点总数。
+///   返回变更节点总数。
 pub fn sync_review_to_progress(
     data_dir: &Path,
     tasks: &[ReviewSyncTask],
@@ -252,7 +254,7 @@ pub struct StatusEstimate {
 /// 根据 State 预估算法的状态：
 /// - `completed` 中的章节 → 建议「基础」
 /// - `current_focus`（正在学的章节）→ 建议「学习中」
-/// 仅对「当前启用方案」的表生成建议，避免跨方案污染。
+///   仅对「当前启用方案」的表生成建议，避免跨方案污染。
 pub fn estimate_from_state(data_dir: &Path, subject: &str) -> Result<Vec<StatusEstimate>, String> {
     let state = read_state_or_default(data_dir);
     let Some(s_state) = subject_state_of(&state, subject) else {
@@ -782,7 +784,11 @@ mod tests {
             planned_date: None,
             note: String::new(),
         };
-        assert!(node_matches(&n, &n.phase, "第四章 网络层：重点复习 IP 编址"));
+        assert!(node_matches(
+            &n,
+            &n.phase,
+            "第四章 网络层：重点复习 IP 编址"
+        ));
         assert!(node_matches(&n, &n.phase, "IP编址与子网划分"));
         assert!(!node_matches(&n, &n.phase, "图的最短路径"));
     }
@@ -808,7 +814,10 @@ mod tests {
         assert_eq!(m.get("math").map(|s| s.as_str()), Some("数二"));
         assert_eq!(m.get("english").map(|s| s.as_str()), Some("英一"));
         assert_eq!(m.get("politics").map(|s| s.as_str()), Some("政治"));
-        assert_eq!(m.get("professional").map(|s| s.as_str()), Some("408 计算机"));
+        assert_eq!(
+            m.get("professional").map(|s| s.as_str()),
+            Some("408 计算机")
+        );
 
         let m2 = default_progress_variants("");
         assert!(m2.is_empty());

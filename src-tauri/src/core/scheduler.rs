@@ -78,11 +78,13 @@ impl DailyScheduler {
             }
             // 截止日规划区间：该科目当天有「生效区间」时，用倒排知识点任务接管，
             // 跳过周计划中该科的 task_templates（分区间的科目不占按学习时长的份额）。
-            if let Some(goal) = crate::data::goal::active_goal_for(data_dir, &allocation.subject, date)
+            if let Some(goal) =
+                crate::data::goal::active_goal_for(data_dir, &allocation.subject, date)
             {
                 let version = goal_subject_version(&state, &allocation.subject);
-                match crate::core::goal_planner::plan_goal_tasks_sync(data_dir, &goal, date, &version)
-                {
+                match crate::core::goal_planner::plan_goal_tasks_sync(
+                    data_dir, &goal, date, &version,
+                ) {
                     Ok(goal_tasks) if !goal_tasks.is_empty() => {
                         log::info!(
                             "科目 {:?} 在 {} 处于截止日规划区间，任务由目标倒排接管（{} 条）",
@@ -102,11 +104,8 @@ impl DailyScheduler {
                                 ..Default::default()
                             })
                             .collect();
-                        pending.extend(
-                            owned
-                                .into_iter()
-                                .map(|tp| (allocation.subject.clone(), tp)),
-                        );
+                        pending
+                            .extend(owned.into_iter().map(|tp| (allocation.subject.clone(), tp)));
                         continue;
                     }
                     other => {

@@ -45,10 +45,7 @@ pub fn subject_display_name(subject: &SubjectKey) -> &'static str {
 }
 
 /// 从 StudyState 取某科目当前的 math/english 版本标签（用于 chapter_seq 定位）
-pub fn subject_version(
-    state: &crate::data::state::StudyState,
-    key: &str,
-) -> String {
+pub fn subject_version(state: &crate::data::state::StudyState, key: &str) -> String {
     match key {
         "math" => state.subjects.math.version.clone().unwrap_or_default(),
         "english" => state.subjects.english.version.clone().unwrap_or_default(),
@@ -90,7 +87,7 @@ fn backward_schedule(
         };
     }
 
-    let n = study_days.len().max(1) as usize;
+    let n = study_days.len().max(1);
     // 均匀分配：每个学习日 base 个知识点，前 extra 天再 +1（尽量均摊，用满全部学习日，
     // 理想执行下正好在截止日达标）。
     let base = remaining / n;
@@ -141,7 +138,11 @@ pub fn plan_goal_tasks_sync(
     let subject = &goal.subject;
     let knowledge: Vec<String> = pos_slice
         .iter()
-        .filter_map(|&p| chapter_seq::syllabus_points(subject_key_str(subject), version).and_then(|seq| seq.get(p)).map(|s| s.to_string()))
+        .filter_map(|&p| {
+            chapter_seq::syllabus_points(subject_key_str(subject), version)
+                .and_then(|seq| seq.get(p))
+                .map(|s| s.to_string())
+        })
         .collect();
     if knowledge.is_empty() {
         return Ok(Vec::new());
@@ -192,7 +193,11 @@ pub async fn plan_goal_tasks(
     // AI 估时（按知识点标题匹配叠加）
     let knowledge: Vec<String> = tasks
         .iter()
-        .map(|t| t.title.trim_start_matches(&format!("（{}）", subject_display_name(subject))).to_string())
+        .map(|t| {
+            t.title
+                .trim_start_matches(&format!("（{}）", subject_display_name(subject)))
+                .to_string()
+        })
         .collect();
     let estimate = estimate_tasks_hours(data_dir, ai, subject, version, &knowledge).await;
     for t in tasks.iter_mut() {
@@ -326,7 +331,8 @@ pub fn replan_goals_after_review(
             continue;
         }
 
-        let new_pos = actual_progress_position(&goal.subject, &version, overcompletion, task_reviews);
+        let new_pos =
+            actual_progress_position(&goal.subject, &version, overcompletion, task_reviews);
         let base_pos = goal.current_position.unwrap_or(0);
         let advanced_pos = new_pos.map(|p| p.max(base_pos)).unwrap_or(base_pos);
         if advanced_pos > base_pos {
@@ -369,7 +375,7 @@ fn actual_progress_position(
         if oc.subject != key {
             continue;
         }
-        if let Some(p) = chapter_seq::position(&key, &version, &oc.chapter_reached) {
+        if let Some(p) = chapter_seq::position(key, version, &oc.chapter_reached) {
             max_pos = Some(max_pos.map_or(p, |m| m.max(p)));
         }
     }
@@ -382,7 +388,7 @@ fn actual_progress_position(
         if tr.status != "completed" && tr.status != "partial" {
             continue;
         }
-        if let Some(p) = chapter_seq::position(&key, &version, &tr.title) {
+        if let Some(p) = chapter_seq::position(key, version, &tr.title) {
             max_pos = Some(max_pos.map_or(p, |m| m.max(p)));
         }
     }
@@ -431,13 +437,7 @@ mod tests {
     #[test]
     fn backward_schedule_distributes_evenly() {
         // 6 个学习日（9/4..9/9），剩 13 个知识点 → 13/6 = 基 2 + 前 1 天 +1
-        let schedule = backward_schedule(
-            "2026-09-04",
-            "2026-09-09",
-            2,
-            15,
-            &[],
-        );
+        let schedule = backward_schedule("2026-09-04", "2026-09-09", 2, 15, &[]);
         assert_eq!(schedule.len(), 6);
         // 总推进 = 13
         let total: usize = schedule.iter().map(|(_, s)| s.len()).sum();
@@ -452,10 +452,7 @@ mod tests {
     fn backward_schedule_skips_rest_days() {
         // 9/5 是周六、9/6 是周日（2026-09-05 为周六）。
         // 用实际日期验证：排除这两个休息日
-        let rest = vec![
-            "2026-09-05".to_string(),
-            "2026-09-06".to_string(),
-        ];
+        let rest = vec!["2026-09-05".to_string(), "2026-09-06".to_string()];
         let schedule = backward_schedule("2026-09-04", "2026-09-09", 2, 15, &rest);
         // 剔掉 2 天休息日，剩余 4 个学习日
         assert_eq!(schedule.len(), 4);
