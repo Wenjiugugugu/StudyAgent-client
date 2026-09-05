@@ -87,7 +87,7 @@ fn backward_schedule(
         };
     }
 
-    let n = study_days.len().max(1) as usize;
+    let n = study_days.len().max(1);
     // 均匀分配：每个学习日 base 个知识点，前 extra 天再 +1（尽量均摊，用满全部学习日，
     // 理想执行下正好在截止日达标）。
     let base = remaining / n;
@@ -375,7 +375,7 @@ fn actual_progress_position(
         if oc.subject != key {
             continue;
         }
-        if let Some(p) = chapter_seq::position(&key, &version, &oc.chapter_reached) {
+        if let Some(p) = chapter_seq::position(key, version, &oc.chapter_reached) {
             max_pos = Some(max_pos.map_or(p, |m| m.max(p)));
         }
     }
@@ -388,7 +388,7 @@ fn actual_progress_position(
         if tr.status != "completed" && tr.status != "partial" {
             continue;
         }
-        if let Some(p) = chapter_seq::position(&key, &version, &tr.title) {
+        if let Some(p) = chapter_seq::position(key, version, &tr.title) {
             max_pos = Some(max_pos.map_or(p, |m| m.max(p)));
         }
     }

@@ -182,7 +182,7 @@ mod tests {
         assert_eq!(read.data.goals.len(), 1);
         assert_eq!(read.data.goals[0].subject, SubjectKey::Math);
         assert_eq!(read.data.goals[0].target_position, Some(40));
-        assert_eq!(read.data.goals[0].active, true);
+        assert!(read.data.goals[0].active);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
