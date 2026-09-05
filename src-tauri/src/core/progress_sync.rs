@@ -1022,12 +1022,8 @@ mod tests {
             );
         }
 
-        let changed = apply_master_derivation(
-            &mut index,
-            "professional",
-            exam.short,
-            NodeStatus::Learning,
-        );
+        let changed =
+            apply_master_derivation(&mut index, "professional", exam.short, NodeStatus::Learning);
         assert!(changed > 0, "部分学习也应推动总表进入「学习中」状态");
 
         let master = index
