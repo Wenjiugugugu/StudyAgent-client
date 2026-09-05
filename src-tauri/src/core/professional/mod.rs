@@ -334,7 +334,12 @@ mod tests {
                 .filter(|n| n.level == NodeLevel::Chapter)
                 .collect();
             // 教材表应逐章展开，而非旧的「全书章节」单一分组
-            assert!(chapters.len() >= 3, "「{}」章节过少: {}", t.name, chapters.len());
+            assert!(
+                chapters.len() >= 3,
+                "「{}」章节过少: {}",
+                t.name,
+                chapters.len()
+            );
             for ch in &chapters {
                 assert!(
                     t.nodes
@@ -394,8 +399,11 @@ mod tests {
         assert_eq!(law.books.len(), 3);
         assert_eq!(
             law.books[2].master_links,
-            &["专业综合课·法理学", "专业综合课·宪法学", "专业综合课·中国法制史"]
+            &[
+                "专业综合课·法理学",
+                "专业综合课·宪法学",
+                "专业综合课·中国法制史"
+            ]
         );
     }
 }
-

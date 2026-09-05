@@ -479,7 +479,11 @@ pub fn apply_batch_round(
 
 /// 单表覆盖推进：覆盖知识点 → max(现状, target)；未覆盖不变。
 /// 章节节点：其下知识点全部将 ≥ target → max(现状, target)，否则不变。
-fn apply_table_coverage(table: &mut ProgressTable, tc: &TableCoverage, target: NodeStatus) -> usize {
+fn apply_table_coverage(
+    table: &mut ProgressTable,
+    tc: &TableCoverage,
+    target: NodeStatus,
+) -> usize {
     // 章节顺序 = 存储顺序；收集「章节 id → 知识点 id」
     let mut chapter_ids: Vec<String> = Vec::new();
     let mut children_of: HashMap<String, Vec<String>> = HashMap::new();
@@ -487,7 +491,10 @@ fn apply_table_coverage(table: &mut ProgressTable, tc: &TableCoverage, target: N
         if n.level == NodeLevel::Chapter {
             chapter_ids.push(n.id.clone());
         } else if let Some(pid) = &n.parent_id {
-            children_of.entry(pid.clone()).or_default().push(n.id.clone());
+            children_of
+                .entry(pid.clone())
+                .or_default()
+                .push(n.id.clone());
         }
     }
 
@@ -913,10 +920,20 @@ mod tests {
         let changed = apply_table_coverage(&mut t, &tc, NodeStatus::Basic);
         assert_eq!(changed, 4, "第一章 2 个 + k10 + 第一章章节节点 = 4 处推进");
         // 第一章的知识点已为基础
-        let s0 = t.nodes.iter().find(|n| n.id == t.nodes[2].id).unwrap().status;
+        let s0 = t
+            .nodes
+            .iter()
+            .find(|n| n.id == t.nodes[2].id)
+            .unwrap()
+            .status;
         assert_eq!(s0, NodeStatus::Basic);
         // 第二章未勾选的另一个知识点（k11 = index 5）保持待学
-        let s4 = t.nodes.iter().find(|n| n.id == t.nodes[5].id).unwrap().status;
+        let s4 = t
+            .nodes
+            .iter()
+            .find(|n| n.id == t.nodes[5].id)
+            .unwrap()
+            .status;
         assert_eq!(s4, NodeStatus::Pending);
         // 第三章保持待学
         assert!(t
@@ -957,7 +974,10 @@ mod tests {
         let exam = find("408计算机").expect("408 应可识别");
         let mut index = ProgressIndex::default();
         {
-            let set = index.subjects.entry("professional".to_string()).or_default();
+            let set = index
+                .subjects
+                .entry("professional".to_string())
+                .or_default();
             set.active_variant = exam.short.to_string();
             let mut tables = build_tables(&exam);
             for t in tables.iter_mut() {
@@ -1040,7 +1060,10 @@ mod tests {
         let exam = find("408计算机").expect("408 应可识别");
         let mut index = ProgressIndex::default();
         {
-            let set = index.subjects.entry("professional".to_string()).or_default();
+            let set = index
+                .subjects
+                .entry("professional".to_string())
+                .or_default();
             set.active_variant = exam.short.to_string();
             // 总表 + 教材表入库（id 分配）
             let mut tables = build_tables(&exam);

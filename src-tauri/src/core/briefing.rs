@@ -396,10 +396,7 @@ impl<'a> BriefingAgent<'a> {
 /// 统计该科全部进度表（专业课含总表与各教材表）的 knowledge 节点；
 /// "已完成" = 状态达「基础」及以上（basic/reinforcing/mastered），
 /// learning/pending 视为剩余。无进度表或无知识点时返回 None。
-fn progress_table_summary(
-    index: &ProgressIndex,
-    subject: &str,
-) -> Option<(usize, usize)> {
+fn progress_table_summary(index: &ProgressIndex, subject: &str) -> Option<(usize, usize)> {
     let set = index.subjects.get(subject)?;
     if set.tables.is_empty() {
         return None;
@@ -523,7 +520,11 @@ pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
             efficiency_factor: entry.estimation_factor,
             feedback_signal: adaptive.workload_ema,
             completion_rate: 0.85,
-            confidence: if entry.estimation_samples > 0.0 { 0.6 } else { 0.35 },
+            confidence: if entry.estimation_samples > 0.0 {
+                0.6
+            } else {
+                0.35
+            },
         };
         // 剩余预估总时长（逐知识点调整后求和）
         let remaining_hours: f64 = pending
@@ -718,10 +719,8 @@ mod tests {
     #[test]
     fn deterministic_estimations_falls_back_without_ai() {
         // 构造临时数据目录：state（math 启用，周学时 12）+ 内置考纲进度表
-        let dir = std::env::temp_dir().join(format!(
-            "studyagent_briefing_test_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("studyagent_briefing_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("state")).unwrap();
         std::fs::create_dir_all(dir.join("progress_tables")).unwrap();

@@ -1178,7 +1178,9 @@ impl<'a> Planner<'a> {
         data_dir: &Path,
         adaptive_parameters: &AdaptivePlanParameters,
     ) -> String {
-        use crate::core::estimated_time::{adjust_hours, estimate_knowledge_hours, EstimateAdjustment};
+        use crate::core::estimated_time::{
+            adjust_hours, estimate_knowledge_hours, EstimateAdjustment,
+        };
         use crate::data::progress_tables::{NodeLevel, NodeStatus};
         const MAX_PER_SUBJECT: usize = 15;
 

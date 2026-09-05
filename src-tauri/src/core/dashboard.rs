@@ -148,7 +148,8 @@ impl DashboardAggregator {
         // 连续学习天数（基于实际数据计算，休息日/排除日不打断连续）
         let streak_days = Self::compute_streak(data_dir, &today);
         // 累计学习天数（数据统计 + 历史累积取较大者，见 compute_total_study_days）
-        let total_study_days = Self::compute_total_study_days(data_dir, state.progress.total_study_days);
+        let total_study_days =
+            Self::compute_total_study_days(data_dir, state.progress.total_study_days);
 
         Ok(DashboardSummary {
             date: today,
@@ -993,7 +994,10 @@ mod tests {
         // state 累积 123 天，但本地数据只有 2 天 → 保留 123（不凭空回落）
         write_review(&dir, "2026-08-10");
         write_review(&dir, "2026-08-11");
-        assert_eq!(DashboardAggregator::compute_total_study_days(&dir, 123), 123);
+        assert_eq!(
+            DashboardAggregator::compute_total_study_days(&dir, 123),
+            123
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1001,7 +1005,13 @@ mod tests {
     fn total_corrects_undercount_when_data_exceeds_state() {
         let dir = tmp_dir("total_undercount_fix");
         // state 只记了 2 个「任务完成日」，但实际有 5 天复盘 → 采用数据统计 5
-        for d in ["2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14"] {
+        for d in [
+            "2026-08-10",
+            "2026-08-11",
+            "2026-08-12",
+            "2026-08-13",
+            "2026-08-14",
+        ] {
             write_review(&dir, d);
         }
         assert_eq!(DashboardAggregator::compute_total_study_days(&dir, 2), 5);

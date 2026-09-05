@@ -900,13 +900,14 @@ pub fn builtin_progress_table(
 ///   章节 = 其下知识点预估值之和（隐藏数据，不展示给用户）；
 /// - 其余逻辑与原实现一致：按 phase 首次出现顺序补出章节节点（表头），维持两级结构。
 fn build_nodes_from_drafts(subject: &str, drafts: &[NodeDraft]) -> Vec<ProgressNode> {
-    use crate::core::estimated_time::{estimate_knowledge_hours, MAX_KNOWLEDGE_HOURS, round1};
+    use crate::core::estimated_time::{estimate_knowledge_hours, round1, MAX_KNOWLEDGE_HOURS};
 
     // 检测 AI 是否填了状态/日期（保留对 NodeDraft 字段的读取避免 dead_code，同时提供可观测性）
-    if drafts.iter().any(|d| d.status.is_some() || d.planned_date.is_some()) {
-        log::warn!(
-            "[进度表] 检测到 AI 填写的 status/planned_date，已统一强制为 pending/null"
-        );
+    if drafts
+        .iter()
+        .any(|d| d.status.is_some() || d.planned_date.is_some())
+    {
+        log::warn!("[进度表] 检测到 AI 填写的 status/planned_date，已统一强制为 pending/null");
     }
 
     // 两级结构：AI 以 phase 作为章节（首次出现顺序建立章节 id），知识点归属其下；
@@ -1166,7 +1167,9 @@ mod tests {
             .filter_map(|n| n.estimated_hours)
             .sum();
         assert!(
-            gaodeng.estimated_hours.is_some_and(|h| (h - gaodeng_kids).abs() < 0.05),
+            gaodeng
+                .estimated_hours
+                .is_some_and(|h| (h - gaodeng_kids).abs() < 0.05),
             "章节预估应为子知识点之和"
         );
     }

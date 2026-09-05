@@ -679,7 +679,8 @@ subject 只能是 "math" / "english" / "politics" / "professional"（任务已�
 }
 
 subject 只能是 "math" / "english" / "politics" / "professional"。
-简报文件存储为 records/YYYY-MM-DD_briefing.json。"#.to_string()
+简报文件存储为 records/YYYY-MM-DD_briefing.json。"#
+                .to_string()
         }
         AgentType::Doubt => {
             // Doubt system prompt — 引导式答疑（解惑），基于 Bloom 2-Sigma 掌握学习法

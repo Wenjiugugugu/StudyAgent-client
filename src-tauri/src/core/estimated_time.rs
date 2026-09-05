@@ -39,10 +39,7 @@ pub fn estimate_knowledge_hours(subject: &str, title: &str) -> f64 {
     let t = title.trim();
     let factor = if t.is_empty() {
         1.0
-    } else if t.contains("证明")
-        || t.contains("推导")
-        || t.contains("算法")
-        || t.contains("综合")
+    } else if t.contains("证明") || t.contains("推导") || t.contains("算法") || t.contains("综合")
     {
         1.4
     } else if t.contains("计算")
@@ -131,10 +128,7 @@ impl EstimateAdjustment {
 /// 避免「用户整体效率高 → 难知识点也被大幅压缩」；识记/概念类允许更激进。
 pub fn difficulty_sensitivity(title: &str) -> f64 {
     let t = title.trim();
-    if t.contains("证明")
-        || t.contains("推导")
-        || t.contains("算法")
-        || t.contains("综合")
+    if t.contains("证明") || t.contains("推导") || t.contains("算法") || t.contains("综合")
     {
         0.7
     } else if t.contains("计算")
@@ -167,7 +161,11 @@ pub fn adjust_hours(base: f64, adjustment: &EstimateAdjustment, title: &str) -> 
     let combined = adjustment.combined_factor();
     let sensitivity = difficulty_sensitivity(title).clamp(0.5, 1.5);
     let effective = 1.0 + (combined - 1.0) * sensitivity;
-    round1(clamp(base * effective, MIN_KNOWLEDGE_HOURS, MAX_KNOWLEDGE_HOURS))
+    round1(clamp(
+        base * effective,
+        MIN_KNOWLEDGE_HOURS,
+        MAX_KNOWLEDGE_HOURS,
+    ))
 }
 
 /// 保留一位小数的时长（小时），避免浮点噪音。
@@ -219,7 +217,7 @@ mod tests {
         // 用户完成偏快 + 反馈任务量偏少 + 完成率偏高 → 综合缩短
         let fast = EstimateAdjustment {
             efficiency_factor: 0.85,
-            feedback_signal: 0.6, // 偏少 → 缩短
+            feedback_signal: 0.6,  // 偏少 → 缩短
             completion_rate: 0.95, // 偏松 → 缩短
             confidence: 1.0,
         };
@@ -230,7 +228,7 @@ mod tests {
         let slow = EstimateAdjustment {
             efficiency_factor: 1.2,
             feedback_signal: -0.6, // 偏多 → 延长
-            completion_rate: 0.6, // 偏紧 → 延长
+            completion_rate: 0.6,  // 偏紧 → 延长
             confidence: 1.0,
         };
         let longer = adjust_hours(2.0, &slow, "矩阵乘法");
@@ -277,9 +275,13 @@ mod tests {
         let easy = adjust_hours(2.0, &adj, "基本概念与定义");
         assert!(hard >= easy, "难内容缩放应更保守: hard={hard} easy={easy}");
         // 无论如何都落在合理区间
-        for title in ["中值定理的证明综合", "基本概念与定义", "极限的计算方法"] {
+        for title in ["中值定理的证明综合", "基本概念与定义", "极限的计算方法"]
+        {
             let h = adjust_hours(2.0, &adj, title);
-            assert!((MIN_KNOWLEDGE_HOURS..=MAX_KNOWLEDGE_HOURS).contains(&h), "{title}: {h}");
+            assert!(
+                (MIN_KNOWLEDGE_HOURS..=MAX_KNOWLEDGE_HOURS).contains(&h),
+                "{title}: {h}"
+            );
         }
     }
 }
