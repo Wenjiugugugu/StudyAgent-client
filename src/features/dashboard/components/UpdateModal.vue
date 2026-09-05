@@ -28,7 +28,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
 <template>
   <Modal
     :open="updateStore.showUpdateModal"
-    :title="forceUpdate ? '必须更新' : '发现新版本'"
+    :title="forceUpdate ? '需要更新' : '发现新版本'"
     :show-close="!forceUpdate"
     :close-on-overlay="false"
     :close-on-esc="!forceUpdate"

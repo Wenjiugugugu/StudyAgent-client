@@ -70,7 +70,6 @@ const briefingView = computed<BriefingView>(() => ({
   regenerating: briefing.briefingRegenerating.value,
   needYesterdayReview: briefing.needYesterdayReview.value,
   withinMakeupWindow: briefing.withinMakeupWindow.value,
-  greeting: briefing.briefingGreeting.value,
   estimations: briefing.estimationList.value,
   animated: animation.briefingAnimated.value,
 }));

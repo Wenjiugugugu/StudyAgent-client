@@ -254,6 +254,7 @@ fn main() {
             builtin_progress_table,
             estimate_progress_from_state,
             apply_progress_statuses,
+            batch_update_progress,
             default_progress_variants,
             get_progress_settings,
             set_progress_settings,

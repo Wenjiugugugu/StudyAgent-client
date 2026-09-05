@@ -778,7 +778,7 @@ onUnmounted(() => {
         <div v-else-if="!current" class="reader-empty">
           <EmptyState
             title="选择一本教材"
-            description="从左侧列表中选择教材开始阅读，或点击「导入教材」添加新教材；学习进度请前往侧边栏「进度」页查看/编辑。"
+            description="从左侧列表中选择教材开始阅读，或点击「导入教材」添加新教材。"
           >
             <template #actions>
               <div class="empty-hint">

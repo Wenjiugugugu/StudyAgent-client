@@ -56,19 +56,37 @@ const activeProgressTable = computed<ProgressTable | null>(() => {
   return s.tables[0] ?? null;
 });
 
-/** 章节选项：章节节点标题；旧表无章节节点时退化为按 phase 去重，再退化全部知识点标题 */
-const chapterOptions = computed<string[]>(() => {
+/** 章节选项（分组）：内置考纲的 chapter 节点是书本/板块级（如「高等数学」），具体章节/知识点
+ * 是其下的 knowledge 子节点；后端按顺序表条目定位，书本名无法定位，故选项取「分组(书本/板块)
+ * → 具体条目」两级。chapter 无子节点时（自定义表可能直接把章节建在 chapter 层）用自身兜底。
+ * 旧表无 chapter 节点时退化为单组（phase 去重 / 全部节点标题）。 */
+const chapterGroups = computed<{ group: string; items: string[] }[]>(() => {
   const t = activeProgressTable.value;
   if (!t) return [];
-  const chapters = t.nodes
-    .filter((n) => n.level === "chapter")
-    .map((n) => n.title)
-    .filter((n) => n.trim() !== "");
-  if (chapters.length) return chapters;
+  const chapters = t.nodes.filter((n) => n.level === "chapter");
+  if (chapters.length) {
+    const groups: { group: string; items: string[] }[] = [];
+    for (const ch of chapters) {
+      const items = [
+        ...new Set(
+          t.nodes
+            .filter((n) => n.level === "knowledge" && n.parent_id === ch.id)
+            .map((n) => n.title)
+            .filter((s) => s.trim() !== "")
+        ),
+      ];
+      if (items.length) groups.push({ group: ch.title, items });
+      else if (ch.title.trim()) groups.push({ group: "", items: [ch.title] });
+    }
+    return groups;
+  }
   const phases = [...new Set(t.nodes.map((n) => n.phase).filter((p) => p.trim() !== ""))];
-  if (phases.length) return phases;
-  return t.nodes.map((n) => n.title);
+  if (phases.length) return [{ group: "", items: phases }];
+  return [{ group: "", items: t.nodes.map((n) => n.title) }];
 });
+
+/** 是否有可选章节（无进度表时为空） */
+const hasChapterOptions = computed(() => chapterGroups.value.some((g) => g.items.length > 0));
 
 // 切换科目时清空已选的章节（选项来自别的进度表）
 watch(formSubject, () => {
@@ -220,10 +238,14 @@ onMounted(reload);
             <input v-model="formTitle" type="text" class="text-input" placeholder="例：9/20 前完成线性方程组" />
           </div>
           <div class="field">
-            <label class="field-label">目标章节（从进度表选择）</label>
-            <Select v-model="formTargetChapter" :placeholder="chapterOptions.length ? '选择目标章节' : '暂无进度表'">
-              <option v-if="chapterOptions.length === 0" value="" disabled>暂无进度表，请先到「进度」页创建</option>
-              <option v-for="c in chapterOptions" :key="c" :value="c">{{ c }}</option>
+            <label class="field-label">目标章节（从进度表选择具体章节）</label>
+            <Select v-model="formTargetChapter" :placeholder="hasChapterOptions ? '选择目标章节' : '暂无进度表'">
+              <template v-if="hasChapterOptions">
+                <optgroup v-for="(g, gi) in chapterGroups" :key="g.group || `g${gi}`" :label="g.group">
+                  <option v-for="c in g.items" :key="c" :value="c">{{ c }}</option>
+                </optgroup>
+              </template>
+              <option v-else value="" disabled>暂无进度表，请先到「进度」页创建</option>
             </Select>
             <p v-if="activeProgressTable" class="field-hint">选自「{{ activeProgressTable.name }}」</p>
           </div>
@@ -231,7 +253,9 @@ onMounted(reload);
             <label class="field-label">起始章节（可选，默认从0起点）</label>
             <Select v-model="formStartChapter" placeholder="从当前起点开始">
               <option value="">从当前起点开始</option>
-              <option v-for="c in chapterOptions" :key="c" :value="c">{{ c }}</option>
+              <optgroup v-for="(g, gi) in chapterGroups" :key="g.group || `g${gi}`" :label="g.group">
+                <option v-for="c in g.items" :key="c" :value="c">{{ c }}</option>
+              </optgroup>
             </Select>
             <p v-if="activeProgressTable" class="field-hint">选自「{{ activeProgressTable.name }}」</p>
           </div>

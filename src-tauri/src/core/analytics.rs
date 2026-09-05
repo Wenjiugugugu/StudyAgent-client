@@ -167,6 +167,12 @@ pub struct AnalyticsSummary {
     pub learning_trend: LearningTrend,
     pub review_quality: ReviewQuality,
     pub comparison: ComparisonAndPrediction,
+    /// 全库最早学习记录日期（复盘或计划），用于所选范围无数据时的引导提示
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_earliest_date: Option<String>,
+    /// 全库最近一次复盘日期（实际学习日），用于所选范围无数据时的引导提示
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_latest_date: Option<String>,
 }
 
 // ============================================================================
@@ -306,11 +312,22 @@ pub fn build_analytics(
     // 5. 周期对比与预测（基于 reviews，不受排除开关影响）
     let comparison = build_comparison_and_prediction(data_dir, &today, &reviews)?;
 
+    // 全库记录跨度（与所选范围无关），用于所选范围无数据时引导用户切换范围
+    let (data_earliest_date, data_latest_date) = {
+        let review_dates = records::list_review_dates(data_dir).unwrap_or_default();
+        let plan_dates = crate::data::plan::list_daily_plan_dates(data_dir).unwrap_or_default();
+        let earliest = review_dates.iter().chain(plan_dates.iter()).min().cloned();
+        let latest_review = review_dates.into_iter().max();
+        (earliest, latest_review)
+    };
+
     Ok(AnalyticsSummary {
         range: range_label,
         learning_trend,
         review_quality,
         comparison,
+        data_earliest_date,
+        data_latest_date,
     })
 }
 
@@ -388,7 +405,13 @@ fn build_learning_trend(
     let total_completed_tasks: i32 = points.iter().map(|p| p.completed_tasks).sum();
     let total_planned_hours: f64 = points.iter().map(|p| p.planned_hours).sum();
     let total_actual_hours: f64 = points.iter().map(|p| p.actual_hours).sum();
-    let study_days = points.iter().filter(|p| p.actual_hours > 0.0).count() as i32;
+    // 学习天数 = 有实际学习活动的天数：实际时长>0（任务计时/专注/复盘时长），
+    // 或当天有复盘（复盘即当天实际投入学习的记录）。
+    // 不要求时长>0，避免未记录学习时长时（复盘 total_hours=0、未开计时）被漏计。
+    let study_days = points
+        .iter()
+        .filter(|p| p.actual_hours > 0.0 || review_map.contains_key(&p.date))
+        .count() as i32;
 
     // 平均完成率用任务数加权口径（总完成 ÷ 总计划），与周计划自校准一致，
     // 避免"任务少但全完成"的天等权拉高整体（见 pure::prev_week_calibration_stats_impl）。
@@ -626,9 +649,9 @@ fn compute_period_metrics(data_dir: &Path, start: &str, end: &str) -> DataResult
     for r in &reviews {
         let hours = crate::data::records::review_actual_hours(r);
         total_hours += hours;
-        if hours > 0.0 {
-            study_days += 1;
-        }
+        // 学习天数：有复盘即算学习日（复盘=当天实际投入学习的记录），
+        // 不要求时长>0，避免未记录学习时长时（复盘 total_hours=0、未开计时）被漏计
+        study_days += 1;
 
         if !r.task_reviews.is_empty() {
             total_tasks += r.task_reviews.len() as i32;

@@ -8,9 +8,11 @@
  */
 import { ref, computed, onMounted } from "vue";
 import * as api from "@/api";
+import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import ProgressTableView from "@/components/progress/ProgressTableView.vue";
-import { ChevronRight, ChevronDown, FolderOpen } from "lucide-vue-next";
+import BatchProgressModal from "@/components/progress/BatchProgressModal.vue";
+import { ChevronRight, ChevronDown, FolderOpen, ListChecks } from "lucide-vue-next";
 import type { ProgressIndex } from "@/types";
 
 const SUBJECTS: { key: string; label: string; desc: string }[] = [
@@ -25,12 +27,28 @@ const error = ref("");
 const index = ref<ProgressIndex | null>(null);
 /** 设置中考试类型解析出的「科目 → 默认方案」（如 数二 → math/数二） */
 const settingsVariants = ref<Record<string, string>>({});
+/** 首屏是否已加载完成：后续刷新走静默模式（保留现有 DOM 与滚动位置），避免切换方案时页面跳回顶部 */
+const initialLoaded = ref(false);
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
 async function reload() {
+  // 非首屏：静默刷新，不收起已验证的内容，避免切方案（英一↔英二等）整页弹回顶部
+  if (initialLoaded.value) {
+    try {
+      const [idx, variants] = await Promise.all([
+        api.listProgressTables(),
+        api.defaultProgressVariants(),
+      ]);
+      index.value = idx;
+      settingsVariants.value = variants;
+    } catch (e) {
+      error.value = `加载进度失败：${errMsg(e)}`;
+    }
+    return;
+  }
   loading.value = true;
   error.value = "";
   try {
@@ -44,6 +62,7 @@ async function reload() {
     error.value = `加载进度失败：${errMsg(e)}`;
   } finally {
     loading.value = false;
+    initialLoaded.value = true;
   }
 }
 
@@ -81,6 +100,17 @@ function pickProfessional(variant: string) {
   pickVariant("professional", variant);
 }
 
+// ── 批量更改进度（标题右侧入口） ──
+const showBatchModal = ref(false);
+/** 弹窗内各科当前启用方案 */
+const batchVariants = computed<Record<string, string>>(() =>
+  Object.fromEntries(SUBJECTS.map((s) => [s.key, activeVariantOf(s.key)]))
+);
+/** 应用批量进度后刷新数据，保持弹窗打开展示结果 */
+async function onBatchApplied() {
+  await reload();
+}
+
 onMounted(reload);
 </script>
 
@@ -88,8 +118,17 @@ onMounted(reload);
   <div class="progress-page">
     <header class="page-head">
       <h1 class="page-title">进度</h1>
-      <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
+      <Button
+        variant="secondary"
+        size="sm"
+        class="batch-btn"
+        title="快速批量调整各科每本书的进度（选择学到第几章）"
+        @click="showBatchModal = true"
+      >
+        <ListChecks :size="14" /> 批量更改进度
+      </Button>
     </header>
+    <div v-if="error" class="error-banner" role="alert">{{ error }}</div>
 
     <LoadingSpinner v-if="loading" :size="30" label="加载进度..." class="page-loading" />
 
@@ -150,7 +189,10 @@ onMounted(reload);
         </div>
 
         <!-- 启用方案的进度表编辑器（不随方案重挂载，避免切方案时跳回顶部；组件内部监听 variant 静默刷新） -->
-        <div class="variant-panel">
+        <div
+          class="variant-panel"
+          :class="{ 'variant-panel--professional': s.key === 'professional' }"
+        >
           <ProgressTableView
             :key="s.key"
             :subject="s.key"
@@ -160,6 +202,15 @@ onMounted(reload);
         </div>
       </section>
     </div>
+
+    <!-- 批量更改进度：选择每本书「学到第几章」，总表按教材自动推导 -->
+    <BatchProgressModal
+      :open="showBatchModal"
+      :index="index"
+      :variants="batchVariants"
+      @close="showBatchModal = false"
+      @applied="onBatchApplied"
+    />
   </div>
 </template>
 
@@ -175,8 +226,9 @@ onMounted(reload);
 }
 .page-head {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 .page-title {
@@ -185,6 +237,9 @@ onMounted(reload);
   font-weight: var(--font-bold);
   color: var(--text-primary);
   letter-spacing: -0.02em;
+}
+.batch-btn {
+  flex-shrink: 0;
 }
 .page-sub {
   margin: 0;
@@ -298,5 +353,11 @@ onMounted(reload);
 .variant-panel :deep(.progress-view) {
   height: 420px;
   min-height: 420px;
+}
+
+/* 专业课节点多（总表 + 各教材表），面板加高展示更多内容 */
+.variant-panel--professional :deep(.progress-view) {
+  height: 720px;
+  min-height: 720px;
 }
 </style>

@@ -3,6 +3,7 @@ import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Select from "@/components/ui/Select.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import { useSettingsStore } from "@/stores/settings";
 import { useProviderEditor } from "../composables/useProviderEditor";
 import {
@@ -157,7 +158,7 @@ const {
         </div>
         <div class="form-field">
           <label class="form-label">模型提供商</label>
-          <Select v-model="providerForm.type" :max-width="'220px'">
+          <Select v-model="providerForm.type" class="select-autowidth">
             <option v-for="opt in providerTypeOptions" :key="opt.value" :value="opt.value">
               {{ opt.label }}
             </option>
@@ -242,7 +243,7 @@ const {
         </div>
         <div class="form-field form-field-checkbox">
           <label class="checkbox-label">
-            <input v-model="providerForm.is_default" type="checkbox" class="form-checkbox" />
+            <Checkbox v-model="providerForm.is_default" />
             <span>设为默认 Provider</span>
           </label>
         </div>

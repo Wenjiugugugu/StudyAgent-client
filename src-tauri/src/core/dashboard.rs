@@ -6,6 +6,7 @@
 //! 对应前端 TypeScript 类型: `types/index.ts` 中的 `DashboardSummary`
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::data::plan::DailyPlanData;
@@ -144,14 +145,20 @@ impl DashboardAggregator {
         // 即将到来的截止日期（从里程碑和风险中提取）
         let upcoming_deadlines = Self::extract_upcoming_deadlines(data_dir, &state);
 
+        // 连续学习天数（基于实际数据计算，休息日/排除日不打断连续）
+        let streak_days = Self::compute_streak(data_dir, &today);
+        // 累计学习天数（数据统计 + 历史累积取较大者，见 compute_total_study_days）
+        let total_study_days =
+            Self::compute_total_study_days(data_dir, state.progress.total_study_days);
+
         Ok(DashboardSummary {
             date: today,
             remaining_days,
             today_tasks,
             week_progress,
             current_phase,
-            streak_days: state.progress.streak_days,
-            total_study_days: state.progress.total_study_days,
+            streak_days,
+            total_study_days,
             upcoming_deadlines,
             review_reminder,
             subject_progress,
@@ -349,6 +356,146 @@ impl DashboardAggregator {
                 tasks_done: 0,
             }
         }
+    }
+
+    /// 计算连续学习天数（基于实际数据，休息日/排除日不打断连续）
+    ///
+    /// 学习日口径与周进度 / 分析页一致：当天有复盘、有完成任务、
+    /// 或有实际学习时长（任务计时 / 番茄 / 正计时）即算学习日；
+    /// 休息日与特殊情况排除日豁免，不计入也不打断连续。
+    /// 今天尚未学习时从昨天起算，保持「进行中」的连续不被误清零。
+    fn compute_streak(data_dir: &Path, today: &str) -> i32 {
+        let settings = crate::load_settings(data_dir);
+        let rest_weekdays: HashSet<String> = settings.rest_days().into_iter().collect();
+
+        // 从周计划收集休息日 / 排除日 / 已覆盖日期（持久化标记，不受后期设置调整影响）
+        let mut week_rest: HashSet<String> = HashSet::new();
+        let mut week_excluded: HashSet<String> = HashSet::new();
+        let mut week_covered: HashSet<String> = HashSet::new();
+        if let Ok(weeks) = crate::data::plan::list_week_plan_dates(data_dir) {
+            for iso_week in &weeks {
+                if let Ok(wp) = crate::data::plan::read_week_plan(data_dir, iso_week) {
+                    for day in &wp.data.days {
+                        week_covered.insert(day.date.clone());
+                        if day.is_rest_day {
+                            week_rest.insert(day.date.clone());
+                        }
+                    }
+                    for ex in &wp.data.excluded_days {
+                        week_covered.insert(ex.date.clone());
+                        week_excluded.insert(ex.date.clone());
+                    }
+                }
+            }
+        }
+
+        let is_exempt = |date: &str| -> bool {
+            if week_excluded.contains(date) {
+                return true;
+            }
+            if week_covered.contains(date) {
+                // 周计划已覆盖的日期以持久化标记为准
+                return week_rest.contains(date);
+            }
+            // 未覆盖日期回退到设置中的休息日（按星期）
+            crate::data::weekday_name(date)
+                .map(|w| rest_weekdays.contains(&w))
+                .unwrap_or(false)
+        };
+
+        // 起点：今天已学习或为豁免日则从今天开始；否则（今天尚未学习）从昨天起算
+        let mut day = today.to_string();
+        if !Self::is_study_day(data_dir, &day) && !is_exempt(&day) {
+            if let Ok(prev) = crate::data::add_days(&day, -1) {
+                day = prev;
+            }
+        }
+
+        let mut streak = 0i32;
+        loop {
+            if is_exempt(&day) {
+                // 豁免日不计数也不打断连续
+            } else if Self::is_study_day(data_dir, &day) {
+                streak += 1;
+            } else {
+                break;
+            }
+            match crate::data::add_days(&day, -1) {
+                Ok(prev) => day = prev,
+                Err(_) => break,
+            }
+        }
+        streak
+    }
+
+    /// 判断某天是否为学习日：有复盘、有完成任务、或有实际学习时长即算
+    fn is_study_day(data_dir: &Path, date: &str) -> bool {
+        // 有复盘（复盘 = 当天实际投入学习的记录）
+        if crate::data::records::read_review(data_dir, date).is_ok() {
+            return true;
+        }
+        // 无复盘：日计划中有已完成 / 进行中任务（历史日期由复盘合并状态）
+        if let Ok(plan) = crate::data::plan::read_daily_plan_with_merged_status(data_dir, date) {
+            if plan
+                .data
+                .tasks
+                .iter()
+                .any(|t| matches!(t.status, TaskStatus::Done | TaskStatus::InProgress))
+            {
+                return true;
+            }
+        }
+        // 实际学习时长 > 0（任务累计计时 + 未关联专注 / 正计时）
+        let minutes = crate::data::state::read_state(data_dir)
+            .map(|s| crate::data::state::day_actual_minutes(&s, date))
+            .unwrap_or(0)
+            + crate::data::focus::day_unlinked_focus_minutes(data_dir, date);
+        minutes > 0
+    }
+
+    /// 计算累计学习天数（数据统计与历史累积取较大者）
+    ///
+    /// 数据侧：统计「有复盘、有完成任务、或有实际学习时长」的去重日期，
+    /// 与周进度 / 分析页口径一致，弥补 state 仅按「任务标记完成日」累计的漏计
+    /// （只靠复盘 / 番茄钟 / 正计时学习的天会被补上）。
+    ///
+    /// 但 state 的 `total_study_days` 是长期单调递增的历史累积，本地数据文件
+    /// 未必覆盖全部历史（如导入 / 迁移、早期记录未保留），直接改用数据统计
+    /// 会让累计天数凭空回落。因此与 state 累积值取较大者：
+    /// 既保证「不遗漏已记录的学习日」，又保留更早的历史累积。
+    fn compute_total_study_days(data_dir: &Path, state_total: i32) -> i32 {
+        let mut study_dates: HashSet<String> = HashSet::new();
+
+        // 复盘日期即学习日
+        if let Ok(review_dates) = crate::data::records::list_review_dates(data_dir) {
+            study_dates.extend(review_dates);
+        }
+
+        // 其余候选：日计划日期 + 专注记录日期（无复盘时由任务完成 / 专注时长判定）
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(plan_dates) = crate::data::plan::list_daily_plan_dates(data_dir) {
+            candidates.extend(plan_dates);
+        }
+        if let Ok(files) = crate::data::list_dir_files(&data_dir.join("focus")) {
+            for f in files {
+                if let Some(name) = f.file_name().and_then(|n| n.to_str()) {
+                    if let Some(date) = name.strip_suffix("_focus.json") {
+                        candidates.push(date.to_string());
+                    }
+                }
+            }
+        }
+
+        for date in candidates {
+            if study_dates.contains(&date) {
+                continue;
+            }
+            if Self::is_study_day(data_dir, &date) {
+                study_dates.insert(date);
+            }
+        }
+
+        (study_dates.len() as i32).max(state_total.max(0))
     }
 
     /// 确定当前学习阶段
@@ -695,6 +842,179 @@ mod tests {
             breakdown.hours
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── compute_streak 测试 ──
+
+    /// 构造最小复盘文件并落盘
+    fn write_review(dir: &std::path::Path, date: &str) {
+        let review = crate::data::records::ReviewFile {
+            version: "1.0.0".to_string(),
+            meta: crate::data::records::ReviewMeta {
+                date: date.to_string(),
+                r#type: "daily".to_string(),
+                plan_ref: format!("plan/{}_day.json", date),
+                generated_at: format!("{}T23:00", date),
+            },
+            data: crate::data::records::ReviewData::default(),
+            view: None,
+            task_reviews: Vec::new(),
+            daily_review: None,
+            overcompletion: Vec::new(),
+        };
+        crate::data::records::save_review(dir, &review).unwrap();
+    }
+
+    /// 写入带休息日配置的 settings.json
+    fn write_settings(dir: &std::path::Path, rest_days: &[&str]) {
+        let path = dir.join("config").join("settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let json = serde_json::json!({
+            "study_schedule": { "rest_days": rest_days }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn streak_counts_consecutive_review_days() {
+        let dir = tmp_dir("streak_consecutive");
+        // 周一(08-17)、周二(08-18)、周三(08-19) 连续学习
+        write_review(&dir, "2026-08-17");
+        write_review(&dir, "2026-08-18");
+        write_review(&dir, "2026-08-19");
+        assert_eq!(DashboardAggregator::compute_streak(&dir, "2026-08-19"), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn streak_breaks_on_missing_day() {
+        let dir = tmp_dir("streak_break");
+        // 周一学习、周二缺勤、周三学习 → 连续仅 1（周三）
+        write_review(&dir, "2026-08-17");
+        write_review(&dir, "2026-08-19");
+        assert_eq!(DashboardAggregator::compute_streak(&dir, "2026-08-19"), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn streak_keeps_ongoing_chain_when_today_not_yet_studied() {
+        let dir = tmp_dir("streak_ongoing");
+        // 周一、周二学习；今天(周三)尚未学习 → 仍显示昨天延续的 2 天
+        write_review(&dir, "2026-08-17");
+        write_review(&dir, "2026-08-18");
+        assert_eq!(DashboardAggregator::compute_streak(&dir, "2026-08-19"), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rest_day_does_not_break_streak() {
+        let dir = tmp_dir("streak_rest");
+        // 2026-08-17 为周一，2026-08-16 为周日（休息日）
+        write_settings(&dir, &["周日"]);
+        // 周四、周五、周六学习；周日休息；今天(周一)未学习 → 连续 3 天
+        write_review(&dir, "2026-08-13");
+        write_review(&dir, "2026-08-14");
+        write_review(&dir, "2026-08-15");
+        assert_eq!(DashboardAggregator::compute_streak(&dir, "2026-08-17"), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rest_day_alone_does_not_count_as_study_day() {
+        let dir = tmp_dir("streak_rest_only");
+        write_settings(&dir, &["周日"]);
+        // 仅周六学习；周日休息；周一未学习 → 连续 1 天（休息日不计入学习）
+        write_review(&dir, "2026-08-15");
+        assert_eq!(DashboardAggregator::compute_streak(&dir, "2026-08-17"), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn empty_history_returns_zero() {
+        let dir = tmp_dir("streak_empty");
+        assert_eq!(DashboardAggregator::compute_streak(&dir, "2026-08-19"), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── compute_total_study_days 测试 ──
+
+    /// 构造带一个已完成任务的日计划并落盘
+    fn write_plan_with_done_task(dir: &std::path::Path, date: &str) {
+        let mut plan = crate::data::plan::DailyPlanFile {
+            version: "1.0.0".to_string(),
+            meta: crate::data::plan::DailyPlanMeta {
+                date: date.to_string(),
+                generated_at: format!("{}T04:00", date),
+                r#type: "daily".to_string(),
+                ..Default::default()
+            },
+            data: crate::data::plan::DailyPlanData::default(),
+            view: None,
+        };
+        plan.data.tasks.push(crate::data::plan::PlanTask {
+            id: format!("{}-01", date),
+            subject: crate::data::state::SubjectKey::Math,
+            title: "数学任务".to_string(),
+            priority: crate::data::state::TaskPriority::A,
+            status: crate::data::state::TaskStatus::Done,
+            ..Default::default()
+        });
+        plan.data.total_tasks = 1;
+        plan.data.total_hours = 1.0;
+        crate::data::plan::save_daily_plan(dir, &plan).unwrap();
+    }
+
+    #[test]
+    fn total_counts_distinct_recorded_study_days() {
+        let dir = tmp_dir("total_distinct");
+        // 3 天有复盘 + 1 天仅日计划完成任务（无复盘）→ 去重后共 4 天
+        write_review(&dir, "2026-08-10");
+        write_review(&dir, "2026-08-11");
+        write_review(&dir, "2026-08-12");
+        write_plan_with_done_task(&dir, "2026-08-13");
+        assert_eq!(DashboardAggregator::compute_total_study_days(&dir, 0), 4);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn total_does_not_double_count_review_and_plan_same_day() {
+        let dir = tmp_dir("total_dedup");
+        // 同一天既有复盘又有完成任务 → 只计 1 天
+        write_review(&dir, "2026-08-10");
+        write_plan_with_done_task(&dir, "2026-08-10");
+        write_review(&dir, "2026-08-11");
+        assert_eq!(DashboardAggregator::compute_total_study_days(&dir, 0), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn total_keeps_state_history_when_higher_than_data() {
+        let dir = tmp_dir("total_keeps_history");
+        // state 累积 123 天，但本地数据只有 2 天 → 保留 123（不凭空回落）
+        write_review(&dir, "2026-08-10");
+        write_review(&dir, "2026-08-11");
+        assert_eq!(
+            DashboardAggregator::compute_total_study_days(&dir, 123),
+            123
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn total_corrects_undercount_when_data_exceeds_state() {
+        let dir = tmp_dir("total_undercount_fix");
+        // state 只记了 2 个「任务完成日」，但实际有 5 天复盘 → 采用数据统计 5
+        for d in [
+            "2026-08-10",
+            "2026-08-11",
+            "2026-08-12",
+            "2026-08-13",
+            "2026-08-14",
+        ] {
+            write_review(&dir, d);
+        }
+        assert_eq!(DashboardAggregator::compute_total_study_days(&dir, 2), 5);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

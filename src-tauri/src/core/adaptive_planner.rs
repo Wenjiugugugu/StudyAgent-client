@@ -118,6 +118,10 @@ pub struct AdaptivePlanParameters {
     pub subject_shares: HashMap<String, f64>,
     pub subject_load_factors: HashMap<String, f64>,
     pub estimation_factors: HashMap<String, f64>,
+    /// 任务量反馈 EMA 信号（-1..1；>0 = 用户长期反馈任务量偏少 → 时间预估偏长 → 应缩短预估）
+    pub feedback_signal: f64,
+    /// 各科计划完成率（0..1），用于预估学习时长的复合调整
+    pub subject_completion_rates: HashMap<String, f64>,
     pub confidence: f64,
     pub reasons: Vec<String>,
     pub warnings: Vec<String>,
@@ -859,6 +863,14 @@ fn build_parameters(
         subject_shares: shares,
         subject_load_factors: load_factors,
         estimation_factors,
+        // 反馈信号：>0 = 偏少 → 预估应缩短（与 feedback_score「too_little=+1」符号一致）
+        feedback_signal: state.workload_ema.clamp(-1.0, 1.0),
+        // 各科完成率：供预估学习时长的复合调整使用
+        subject_completion_rates: analysis
+            .subjects
+            .iter()
+            .map(|s| (s.subject.clone(), s.planned_completion_rate))
+            .collect(),
         confidence: analysis.confidence,
         reasons,
         warnings,
@@ -889,6 +901,9 @@ pub fn prepare_next_week(
             refreshed.reasons = parameters.reasons;
             refreshed.warnings = parameters.warnings;
             refreshed.confidence = parameters.confidence;
+            // 同周刷新不重新跑分析：保留缓存的反馈信号与各科完成率，供预估时长复合调整使用
+            refreshed.feedback_signal = parameters.feedback_signal;
+            refreshed.subject_completion_rates = parameters.subject_completion_rates.clone();
             return Ok(refreshed);
         }
     }
@@ -911,6 +926,11 @@ pub fn prepare_next_week(
     let capacity_before = adaptive.capacity_ema;
 
     // 学科估时 EMA：至少 3 个有效任务且至少 2 小时才更新。
+    //
+    // 升级为更稳健的学习：
+    // - 更新目标先按本周样本量向 1 收缩（样本少不轻信单周比值），避免一周异常带偏长期系数；
+    // - 变学习率：样本积累越多步长越小（alpha = 0.25 / (1 + 0.4×样本数)），前期快收敛、后期更稳定；
+    // - 单周比值本身在 analyze_week 已 clamp 到 [0.6, 1.8]。
     let mut estimation_reasons = Vec::new();
     for subject_analysis in &analysis.subjects {
         if subject_analysis.valid_time_tasks < 3
@@ -925,9 +945,13 @@ pub fn prepare_next_week(
             .or_default();
         let ratio = subject_analysis.time_ratio.unwrap_or(1.0);
         let sample_weight = clamp(subject_analysis.valid_time_tasks as f64 / 4.0, 0.0, 1.0);
+        // 更新目标：按样本量向 1 收缩（低样本时更保守）
+        let target = 1.0 + (ratio - 1.0) * sample_weight;
+        // 变学习率：样本越多步长越小
+        let alpha = 0.25 / (1.0 + 0.4 * entry.estimation_samples);
         let old_factor = entry.estimation_factor;
         entry.estimation_factor = clamp(
-            entry.estimation_factor + 0.25 * sample_weight * (ratio - entry.estimation_factor),
+            entry.estimation_factor + alpha * (target - entry.estimation_factor),
             MIN_ESTIMATION_FACTOR,
             MAX_ESTIMATION_FACTOR,
         );
@@ -936,7 +960,7 @@ pub fn prepare_next_week(
         if (entry.estimation_factor - old_factor).abs() >= 0.005 {
             let direction = if ratio >= 1.0 { "提高" } else { "降低" };
             estimation_reasons.push(format!(
-                "{}本周有效任务实际用时约为预计的 {:.0}%，因此估时系数逐步{}至 {:.2}",
+                "{}本周有效任务实际用时约为预计的 {:.0}%（已按样本量平滑），因此估时系数逐步{}至 {:.2}",
                 subject_cn(&subject_analysis.subject),
                 ratio * 100.0,
                 direction,

@@ -301,6 +301,21 @@ pub fn apply_progress_statuses(
     crate::core::progress_sync::apply_estimated_statuses(&data_dir, &subject, &changes)
 }
 
+/// 批量更改进度：对各科各表按「学到第几章」整表向前推进（只升不降）；
+/// 专业课内置场景下，总专业课进度表再按教材覆盖度自动联动。
+/// 前端调用: `invoke('batch_update_progress', { updates })`
+#[tauri::command]
+pub fn batch_update_progress(
+    updates: Vec<crate::core::progress_sync::BatchRoundUpdate>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::core::progress_sync::BatchRoundResult, String> {
+    for u in &updates {
+        validate_subject(&u.subject)?;
+    }
+    let data_dir = get_data_dir(state.inner())?;
+    crate::core::progress_sync::apply_batch_round(&data_dir, &updates)
+}
+
 /// 把设置中的考试类型解析为各科默认考纲方案（科目 → 方案）。
 /// 前端调用: `invoke('default_progress_variants')`
 #[tauri::command]
@@ -358,6 +373,9 @@ struct NodeDraft {
     planned_date: Option<String>,
     #[serde(default)]
     note: String,
+    /// 预估学习时长（小时，隐藏数据，不展示给用户）；缺失/非法时回退确定性估算
+    #[serde(default)]
+    estimated_hours: Option<f64>,
 }
 
 /// 将考纲方案（variant，如「数二」「英一」「政治」「408」）映射为章节表版本键。
@@ -394,6 +412,33 @@ fn version_for(subject: &str, variant: &str) -> Option<String> {
 fn builtin_syllabus(subject: &str, version: &str) -> Option<Vec<String>> {
     crate::core::chapter_seq::syllabus_points(subject, version)
         .map(|seq| seq.iter().map(|s| s.to_string()).collect())
+}
+
+/// 提取专业课内置教材章节结构参考文本（供 AI 生成 prompt 使用）。
+///
+/// 每本教材一行：`教材名：第一章 xxx / 第二章 xxx / …`（章节名取自教材 sections 的 phase）。
+/// 仅对 professional/408 生效；find 未命中或该科无教材（如 396/199/农学）时返回空串，
+/// 由提示词兜底要求 AI 依据最新考纲明确考纲规定的教材。
+fn book_sections_text(subject: &str, exam_type: &str) -> String {
+    if subject != "professional" && subject != "408" {
+        return String::new();
+    }
+    let Some(exam) = crate::core::professional::find(exam_type) else {
+        return String::new();
+    };
+    let mut lines = Vec::new();
+    for book in &exam.books {
+        let chapters: Vec<&str> = book
+            .sections
+            .iter()
+            .map(|s| s.phase.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if !chapters.is_empty() {
+            lines.push(format!("{}：{}", book.name, chapters.join(" / ")));
+        }
+    }
+    lines.join("\n")
 }
 
 /// 联网搜索最新考研大纲（provider: bocha 博查查）
@@ -520,13 +565,16 @@ pub async fn generate_progress_table(
             .join("\n")
     };
 
-    // 2. 构建 prompt
+    // 2. 构建 prompt（专业课附带内置教材章节参考）
+    let book_sections = book_sections_text(&subject, &effective_exam);
     let prompt = build_generate_prompt(
+        &subject,
         subject_label,
         &effective_exam,
         &name,
         &syllabus_text,
         used_web,
+        &book_sections,
     );
 
     let request = ChatRequest {
@@ -555,76 +603,8 @@ pub async fn generate_progress_table(
     }
 
     let now = now_string();
-    // 两级结构：AI 以 phase 作为章节（首次出现顺序建立章节 id），知识点归属其下；
-    // 若某节点显式带 level=chapter，则其本身作为章节节点。
-    let mut id_for_phase: std::collections::HashMap<String, String> = Default::default();
-    let mut chapter_order: Vec<String> = Vec::new();
-    for d in &drafts {
-        let ph = d.phase.trim();
-        if !ph.is_empty() && !id_for_phase.contains_key(ph) {
-            let cid = new_progress_id("c", ph);
-            id_for_phase.insert(ph.to_string(), cid);
-            chapter_order.push(ph.to_string());
-        }
-    }
-    let mut nodes: Vec<ProgressNode> = Vec::new();
-    let mut chapters_used: std::collections::HashSet<String> = Default::default();
-    for d in &drafts {
-        let ph = d.phase.trim().to_string();
-        match d.level {
-            NodeLevel::Chapter => {
-                nodes.push(ProgressNode {
-                    id: new_progress_id("n", &d.title),
-                    title: d.title.trim().to_string(),
-                    level: NodeLevel::Chapter,
-                    parent_id: None,
-                    phase: ph.clone(),
-                    status: d.status.unwrap_or(NodeStatus::Pending),
-                    planned_date: d.planned_date.clone(),
-                    note: d.note.trim().to_string(),
-                });
-            }
-            NodeLevel::Knowledge => {
-                let pid = id_for_phase.get(&ph).cloned();
-                if let Some(ref c) = pid {
-                    chapters_used.insert(c.clone());
-                }
-                nodes.push(ProgressNode {
-                    id: new_progress_id("n", &d.title),
-                    title: d.title.trim().to_string(),
-                    level: NodeLevel::Knowledge,
-                    parent_id: pid,
-                    phase: ph.clone(),
-                    status: d.status.unwrap_or(NodeStatus::Pending),
-                    planned_date: d.planned_date.clone(),
-                    note: d.note.trim().to_string(),
-                });
-            }
-        }
-    }
-    // 表头插入有知识点的章节节点
-    let mut final_nodes: Vec<ProgressNode> = Vec::new();
-    for cid in &chapter_order {
-        let cid_r = id_for_phase.get(cid).cloned().unwrap_or_default();
-        if chapters_used.contains(cid_r.as_str()) {
-            final_nodes.push(ProgressNode {
-                id: cid_r.clone(),
-                title: cid.clone(),
-                level: NodeLevel::Chapter,
-                parent_id: None,
-                phase: cid.clone(),
-                status: NodeStatus::Pending,
-                planned_date: None,
-                note: String::new(),
-            });
-        }
-    }
-    for node in nodes {
-        if node.level == NodeLevel::Knowledge || node.parent_id.is_none() {
-            final_nodes.push(node);
-        }
-    }
-    final_nodes.retain(|n| !n.title.is_empty());
+    // 5. AI 草稿 → 节点列表（统一 pending、丢弃无 phase 孤儿节点、附隐藏预估时长）
+    let final_nodes = build_nodes_from_drafts(&subject, &drafts);
 
     let table = ProgressTable {
         id: String::new(), // 草稿：id 留空，保存时分配
@@ -753,6 +733,9 @@ fn chapter_for_english(title: &str) -> &'static str {
 }
 
 /// 把普通科目的扁平知识点列表按大章整理为两级节点（章节 + 知识点）
+///
+/// 每个节点附带隐藏的预估学习时长（`estimated_hours`，不展示给用户）：
+/// 知识点按标题特征估算，章节 = 其下知识点预估值之和。
 fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> {
     let chapter_fn: fn(&str) -> &'static str = match subject {
         "math" => chapter_for_math,
@@ -786,9 +769,11 @@ fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> 
                 status: NodeStatus::Pending,
                 planned_date: None,
                 note: String::new(),
+                estimated_hours: None,
             });
         }
 
+        let estimated = crate::core::estimated_time::estimate_knowledge_hours(subject, &title);
         nodes.push(ProgressNode {
             id: new_progress_id("n", &title),
             title,
@@ -798,7 +783,27 @@ fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> 
             status: NodeStatus::Pending,
             planned_date: None,
             note: String::new(),
+            estimated_hours: Some(estimated),
         });
+    }
+
+    // 章节节点 = 其下知识点预估值之和（隐藏数据）
+    let mut chapter_hours: std::collections::HashMap<String, f64> =
+        std::collections::HashMap::new();
+    for n in &nodes {
+        if n.level == NodeLevel::Knowledge {
+            if let (Some(pid), Some(h)) = (n.parent_id.as_deref(), n.estimated_hours) {
+                *chapter_hours.entry(pid.to_string()).or_insert(0.0) += h;
+            }
+        }
+    }
+    for n in &mut nodes {
+        if n.level == NodeLevel::Chapter {
+            n.estimated_hours = chapter_hours
+                .get(&n.id)
+                .copied()
+                .map(crate::core::estimated_time::round1);
+        }
     }
     nodes
 }
@@ -885,14 +890,150 @@ pub fn builtin_progress_table(
     Ok(vec![table])
 }
 
+/// 将 AI 返回的草稿节点整理为最终节点列表。
+///
+/// - **统一 pending**：所有节点 status 强制 `Pending`、planned_date 强制 `None`
+///   （进度与计划日期由系统后续安排，忽略 AI 填写的值，仅记录告警）；
+/// - **节点归属严格**：phase 为空的 knowledge 节点视为孤儿直接丢弃（显式 chapter 节点保留，
+///   其 phase 可空合法）；
+/// - **隐藏预估时长**：知识点取 AI 的 `estimated_hours`（非法/缺失时回退确定性估算），
+///   章节 = 其下知识点预估值之和（隐藏数据，不展示给用户）；
+/// - 其余逻辑与原实现一致：按 phase 首次出现顺序补出章节节点（表头），维持两级结构。
+fn build_nodes_from_drafts(subject: &str, drafts: &[NodeDraft]) -> Vec<ProgressNode> {
+    use crate::core::estimated_time::{estimate_knowledge_hours, round1, MAX_KNOWLEDGE_HOURS};
+
+    // 检测 AI 是否填了状态/日期（保留对 NodeDraft 字段的读取避免 dead_code，同时提供可观测性）
+    if drafts
+        .iter()
+        .any(|d| d.status.is_some() || d.planned_date.is_some())
+    {
+        log::warn!("[进度表] 检测到 AI 填写的 status/planned_date，已统一强制为 pending/null");
+    }
+
+    // 两级结构：AI 以 phase 作为章节（首次出现顺序建立章节 id），知识点归属其下；
+    // 若某节点显式带 level=chapter，则其本身作为章节节点。
+    let mut id_for_phase: std::collections::HashMap<String, String> = Default::default();
+    let mut chapter_order: Vec<String> = Vec::new();
+    for d in drafts {
+        let ph = d.phase.trim();
+        if !ph.is_empty() && !id_for_phase.contains_key(ph) {
+            let cid = new_progress_id("c", ph);
+            id_for_phase.insert(ph.to_string(), cid);
+            chapter_order.push(ph.to_string());
+        }
+    }
+    let mut nodes: Vec<ProgressNode> = Vec::new();
+    let mut chapters_used: std::collections::HashSet<String> = Default::default();
+    for d in drafts {
+        let ph = d.phase.trim().to_string();
+        match d.level {
+            NodeLevel::Chapter => {
+                nodes.push(ProgressNode {
+                    id: new_progress_id("n", &d.title),
+                    title: d.title.trim().to_string(),
+                    level: NodeLevel::Chapter,
+                    parent_id: None,
+                    phase: ph.clone(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: d.note.trim().to_string(),
+                    // 章节预估值在收尾阶段重算为子知识点之和；此处保留 AI 给出的值作兜底
+                    estimated_hours: d
+                        .estimated_hours
+                        .filter(|h| h.is_finite() && *h > 0.0)
+                        .map(round1),
+                });
+            }
+            NodeLevel::Knowledge => {
+                // 节点归属严格：无 phase 的孤立知识点直接丢弃
+                if ph.is_empty() {
+                    log::warn!("[进度表] 丢弃无 phase 的孤立知识点节点: {}", d.title);
+                    continue;
+                }
+                let pid = id_for_phase.get(&ph).cloned();
+                if let Some(ref c) = pid {
+                    chapters_used.insert(c.clone());
+                }
+                let estimated = match d.estimated_hours {
+                    Some(h) if h.is_finite() && h > 0.0 => {
+                        Some(round1(h.clamp(0.5, MAX_KNOWLEDGE_HOURS)))
+                    }
+                    _ => Some(estimate_knowledge_hours(subject, &d.title)),
+                };
+                nodes.push(ProgressNode {
+                    id: new_progress_id("n", &d.title),
+                    title: d.title.trim().to_string(),
+                    level: NodeLevel::Knowledge,
+                    parent_id: pid,
+                    phase: ph.clone(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: d.note.trim().to_string(),
+                    estimated_hours: estimated,
+                });
+            }
+        }
+    }
+    // 表头插入有知识点的章节节点
+    let mut final_nodes: Vec<ProgressNode> = Vec::new();
+    for cid in &chapter_order {
+        let cid_r = id_for_phase.get(cid).cloned().unwrap_or_default();
+        if chapters_used.contains(cid_r.as_str()) {
+            final_nodes.push(ProgressNode {
+                id: cid_r.clone(),
+                title: cid.clone(),
+                level: NodeLevel::Chapter,
+                parent_id: None,
+                phase: cid.clone(),
+                status: NodeStatus::Pending,
+                planned_date: None,
+                note: String::new(),
+                estimated_hours: None,
+            });
+        }
+    }
+    for node in nodes {
+        if node.level == NodeLevel::Knowledge || node.parent_id.is_none() {
+            final_nodes.push(node);
+        }
+    }
+    final_nodes.retain(|n| !n.title.is_empty());
+
+    // 章节节点预估时长 = 其下知识点预估值之和（隐藏数据，不展示给用户）
+    let mut chapter_hours: std::collections::HashMap<String, f64> = Default::default();
+    for n in &final_nodes {
+        if n.level == NodeLevel::Knowledge {
+            if let (Some(pid), Some(h)) = (n.parent_id.as_deref(), n.estimated_hours) {
+                *chapter_hours.entry(pid.to_string()).or_insert(0.0) += h;
+            }
+        }
+    }
+    for n in &mut final_nodes {
+        if n.level == NodeLevel::Chapter {
+            if let Some(sum) = chapter_hours.get(&n.id) {
+                n.estimated_hours = Some(round1(*sum));
+            }
+        }
+    }
+    final_nodes
+}
+
 /// 生成进度表的 prompt 构造
+///
+/// - `subject_key`: 学科 key（math/english/politics/professional），用于区分专业课的无教材兜底
+/// - `book_sections`: 专业课内置教材章节参考（可空；空时专业课由提示词兜底要求 AI 明确考纲规定的教材）
 fn build_generate_prompt(
+    subject_key: &str,
     subject_label: &str,
     exam_type: &str,
     name: &str,
     syllabus_text: &str,
     used_web: bool,
+    book_sections: &str,
 ) -> String {
+    let is_professional = subject_key == "professional" || subject_key == "408";
+    let has_books = !book_sections.trim().is_empty();
+
     let source_note = if used_web {
         "我已通过联网搜索为你获取了以下最新考研考纲内容（可能包含网页摘要，多来源）作为依据。"
     } else {
@@ -900,31 +1041,55 @@ fn build_generate_prompt(
     };
 
     let syllabus_block = if syllabus_text.trim().is_empty() {
-        "（未提供考纲文本，请你依据该科最新权威考试大纲自行构建，务必遵循最新考纲的考察范围，不得遗漏新大纲新增考点。）"
-            .to_string()
+        if is_professional {
+            if has_books {
+                "（未提供官方考纲知识点顺序，请以下方【内置教材章节参考】为骨架组织知识点，并兼顾最新考纲考查范围，不得遗漏。）"
+                    .to_string()
+            } else {
+                "（未提供官方考纲知识点顺序，请依据最新考研大纲明确该科【考纲规定的教材】，并按其章节体系组织知识点。）"
+                    .to_string()
+            }
+        } else {
+            "（未提供考纲文本，请你依据该科最新权威考试大纲自行构建，务必遵循最新考纲的考察范围，不得遗漏新大纲新增考点。）"
+                .to_string()
+        }
     } else {
         format!("【{}考纲参考】\n{}", subject_label, syllabus_text)
+    };
+
+    let book_block = if has_books {
+        format!("【内置教材章节参考】\n{}", book_sections)
+    } else if is_professional {
+        "【教材要求】该科目无内置教材数据。请依据最新考研大纲确定官方或主流参考教材（如复习全书、精点系列等），严格按教材章节体系组织知识点：phase 必须使用教材章节名，章节顺序遵循教材/大纲；如确无统一指定教材，则按考纲板块组织并在 note 中注明。"
+            .to_string()
+    } else {
+        String::new()
     };
 
     format!(
         concat!(
             "你是考研规划助手，为 StudyAgent 桌面应用生成一份「{}」的完整学习进度表（名称：{}，考试类型：{}）。\n",
             "要求：\n",
-            "1. 必须依据最新考研考试大纲，覆盖该科全部考查范围，并遵循大纲的章节先后顺序。\n",
-            "2. 将考纲组织为首尾有序的进度节点，每个节点建议为「章/节」粒度（如「第一章 函数、极限、连续」下拆成知识点节点时口径保持一致），总节点数适中（约 30-80 个），能用于长期学习打卡。\n",
-            "3. 同一章的多个知识点应归入相同 phase，phase 用作章节分组；phase 与 title 内容不同（phase=章名，title=具体知识点）。\n",
-            "4. 生成顺序 = 建议学习顺序，从基础到进阶。\n",
+            "1. 覆盖与顺序：必须依据最新考研考试大纲，覆盖该科全部考查范围，严格遵循大纲/教材的章节先后顺序，不得遗漏任何考查板块或章节。\n",
+            "2. 章节对齐：phase 用作章节分组；若提供了【内置教材章节参考】，phase 必须与其中的章节名一字不差，禁止自创章节名；若为专业课且无内置教材，必须依据最新考纲明确【考纲规定的教材】并按其章节组织，phase 用教材章节名；其余情况按考纲章节组织并保持口径一致。\n",
+            "3. 节点归属严格：每个知识点节点都必须归入某个 phase（所属章节），严禁输出无 phase 的孤立知识点；phase=章名、title=具体知识点，二者内容不同。\n",
+            "4. 覆盖与粒度：每章输出约 3-10 个知识点节点，全书知识点总数约 30-80 个，能用于长期学习打卡；同一章的多个知识点 phase 必须相同。\n",
+            "5. 生成顺序 = 建议学习顺序，从基础到进阶。\n",
+            "6. 状态统一：所有节点的 status 一律填 pending（不带引号的枚举值），planned_date 一律填 null；进度与计划日期由系统后续统一安排，不要自行填写状态或日期。\n",
+            "7. 预估时长（隐藏数据）：每个节点必须给出 estimated_hours，表示学习该知识点/章节所需的预估时长（单位：小时），填 0.5~4 之间的数字（如 1.5、2.0）；该字段仅用于后续计划参考、不会展示给用户，请按知识点实际难度与内容量合理估算（概念/识记类偏短，计算/证明/综合类偏长）。\n",
+            "{}\n",
             "{}\n",
             "{}\n",
             "只输出严格合法的 JSON 数组，不要包裹 ```json 代码块，不要输出任何解释文字。\n",
-            "数组元素字段：{{\"title\": 知识点标题, \"phase\": 所属章节, \"status\": \"pending\", \"planned_date\": null, \"note\": \"一句话学习要点或真题提示,可空\"}}\n",
-            "输出示例：[{{\"title\":\"函数的概念及表示法\",\"phase\":\"第一章 函数、极限、连续\",\"status\":\"pending\",\"planned_date\":null,\"note\":\"注重定义域与对应法则\"}}]",
+            "数组元素字段：{{\"title\": 知识点标题, \"phase\": 所属章节, \"status\": \"pending\", \"planned_date\": null, \"note\": \"一句话学习要点或真题提示,可空\", \"estimated_hours\": 1.5}}\n",
+            "输出示例：[{{\"title\":\"函数的概念及表示法\",\"phase\":\"第一章 函数、极限、连续\",\"status\":\"pending\",\"planned_date\":null,\"note\":\"注重定义域与对应法则\",\"estimated_hours\":1.0}}]",
         ),
         subject_label,
         if name.trim().is_empty() { "未命名".to_string() } else { name.trim().to_string() },
         if exam_type.trim().is_empty() { "未指定".to_string() } else { exam_type.trim().to_string() },
         source_note,
         syllabus_block,
+        book_block,
     )
 }
 
@@ -982,5 +1147,158 @@ mod tests {
             .find(|n| n.title == "向量组及其线性组合")
             .unwrap();
         assert_eq!(vector_group.phase, "线性代数");
+        // 隐藏预估时长：知识点有值，章节 = 子知识点之和
+        for n in &nodes {
+            if n.level == NodeLevel::Knowledge {
+                assert!(
+                    n.estimated_hours.is_some_and(|h| h > 0.0),
+                    "知识点「{}」应有预估时长",
+                    n.title
+                );
+            }
+        }
+        let gaodeng = nodes
+            .iter()
+            .find(|n| n.level == NodeLevel::Chapter && n.title == "高等数学")
+            .unwrap();
+        let gaodeng_kids: f64 = nodes
+            .iter()
+            .filter(|n| n.parent_id.as_deref() == Some(gaodeng.id.as_str()))
+            .filter_map(|n| n.estimated_hours)
+            .sum();
+        assert!(
+            gaodeng
+                .estimated_hours
+                .is_some_and(|h| (h - gaodeng_kids).abs() < 0.05),
+            "章节预估应为子知识点之和"
+        );
+    }
+
+    #[test]
+    fn generate_prompt_embeds_book_sections_and_forces_pending() {
+        let books = "数据结构（C语言版）·严蔚敏：第一章 绪论 / 第二章 线性表";
+        let p = build_generate_prompt(
+            "professional",
+            "专业课",
+            "408 计算机",
+            "408全程",
+            "",
+            false,
+            books,
+        );
+        // 教材参考进入 prompt
+        assert!(p.contains("数据结构（C语言版）·严蔚敏"));
+        assert!(p.contains("第一章 绪论"));
+        // 章节对齐 / 归属严格 / 粒度 / 统一 pending 约束
+        assert!(p.contains("一字不差"));
+        assert!(p.contains("严禁"));
+        assert!(p.contains("3-10"));
+        assert!(p.contains("status 一律填"));
+        // 隐藏预估时长要求
+        assert!(p.contains("estimated_hours"));
+        assert!(p.contains("隐藏数据"));
+        // 有教材参考时不再提示自行构建考纲；输出格式与字段说明不变
+        assert!(!p.contains("未提供考纲文本"));
+        assert!(p.contains("只输出严格合法的 JSON 数组"));
+        assert!(p.contains("\"phase\": 所属章节"));
+    }
+
+    #[test]
+    fn generate_prompt_without_book_sections_keeps_fallback() {
+        let p = build_generate_prompt("math", "数学", "数二", "测试", "", false, "");
+        assert!(p.contains("未提供考纲文本"));
+        // 无教材参考：不输出独立教材块（仅要求措辞中引用一次该词）
+        assert_eq!(p.matches("【内置教材章节参考】").count(), 1);
+        assert!(!p.contains("【教材要求】"));
+        let p2 = build_generate_prompt("math", "数学", "数二", "测试", "考纲A\n考纲B", false, "");
+        assert!(p2.contains("【数学考纲参考】"));
+        assert!(p2.contains("考纲A"));
+    }
+
+    #[test]
+    fn generate_prompt_professional_without_books_requires_materials() {
+        // 396/199/农学等无内置教材的专业课：提示词兜底要求明确考纲规定的教材
+        let p = build_generate_prompt(
+            "professional",
+            "专业课",
+            "396 经济类",
+            "396进度表",
+            "",
+            false,
+            "",
+        );
+        assert!(p.contains("【教材要求】"));
+        assert!(p.contains("考纲规定的教材"));
+        assert!(p.contains("教材章节名"));
+        // 无内置教材：不输出独立教材块（仅要求措辞中引用一次该词）
+        assert_eq!(p.matches("【内置教材章节参考】").count(), 1);
+        // 考纲为空时的专业课兜底提示
+        assert!(p.contains("明确该科【考纲规定的教材】"));
+    }
+
+    #[test]
+    fn build_nodes_from_drafts_drops_orphans_and_forces_pending() {
+        let drafts = vec![
+            NodeDraft {
+                title: "孤儿知识点".into(),
+                phase: String::new(),
+                level: NodeLevel::Knowledge,
+                status: Some(NodeStatus::Mastered),
+                planned_date: Some("2026-09-01".into()),
+                note: String::new(),
+                estimated_hours: Some(1.0),
+            },
+            NodeDraft {
+                title: "显式整章".into(),
+                phase: String::new(),
+                level: NodeLevel::Chapter,
+                status: Some(NodeStatus::Mastered),
+                planned_date: Some("2026-09-01".into()),
+                note: String::new(),
+                estimated_hours: Some(3.0),
+            },
+            NodeDraft {
+                title: "正常知识点".into(),
+                phase: "第一章 绪论".into(),
+                level: NodeLevel::Knowledge,
+                status: Some(NodeStatus::Learning),
+                planned_date: Some("2026-09-02".into()),
+                note: String::new(),
+                // 缺失预估时长 → 回退确定性估算
+                estimated_hours: None,
+            },
+        ];
+        let nodes = build_nodes_from_drafts("math", &drafts);
+        // 孤儿 knowledge 被丢弃，显式 chapter 保留
+        assert!(!nodes.iter().any(|n| n.title == "孤儿知识点"));
+        assert!(nodes.iter().any(|n| n.title == "显式整章"));
+        // 章节节点强制 pending / null
+        let ch = nodes
+            .iter()
+            .find(|n| n.level == NodeLevel::Chapter && n.title == "第一章 绪论")
+            .expect("应有章节节点");
+        assert_eq!(ch.status, NodeStatus::Pending);
+        assert!(ch.planned_date.is_none());
+        // 知识点忽略 AI 状态与日期，归属正确
+        let k = nodes.iter().find(|n| n.title == "正常知识点").unwrap();
+        assert_eq!(k.status, NodeStatus::Pending);
+        assert!(k.planned_date.is_none());
+        assert_eq!(k.parent_id.as_deref(), Some(ch.id.as_str()));
+        // 隐藏预估时长：缺失回退估算；章节 = 子知识点之和
+        assert!(
+            k.estimated_hours.is_some_and(|h| h > 0.0),
+            "知识点应有预估时长"
+        );
+        assert_eq!(ch.estimated_hours, k.estimated_hours);
+    }
+
+    #[test]
+    fn book_sections_text_extracts_408_books() {
+        let s = book_sections_text("professional", "408 计算机");
+        assert!(s.contains("数据结构"), "408 应含数据结构教材: {s}");
+        assert!(s.contains(" / "), "章节之间应以 / 连接: {s}");
+        // 非专业课与未命中科目返回空
+        assert!(book_sections_text("math", "数二").is_empty());
+        assert!(book_sections_text("professional", "不存在的科目").is_empty());
     }
 }

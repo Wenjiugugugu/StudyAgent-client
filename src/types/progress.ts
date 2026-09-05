@@ -33,6 +33,12 @@ export interface ProgressNode {
   planned_date: string | null;
   /** 备注 */
   note: string;
+  /**
+   * 预估学习时长（小时）——隐藏数据，界面不展示。
+   * 内置考纲表 / AI 生成的进度表会写入预估值，周计划生成时作任务时长参考，
+   * 并按自适应周计划学到的用户效率系数缩放。
+   */
+  estimated_hours?: number | null;
 }
 
 /** 表来源：内置考纲表 / 自定义表 */

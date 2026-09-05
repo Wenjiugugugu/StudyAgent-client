@@ -42,8 +42,31 @@ pub async fn get_briefing(
     let settings = crate::load_settings(&data_dir);
 
     // 读取简报文件
-    let briefing = crate::data::briefing::read_briefing(&data_dir, &date).ok();
+    let mut briefing = crate::data::briefing::read_briefing(&data_dir, &date).ok();
     let exists = briefing.is_some();
+
+    // 无 AI 兜底：简报缺失或 AI 未给出估时时，用确定性「阶段估时」补齐——
+    // 基于内置/启用进度表的隐藏预估时长（estimated_hours）按自适应复合校准系数调整，
+    // 保证未配置 AI / AI 不可用时首页也能正常显示各科阶段估时。
+    let deterministic = crate::core::briefing::deterministic_estimations(&data_dir);
+    if let Some(b) = &mut briefing {
+        if b.data.estimations.is_empty() && !deterministic.is_empty() {
+            b.data.estimations = deterministic;
+        }
+    } else if !deterministic.is_empty() {
+        briefing = Some(crate::data::briefing::BriefingFile {
+            version: "1.0.0".to_string(),
+            meta: crate::data::briefing::BriefingMeta {
+                date: date.clone(),
+                generated_at: crate::data::now_string(),
+                ..Default::default()
+            },
+            data: crate::data::briefing::BriefingData {
+                estimations: deterministic,
+                ..Default::default()
+            },
+        });
+    }
 
     // 昨日日期
     let yesterday = crate::data::add_days(&date, -1).unwrap_or_else(|_| date.clone());

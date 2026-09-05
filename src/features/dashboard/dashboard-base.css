@@ -299,45 +299,6 @@
   gap: var(--space-4);
 }
 
-/* AI 寄语（大字引言式） */
-.briefing-quote {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-1);
-  padding: var(--space-4) var(--space-5);
-  background: linear-gradient(135deg, var(--accent-subtle) 0%, transparent 100%);
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-md);
-}
-
-.briefing-quote-mark {
-  font-size: 36px;
-  line-height: 1;
-  color: var(--accent);
-  font-weight: var(--font-bold);
-  font-family: Georgia, serif;
-  flex-shrink: 0;
-  opacity: 0.4;
-  margin-top: -4px;
-}
-
-.briefing-quote-mark.closing {
-  align-self: flex-end;
-  margin-top: auto;
-  margin-bottom: -8px;
-}
-
-.briefing-quote-text {
-  margin: 0;
-  font-size: var(--text-lg);
-  line-height: var(--leading-relaxed);
-  color: var(--text-primary);
-  font-weight: var(--font-medium);
-  flex: 1;
-  letter-spacing: -0.01em;
-}
-
 /* 居中提示（特殊状态） */
 .briefing-center-prompt {
   display: flex;
@@ -1199,10 +1160,6 @@
 
   .hero-countdown {
     align-items: flex-start;
-  }
-
-  .briefing-quote-text {
-    font-size: var(--text-base);
   }
 
   .briefing-estimation-grid {

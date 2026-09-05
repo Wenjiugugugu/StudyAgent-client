@@ -907,6 +907,7 @@ impl<'a> Planner<'a> {
             &subject_start_dates,
         );
         let prompt = self.build_week_plan_prompt(
+            data_dir,
             &state,
             &user_model,
             &recent_reviews,
@@ -1166,10 +1167,104 @@ impl<'a> Planner<'a> {
         }
     }
 
+    /// 生成「各科待学知识点预估时长」参考文本（隐藏数据，仅进 prompt，不展示给用户）。
+    ///
+    /// 从各科启用进度表取「待学（pending/learning）」知识点，按表内顺序每科最多取前
+    /// `MAX_PER_SUBJECT` 个；预估值缺失时用确定性估算回退，并按自适应周计划学到的
+    /// 用户效率做**复合调整**：融合「实际/预估时间比效率系数 + 任务量反馈信号 +
+    /// 学科完成率」三个信号，再按置信度收缩、按知识点难度调整敏感性（详见
+    /// `crate::core::estimated_time::EstimateAdjustment`）。
+    fn progress_estimate_prompt_block(
+        data_dir: &Path,
+        adaptive_parameters: &AdaptivePlanParameters,
+    ) -> String {
+        use crate::core::estimated_time::{
+            adjust_hours, estimate_knowledge_hours, EstimateAdjustment,
+        };
+        use crate::data::progress_tables::{NodeLevel, NodeStatus};
+        const MAX_PER_SUBJECT: usize = 15;
+
+        let index = crate::data::load_progress_index(data_dir);
+        let subjects = ["math", "english", "politics", "professional"];
+        let mut lines: Vec<String> = Vec::new();
+        for subject in subjects {
+            let Some(set) = index.subjects.get(subject) else {
+                continue;
+            };
+            let active_id = if set.active_id.is_empty() {
+                match set.tables.first() {
+                    Some(t) => t.id.clone(),
+                    None => continue,
+                }
+            } else {
+                set.active_id.clone()
+            };
+            let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+                continue;
+            };
+            // 复合调整参数：效率系数 + 反馈信号 + 该科完成率 + 置信度
+            let adjustment = EstimateAdjustment {
+                efficiency_factor: adaptive_parameters
+                    .estimation_factors
+                    .get(subject)
+                    .copied()
+                    .unwrap_or(1.0),
+                feedback_signal: adaptive_parameters.feedback_signal,
+                completion_rate: adaptive_parameters
+                    .subject_completion_rates
+                    .get(subject)
+                    .copied()
+                    .unwrap_or(0.85),
+                confidence: adaptive_parameters.confidence,
+            };
+            let points: Vec<String> = table
+                .nodes
+                .iter()
+                .filter(|n| n.level == NodeLevel::Knowledge)
+                .filter(|n| matches!(n.status, NodeStatus::Pending | NodeStatus::Learning))
+                .take(MAX_PER_SUBJECT)
+                .map(|n| {
+                    let base = n
+                        .estimated_hours
+                        .unwrap_or_else(|| estimate_knowledge_hours(subject, &n.title));
+                    let adjusted = adjust_hours(base, &adjustment, &n.title);
+                    format!("{} ≈{:.1}h", n.title, adjusted)
+                })
+                .collect();
+            if points.is_empty() {
+                continue;
+            }
+            let cn = crate::data::subject_label(subject);
+            let factor_pct = (adjustment.combined_factor() * 100.0).round();
+            lines.push(format!(
+                "- {}（综合校准系数 ≈{:.0}%，效率 {:.2}/反馈 {:.1}/完成率 {:.0}%）：{}",
+                cn,
+                factor_pct,
+                adjustment.efficiency_factor,
+                adjustment.feedback_signal,
+                adjustment.completion_rate * 100.0,
+                points.join("；")
+            ));
+        }
+        if lines.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from(
+            "## 各科待学知识点预估时长（隐藏校准数据，仅用于安排任务时长参考，不展示给用户）\n\
+             以下为各科启用进度表中待学知识点的预估学习时长，已按用户近期学习效率（时间比、任务量反馈、完成率）自动校准：\n",
+        );
+        out.push_str(&lines.join("\n"));
+        out.push_str(
+            "\n要求：安排单条任务 estimated_hours 时，优先以上述预估值为主要依据（可结合每日预算在 0.5~3h 内合并/拆分微调）；未列出的内容仍按原规则估算。\n\n",
+        );
+        out
+    }
+
     /// 构建周计划 prompt
     #[allow(clippy::too_many_arguments)]
     fn build_week_plan_prompt(
         &self,
+        data_dir: &Path,
         state: &StudyState,
         user_model: &crate::data::assets::UserModelIndex,
         recent_reviews: &[crate::data::records::ReviewFile],
@@ -1318,6 +1413,13 @@ impl<'a> Planner<'a> {
             "- 单条任务 estimated_hours ∈ [1.0, 2.0]h（推荐），超过 3.0h 必须拆分为多条\n",
         );
         prompt.push_str("- 一条任务 = 单一主旨的同动作学习单元。不同学习动作（如背诵/阅读/分析/做题/听课）即使总时长合理也必须拆为独立任务，不得用 + 拼接；判定：该单元完成后能否单独勾选完成？能 → 独立成条。\n\n");
+
+        // 各科待学知识点预估时长参考（隐藏数据，已按用户效率系数校准）
+        let progress_estimate_block =
+            Self::progress_estimate_prompt_block(data_dir, adaptive_parameters);
+        if !progress_estimate_block.is_empty() {
+            prompt.push_str(&progress_estimate_block);
+        }
 
         // 各科学时分配（用户配置占比，重要约束）：按占比给出每科每周/每日学时，
         // 并要求各科 subject_allocations 的 hours 按占比分配

@@ -14,6 +14,7 @@ pub mod analytics;
 pub mod briefing;
 pub mod chapter_seq;
 pub mod dashboard;
+pub mod estimated_time;
 pub mod goal_planner;
 pub mod planner;
 pub mod planning;

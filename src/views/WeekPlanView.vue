@@ -7,6 +7,7 @@ import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
 import Button from "@/components/ui/Button.vue";
 import Select from "@/components/ui/Select.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import Modal from "@/components/ui/Modal.vue";
@@ -976,8 +977,7 @@ onMounted(async () => {
               :class="{ active: !!configExcluded[day.date] }"
             >
               <label class="exclude-day-toggle">
-                <input
-                  type="checkbox"
+                <Checkbox
                   :checked="!!configExcluded[day.date]"
                   @change="toggleConfigExclude(day.date)"
                 />
@@ -990,8 +990,7 @@ onMounted(async () => {
               <template v-if="configExcluded[day.date]">
                 <Select
                   v-model="configExcluded[day.date].reason_type"
-                  class="exclude-reason-select"
-                  :max-width="'120px'"
+                  class="exclude-reason-select select-autowidth"
                 >
                   <option value="travel">外出旅行</option>
                   <option value="sick">生病</option>
@@ -1842,13 +1841,6 @@ onMounted(async () => {
   align-items: center;
   gap: var(--space-2);
   cursor: pointer;
-}
-
-.exclude-day-toggle input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: var(--color-danger, #ef4444);
 }
 
 .exclude-day-label {

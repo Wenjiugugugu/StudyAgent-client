@@ -10,6 +10,7 @@ import { currentMinutesShanghai, timeStringToMinutes, todayString, weekdayName, 
 import AppLayout from "@/layouts/AppLayout.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import {
   Sparkles,
@@ -353,7 +354,7 @@ onBeforeUnmount(() => {
       </div>
 
       <label class="close-remember">
-        <input v-model="closeRemember" type="checkbox" />
+        <Checkbox v-model="closeRemember" />
         <span>记住选择，下次不再询问（可在设置中修改）</span>
       </label>
     </div>
@@ -484,13 +485,6 @@ onBeforeUnmount(() => {
   padding: var(--space-2) var(--space-1);
   font-size: var(--text-xs);
   color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.close-remember input {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--accent);
   cursor: pointer;
 }
 

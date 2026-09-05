@@ -160,6 +160,14 @@ code, pre {
 .w-full { width: 100%; }
 .h-full { height: 100%; }
 
+/* 下拉按内容自适应宽度：替代各处硬编码 max-width，长文案（教材名/任务名等）不被截断。
+   覆盖 Select.vue 根节点 .select-root 的默认 width: 100%（scoped 样式，需 !important）。 */
+.select-autowidth {
+  width: auto !important;
+  min-width: 120px;
+  max-width: 100%;
+}
+
 /* ── Page Transition ── */
 .page-enter-active,
 .page-leave-active {

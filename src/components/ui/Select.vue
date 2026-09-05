@@ -18,6 +18,7 @@ import { ChevronDown } from "lucide-vue-next";
 interface SelectOption {
   value: string;
   label: string;
+  group?: string;
   disabled?: boolean;
 }
 
@@ -67,27 +68,45 @@ function extractText(children: unknown): string {
   return "";
 }
 
-/** 从默认插槽的 <option> vnodes 提取选项列表，保持与原生 select 用法完全一致 */
+/** 从默认插槽的 <option>/<optgroup> vnodes 提取选项列表，保持与原生 select 用法完全一致 */
 const options = computed<SelectOption[]>(() => {
   const nodes = slots.default?.() ?? [];
   const result: SelectOption[] = [];
-  const walk = (list: VNode[]) => {
+  const walk = (list: VNode[], group?: string) => {
     for (const n of list) {
       const isOption = n.type === "option" || (n.type as any)?.name === "option";
       if (isOption) {
         result.push({
           value: String((n.props as Record<string, unknown>)?.value ?? ""),
           label: extractText(n.children),
+          group,
           disabled: !!(n.props as Record<string, unknown>)?.disabled,
         });
       } else if (n.children && typeof n.children === "object") {
         const childArr = Array.isArray(n.children) ? (n.children as VNode[]) : [(n.children as any) as VNode];
-        walk(childArr.filter((c) => c && typeof c === "object"));
+        // optgroup：取 label 作为分组名，组内 option 继续提取
+        const isGroup = n.type === "optgroup" || (n.type as any)?.name === "optgroup";
+        const g = isGroup ? String((n.props as Record<string, unknown>)?.label ?? "") : group;
+        walk(childArr.filter((c) => c && typeof c === "object"), g);
       }
     }
   };
   walk(nodes.filter((n) => n && typeof n === "object"));
   return result;
+});
+
+/** 按 optgroup 分组后的选项（保持原始顺序，连续同组合并）；条目带扁平下标供面板渲染定位 */
+const groupedOptions = computed<{ group: string; items: (SelectOption & { _idx: number })[] }[]>(() => {
+  const res: { group: string; items: (SelectOption & { _idx: number })[] }[] = [];
+  let idx = 0;
+  for (const o of options.value) {
+    const item = { ...o, _idx: idx++ };
+    const key = o.group ?? "";
+    const last = res[res.length - 1];
+    if (last && last.group === key) last.items.push(item);
+    else res.push({ group: key, items: [item] });
+  }
+  return res;
 });
 
 const currentKey = computed(() => String(props.modelValue ?? ""));
@@ -252,20 +271,23 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
         role="listbox"
         @keydown="onPanelKeydown"
       >
-        <button
-          v-for="(opt, i) in options"
-          :id="`${uid}-opt-${i}`"
-          :key="`${opt.value}-${i}`"
-          type="button"
-          class="select-option"
-          :class="{ selected: opt.value === currentKey, highlighted: i === highlightIndex }"
-          :disabled="opt.disabled"
-          role="option"
-          :aria-selected="opt.value === currentKey"
-          @click="choose(opt)"
-        >
-          {{ opt.label }}
-        </button>
+        <template v-for="(grp, gi) in groupedOptions" :key="grp.group || `g${gi}`">
+          <div v-if="grp.group" class="select-group-label">{{ grp.group }}</div>
+          <button
+            v-for="opt in grp.items"
+            :id="`${uid}-opt-${opt._idx}`"
+            :key="`${opt.value}-${opt._idx}`"
+            type="button"
+            class="select-option"
+            :class="{ selected: opt.value === currentKey, highlighted: highlightIndex === opt._idx }"
+            :disabled="opt.disabled"
+            role="option"
+            :aria-selected="opt.value === currentKey"
+            @click="choose(opt)"
+          >
+            {{ opt.label }}
+          </button>
+        </template>
         <div v-if="options.length === 0" class="select-empty">暂无选项</div>
       </div>
     </transition>
@@ -381,6 +403,24 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
 .select-option:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.select-group-label {
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.select-group-label + .select-group-label {
+  margin-top: var(--space-1);
+  border-top: 1px solid var(--border-color);
+  padding-top: var(--space-2);
 }
 
 .select-empty {
