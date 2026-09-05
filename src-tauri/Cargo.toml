@@ -37,6 +37,11 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 keyring = { version = "4.1", features = ["windows-native-keyring-store"] }
 
 [features]
+# custom-protocol 放入 default features：任何 release 构建（含裸 `cargo build --release`、
+# `installer/build.ps1 -SkipBuild` 复用旧 exe 等场景）都会内嵌 dist 前端资源，避免打包后
+# 运行时去连 devUrl `http://localhost:1420` 而出现「localhost 拒绝连接」。
+# `tauri dev` 会自动加 `--no-default-features` 并剔除本特性，不影响开发热重载。
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [profile.dev]

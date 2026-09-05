@@ -15,7 +15,22 @@ import {
   mockMCPServerStatus,
 } from "./mock-data";
 import { useAiDebugStore } from "@/stores/aiDebug";
-import type { ProgressIndex, ProgressTable, ProgressWebSearchConfig, ProgressNode } from "@/types/progress";
+import type {
+  ProgressIndex,
+  ProgressTable,
+  ProgressWebSearchConfig,
+  ProgressNode,
+  ProgressNodeLevel,
+  ProgressNodeStatus,
+} from "@/types/progress";
+
+/** 各科默认考纲方案（进度表页「选一类启用」用） */
+export const PROGRESS_VARIANTS: Record<string, string[]> = {
+  math: ["数一", "数二", "数三"],
+  english: ["英一", "英二"],
+  professional: ["408 计算机", "307 中医", "311 教育学", "312 心理学", "313 历史学", "333 教育综合", "396 经济类", "199 管理类", "306 西医", "法律硕士"],
+  politics: ["政治"],
+};
 
 /** AI 请求取消键（与后端 agent 类型小写对应） */
 export const AI_CANCEL_KEYS = {
@@ -297,6 +312,57 @@ export async function generateWeekPlan(
     timeoutMs: 290_000,
     timeoutMessage: `生成周计划超时（超过 290 秒）。可能网络较慢或模型响应过久，可点击「取消」终止。`,
   });
+}
+
+// ── Goal（目标与截止日规划区间） ──
+
+/** 列出全部目标区间 */
+export async function listGoals(): Promise<import("@/types").GoalPlanFile> {
+  return invokeWithFallback("list_goals", undefined, async () => ({ version: "1.0.0", meta: { generated_at: new Date().toISOString() }, data: { goals: [] } }));
+}
+
+/** 创建一条目标区间（subject/title/deadline/targetChapter 必填，startChapter 可选） */
+export async function createGoal(
+  subject: import("@/types").SubjectKey,
+  title: string,
+  deadline: string,
+  targetChapter: string,
+  startChapter?: string,
+): Promise<import("@/types").Goal> {
+  return invokeDirect<import("@/types").Goal>("create_goal", {
+    subject,
+    title,
+    deadline,
+    targetChapter,
+    startChapter: startChapter || null,
+  });
+}
+
+/** 更新一条目标区间（整体替换） */
+export async function updateGoal(goal: import("@/types").Goal): Promise<import("@/types").Goal> {
+  return invokeDirect<import("@/types").Goal>("update_goal", { goal });
+}
+
+/** 删除一条目标区间 */
+export async function deleteGoal(goalId: string): Promise<void> {
+  return invokeDirect<void>("delete_goal", { goalId });
+}
+
+/** 为目标区间内某科目生成当天任务（仅展示预览用；任务确认后由后端正常落日计划） */
+export async function generateGoalPlan(
+  subject: import("@/types").SubjectKey,
+  date: string,
+): Promise<import("@/types").PlanTask[]> {
+  return invokeDirect<import("@/types").PlanTask[]>("generate_goal_plan", { subject, date });
+}
+
+/** 从当前 state 反推某科目的当前进度章节（预填新建时的起点） */
+export async function getGoalStartChapter(
+  subject: import("@/types").SubjectKey,
+): Promise<string | null> {
+  return invokeDirect<{ goal?: string } | null>("get_goal_start_chapter", { subject }).then(
+    (r) => r?.goal ?? null,
+  );
 }
 
 export async function updateTaskStatus(taskId: string, status: string): Promise<void> {
@@ -739,13 +805,19 @@ export async function listProgressTables(): Promise<ProgressIndex> {
   }));
 }
 
-/** 新增 or 更新一份进度表；makeActive=true 时设为该科唯一启用 */
+/** 新增 or 更新一份进度表；makeActive=true 时设为该科唯一启用，并同步启用该表所属方案 */
 export async function saveProgressTable(
   subject: string,
+  variant: string,
   table: ProgressTable,
   makeActive: boolean
-): Promise<void> {
-  return invokeDirect<void>("save_progress_table", { subject, table, makeActive });
+): Promise<ProgressTable> {
+  return invokeDirect<ProgressTable>("save_progress_table", {
+    subject,
+    variant,
+    table,
+    makeActive,
+  });
 }
 
 /** 删除某科的一份进度表 */
@@ -753,9 +825,25 @@ export async function deleteProgressTable(subject: string, id: string): Promise<
   return invokeDirect<void>("delete_progress_table", { subject, id });
 }
 
-/** 设定某科启用哪份进度表 */
+/**
+ * 删除某科指定方案下全部内置考纲表（重新生成内置考纲前清理旧数据用）。
+ * variant 为空时删除该科所有内置表。
+ */
+export async function deleteBuiltinProgressTables(
+  subject: string,
+  variant: string
+): Promise<number> {
+  return invokeDirect<number>("delete_builtin_progress_tables", { subject, variant });
+}
+
+/** 设定某科启用哪份进度表（会同步启用其所属考纲方案） */
 export async function setActiveProgressTable(subject: string, id: string): Promise<void> {
   return invokeDirect<void>("set_active_progress_table", { subject, id });
+}
+
+/** 设定某科启用哪个考纲方案；启用表同步对齐到该方案下当前启用表或其第一张表 */
+export async function setActiveProgressVariant(subject: string, variant: string): Promise<void> {
+  return invokeDirect<void>("set_active_progress_variant", { subject, variant });
 }
 
 /** 读取进度表相关设置（联网搜索配置） */
@@ -781,23 +869,82 @@ export async function setProgressSettings(
  */
 export function generateProgressTable(
   subject: string,
-  examType: string,
+  variant: string,
   name: string,
   useWeb: boolean
 ): Promise<ProgressTable> {
   return aiInvoke<ProgressTable>({
     command: "generate_progress_table",
     label: `AI 生成进度表（${subject}）`,
-    args: { subject, examType, name, useWeb },
+    args: { subject, variant, name, useWeb },
     cancelKey: AI_CANCEL_KEYS.assistant,
     timeoutMs: 240_000,
     timeoutMessage: `AI 生成进度表超时（超过 240 秒）。请检查 AI Provider 配置或网络连接。`,
   });
 }
 
+/**
+ * 内置考纲转进度表：不依赖 AI，将随包内置的官方考研考纲直接转换为进度表草稿（不落盘）。
+ * - 普通科目（数学/英语/政治）：返回 1 份总表草稿；
+ * - 专业课（professional/408）：按考试类型匹配内置统考专业课，返回多份草稿
+ *   （第 1 份为总专业课进度表，其后为每本指定教材一张进度表）。
+ * 每份草稿 id 为空，前端保存时先分配 id 再逐份入库。
+ */
+export function builtinProgressTable(subject: string, variant: string): Promise<ProgressTable[]> {
+  return invokeDirect<ProgressTable[]>("builtin_progress_table", { subject, variant });
+}
+
+/** 首次状态确认：根据 State 预估的各知识点状态条目 */
+export interface ProgressStatusEstimate {
+  table_id: string;
+  table_name: string;
+  chapter_id: string | null;
+  /** 章节标题（无章节时取 phase） */
+  chapter: string;
+  node_id: string;
+  node_title: string;
+  /** 建议状态 */
+  suggested: ProgressNodeStatus;
+}
+
+/** 状态变更（applyProgressStatuses 入参） */
+export interface ProgressStatusChange {
+  table_id: string;
+  node_id: string;
+  status: ProgressNodeStatus;
+}
+
+/**
+ * 根据 State 预估某科知识点当前应处状态（首次打开弹窗确认用）。
+ * 前端调用: `invoke('estimate_progress_from_state', { subject })`
+ */
+export function estimateProgressFromState(subject: string): Promise<ProgressStatusEstimate[]> {
+  return invokeDirect<ProgressStatusEstimate[]>("estimate_progress_from_state", { subject });
+}
+
+/**
+ * 批量应用首次状态确认勾选结果（后端只升不降）。
+ * 前端调用: `invoke('apply_progress_statuses', { subject, changes })`
+ */
+export function applyProgressStatuses(
+  subject: string,
+  changes: ProgressStatusChange[]
+): Promise<number> {
+  return invokeDirect<number>("apply_progress_statuses", { subject, changes });
+}
+
+/**
+ * 把设置中的考试类型解析为各科默认考纲方案（科目 → 方案）。
+ * 前端调用: `invoke('default_progress_variants')`
+ */
+export function defaultProgressVariants(): Promise<Record<string, string>> {
+  return invokeDirect<Record<string, string>>("default_progress_variants", {});
+}
+
 /** 供导出：构造便携格式的 JSON 字符串 */
 export function serializeProgressTableExport(
   subject: string,
+  variant: string,
   name: string,
   nodes: ProgressNode[]
 ): string {
@@ -805,6 +952,7 @@ export function serializeProgressTableExport(
     type: "studyagent.progress_table",
     version: 1,
     subject,
+    variant,
     name,
     nodes,
   };
@@ -814,6 +962,7 @@ export function serializeProgressTableExport(
 /** 校验并解析导入的进度表 JSON 文本 */
 export function parseProgressTableExport(raw: string): {
   subject: string;
+  variant: string;
   name: string;
   nodes: ProgressNode[];
 } {
@@ -825,9 +974,12 @@ export function parseProgressTableExport(raw: string): {
     throw new Error("进度表文件缺少节点数据");
   }
   const normSubject = (data.subject as string) || "";
+  const normVariant = (data.variant as string) || "";
   const nodes: ProgressNode[] = (data.nodes as any[]).map((n) => ({
     id: "",
     title: (n.title ?? "").toString(),
+    level: (n.level === "chapter" ? "chapter" : "knowledge") as ProgressNodeLevel,
+    parent_id: n.parent_id ?? null,
     phase: (n.phase ?? "").toString(),
     status: ["pending", "learning", "mastered"].includes(n.status)
       ? n.status
@@ -837,6 +989,7 @@ export function parseProgressTableExport(raw: string): {
   }));
   return {
     subject: normSubject,
+    variant: normVariant,
     name: (data.name ?? `${normSubject || "科目"}进度表`).toString(),
     nodes,
   };

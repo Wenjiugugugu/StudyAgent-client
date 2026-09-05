@@ -20,8 +20,10 @@ import {
   Bug,
   HelpCircle,
   Timer,
+  ClipboardList,
   ChevronsLeft,
   ChevronsRight,
+  Target,
 } from "lucide-vue-next";
 import { useAppVersion } from "@/version";
 
@@ -103,6 +105,7 @@ const planGroup = {
   children: [
     { name: "today", label: "今日计划", icon: Calendar, path: "/today" },
     { name: "week-plan", label: "周计划", icon: CalendarDays, path: "/week-plan" },
+    { name: "goal-plan", label: "目标计划", icon: Target, path: "/goal-plan" },
     { name: "history-plans", label: "历史计划", icon: History, path: "/history-plans" },
   ] as NavItem[],
 };
@@ -116,7 +119,8 @@ const menuEntries: MenuEntry[] = [
   { kind: "item", item: { name: "focus", label: "专注", icon: Timer, path: "/focus" } },
   { kind: "item", item: { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" } },
   { kind: "item", item: { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" } },
-  { kind: "item", item: { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" } },
+  { kind: "item", item: { name: "textbooks", label: "进度与教材", icon: BookOpen, path: "/textbooks" } },
+  { kind: "item", item: { name: "progress", label: "进度", icon: ClipboardList, path: "/progress" } },
   { kind: "item", item: { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" } },
   ...(isDev
     ? [{ kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } } as MenuEntry]

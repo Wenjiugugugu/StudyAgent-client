@@ -12,8 +12,8 @@ use tauri::State;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::data::{
-    load_progress_index, new_progress_id, now_string, save_progress_index, NodeStatus,
-    ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet, WebSearchConfig,
+    load_progress_index, new_progress_id, now_string, save_progress_index, NodeLevel, NodeStatus,
+    ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet, TableOrigin, WebSearchConfig,
 };
 use crate::{get_data_dir, get_data_dir_and_ai, AppState};
 
@@ -57,12 +57,14 @@ pub fn list_progress_tables(state: State<'_, Mutex<AppState>>) -> Result<Progres
 
 /// 新增或更新某科的一份进度表
 ///
-/// - `make_active`: 是否将其设为该科唯一启用（true 时清掉其它表的启用状态）
+/// - `variant`: 考纲方案（数一/数二/数三/英一/英二/408/307/政治），空格则复用表自身/默认
+/// - `make_active`: 是否将其设为该科唯一启用（true 时清掉其它表的启用状态，并把科目启用方案同步）
 /// - 表 id 为空视为「新建」，否则为更新。
-/// 前端调用: `invoke('save_progress_table', { subject, table, makeActive })`
+/// 前端调用: `invoke('save_progress_table', { subject, variant, table, makeActive })`
 #[tauri::command]
 pub fn save_progress_table(
     subject: String,
+    variant: String,
     mut table: ProgressTable,
     make_active: bool,
     state: State<'_, Mutex<AppState>>,
@@ -70,6 +72,11 @@ pub fn save_progress_table(
     validate_subject(&subject)?;
     if table.name.trim().is_empty() {
         return Err("进度表名称不能为空".to_string());
+    }
+    if !table.variant.is_empty() && variant.is_empty() {
+        // 表自身已带方案，保留
+    } else if !variant.is_empty() {
+        table.variant = variant.clone();
     }
     let data_dir = get_data_dir(state.inner())?;
 
@@ -81,11 +88,9 @@ pub fn save_progress_table(
     let new_id = if is_new {
         let id = new_progress_id("p", &table.name);
         table.id = id.clone();
-        set.active_id = if set.active_id.is_empty() || make_active {
-            id.clone()
-        } else {
-            set.active_id.clone()
-        };
+        if set.active_id.is_empty() || make_active {
+            set.active_id = id.clone();
+        }
         id
     } else {
         table.id.clone()
@@ -100,7 +105,9 @@ pub fn save_progress_table(
 
     if let Some(existing) = set.tables.iter_mut().find(|t| t.id == new_id) {
         existing.name = table.name.clone();
+        existing.variant = table.variant.clone();
         existing.subject = table.subject.clone();
+        existing.origin = table.origin;
         existing.updated_at = table.updated_at.clone();
         existing.nodes = table.nodes.clone();
     } else if is_new {
@@ -116,6 +123,10 @@ pub fn save_progress_table(
     // 启用互斥：每科仅一份启用
     if make_active {
         set.active_id = new_id;
+        // 启用方案与启用表联动
+        if !table.variant.is_empty() {
+            set.active_variant = table.variant.clone();
+        }
     }
 
     save_progress_index(&data_dir, &index)?;
@@ -156,7 +167,51 @@ pub fn delete_progress_table(
     save_progress_index(&data_dir, &index)
 }
 
-/// 设定某科启用哪份进度表（同一时刻每科仅一份启用）
+/// 删除某科指定方案下全部内置考纲表（用于重新生成内置考纲前清理旧数据，避免污染/重复）。
+/// - `variant` 为空时删除该科所有内置表。
+/// 前端调用: `invoke('delete_builtin_progress_tables', { subject, variant })`
+#[tauri::command]
+pub fn delete_builtin_progress_tables(
+    subject: String,
+    variant: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, String> {
+    validate_subject(&subject)?;
+    let data_dir = get_data_dir(state.inner())?;
+    let mut index = load_progress_index(&data_dir);
+
+    let set = subject_set(&mut index, &subject);
+    let before = set.tables.len();
+    let active_id = set.active_id.clone();
+
+    set.tables.retain(|t| {
+        if t.origin != TableOrigin::Builtin {
+            return true;
+        }
+        if variant.trim().is_empty() {
+            return false; // variant 为空：删除该科全部内置表
+        }
+        t.variant != variant.trim()
+    });
+
+    let removed = before - set.tables.len();
+    if removed > 0 {
+        // 若启用表被删，重新对齐启用状态
+        if set.tables.iter().any(|t| t.id == active_id) {
+            // active 仍在，保持原样
+        } else if let Some(first) = set.tables.first() {
+            set.active_id = first.id.clone();
+            set.active_variant = first.variant.clone();
+        } else {
+            set.active_id.clear();
+            set.active_variant.clear();
+        }
+        save_progress_index(&data_dir, &index)?;
+    }
+    Ok(removed)
+}
+
+/// 设定某科启用哪份进度表（同一时刻每科仅一份启用，并同步启用方案为该表所属方案）
 /// 前端调用: `invoke('set_active_progress_table', { subject, id })`
 #[tauri::command]
 pub fn set_active_progress_table(
@@ -168,12 +223,95 @@ pub fn set_active_progress_table(
     let data_dir = get_data_dir(state.inner())?;
     let mut index = load_progress_index(&data_dir);
 
+    let variant = {
+        let set = subject_set(&mut index, &subject);
+        let t = set
+            .tables
+            .iter()
+            .find(|t| t.id == id)
+            .ok_or_else(|| "进度表不存在".to_string())?;
+        t.variant.clone()
+    };
     let set = subject_set(&mut index, &subject);
-    if !set.tables.iter().any(|t| t.id == id) {
-        return Err("进度表不存在".to_string());
-    }
     set.active_id = id;
+    if !variant.is_empty() {
+        set.active_variant = variant;
+    }
     save_progress_index(&data_dir, &index)
+}
+
+/// 设定某科启用哪个考纲方案；启用表同步对齐到该方案下当前启用表或其第一张表。
+/// 新增若该方案尚无任何表，则只设置启用方案（前端随后可生成/新建该方案的表）。
+/// 前端调用: `invoke('set_active_progress_variant', { subject, variant })`
+#[tauri::command]
+pub fn set_active_progress_variant(
+    subject: String,
+    variant: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    validate_subject(&subject)?;
+    if variant.trim().is_empty() {
+        return Err("考纲方案不能为空".to_string());
+    }
+    let data_dir = get_data_dir(state.inner())?;
+    let mut index = load_progress_index(&data_dir);
+    let set = subject_set(&mut index, &subject);
+    set.active_variant = variant.clone();
+    // active_id 对齐：优先该方案当前启用表，否则取该方案第一张表
+    if !set.tables.is_empty() {
+        let active_is_in_variant = set
+            .tables
+            .iter()
+            .any(|t| t.id == set.active_id && t.variant == variant);
+        if !active_is_in_variant {
+            if let Some(t) = set.tables.iter().find(|t| t.variant == variant) {
+                set.active_id = t.id.clone();
+            }
+        }
+    }
+    save_progress_index(&data_dir, &index)
+}
+
+// ============================================================================
+// 进度表与学习状态联动（首次确认 / 复盘联动）
+// ============================================================================
+
+/// 根据 State 预估某科知识点当前应处状态（首次打开弹窗确认用）。
+/// 前端调用: `invoke('estimate_progress_from_state', { subject })`
+#[tauri::command]
+pub fn estimate_progress_from_state(
+    subject: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::core::progress_sync::StatusEstimate>, String> {
+    validate_subject(&subject)?;
+    let data_dir = get_data_dir(state.inner())?;
+    crate::core::progress_sync::estimate_from_state(&data_dir, &subject)
+}
+
+/// 批量应用用户在「首次状态确认」弹窗中勾选的结果（只升不降）。
+/// 前端调用: `invoke('apply_progress_statuses', { subject, changes })`
+#[tauri::command]
+pub fn apply_progress_statuses(
+    subject: String,
+    changes: Vec<crate::core::progress_sync::StatusChange>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, String> {
+    validate_subject(&subject)?;
+    let data_dir = get_data_dir(state.inner())?;
+    crate::core::progress_sync::apply_estimated_statuses(&data_dir, &subject, &changes)
+}
+
+/// 把设置中的考试类型解析为各科默认考纲方案（科目 → 方案）。
+/// 前端调用: `invoke('default_progress_variants')`
+#[tauri::command]
+pub fn default_progress_variants(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let settings = crate::load_settings(&data_dir);
+    Ok(crate::core::progress_sync::default_progress_variants(
+        &settings.exam_type,
+    ))
 }
 
 // ============================================================================
@@ -213,6 +351,8 @@ struct NodeDraft {
     #[serde(default)]
     phase: String,
     #[serde(default)]
+    level: NodeLevel,
+    #[serde(default)]
     status: Option<NodeStatus>,
     #[serde(default)]
     planned_date: Option<String>,
@@ -220,38 +360,39 @@ struct NodeDraft {
     note: String,
 }
 
-/// 将 exam_type（如「数学二」）映射为章节表版本键（数一/数二/数三），
-/// 非数学科目或无匹配时返回空字符串。
-fn version_for(subject: &str, exam_type: &str) -> Option<String> {
-    if subject == "math" {
-        for key in ["数一", "数二", "数三"] {
-            if exam_type.contains(key) {
-                return Some(key.to_string());
+/// 将考纲方案（variant，如「数二」「英一」「政治」「408」）映射为章节表版本键。
+/// 返回的字符串会写进进度表的 `variant` 字段，因此必须和当前方案精确对应，
+/// 否则前端按方案过滤/查重/清理都会失败。
+fn version_for(subject: &str, variant: &str) -> Option<String> {
+    let v = variant.trim();
+    match subject {
+        "math" => match v {
+            "数一" | "数学一" => Some("数一".to_string()),
+            "数二" | "数学二" => Some("数二".to_string()),
+            "数三" | "数学三" => Some("数三".to_string()),
+            _ => None, // 未声明数学版本，交由 AI 依据考纲生成
+        },
+        // 英语一/二共用同一套知识点顺序，但表的 variant 要保留当前方案，便于识别和清理
+        "english" => match v {
+            "英一" | "英语一" => Some("英一".to_string()),
+            "英二" | "英语二" => Some("英二".to_string()),
+            _ if !v.is_empty() => Some(v.to_string()),
+            _ => Some("英一".to_string()),
+        },
+        "politics" => {
+            if v.is_empty() {
+                Some("政治".to_string())
+            } else {
+                Some(v.to_string())
             }
         }
-        return None; // 未声明数学版本，交由 AI 依据考纲生成
+        _ => None,
     }
-    if subject == "english" {
-        if exam_type.contains("英语二") || exam_type.contains("英二") {
-            return Some(String::new());
-        }
-        return Some(String::new()); // 英一/英二 采用同一占位表
-    }
-    if subject == "politics" {
-        return Some(String::new());
-    }
-    None
 }
 
 /// 内置考纲兜底：从 chapter_seq 取有序知识点列表
 fn builtin_syllabus(subject: &str, version: &str) -> Option<Vec<String>> {
-    // 兼容旧键：408 视为 professional（无内置表）
-    let resolved = if subject == "408" {
-        "professional"
-    } else {
-        subject
-    };
-    crate::core::chapter_seq::syllabus_points(resolved, version)
+    crate::core::chapter_seq::syllabus_points(subject, version)
         .map(|seq| seq.iter().map(|s| s.to_string()).collect())
 }
 
@@ -330,14 +471,14 @@ async fn web_search_syllabus(
 /// AI 生成一份进度表（返回草稿，不自动落盘；前端预览确认后再保存）
 ///
 /// - `subject`: 学科 key
-/// - `exam_type`: 考试类型文本（如「数学二」），可从设置读取
+/// - `variant`: 考纲方案（如「数二」「英一」「408 计算机」），可从进度表页当前启用方案读取
 /// - `name`: 生成的进度表名称
 /// - `use_web`: 是否优先联网查询最新考研大纲（若未配置则回退内置考纲）
-/// 前端调用: `invoke('generate_progress_table', { subject, examType, name, useWeb })`
+/// 前端调用: `invoke('generate_progress_table', { subject, variant, name, useWeb })`
 #[tauri::command]
 pub async fn generate_progress_table(
     subject: String,
-    exam_type: String,
+    variant: String,
     name: String,
     use_web: bool,
     state: State<'_, Mutex<AppState>>,
@@ -353,14 +494,7 @@ pub async fn generate_progress_table(
     }
 
     // 考试类型：优先使用传入，其次读设置
-    let effective_exam = {
-        let settings = crate::load_settings(&data_dir);
-        if exam_type.trim().is_empty() {
-            settings.exam_type.clone()
-        } else {
-            exam_type.clone()
-        }
-    };
+    let effective_exam = variant.clone();
     let ver = version_for(&subject, &effective_exam);
     let subject_label = crate::data::subject_label(&subject);
 
@@ -421,31 +555,334 @@ pub async fn generate_progress_table(
     }
 
     let now = now_string();
-    let nodes: Vec<ProgressNode> = drafts
-        .into_iter()
-        .map(|d| ProgressNode {
-            id: new_progress_id("n", &d.title),
-            title: d.title.trim().to_string(),
-            phase: d.phase.trim().to_string(),
-            status: d.status.unwrap_or(NodeStatus::Pending),
-            planned_date: d.planned_date,
-            note: d.note.trim().to_string(),
-        })
-        .collect();
+    // 两级结构：AI 以 phase 作为章节（首次出现顺序建立章节 id），知识点归属其下；
+    // 若某节点显式带 level=chapter，则其本身作为章节节点。
+    let mut id_for_phase: std::collections::HashMap<String, String> = Default::default();
+    let mut chapter_order: Vec<String> = Vec::new();
+    for d in &drafts {
+        let ph = d.phase.trim();
+        if !ph.is_empty() && !id_for_phase.contains_key(ph) {
+            let cid = new_progress_id("c", ph);
+            id_for_phase.insert(ph.to_string(), cid);
+            chapter_order.push(ph.to_string());
+        }
+    }
+    let mut nodes: Vec<ProgressNode> = Vec::new();
+    let mut chapters_used: std::collections::HashSet<String> = Default::default();
+    for d in &drafts {
+        let ph = d.phase.trim().to_string();
+        match d.level {
+            NodeLevel::Chapter => {
+                nodes.push(ProgressNode {
+                    id: new_progress_id("n", &d.title),
+                    title: d.title.trim().to_string(),
+                    level: NodeLevel::Chapter,
+                    parent_id: None,
+                    phase: ph.clone(),
+                    status: d.status.unwrap_or(NodeStatus::Pending),
+                    planned_date: d.planned_date.clone(),
+                    note: d.note.trim().to_string(),
+                });
+            }
+            NodeLevel::Knowledge => {
+                let pid = id_for_phase.get(&ph).cloned();
+                if let Some(ref c) = pid {
+                    chapters_used.insert(c.clone());
+                }
+                nodes.push(ProgressNode {
+                    id: new_progress_id("n", &d.title),
+                    title: d.title.trim().to_string(),
+                    level: NodeLevel::Knowledge,
+                    parent_id: pid,
+                    phase: ph.clone(),
+                    status: d.status.unwrap_or(NodeStatus::Pending),
+                    planned_date: d.planned_date.clone(),
+                    note: d.note.trim().to_string(),
+                });
+            }
+        }
+    }
+    // 表头插入有知识点的章节节点
+    let mut final_nodes: Vec<ProgressNode> = Vec::new();
+    for cid in &chapter_order {
+        let cid_r = id_for_phase.get(cid).cloned().unwrap_or_default();
+        if chapters_used.contains(cid_r.as_str()) {
+            final_nodes.push(ProgressNode {
+                id: cid_r.clone(),
+                title: cid.clone(),
+                level: NodeLevel::Chapter,
+                parent_id: None,
+                phase: cid.clone(),
+                status: NodeStatus::Pending,
+                planned_date: None,
+                note: String::new(),
+            });
+        }
+    }
+    for node in nodes {
+        if node.level == NodeLevel::Knowledge || node.parent_id.is_none() {
+            final_nodes.push(node);
+        }
+    }
+    final_nodes.retain(|n| !n.title.is_empty());
 
     let table = ProgressTable {
         id: String::new(), // 草稿：id 留空，保存时分配
         subject: subject.clone(),
+        variant: variant.clone(),
         name: if name.trim().is_empty() {
             format!("{}进度表", subject_label)
         } else {
             name.trim().to_string()
         },
+        origin: TableOrigin::Custom,
+        created_at: now.clone(),
+        updated_at: now,
+        nodes: final_nodes,
+    };
+    Ok(table)
+}
+
+/// 数学知识点按大章分组（用于内置考纲两级结构）。
+/// 注意：高数里也有「向量代数与空间解析几何」，所以「向量」单独出现要留给高数，
+/// 只有「向量组」及其后续线性代数特征词才归到线代。
+fn chapter_for_math(title: &str) -> &'static str {
+    let t = title;
+    // 线代：用「向量组」而不是「向量」，避免把高数空间向量误判进线代
+    if t.contains("行列式")
+        || t.contains("矩阵")
+        || t.contains("向量组")
+        || t.contains("线性方程组")
+        || t.contains("特征值")
+        || t.contains("二次型")
+        || t.contains("相似矩阵")
+        || t.contains("基础解系")
+    {
+        "线性代数"
+    } else if t.contains("随机")
+        || t.contains("概率")
+        || t.contains("分布")
+        || t.contains("估计")
+        || t.contains("假设检验")
+        || t.contains("大数定律")
+        || t.contains("中心极限")
+        || t.contains("统计量")
+        || t.contains("抽样分布")
+    {
+        "概率论与数理统计"
+    } else {
+        "高等数学"
+    }
+}
+
+/// 政治知识点按大章分组
+fn chapter_for_politics(title: &str) -> &'static str {
+    let t = title;
+    if t.contains("马克思主义")
+        || t.contains("辩证唯物")
+        || t.contains("唯物辩证法")
+        || t.contains("认识论")
+        || t.contains("唯物史观")
+        || t.contains("商品")
+        || t.contains("剩余价值")
+        || t.contains("资本主义")
+        || t.contains("垄断")
+    {
+        "马克思主义基本原理"
+    } else if t.contains("毛泽东")
+        || t.contains("新民主主义")
+        || t.contains("社会主义改造")
+        || t.contains("社会主义建设")
+        || (t.contains("中国特色社会主义") && !t.contains("新时代"))
+        || t.contains("经济发展")
+        || t.contains("全面深化改革")
+        || t.contains("社会主义民主政治")
+        || t.contains("文化建设")
+        || t.contains("社会主义核心价值观")
+        || t.contains("民生")
+        || t.contains("社会治理")
+        || t.contains("生态文明")
+        || t.contains("党的建设")
+        || t.contains("从严治党")
+    {
+        "毛泽东思想和中国特色社会主义理论体系概论"
+    } else if t.contains("新时代")
+        || t.contains("中国式现代化")
+        || t.contains("高质量发展")
+        || t.contains("新质生产力")
+        || t.contains("新发展格局")
+    {
+        "习近平新时代中国特色社会主义思想概论"
+    } else if t.contains("近代")
+        || t.contains("新民主主义革命")
+        || t.contains("中华人民共和国")
+        || t.contains("社会主义制度")
+        || (t.contains("改革开放") && !t.contains("新时代"))
+        || t.contains("社会主义建设道路")
+    {
+        "中国近现代史纲要"
+    } else if t.contains("人生观")
+        || t.contains("理想信念")
+        || t.contains("道德")
+        || t.contains("法治")
+        || t.contains("宪法")
+        || t.contains("依法治国")
+    {
+        "思想道德与法治"
+    } else {
+        "形势与政策以及当代世界经济与政治"
+    }
+}
+
+/// 英语知识点按大章分组
+fn chapter_for_english(title: &str) -> &'static str {
+    let t = title;
+    if t.contains("词汇") || t.contains("长难句") || t.contains("语法") {
+        "词汇与语法"
+    } else if t.contains("完形") || t.contains("知识运用") {
+        "完形填空"
+    } else if t.contains("阅读") || t.contains("新题型") {
+        "阅读理解"
+    } else if t.contains("翻译") {
+        "翻译"
+    } else if t.contains("作文") || t.contains("写作") {
+        "写作"
+    } else {
+        "综合"
+    }
+}
+
+/// 把普通科目的扁平知识点列表按大章整理为两级节点（章节 + 知识点）
+fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> {
+    let chapter_fn: fn(&str) -> &'static str = match subject {
+        "math" => chapter_for_math,
+        "politics" => chapter_for_politics,
+        "english" => chapter_for_english,
+        _ => |_| "未分组",
+    };
+
+    let mut nodes: Vec<ProgressNode> = Vec::new();
+    let mut chapter_ids: std::collections::HashMap<&'static str, String> =
+        std::collections::HashMap::new();
+
+    for title in points {
+        let ch = chapter_fn(&title);
+        let cid = chapter_ids
+            .entry(ch)
+            .or_insert_with(|| new_progress_id("c", ch))
+            .clone();
+
+        // 确保章节节点只插入一次
+        if !nodes
+            .iter()
+            .any(|n| n.level == NodeLevel::Chapter && n.id == cid)
+        {
+            nodes.push(ProgressNode {
+                id: cid.clone(),
+                title: ch.to_string(),
+                level: NodeLevel::Chapter,
+                parent_id: None,
+                phase: ch.to_string(),
+                status: NodeStatus::Pending,
+                planned_date: None,
+                note: String::new(),
+            });
+        }
+
+        nodes.push(ProgressNode {
+            id: new_progress_id("n", &title),
+            title,
+            level: NodeLevel::Knowledge,
+            parent_id: Some(cid),
+            phase: ch.to_string(),
+            status: NodeStatus::Pending,
+            planned_date: None,
+            note: String::new(),
+        });
+    }
+    nodes
+}
+
+// ============================================================================
+// 内置考纲进度表（不依赖 AI）
+// ============================================================================
+
+/// 内置考纲转进度表：将随包内置的官方考研考纲（core::chapter_seq / core::professional）
+/// 直接转换为进度表草稿（不自动落盘，前端预览确认后再逐份保存）。
+///
+/// - 普通科目（数学/英语/政治）：返回一份总表草稿；
+/// - 专业课（subject=professional）：按考纲方案匹配内置统考专业课，返回多份草稿：
+///   第 1 份为「总专业课进度表」（考纲板块→章节），其后为每本指定教材一张进度表。
+/// - `variant`: 考纲方案（如「数二」「英一」「408 计算机」「法硕（非法学）」），用于定位内置考纲版本
+/// 前端调用: `invoke('builtin_progress_table', { subject, variant })`
+#[tauri::command]
+pub fn builtin_progress_table(
+    subject: String,
+    variant: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<ProgressTable>, String> {
+    validate_subject(&subject)?;
+    let data_dir = get_data_dir(state.inner())?;
+
+    let effective_exam = {
+        let settings = crate::load_settings(&data_dir);
+        if variant.trim().is_empty() {
+            settings.exam_type.clone()
+        } else {
+            variant.clone()
+        }
+    };
+
+    // 专业课：匹配随包内置的统考专业课（返回总表 + 各教材表）
+    if subject == "professional" || subject == "408" {
+        match crate::core::professional::find(&effective_exam) {
+            Some(exam) => return Ok(crate::core::professional::build_tables(&exam)),
+            None => {
+                return Err(format!(
+                    "「专业课」暂未识别考试类型「{}」对应的内置专业课（当前支持：{}），\
+                     请把专业课名称填写为其中一种，或使用 AI 生成。",
+                    if effective_exam.trim().is_empty() {
+                        "未填写"
+                    } else {
+                        effective_exam.trim()
+                    },
+                    crate::core::professional::all_names()
+                ))
+            }
+        }
+    }
+
+    // 普通科目：内置考纲知识点顺序 → 一份带章节结构的总表草稿
+    let resolved = if subject == "408" {
+        "professional"
+    } else {
+        &subject
+    };
+    if resolved != "math" && resolved != "english" && resolved != "politics" {
+        return Err(format!("暂不支持学科「{}」的内置考纲生成", subject));
+    }
+    let ver = version_for(&subject, &effective_exam);
+    let points = builtin_syllabus(&subject, ver.as_deref().unwrap_or("")).ok_or_else(|| {
+        format!(
+            "学科「{}」暂无内置考纲数据",
+            crate::data::subject_label(&subject)
+        )
+    })?;
+
+    let now = now_string();
+    let nodes = build_subject_nodes(&subject, points);
+
+    let table = ProgressTable {
+        id: String::new(), // 草稿：id 留空，保存时分配
+        subject: subject.clone(),
+        variant: ver.unwrap_or_default(),
+        name: format!("{} · 内置官方考纲", crate::data::subject_label(&subject)),
+        origin: TableOrigin::Builtin,
         created_at: now.clone(),
         updated_at: now,
         nodes,
     };
-    Ok(table)
+    Ok(vec![table])
 }
 
 /// 生成进度表的 prompt 构造
@@ -489,4 +926,61 @@ fn build_generate_prompt(
         source_note,
         syllabus_block,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_for_maps_subjects_correctly() {
+        assert_eq!(version_for("math", "数二"), Some("数二".to_string()));
+        assert_eq!(version_for("math", "数学二"), Some("数二".to_string()));
+        assert_eq!(version_for("english", "英一"), Some("英一".to_string()));
+        assert_eq!(version_for("english", "英语二"), Some("英二".to_string()));
+        assert_eq!(version_for("politics", "政治"), Some("政治".to_string()));
+        assert_eq!(version_for("politics", ""), Some("政治".to_string()));
+    }
+
+    #[test]
+    fn chapter_for_math_distinguishes_vector_calculus_and_linalg() {
+        // 高数中的「向量」不应被误判为线性代数
+        assert_eq!(chapter_for_math("向量的概念及其线性运算"), "高等数学");
+        assert_eq!(chapter_for_math("数量积、向量积、混合积"), "高等数学");
+        // 「向量组」才是线代
+        assert_eq!(chapter_for_math("向量组及其线性组合"), "线性代数");
+        assert_eq!(chapter_for_math("行列式的定义与性质"), "线性代数");
+        // 概率
+        assert_eq!(chapter_for_math("随机事件与样本空间"), "概率论与数理统计");
+    }
+
+    #[test]
+    fn build_subject_nodes_groups_math_by_chapter() {
+        let nodes = build_subject_nodes(
+            "math",
+            vec![
+                "向量的概念及其线性运算".to_string(),
+                "向量组及其线性组合".to_string(),
+                "随机事件与样本空间".to_string(),
+            ],
+        );
+        let chapters: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Chapter)
+            .map(|n| n.title.as_str())
+            .collect();
+        assert_eq!(chapters, vec!["高等数学", "线性代数", "概率论与数理统计"]);
+
+        // 知识点归属正确
+        let vector_calc = nodes
+            .iter()
+            .find(|n| n.title == "向量的概念及其线性运算")
+            .unwrap();
+        assert_eq!(vector_calc.phase, "高等数学");
+        let vector_group = nodes
+            .iter()
+            .find(|n| n.title == "向量组及其线性组合")
+            .unwrap();
+        assert_eq!(vector_group.phase, "线性代数");
+    }
 }

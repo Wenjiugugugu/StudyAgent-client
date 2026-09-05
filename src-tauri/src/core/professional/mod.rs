@@ -22,10 +22,10 @@
 
 use std::sync::OnceLock;
 
-use crate::data::progress_tables::{
-    new_progress_id, NodeStatus, ProgressNode, ProgressTable,
-};
 use crate::data::now_string;
+use crate::data::progress_tables::{
+    new_progress_id, NodeLevel, NodeStatus, ProgressNode, ProgressTable, TableOrigin,
+};
 
 mod data_408_law;
 mod data_edu;
@@ -116,48 +116,40 @@ pub fn all_names() -> String {
 /// 把一门统考专业课装配为多份进度表草稿（不落盘，前端预览确认后再各自保存）
 ///
 /// 第 1 份为「总专业课进度表」，其后每本指定教材一张进度表。表 id 留空（保存时分配）。
+/// 节点为两级结构：每个板块/篇章输出一个「章节」节点，其下 items 输出「知识点」子节点。
 pub fn build_tables(exam: &ProfExam) -> Vec<ProgressTable> {
-    // 1) 总专业课进度表：考纲板块(phase) → 章节(title)
+    // 1) 总专业课进度表：考纲板块(章节) → 知识点
     let mut tables = Vec::with_capacity(1 + exam.books.len());
     tables.push(build_master(exam));
 
-    // 2) 每本指定教材一张进度表：教材章节(title)，phase 用「篇/章分组」（多数为「全书章节」）
+    // 2) 每本指定教材一张进度表：教材篇/章分组(章节) → 章节目录(知识点)
     for book in &exam.books {
-        let mut nodes = Vec::new();
-        let mut seq = 0u32;
-        for sec in book.sections {
-            for item in sec.items {
-                seq += 1;
-                nodes.push(ProgressNode {
-                    id: new_progress_id("n", item),
-                    title: item.to_string(),
-                    phase: sec.phase.to_string(),
-                    status: NodeStatus::Pending,
-                    planned_date: None,
-                    note: String::new(),
-                });
-            }
-        }
-        tables.push(ProgressTable {
-            id: String::new(),
-            subject: "professional".to_string(),
-            name: format!("{} · 教材：{}", exam.name, book.name),
-            created_at: now_string(),
-            updated_at: now_string(),
-            nodes,
-        });
+        tables.push(build_book(exam, book));
     }
     tables
 }
 
-/// 总专业课进度表
-fn build_master(exam: &ProfExam) -> ProgressTable {
+/// 装配一张教材进度表：每个分组(篇/章)作为章节节点，其下章节条目作为知识点子节点
+fn build_book(exam: &ProfExam, book: &ProfBook) -> ProgressTable {
     let mut nodes = Vec::new();
-    for sec in exam.master {
+    for sec in book.sections {
+        let chapter_id = new_progress_id("c", sec.phase);
+        nodes.push(ProgressNode {
+            id: chapter_id.clone(),
+            title: sec.phase.to_string(),
+            level: NodeLevel::Chapter,
+            parent_id: None,
+            phase: sec.phase.to_string(),
+            status: NodeStatus::Pending,
+            planned_date: None,
+            note: String::new(),
+        });
         for item in sec.items {
             nodes.push(ProgressNode {
                 id: new_progress_id("n", item),
                 title: item.to_string(),
+                level: NodeLevel::Knowledge,
+                parent_id: Some(chapter_id.clone()),
                 phase: sec.phase.to_string(),
                 status: NodeStatus::Pending,
                 planned_date: None,
@@ -168,7 +160,49 @@ fn build_master(exam: &ProfExam) -> ProgressTable {
     ProgressTable {
         id: String::new(),
         subject: "professional".to_string(),
+        variant: exam.short.to_string(),
+        name: format!("{} · 教材：{}", exam.name, book.name),
+        origin: TableOrigin::Builtin,
+        created_at: now_string(),
+        updated_at: now_string(),
+        nodes,
+    }
+}
+
+/// 总专业课进度表：每个考纲板块作为章节节点，其下知识点作为知识点子节点
+fn build_master(exam: &ProfExam) -> ProgressTable {
+    let mut nodes = Vec::new();
+    for sec in exam.master {
+        let chapter_id = new_progress_id("c", sec.phase);
+        nodes.push(ProgressNode {
+            id: chapter_id.clone(),
+            title: sec.phase.to_string(),
+            level: NodeLevel::Chapter,
+            parent_id: None,
+            phase: sec.phase.to_string(),
+            status: NodeStatus::Pending,
+            planned_date: None,
+            note: String::new(),
+        });
+        for item in sec.items {
+            nodes.push(ProgressNode {
+                id: new_progress_id("n", item),
+                title: item.to_string(),
+                level: NodeLevel::Knowledge,
+                parent_id: Some(chapter_id.clone()),
+                phase: sec.phase.to_string(),
+                status: NodeStatus::Pending,
+                planned_date: None,
+                note: String::new(),
+            });
+        }
+    }
+    ProgressTable {
+        id: String::new(),
+        subject: "professional".to_string(),
+        variant: exam.short.to_string(),
         name: format!("{} · 总专业课进度表", exam.name),
+        origin: TableOrigin::Builtin,
         created_at: now_string(),
         updated_at: now_string(),
         nodes,
@@ -221,7 +255,11 @@ mod tests {
     fn every_exam_has_master_and_unique_short() {
         let exams = all();
         assert!(!exams.is_empty());
-        assert!(exams.len() >= 5, "至少 5 门统考专业课，当前 {}", exams.len());
+        assert!(
+            exams.len() >= 5,
+            "至少 5 门统考专业课，当前 {}",
+            exams.len()
+        );
         let mut shorts = vec![];
         for e in exams {
             assert!(!e.master.is_empty(), "「{}」缺少总表板块", e.name);

@@ -139,6 +139,8 @@ export interface OvercompletionEntry {
   subject: string;
   /** 实际已学习到的章节（如 "多元函数微分学"） */
   chapter_reached: string;
+  /** 对应进度表节点 id（可选，用于追溯与回读勾选状态） */
+  node_id?: string;
   /** 备注（可选） */
   note?: string;
 }

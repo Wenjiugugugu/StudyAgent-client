@@ -8,7 +8,6 @@ import * as api from "@/api";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
-import Select from "@/components/ui/Select.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import {
@@ -28,8 +27,21 @@ import {
   Ban,
   Smartphone,
   Info,
+  GripVertical,
+  Plus,
+  FolderOpen,
+  CircleDot,
 } from "lucide-vue-next";
-import type { TaskReviewEntry, DailyReviewInput, ReviewRecord, OvercompletionEntry, RegenDayChange } from "@/types";
+import type {
+  TaskReviewEntry,
+  DailyReviewInput,
+  ReviewRecord,
+  OvercompletionEntry,
+  RegenDayChange,
+  ProgressIndex,
+  ProgressTable,
+  ProgressNode,
+} from "@/types";
 
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
@@ -367,20 +379,242 @@ function findTaskSubject(taskId: string, tr?: TaskReviewEntry): string {
   return allTasks.value.find(t => t.id === taskId)?.subject ?? "";
 }
 
-// 计划外学习：可选科目（基于今日计划中出现的科目）
-const overcompletionSubjectOptions = computed(() => {
-  const subjects = new Set<string>();
-  for (const t of allTasks.value) subjects.add(t.subject);
-  return Array.from(subjects).map(s => ({ value: s, label: subjectLabel(s) }));
-});
+// ── 计划外学习：基于进度表章节的选择器 ──
+const OC_SUBJECTS = ["math", "english", "politics", "professional"] as const;
 
-function addOvercompletion() {
-  const firstSubject = overcompletionSubjectOptions.value[0]?.value ?? "math";
-  overcompletions.value.push({ subject: firstSubject, chapter_reached: "", note: undefined });
+const progressIndex = ref<ProgressIndex | null>(null);
+const progressLoading = ref(false);
+const activeSubject = ref<string>("math");
+const savingProgress = ref(false);
+const newChapterTitle = ref("");
+const newChapterError = ref("");
+const draggingChapterId = ref<string | null>(null);
+const dragOverChapterId = ref<string | null>(null);
+
+async function loadProgressIndex() {
+  progressLoading.value = true;
+  try {
+    progressIndex.value = await api.listProgressTables();
+  } catch {
+    progressIndex.value = null;
+  } finally {
+    progressLoading.value = false;
+  }
 }
 
-function removeOvercompletion(idx: number) {
-  overcompletions.value.splice(idx, 1);
+function subjectSet(subject: string) {
+  return progressIndex.value?.subjects[subject];
+}
+
+/** 解析某科目当前生效的进度表（优先 active_id，其次 active_variant 下首张表，最后首张表） */
+function resolveActiveTable(subject: string): ProgressTable | null {
+  const set = subjectSet(subject);
+  if (!set || !set.tables.length) return null;
+  const byActive = set.tables.find((t) => t.id === set.active_id);
+  if (byActive) return byActive;
+  if (set.active_variant) {
+    const vt = set.tables.find((t) => t.variant === set.active_variant);
+    if (vt) return vt;
+  }
+  return set.tables[0] ?? null;
+}
+
+function hasTable(subject: string): boolean {
+  return resolveActiveTable(subject) !== null;
+}
+
+const activeTable = computed(() => resolveActiveTable(activeSubject.value));
+
+/** 章节级节点（有章节时以章节为选择单位） */
+const chapterNodes = computed<ProgressNode[]>(() =>
+  (activeTable.value?.nodes ?? []).filter((n) => n.level === "chapter")
+);
+/** 知识点级节点（内置表无章节时回退为选择单位） */
+const knowledgeNodes = computed<ProgressNode[]>(() =>
+  (activeTable.value?.nodes ?? []).filter((n) => n.level === "knowledge")
+);
+const hasChapters = computed(() => chapterNodes.value.length > 0);
+/** 可勾选的节点列表 */
+const selectableNodes = computed<ProgressNode[]>(() =>
+  hasChapters.value ? chapterNodes.value : knowledgeNodes.value
+);
+
+function entryFor(subject: string, node: ProgressNode): OvercompletionEntry | undefined {
+  return overcompletions.value.find(
+    (oc) =>
+      oc.subject === subject &&
+      (oc.node_id === node.id || (!oc.node_id && oc.chapter_reached === node.title))
+  );
+}
+
+function isChecked(subject: string, node: ProgressNode): boolean {
+  return !!entryFor(subject, node);
+}
+
+/** 无法匹配当前进度表节点的历史条目（科目无表 / 节点已删除），保留为可编辑兜底行 */
+const unmatchedEntries = computed(() =>
+  overcompletions.value.filter((oc) => {
+    const t = resolveActiveTable(oc.subject);
+    if (!t) return true;
+    return !t.nodes.some(
+      (n) => n.id === oc.node_id || (!oc.node_id && n.title === oc.chapter_reached)
+    );
+  })
+);
+
+/** 用返回值替换本地 index 中的表，避免整页重拉闪烁 */
+function updateTableInIndex(subject: string, table: ProgressTable) {
+  const set = progressIndex.value?.subjects[subject];
+  if (!set) return;
+  const i = set.tables.findIndex((t) => t.id === table.id);
+  if (i >= 0) set.tables[i] = table;
+}
+
+/** 写回当前科目进度表（makeActive=false，savingProgress 防重入避免整表覆盖丢失更新） */
+async function persistActiveTable(subject: string, mutate: (t: ProgressTable) => void) {
+  if (savingProgress.value) return;
+  const t = resolveActiveTable(subject);
+  if (!t) return;
+  savingProgress.value = true;
+  try {
+    const copy: ProgressTable = { ...t, nodes: [...t.nodes] };
+    mutate(copy);
+    const saved = await api.saveProgressTable(subject, copy.variant, copy, false);
+    updateTableInIndex(subject, saved);
+  } catch (e) {
+    console.error("保存进度表失败:", e);
+  } finally {
+    savingProgress.value = false;
+  }
+}
+
+/** 勾选/取消计划外章节：勾选同步标记节点已掌握，取消不回退状态 */
+async function toggleChapter(subject: string, node: ProgressNode) {
+  const existing = entryFor(subject, node);
+  if (existing) {
+    overcompletions.value = overcompletions.value.filter((oc) => oc !== existing);
+    return;
+  }
+  overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
+  await persistActiveTable(subject, (t) => {
+    const n = t.nodes.find((x) => x.id === node.id);
+    if (n && n.status !== "mastered") n.status = "mastered";
+  });
+}
+
+function newNodeId(): string {
+  return `n-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+}
+
+/** 新建节点：有章节→建章节节点；无章节→建知识点节点；创建后落盘并勾选 */
+async function createChapter(subject: string) {
+  const title = newChapterTitle.value.trim();
+  if (!title) return;
+  newChapterError.value = "";
+  if (selectableNodes.value.some((n) => n.title.trim() === title)) {
+    newChapterError.value = "该章节已存在";
+    return;
+  }
+  const node: ProgressNode = {
+    id: newNodeId(),
+    title,
+    level: hasChapters.value ? "chapter" : "knowledge",
+    parent_id: null,
+    phase: hasChapters.value ? title : "",
+    status: "mastered",
+    planned_date: null,
+    note: "",
+  };
+  await persistActiveTable(subject, (t) => {
+    t.nodes.push(node);
+  });
+  overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
+  newChapterTitle.value = "";
+}
+
+// ── 拖拽重排章节（复制自 ProgressTableView 的 doReorder + canonicalizeNodes）──
+function onChapterDragStart(e: DragEvent, node: ProgressNode) {
+  draggingChapterId.value = node.id;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", node.id);
+  }
+}
+
+function onChapterDragOver(e: DragEvent, node: ProgressNode) {
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  dragOverChapterId.value = node.id;
+}
+
+async function onChapterDrop(e: DragEvent, node: ProgressNode) {
+  e.preventDefault();
+  const draggedId = e.dataTransfer?.getData("text/plain") || draggingChapterId.value;
+  dragOverChapterId.value = null;
+  draggingChapterId.value = null;
+  if (!draggedId || draggedId === node.id) return;
+  await reorderChapters(activeSubject.value, draggedId, node.id);
+}
+
+function onChapterDragEnd() {
+  draggingChapterId.value = null;
+  dragOverChapterId.value = null;
+}
+
+/** 将 flat 列表规范为「章节及子树连续」顺序（同 ProgressTableView.canonicalizeNodes） */
+function canonicalizeNodes(list: ProgressNode[]): ProgressNode[] {
+  const chapters = list.filter((n) => n.level === "chapter");
+  const childrenOf = (chId: string) =>
+    list.filter((n) => n.level === "knowledge" && n.parent_id === chId);
+  const byId = new Map(list.map((n) => [n.id, n]));
+  const out: ProgressNode[] = [];
+  const placed = new Set<string>();
+  for (const ch of chapters) {
+    out.push(ch);
+    placed.add(ch.id);
+    for (const c of childrenOf(ch.id)) {
+      if (!placed.has(c.id)) {
+        out.push(c);
+        placed.add(c.id);
+      }
+    }
+  }
+  for (const n of list) {
+    if (placed.has(n.id)) continue;
+    if (n.level === "chapter") continue;
+    const p = n.parent_id ? byId.get(n.parent_id) : null;
+    if (n.level === "knowledge" && p && p.level === "chapter") continue;
+    out.push(n);
+    placed.add(n.id);
+  }
+  for (const n of list) {
+    if (!placed.has(n.id)) {
+      out.push(n);
+      placed.add(n.id);
+    }
+  }
+  return out;
+}
+
+async function reorderChapters(subject: string, draggedId: string, targetId: string) {
+  const t = resolveActiveTable(subject);
+  if (!t || draggedId === targetId || savingProgress.value) return;
+  const list = [...t.nodes];
+  const from = list.findIndex((n) => n.id === draggedId);
+  const to = list.findIndex((n) => n.id === targetId);
+  if (from < 0 || to < 0) return;
+  const [moved] = list.splice(from, 1);
+  const toAfter = list.findIndex((n) => n.id === targetId);
+  list.splice(toAfter >= 0 ? toAfter : to, 0, moved);
+  await persistActiveTable(subject, (copy) => {
+    copy.nodes = canonicalizeNodes(list);
+  });
+}
+
+/** 更新已勾选章节的备注 */
+function updateNodeNote(subject: string, node: ProgressNode, e: Event) {
+  const oc = entryFor(subject, node);
+  if (oc) oc.note = (e.target as HTMLInputElement).value;
 }
 
 function subjectBadgeVariant(s: string): "math" | "english" | "politics" | "professional" | "default" {
@@ -473,10 +707,15 @@ function initFromReview(review: ReviewRecord) {
     workloadFeedback.value = review.daily_review.workload_feedback || "reasonable";
     externalInterference.value = review.daily_review.external_interference || "none";
   }
-  // 计划外学习记录（仅用于只读展示）
+  // 计划外学习记录（用于勾选回显 + 只读展示）
   if (review.overcompletion?.length) {
     hasOvercompletion.value = true;
     overcompletions.value = review.overcompletion.map(oc => ({ ...oc }));
+    // 默认定位到有进度表的科目（优先已记录科目的科目），便于直接回显勾选态
+    activeSubject.value =
+      review.overcompletion.find(oc => hasTable(oc.subject))?.subject
+      ?? OC_SUBJECTS.find(hasTable)
+      ?? "math";
   }
 }
 
@@ -493,6 +732,8 @@ function resetForm() {
   externalInterference.value = "none";
   hasOvercompletion.value = false;
   overcompletions.value = [];
+  progressIndex.value = null;
+  activeSubject.value = "math";
 }
 
 // ── Navigation ──
@@ -755,6 +996,8 @@ async function loadReviewData() {
   try {
     // 加载选中日期的计划（用于显示任务列表）
     await todayStore.loadByDate(selectedDate.value);
+    // 加载各科进度表（计划外学习章节选择数据源）
+    await loadProgressIndex();
     // 加载任务实际用时（仅启用计时且当前日匹配时有效）
     await loadTaskActualMinutes();
     // 检查选中日期是否为排除日
@@ -1328,7 +1571,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       <!-- Step 6: 计划外学习 (extra, optional) -->
       <Card v-if="step === 5" padding="lg" class="step-card">
         <h2 class="step-title">计划外学习（可选）</h2>
-        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如 AI 安排的任务超前，你已提前学到后面的章节），请在此记录实际进度，AI 会根据它修正后续计划和学习状态。</p>
+        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如 AI 安排的任务超前，你已提前学到后面的章节），请勾选进度表中实际学到的章节，AI 会根据它修正后续计划和学习状态。</p>
         <div class="overcompletion-toggle">
           <button type="button" class="oc-switch" :class="{ active: hasOvercompletion }"
             @click="hasOvercompletion = !hasOvercompletion">
@@ -1338,26 +1581,123 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           </button>
         </div>
         <div v-if="hasOvercompletion" class="overcompletion-list">
-          <div v-for="(oc, idx) in overcompletions" :key="idx" class="oc-item">
-            <div class="oc-row">
-              <Select v-model="oc.subject" :max-width="'160px'">
-                <option v-for="opt in overcompletionSubjectOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-              </Select>
-              <input v-model="oc.chapter_reached" type="text" class="field-input oc-input"
-                placeholder="实际学到的内容/章节（如：多元函数微分学）" />
-              <Button variant="ghost" size="sm" @click="removeOvercompletion(idx)">
-                <AlertTriangle :size="14" />
+          <!-- 科目切换 -->
+          <div class="oc-subjects">
+            <button
+              v-for="s in OC_SUBJECTS"
+              :key="s"
+              type="button"
+              class="oc-subject-chip"
+              :class="{ active: activeSubject === s, disabled: !hasTable(s) }"
+              :disabled="!hasTable(s)"
+              :title="hasTable(s) ? subjectLabel(s) : `${subjectLabel(s)}（该科目还没有进度表）`"
+              @click="activeSubject = s"
+            >
+              <FolderOpen v-if="hasTable(s)" :size="13" />
+              <AlertTriangle v-else :size="13" />
+              {{ subjectLabel(s) }}
+            </button>
+          </div>
+
+          <!-- 主体：加载中 / 无表 / 章节清单 -->
+          <LoadingSpinner v-if="progressLoading" :size="24" label="加载进度表..." class="oc-loading" />
+          <EmptyState
+            v-else-if="!activeTable"
+            :title="`${subjectLabel(activeSubject)}还没有进度表`"
+            description="请先到「进度」页创建或启用一份进度表，再回来记录计划外进度。"
+          >
+            <template #actions>
+              <Button variant="primary" size="sm" @click="router.push('/progress')">
+                <FolderOpen :size="14" /> 前往进度页
+              </Button>
+            </template>
+          </EmptyState>
+
+          <template v-else>
+            <div class="oc-table-caption">
+              <Badge variant="default">{{ subjectLabel(activeSubject) }}</Badge>
+              <Badge variant="info">{{ activeTable.variant }}</Badge>
+              <span class="oc-table-name">{{ activeTable.name }}（{{ activeTable.nodes.length }} 节点）</span>
+            </div>
+
+            <p v-if="!selectableNodes.length" class="oc-empty-hint">
+              该进度表还没有可勾选的{{ hasChapters ? '章节' : '节点' }}，可在下方新建一个。
+            </p>
+
+            <!-- 章节/节点清单：勾选 + 拖拽重排 -->
+            <div class="oc-node-list">
+              <div
+                v-for="node in selectableNodes"
+                :key="node.id"
+                class="oc-node-row"
+                :class="{ checked: isChecked(activeSubject, node), 'drag-over': dragOverChapterId === node.id, dragging: draggingChapterId === node.id }"
+                draggable="true"
+                @dragstart="onChapterDragStart($event, node)"
+                @dragover="onChapterDragOver($event, node)"
+                @drop="onChapterDrop($event, node)"
+                @dragend="onChapterDragEnd"
+              >
+                <button
+                  type="button"
+                  class="oc-check"
+                  :class="{ active: isChecked(activeSubject, node) }"
+                  draggable="false"
+                  @click="toggleChapter(activeSubject, node)"
+                >
+                  <CheckCircle2 v-if="isChecked(activeSubject, node)" :size="17" />
+                  <Circle v-else :size="17" />
+                </button>
+                <span class="oc-node-icon"><CircleDot v-if="!hasChapters" :size="13" /></span>
+                <span class="oc-node-title">{{ node.title }}</span>
+                <GripVertical :size="14" class="oc-grip" />
+                <input
+                  v-if="isChecked(activeSubject, node)"
+                  :value="entryFor(activeSubject, node)?.note"
+                  draggable="false"
+                  type="text"
+                  class="field-input oc-note-input"
+                  placeholder="备注（可选）"
+                  @input="updateNodeNote(activeSubject, node, $event)"
+                />
+              </div>
+            </div>
+
+            <!-- 新建节点 -->
+            <div class="oc-create">
+              <input
+                v-model="newChapterTitle"
+                type="text"
+                class="field-input oc-create-input"
+                :placeholder="hasChapters ? '新建章节，如：第三章 微分中值定理' : '新建节点，如：函数的概念及表示法'"
+                @keydown.enter="createChapter(activeSubject)"
+              />
+              <Button variant="secondary" size="sm" @click="createChapter(activeSubject)">
+                <Plus :size="14" /> 新建{{ hasChapters ? '章节' : '节点' }}
               </Button>
             </div>
-            <input v-model="oc.note" type="text" class="field-input" placeholder="备注（可选）" />
+            <p v-if="newChapterError" class="oc-error">{{ newChapterError }}</p>
+
+            <!-- 历史未匹配条目兜底：可编辑，重新提交不丢数据 -->
+            <div v-if="unmatchedEntries.length" class="oc-unmatched">
+              <div class="oc-unmatched-title">以下记录未能匹配到进度表节点（可在下方修改后保留）</div>
+              <div v-for="oc in unmatchedEntries" :key="oc.chapter_reached + oc.subject" class="oc-item">
+                <div class="oc-row">
+                  <span class="oc-unmatched-subject">{{ subjectLabel(oc.subject) }}</span>
+                  <input v-model="oc.chapter_reached" type="text" class="field-input oc-input"
+                    placeholder="实际学到的内容/章节" />
+                  <Button variant="ghost" size="sm" @click="overcompletions = overcompletions.filter(x => x !== oc)">
+                    <AlertTriangle :size="14" />
+                  </Button>
+                </div>
+                <input v-model="oc.note" type="text" class="field-input" placeholder="备注（可选）" />
+              </div>
+            </div>
+          </template>
+
+          <div v-if="hasOvercompletion && activeTable && overcompletions.length === 0" class="empty-step">
+            <Sparkles :size="32" class="empty-icon" />
+            <p>勾选本次计划外学到的章节；若进度表里没有，可先新建。</p>
           </div>
-          <Button variant="secondary" size="sm" @click="addOvercompletion">
-            <Sparkles :size="14" /> 添加一条
-          </Button>
-        </div>
-        <div v-if="hasOvercompletion && overcompletions.length === 0" class="empty-step">
-          <Sparkles :size="32" class="empty-icon" />
-          <p>点击「添加一条」记录计划外学到的科目与内容。</p>
         </div>
       </Card>
 
@@ -1907,6 +2247,53 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   outline: none; min-width: 110px;
 }
 .oc-input { flex: 1; }
+
+/* 计划外学习：科目 chip + 章节清单 */
+.oc-subjects { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.oc-subject-chip {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: 5px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-full);
+  background: var(--bg-primary); color: var(--text-secondary);
+  font-family: inherit; font-size: var(--text-xs); font-weight: var(--font-medium);
+  cursor: pointer; transition: all var(--transition-fast);
+}
+.oc-subject-chip:hover:not(:disabled) { border-color: var(--border-color-strong); color: var(--text-primary); }
+.oc-subject-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
+.oc-subject-chip.disabled { opacity: 0.45; cursor: not-allowed; }
+.oc-loading { margin: var(--space-4) auto; }
+.oc-table-caption {
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  font-size: var(--text-xs); color: var(--text-tertiary);
+}
+.oc-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-empty-hint { margin: 0; font-size: var(--text-xs); color: var(--text-tertiary); }
+.oc-node-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.oc-node-row {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-color); border-radius: var(--radius-md);
+  background: var(--bg-elevated); transition: border-color var(--transition-fast), opacity var(--transition-fast);
+}
+.oc-node-row:hover { border-color: var(--border-color-strong); }
+.oc-node-row.drag-over { border-color: var(--accent); background: var(--accent-subtle); }
+.oc-node-row.dragging { opacity: 0.4; }
+.oc-node-row.checked { border-color: var(--accent); background: var(--accent-subtle); }
+.oc-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: none; background: transparent; color: var(--text-quaternary);
+  cursor: pointer; flex-shrink: 0;
+}
+.oc-check.active { color: var(--color-success, #16a34a); }
+.oc-node-icon { color: var(--text-quaternary); display: inline-flex; flex-shrink: 0; }
+.oc-node-title { flex: 1; min-width: 0; font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-primary); word-break: break-word; }
+.oc-grip { color: var(--text-quaternary); cursor: grab; flex-shrink: 0; }
+.oc-note-input { max-width: 200px; flex-shrink: 1; }
+.oc-create { display: flex; align-items: center; gap: var(--space-2); }
+.oc-create-input { flex: 1; }
+.oc-error { margin: 0; font-size: var(--text-xs); color: var(--color-danger); }
+.oc-unmatched { display: flex; flex-direction: column; gap: var(--space-2); }
+.oc-unmatched-title { font-size: var(--text-xs); color: var(--text-tertiary); }
+.oc-unmatched-subject { flex-shrink: 0; font-size: var(--text-xs); color: var(--text-tertiary); background: var(--bg-tertiary); padding: 2px 8px; border-radius: var(--radius-full); }
 
 /* ── 日期切换过渡动画 ── */
 .date-slide-left-enter-active,

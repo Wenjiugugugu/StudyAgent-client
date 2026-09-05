@@ -32,6 +32,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "周计划", icon: "CalendarDays" },
   },
   {
+    path: "/goal-plan",
+    name: "goal-plan",
+    component: () => import("@/views/GoalPlanView.vue"),
+    meta: { title: "目标计划", icon: "Target" },
+  },
+  {
     path: "/history-plans",
     name: "history-plans",
     component: () => import("@/views/HistoryPlansView.vue"),
@@ -41,7 +47,13 @@ const routes: RouteRecordRaw[] = [
     path: "/textbooks",
     name: "textbooks",
     component: () => import("@/views/TextbooksView.vue"),
-    meta: { title: "教材", icon: "BookOpen" },
+    meta: { title: "进度与教材", icon: "BookOpen" },
+  },
+  {
+    path: "/progress",
+    name: "progress",
+    component: () => import("@/views/ProgressView.vue"),
+    meta: { title: "进度", icon: "ClipboardList" },
   },
   {
     path: "/review",

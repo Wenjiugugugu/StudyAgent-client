@@ -182,6 +182,9 @@ pub struct OvercompletionEntry {
     pub subject: String,
     /// 实际已学习到的章节（如 "多元函数微分学"）
     pub chapter_reached: String,
+    /// 对应进度表节点 id（可选，用于追溯与前端回读勾选状态）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_id: String,
     /// 备注（可选）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
