@@ -1025,7 +1025,7 @@ mod tests {
         let changed = apply_master_derivation(
             &mut index,
             "professional",
-            &exam.short,
+            exam.short,
             NodeStatus::Learning,
         );
         assert!(changed > 0, "部分学习也应推动总表进入「学习中」状态");
@@ -1097,7 +1097,7 @@ mod tests {
         }
 
         let changed =
-            apply_master_derivation(&mut index, "professional", &exam.short, NodeStatus::Basic);
+            apply_master_derivation(&mut index, "professional", exam.short, NodeStatus::Basic);
         assert!(changed > 0, "总表应随教材推进而变化");
 
         // 数据结构板块：整本书覆盖 → 该板块全部知识点为基础，板块章节节点同步推进

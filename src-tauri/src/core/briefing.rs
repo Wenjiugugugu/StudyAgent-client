@@ -179,6 +179,7 @@ impl<'a> BriefingAgent<'a> {
     }
 
     /// 构建简报 prompt
+    #[allow(clippy::too_many_arguments)]
     fn build_briefing_prompt(
         &self,
         state: &StudyState,
