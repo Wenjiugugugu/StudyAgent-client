@@ -289,7 +289,8 @@ impl<'a> Planner<'a> {
         // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
         // （区间科目内容由 scheduler 确定性倒排接管）。
         let week_start = &week_plan.meta.week_start;
-        let goal_subjects = goal_active_subjects(data_dir, &state, review_date, week_start, &week_end);
+        let goal_subjects =
+            goal_active_subjects(data_dir, &state, review_date, week_start, &week_end);
         let (subject_time_allocation, daily_target_hours) =
             deduct_goal_allocations(subject_time_allocation, daily_target_hours, &goal_subjects);
 
@@ -898,11 +899,8 @@ impl<'a> Planner<'a> {
         // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
         // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
         let goal_subjects = goal_active_subjects(data_dir, &state, &today, week_start, &week_end);
-        let (subject_time_allocation, daily_target_hours) = deduct_goal_allocations(
-            subject_time_allocation,
-            daily_target_hours,
-            &goal_subjects,
-        );
+        let (subject_time_allocation, daily_target_hours) =
+            deduct_goal_allocations(subject_time_allocation, daily_target_hours, &goal_subjects);
         let active_count = crate::core::planning::pure::active_subject_count_for(
             &state,
             &week_end,

@@ -22,10 +22,10 @@
 
 use std::sync::OnceLock;
 
+use crate::data::now_string;
 use crate::data::progress_tables::{
     new_progress_id, NodeLevel, NodeStatus, ProgressNode, ProgressTable, TableOrigin,
 };
-use crate::data::now_string;
 
 mod data_408_law;
 mod data_edu;
@@ -255,7 +255,11 @@ mod tests {
     fn every_exam_has_master_and_unique_short() {
         let exams = all();
         assert!(!exams.is_empty());
-        assert!(exams.len() >= 5, "至少 5 门统考专业课，当前 {}", exams.len());
+        assert!(
+            exams.len() >= 5,
+            "至少 5 门统考专业课，当前 {}",
+            exams.len()
+        );
         let mut shorts = vec![];
         for e in exams {
             assert!(!e.master.is_empty(), "「{}」缺少总表板块", e.name);

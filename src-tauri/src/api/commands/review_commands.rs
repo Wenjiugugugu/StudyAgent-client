@@ -365,9 +365,9 @@ pub async fn submit_review(
     // 只升不降；失败仅记日志，不影响复盘提交主流程。
     {
         let feeling = payload.daily_review.overall_feeling.clone();
-        let tomorrow_plan = crate::data::add_days(&payload.date, 1).ok().and_then(|d| {
-            crate::data::plan::read_daily_plan(&data_dir, &d).ok()
-        });
+        let tomorrow_plan = crate::data::add_days(&payload.date, 1)
+            .ok()
+            .and_then(|d| crate::data::plan::read_daily_plan(&data_dir, &d).ok());
         let tasks: Vec<crate::core::progress_sync::ReviewSyncTask> = payload
             .task_reviews
             .iter()

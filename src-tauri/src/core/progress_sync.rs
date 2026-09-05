@@ -143,7 +143,9 @@ fn apply_task_to_subject(
             if set.active_variant.is_empty() {
                 set.tables.first_mut()
             } else {
-                set.tables.iter_mut().find(|t| t.variant == set.active_variant)
+                set.tables
+                    .iter_mut()
+                    .find(|t| t.variant == set.active_variant)
             }
         }
     };
@@ -458,7 +460,11 @@ mod tests {
             planned_date: None,
             note: String::new(),
         };
-        assert!(node_matches(&n, &n.phase, "第四章 网络层：重点复习 IP 编址"));
+        assert!(node_matches(
+            &n,
+            &n.phase,
+            "第四章 网络层：重点复习 IP 编址"
+        ));
         assert!(node_matches(&n, &n.phase, "IP编址与子网划分"));
         assert!(!node_matches(&n, &n.phase, "图的最短路径"));
     }
@@ -484,7 +490,10 @@ mod tests {
         assert_eq!(m.get("math").map(|s| s.as_str()), Some("数二"));
         assert_eq!(m.get("english").map(|s| s.as_str()), Some("英一"));
         assert_eq!(m.get("politics").map(|s| s.as_str()), Some("政治"));
-        assert_eq!(m.get("professional").map(|s| s.as_str()), Some("408 计算机"));
+        assert_eq!(
+            m.get("professional").map(|s| s.as_str()),
+            Some("408 计算机")
+        );
 
         let m2 = default_progress_variants("");
         assert!(m2.is_empty());

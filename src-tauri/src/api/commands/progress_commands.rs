@@ -309,7 +309,9 @@ pub fn default_progress_variants(
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let data_dir = get_data_dir(state.inner())?;
     let settings = crate::load_settings(&data_dir);
-    Ok(crate::core::progress_sync::default_progress_variants(&settings.exam_type))
+    Ok(crate::core::progress_sync::default_progress_variants(
+        &settings.exam_type,
+    ))
 }
 
 // ============================================================================
@@ -771,7 +773,10 @@ fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> 
             .clone();
 
         // 确保章节节点只插入一次
-        if !nodes.iter().any(|n| n.level == NodeLevel::Chapter && n.id == cid) {
+        if !nodes
+            .iter()
+            .any(|n| n.level == NodeLevel::Chapter && n.id == cid)
+        {
             nodes.push(ProgressNode {
                 id: cid.clone(),
                 title: ch.to_string(),
@@ -848,13 +853,20 @@ pub fn builtin_progress_table(
     }
 
     // 普通科目：内置考纲知识点顺序 → 一份带章节结构的总表草稿
-    let resolved = if subject == "408" { "professional" } else { &subject };
+    let resolved = if subject == "408" {
+        "professional"
+    } else {
+        &subject
+    };
     if resolved != "math" && resolved != "english" && resolved != "politics" {
         return Err(format!("暂不支持学科「{}」的内置考纲生成", subject));
     }
     let ver = version_for(&subject, &effective_exam);
     let points = builtin_syllabus(&subject, ver.as_deref().unwrap_or("")).ok_or_else(|| {
-        format!("学科「{}」暂无内置考纲数据", crate::data::subject_label(&subject))
+        format!(
+            "学科「{}」暂无内置考纲数据",
+            crate::data::subject_label(&subject)
+        )
     })?;
 
     let now = now_string();

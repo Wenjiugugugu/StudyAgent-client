@@ -47,12 +47,11 @@ pub async fn create_goal(
     let target_position = crate::core::chapter_seq::position(key, &version, &target_chapter)
         .ok_or_else(|| format!("未能在地图中考纲顺序表中定位目标章节「{}」", target_chapter))?;
     let start_chapter_str = start_chapter.unwrap_or_default();
-    let current_position =
-        if start_chapter_str.is_empty() {
-            0
-        } else {
-            crate::core::chapter_seq::position(key, &version, &start_chapter_str).unwrap_or(0)
-        };
+    let current_position = if start_chapter_str.is_empty() {
+        0
+    } else {
+        crate::core::chapter_seq::position(key, &version, &start_chapter_str).unwrap_or(0)
+    };
 
     let mut file = read_goals(&data_dir)?;
     let seq = file.data.goals.len() + 1;
@@ -79,10 +78,7 @@ pub async fn create_goal(
 ///
 /// 前端调用: `invoke('update_goal', { goal })`
 #[tauri::command]
-pub async fn update_goal(
-    goal: Goal,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<Goal, String> {
+pub async fn update_goal(goal: Goal, state: State<'_, Mutex<AppState>>) -> Result<Goal, String> {
     if !goal.deadline.is_empty() {
         crate::data::validate_date(&goal.deadline)?;
     }
@@ -104,10 +100,7 @@ pub async fn update_goal(
 ///
 /// 前端调用: `invoke('delete_goal', { goalId })`
 #[tauri::command]
-pub async fn delete_goal(
-    goal_id: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
+pub async fn delete_goal(goal_id: String, state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     let data_dir = get_data_dir(state.inner())?;
     let mut file = read_goals(&data_dir)?;
     let before = file.data.goals.len();
@@ -138,8 +131,7 @@ pub async fn generate_goal_plan(
     let state_data = read_state_or_default(&data_dir);
     let key = subject_key_str(&subject);
     let version = subject_version(&state_data, key);
-    crate::core::goal_planner::plan_goal_tasks(&data_dir, &ai_service, &goal, &date, &version)
-        .await
+    crate::core::goal_planner::plan_goal_tasks(&data_dir, &ai_service, &goal, &date, &version).await
 }
 
 /// 从当前 state 反推某科目的当前进度章节名（用于新建区间时预填起点）。
