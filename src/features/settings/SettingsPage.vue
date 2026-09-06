@@ -140,6 +140,7 @@ watch(
           :study-state="studyState"
           :subject-active="subjectActive"
           :professional-name="professionalName"
+          :saved-allocation="settingsStore.settings?.study_schedule?.subject_time_allocation ?? null"
         />
         <TextbooksSection
           :state-loading="stateLoading"

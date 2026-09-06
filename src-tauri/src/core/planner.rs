@@ -225,11 +225,16 @@ impl<'a> Planner<'a> {
             &crate::data::today_string(),
         );
 
-        // 2. 判断是否需要重排
-        let needs_regen = check_review_needs_regeneration(&review);
+        // 2. 判断是否需要重排：
+        //    - 复盘内容触发（未完成/部分完成/薄弱/困难/额外进度）；
+        //    - 或设置中「学科时间占比」相对本周计划生成时的快照发生了变化——即便复盘内容一切正常，
+        //      也按新占比调整剩余天数（最快于下一次复盘后生效）。
+        //    占比未变化时，仅按复盘实际情况决定是否重排。
+        let needs_regen = check_review_needs_regeneration(&review)
+            || allocation_changed_since_week_plan(data_dir, review_date);
         if !needs_regen {
             log::info!(
-                "复盘 {} 无需重排剩余天数（无未完成/困难/额外进度）",
+                "复盘 {} 无需重排剩余天数（无未完成/困难/额外进度，且学科时间占比相对本周计划生成时未变化）",
                 review_date
             );
             return Ok((false, Vec::new(), false, Vec::new(), Vec::new()));
@@ -470,6 +475,9 @@ impl<'a> Planner<'a> {
         }
 
         // 去重/校正可能改写了周计划，持久化后再生成日计划
+        // 同时刷新学科占比快照：本次重排已按当前占比生成剩余天数，
+        // 供下次复盘检测占比是否再次变动。
+        week_plan.meta.subject_time_allocation_snapshot = settings.subject_time_allocation();
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
         log::info!("周计划剩余天数已更新, 影响日期: {:?}", regen_dates);
         crate::data::write_ai_debug_log(
@@ -1010,6 +1018,8 @@ impl<'a> Planner<'a> {
         }
 
         // 4. 保存周计划 JSON
+        // 记录本周计划生成时使用的学科占比快照（复盘重排用它检测占比变动）
+        week_plan.meta.subject_time_allocation_snapshot = settings.subject_time_allocation();
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
 
         // 4.1 保存原始周计划副本（用于一周结束后对比原计划与现计划的任务进度）
@@ -3112,6 +3122,31 @@ fn enforce_past_days_empty(plan: &mut WeekPlanFile) {
 /// - 有额外进度记录（overcompletion 非空）
 pub fn check_review_needs_regeneration(review: &crate::data::records::ReviewFile) -> bool {
     crate::core::planning::pure::check_review_needs_regeneration(review)
+}
+
+/// 设置中「学科时间占比」相对当前周计划生成时的快照是否发生了变化。
+///
+/// 占比变动时，即使复盘内容不需要重排（无未完成/困难/额外进度），
+/// 也要在下次复盘后按新占比调整剩余天数；占比未变化时，
+/// 是否重排完全由复盘实际情况决定。
+///
+/// 本周无周计划、或复盘日之后已无剩余天数（已到本周最后一天）时返回 false。
+pub fn allocation_changed_since_week_plan(data_dir: &Path, review_date: &str) -> bool {
+    let Ok(iso_week) = iso_week_string(review_date) else {
+        return false;
+    };
+    let Ok(week_plan) = crate::data::plan::read_week_plan(data_dir, &iso_week) else {
+        return false;
+    };
+    let has_remaining = add_days(review_date, 1)
+        .map(|d| d <= week_plan.meta.week_end)
+        .unwrap_or(false);
+    if !has_remaining {
+        return false;
+    }
+    let settings = crate::load_settings(data_dir);
+    week_plan.meta.subject_time_allocation_snapshot.as_ref()
+        != settings.subject_time_allocation().as_ref()
 }
 
 /// 汇总重排前后各受影响日期的任务变动明细（标题级 diff，供前端悬停展示）

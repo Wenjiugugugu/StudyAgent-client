@@ -57,6 +57,11 @@ pub struct WeekPlanMeta {
     pub week_number: i32,
     pub generated_at: String,
     pub based_on: BasedOn,
+    /// 生成本周计划时使用的「学科时间占比」设置快照（活跃科目合计 100）。
+    /// 复盘重排时用它判定占比是否相对本周计划生成时发生变化——
+    /// 发生变化时，即使复盘内容不需重排，也要按新占比调整剩余天数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_time_allocation_snapshot: Option<std::collections::HashMap<String, f64>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

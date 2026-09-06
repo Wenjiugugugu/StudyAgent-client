@@ -395,7 +395,16 @@ pub async fn submit_review(
 
     // 3. 判断是否需要重新生成本周剩余天数计划
     let needs_regeneration = crate::core::planner::check_review_needs_regeneration(&review);
+    // 占比变动也触发重排：设置中「学科时间占比」相对本周计划生成时发生了变化时，
+    // 即便复盘内容一切正常，也按新占比调整剩余天数（最快于下一次复盘后生效）。
+    let allocation_changed =
+        crate::core::planner::allocation_changed_since_week_plan(&data_dir, &payload.date);
+    let needs_regeneration = needs_regeneration || allocation_changed;
     let mut regen_reasons = Vec::new();
+
+    if allocation_changed {
+        regen_reasons.push("学科时间占比已调整".to_string());
+    }
 
     if needs_regeneration {
         // 收集触发原因（用于前端展示）

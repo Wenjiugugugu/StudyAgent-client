@@ -97,7 +97,9 @@ export function normalizeAllocation(
       raw[k] = 0;
     } else {
       const v = stored?.[k];
-      raw[k] = typeof v === "number" && isFinite(v) && v > 0 ? v : Math.max(0, weekly[k] ?? 0);
+      // 显式配置的 0 视为有效值（该科占比为 0 时不安排任务），
+      // 仅当缺失/非法时才回退到按周学时推导，否则滑块无法拉到 0。
+      raw[k] = typeof v === "number" && isFinite(v) && v >= 0 ? v : Math.max(0, weekly[k] ?? 0);
     }
   }
   const sum = activeKeys.reduce((s, k) => s + (raw[k] ?? 0), 0);

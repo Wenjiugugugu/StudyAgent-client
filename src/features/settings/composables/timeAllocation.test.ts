@@ -105,6 +105,18 @@ describe("normalizeAllocation", () => {
     expect(out.professional).toBe(0);
   });
 
+  it("显式配置的 0 应保留（不按周学时回填），其余科目按占比缩放", () => {
+    // 回归：滑块应可拉到 0 —— 显式 0 是有效占比，不能被周学时回填后重新放大
+    const out = normalizeAllocation(
+      { math: 0, english: 40, politics: 30 },
+      { math: 14, english: 7, politics: 5, professional: 10 },
+      allActive,
+    );
+    expect(out.math).toBe(0);
+    expect(total(out)).toBe(100);
+    expect(out.english + out.politics + out.professional).toBe(100);
+  });
+
   it("非活跃科目清零", () => {
     const out = normalizeAllocation(
       { math: 50, english: 30, politics: 20, professional: 0 },
