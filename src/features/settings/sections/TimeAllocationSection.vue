@@ -9,7 +9,7 @@
  */
 import { computed } from "vue";
 import Card from "@/components/ui/Card.vue";
-import { PieChart } from "lucide-vue-next";
+import { PieChart, Info } from "lucide-vue-next";
 import type { SubjectTimeAllocation } from "@/types/settings";
 import type { SubjectKey } from "@/types/state";
 import type { StudyState } from "@/types/state";
@@ -28,7 +28,16 @@ const props = defineProps<{
   studyState: StudyState | null;
   subjectActive: SubjectActive;
   professionalName: string;
+  /** 已保存的占比较准（用于检测占比是否被修改，显示「下次复盘后调整」提示） */
+  savedAllocation?: SubjectTimeAllocation | null;
 }>();
+
+/** 占比是否相对已保存值发生了调整（未配置时以 null 比较） */
+const allocationDirty = computed(() => {
+  const cur = props.form.subject_time_allocation;
+  const saved = props.savedAllocation ?? null;
+  return JSON.stringify(cur) !== JSON.stringify(saved);
+});
 
 /** 各科周学时（state 未加载时为 0，用于推导默认占比的兜底） */
 const weekly = computed<Record<SubjectKey, number>>(() => ({
@@ -165,6 +174,10 @@ const SUBJECT_COLORS: Record<SubjectKey, string> = {
           </button>
         </div>
         <p class="field-hint">占比为 0 的科目将不安排任务；未到开始日期的科目即使占比大于 0 也不会安排。</p>
+        <p v-if="allocationDirty" class="field-hint alloc-pending-hint">
+          <Info :size="13" />
+          调整保存后，最快将于下一次复盘之后应用到本周剩余计划（占比未调整时，将根据复盘实际情况决定是否重排）。
+        </p>
       </div>
     </template>
   </Card>
