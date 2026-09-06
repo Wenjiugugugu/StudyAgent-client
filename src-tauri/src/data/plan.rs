@@ -909,6 +909,7 @@ mod tests {
                 week_end: "2026-07-26".to_string(),
                 week_number: 30,
                 generated_at: "2026-07-20T04:00".to_string(),
+                subject_time_allocation_snapshot: None,
                 based_on: BasedOn {
                     state: "state/current.state".to_string(),
                     user_model: "assets/user_model/_index.md".to_string(),

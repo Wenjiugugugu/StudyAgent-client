@@ -4249,6 +4249,7 @@ mod tests {
                 week_end: "2026-08-23".to_string(),
                 week_number: 34,
                 generated_at: "x".to_string(),
+                subject_time_allocation_snapshot: None,
                 based_on: Default::default(),
             },
             data: crate::data::plan::WeekPlanData {
