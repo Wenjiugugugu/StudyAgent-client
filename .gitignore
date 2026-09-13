@@ -17,6 +17,12 @@ target/
 release/
 out/
 bundle/
+# 临时构建目录（vite --outDir 产物 / 打包中间态，如 dist-check、dist-new、dist-old-070）
+dist-check/
+dist-new/
+dist-old-*/
+# 构建与调试产物
+src-tauri/build_errors.txt
 
 # Local env files
 .env
@@ -48,7 +54,8 @@ Thumbs.db
 desktop.ini
 
 # Rust
-Cargo.lock
+# 本项目是应用（binary crate），Cargo.lock **应当提交**以保证依赖与构建可复现
+# （Tauri 官方模板同样不忽略它），因此这里不再忽略。
 **/*.rs.bk
 
 # Tauri
@@ -71,6 +78,11 @@ installer/staging/
 installer/tmp_*
 installer/StudyAgent-client-*/
 installer/StudyAgent-*-sha256.txt
+
+# 敏感文件（预防性规则）
+# demo-data 位于仓库之外，但其中的 config/settings.json 含明文 API key；
+# 一旦有人把它复制进仓库，这条规则可以兜住。
+demo-data/config/settings.json
 
 # Runtime data（仅仓库根目录的运行数据，不误伤 src-tauri/src/data/ 源码）
 /data/
