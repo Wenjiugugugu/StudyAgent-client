@@ -8,9 +8,7 @@ import Logo from "@/components/Logo.vue";
 import {
   LayoutDashboard,
   Calendar,
-  CalendarDays,
   History,
-  BookOpen,
   ClipboardCheck,
   GitBranch,
   BarChart3,
@@ -18,7 +16,6 @@ import {
   Moon,
   SunMedium,
   Bug,
-  HelpCircle,
   Timer,
   ClipboardList,
   ChevronsLeft,
@@ -104,7 +101,6 @@ const planGroup = {
   path: "/today",
   children: [
     { name: "today", label: "今日计划", icon: Calendar, path: "/today" },
-    { name: "week-plan", label: "周计划", icon: CalendarDays, path: "/week-plan" },
     { name: "goal-plan", label: "目标计划", icon: Target, path: "/goal-plan" },
     { name: "history-plans", label: "历史计划", icon: History, path: "/history-plans" },
   ] as NavItem[],
@@ -112,7 +108,7 @@ const planGroup = {
 
 type MenuEntry = { kind: "item"; item: NavItem } | { kind: "plan" };
 
-/** 侧边栏菜单顺序：工作台 → 计划 → 专注 → 复盘 → 分析 → 进度 → 教材 → 解惑 → 时间线 */
+/** 侧边栏菜单顺序：工作台 → 计划 → 专注 → 复盘 → 分析 → 进度 → 时间线 */
 const menuEntries: MenuEntry[] = [
   { kind: "item", item: { name: "dashboard", label: "工作台", icon: LayoutDashboard, path: "/dashboard" } },
   { kind: "plan" },
@@ -120,8 +116,6 @@ const menuEntries: MenuEntry[] = [
   { kind: "item", item: { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" } },
   { kind: "item", item: { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" } },
   { kind: "item", item: { name: "progress", label: "进度", icon: ClipboardList, path: "/progress" } },
-  { kind: "item", item: { name: "textbooks", label: "教材", icon: BookOpen, path: "/textbooks" } },
-  { kind: "item", item: { name: "doubt", label: "解惑", icon: HelpCircle, path: "/doubt" } },
   ...(isDev
     ? [{ kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } } as MenuEntry]
     : []),

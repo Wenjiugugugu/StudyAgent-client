@@ -40,6 +40,7 @@ const defaultSettings: AppSettings = {
   },
   ai_providers: [],
   default_provider_id: "",
+  feature_providers: {},
   mcp_servers: [],
   enabled_mcp_ids: [],
   ticktick: {
@@ -111,6 +112,7 @@ export const useSettingsStore = defineStore("settings", () => {
         },
         ai_providers: backendSettings.ai_providers || [],
         default_provider_id: backendSettings.default_provider_id || '',
+        feature_providers: backendSettings.feature_providers || {},
         mcp_servers: backendSettings.mcp_servers || [],
         enabled_mcp_ids: backendSettings.enabled_mcp_ids || [],
         ticktick: backendSettings.ticktick || defaultSettings.ticktick,
@@ -215,6 +217,27 @@ export const useSettingsStore = defineStore("settings", () => {
     if (settings.value.default_provider_id === id) {
       settings.value.default_provider_id = settings.value.ai_providers[0]?.id ?? "";
     }
+    // 同步清理功能映射中被删除的 Provider，避免悬空
+    if (settings.value.feature_providers) {
+      for (const key of Object.keys(settings.value.feature_providers)) {
+        if (settings.value.feature_providers[key] === id) {
+          settings.value.feature_providers[key] = "";
+        }
+      }
+    }
+  }
+
+  /** 设置某功能使用的 Provider（空串 = 跟随默认） */
+  function setFeatureProvider(feature: string, providerId: string) {
+    if (!settings.value) return;
+    if (!settings.value.feature_providers) {
+      settings.value.feature_providers = {};
+    }
+    if (providerId) {
+      settings.value.feature_providers[feature] = providerId;
+    } else {
+      delete settings.value.feature_providers[feature];
+    }
   }
 
   function addMCPServer(server: MCPServerConfig) {
@@ -268,6 +291,7 @@ export const useSettingsStore = defineStore("settings", () => {
     addProvider,
     updateProvider,
     removeProvider,
+    setFeatureProvider,
     addMCPServer,
     updateMCPServer,
     removeMCPServer,

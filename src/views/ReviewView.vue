@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
@@ -27,7 +27,6 @@ import {
   Ban,
   Smartphone,
   Info,
-  GripVertical,
   Plus,
   FolderOpen,
   CircleDot,
@@ -41,6 +40,7 @@ import type {
   ProgressIndex,
   ProgressTable,
   ProgressNode,
+  ProgressNodeStatus,
 } from "@/types";
 
 const todayStore = useTodayStore();
@@ -388,8 +388,16 @@ const activeSubject = ref<string>("math");
 const savingProgress = ref(false);
 const newChapterTitle = ref("");
 const newChapterError = ref("");
-const draggingChapterId = ref<string | null>(null);
-const dragOverChapterId = ref<string | null>(null);
+// 计划外学习 v2「进度指针」会话态：
+// 以「完成区尾」（状态 ≥ 基础 的最后一个章节）为当前记录进度，
+// 点选更靠后的章节把区间整段补记为本次计划外；点选完成区内章节则视为记录超前，确认后回退。
+const correctionTarget = ref<ProgressNode | null>(null);
+const ocHint = ref("");
+/** 会话开始时各节点状态快照：`${subject}|${tableId}|${nodeId}` → status（撤销推进/回退时还原） */
+const ocOrig = ref<Record<string, string>>({});
+/** 各表进入会话时的完成区尾下标：`${subject}|${tableId}` → index */
+const ocTail = ref<Record<string, number>>({});
+const ocListRef = ref<HTMLElement | null>(null);
 
 async function loadProgressIndex() {
   progressLoading.value = true;
@@ -423,7 +431,49 @@ function hasTable(subject: string): boolean {
   return resolveActiveTable(subject) !== null;
 }
 
-const activeTable = computed(() => resolveActiveTable(activeSubject.value));
+/**
+ * 当前查看的进度表（计划外学习选择器）：科目内多表时可自由切换查看/勾选
+ * （专业课通常是「总进度表 + 各指定教材表」，其它科目也可能有多份考纲方案并存）。
+ * 默认跟随该科目启用的表；用户点选具体表后记住选择。
+ */
+const viewTableIds = ref<Record<string, string>>({});
+
+function tablesOfSubject(subject: string): ProgressTable[] {
+  return subjectSet(subject)?.tables ?? [];
+}
+
+function viewTableOf(subject: string): ProgressTable | null {
+  const set = subjectSet(subject);
+  if (!set || !set.tables.length) return null;
+  const chosenId = viewTableIds.value[subject];
+  if (chosenId) {
+    const t = set.tables.find((x) => x.id === chosenId);
+    if (t) return t;
+  }
+  return resolveActiveTable(subject);
+}
+
+function setViewTable(subject: string, tableId: string) {
+  const next = { ...viewTableIds.value };
+  if (tableId) next[subject] = tableId;
+  else delete next[subject];
+  viewTableIds.value = next;
+  newChapterTitle.value = "";
+  newChapterError.value = "";
+}
+
+/** 某表内已被勾选（记录到 overcompletions）的条目数，用于表切换时提示 */
+function ocCountOfTable(subject: string, table: ProgressTable): number {
+  return overcompletions.value.filter(
+    (oc) =>
+      oc.subject === subject &&
+      table.nodes.some(
+        (n) => n.id === oc.node_id || (!oc.node_id && n.title === oc.chapter_reached)
+      )
+  ).length;
+}
+
+const activeTable = computed(() => viewTableOf(activeSubject.value));
 
 /** 章节级节点（有章节时以章节为选择单位） */
 const chapterNodes = computed<ProgressNode[]>(() =>
@@ -434,10 +484,25 @@ const knowledgeNodes = computed<ProgressNode[]>(() =>
   (activeTable.value?.nodes ?? []).filter((n) => n.level === "knowledge")
 );
 const hasChapters = computed(() => chapterNodes.value.length > 0);
-/** 可勾选的节点列表 */
-const selectableNodes = computed<ProgressNode[]>(() =>
-  hasChapters.value ? chapterNodes.value : knowledgeNodes.value
+
+/** 章节 id → 其直属知识点 */
+const knowledgeByChapter = computed(() => {
+  const m = new Map<string, ProgressNode[]>();
+  for (const k of knowledgeNodes.value) {
+    if (!k.parent_id) continue;
+    const arr = m.get(k.parent_id);
+    if (arr) arr.push(k);
+    else m.set(k.parent_id, [k]);
+  }
+  return m;
+});
+/** 未挂到任何章节下的知识点（孤儿节点，单独区段展示） */
+const orphanKnowledge = computed(() =>
+  knowledgeNodes.value.filter((k) => !k.parent_id)
 );
+function childrenOfChapter(chapterId: string): ProgressNode[] {
+  return knowledgeByChapter.value.get(chapterId) ?? [];
+}
 
 function entryFor(subject: string, node: ProgressNode): OvercompletionEntry | undefined {
   return overcompletions.value.find(
@@ -451,13 +516,16 @@ function isChecked(subject: string, node: ProgressNode): boolean {
   return !!entryFor(subject, node);
 }
 
-/** 无法匹配当前进度表节点的历史条目（科目无表 / 节点已删除），保留为可编辑兜底行 */
+/** 无法匹配任何进度表节点的历史条目（该科无表 / 节点已删除），保留为可编辑兜底行 */
 const unmatchedEntries = computed(() =>
   overcompletions.value.filter((oc) => {
-    const t = resolveActiveTable(oc.subject);
-    if (!t) return true;
-    return !t.nodes.some(
-      (n) => n.id === oc.node_id || (!oc.node_id && n.title === oc.chapter_reached)
+    const tables = tablesOfSubject(oc.subject);
+    if (!tables.length) return true;
+    // 只要能在该科任意一张表里匹配到就不算“未匹配”，避免切换查看表时历史记录被误判
+    return !tables.some((t) =>
+      t.nodes.some(
+        (n) => n.id === oc.node_id || (!oc.node_id && n.title === oc.chapter_reached)
+      )
     );
   })
 );
@@ -470,10 +538,10 @@ function updateTableInIndex(subject: string, table: ProgressTable) {
   if (i >= 0) set.tables[i] = table;
 }
 
-/** 写回当前科目进度表（makeActive=false，savingProgress 防重入避免整表覆盖丢失更新） */
+/** 写回当前查看的进度表（makeActive=false；savingProgress 防重入避免整表覆盖丢失更新） */
 async function persistActiveTable(subject: string, mutate: (t: ProgressTable) => void) {
   if (savingProgress.value) return;
-  const t = resolveActiveTable(subject);
+  const t = viewTableOf(subject);
   if (!t) return;
   savingProgress.value = true;
   try {
@@ -488,8 +556,218 @@ async function persistActiveTable(subject: string, mutate: (t: ProgressTable) =>
   }
 }
 
-/** 勾选/取消计划外章节：勾选同步标记节点已掌握，取消不回退状态 */
-async function toggleChapter(subject: string, node: ProgressNode) {
+/**
+ * 计划外学习只把节点状态推进到「基础」——超前/额外学了一遍并不等于真正掌握，
+ * 之后的巩固与复盘再决定是否升到强化/掌握。已高于基础的节点不回退。
+ */
+const STATUS_RANK: Record<string, number> = {
+  pending: 0,
+  learning: 1,
+  basic: 2,
+  reinforcing: 3,
+  mastered: 4,
+};
+
+function ocRankOf(n: ProgressNode): number {
+  return STATUS_RANK[n.status] ?? 0;
+}
+/** 该节点在系统记录中是否已学过（≥ 基础） */
+function ocIsLearned(n: ProgressNode): boolean {
+  return ocRankOf(n) >= STATUS_RANK.basic;
+}
+
+/** 当前查看表内按顺序的可声明单位：有章节取章节，否则平铺知识点 */
+const ocUnits = computed<ProgressNode[]>(() =>
+  hasChapters.value ? chapterNodes.value : knowledgeNodes.value
+);
+
+function ocIndexOf(node: ProgressNode): number {
+  return ocUnits.value.findIndex((u) => u.id === node.id);
+}
+
+/** 进入会话时为当前查看表锁定快照：完成区尾下标 + 各节点原始状态（幂等） */
+function ensureOcSnapshot(subject: string) {
+  const table = viewTableOf(subject);
+  if (!table) return;
+  const key = `${subject}|${table.id}`;
+  if (key in ocTail.value) return;
+  const units = ocUnits.value;
+  let tail = -1;
+  for (let i = 0; i < units.length; i++) {
+    if (ocIsLearned(units[i])) tail = i;
+  }
+  ocTail.value[key] = tail;
+  for (const n of table.nodes) {
+    const k = `${subject}|${table.id}|${n.id}`;
+    if (!(k in ocOrig.value)) ocOrig.value[k] = n.status;
+  }
+}
+
+/** 当前查看表的完成区尾下标（进入会话时锁定；回退确认后更新） */
+const ocTailIdx = computed<number>(() => {
+  const subject = activeSubject.value;
+  const table = activeTable.value;
+  if (!table) return -1;
+  ensureOcSnapshot(subject);
+  return ocTail.value[`${subject}|${table.id}`] ?? -1;
+});
+/** 完成区最后一个已学章节（目前进度锚点） */
+const ocTailUnit = computed<ProgressNode | null>(() => {
+  const i = ocTailIdx.value;
+  return i >= 0 ? ocUnits.value[i] ?? null : null;
+});
+/** 首个待学章节（自动定位目标） */
+const ocNextUnit = computed<ProgressNode | null>(() => {
+  const units = ocUnits.value;
+  const i = ocTailIdx.value + 1;
+  return units.length > 0 && i >= 0 && i < units.length ? units[i] : null;
+});
+
+function ocSnapshotStatus(subject: string, tableId: string, nodeId: string): ProgressNodeStatus {
+  const s = ocOrig.value[`${subject}|${tableId}|${nodeId}`];
+  return s === "pending" || s === "learning" || s === "basic" || s === "reinforcing" || s === "mastered"
+    ? (s as ProgressNodeStatus)
+    : "pending";
+}
+
+/** 撤销某单位在本轮的记录（按节点 id 或旧版标题匹配） */
+function removeOcOf(subject: string, node: ProgressNode) {
+  overcompletions.value = overcompletions.value.filter(
+    (oc) =>
+      oc.subject !== subject ||
+      !(oc.node_id === node.id || (!oc.node_id && oc.chapter_reached === node.title))
+  );
+}
+
+/** 本地副本上把单位(及其子知识点)推进到基础 / 还原到会话初始状态 */
+function applyNodeState(
+  subject: string,
+  tableId: string,
+  t: ProgressTable,
+  nodeId: string,
+  advance: boolean
+) {
+  const n = t.nodes.find((x) => x.id === nodeId);
+  if (!n) return;
+  const apply = (target: ProgressNode) => {
+    if (advance) {
+      if (ocRankOf(target) < STATUS_RANK.basic) target.status = "basic";
+    } else {
+      target.status = ocSnapshotStatus(subject, tableId, target.id);
+    }
+  };
+  apply(n);
+  if (n.level === "chapter") {
+    for (const k of t.nodes) {
+      if (k.parent_id === n.id) apply(k);
+    }
+  }
+}
+
+/** 前向推进：把 (完成区尾, 所选章] 整段作为本轮计划外声明（点选更早的本轮章节 = 回缩） */
+async function applyForwardPointer(idx: number) {
+  const subject = activeSubject.value;
+  const table = activeTable.value;
+  if (!table) return;
+  ensureOcSnapshot(subject);
+  const tail = ocTail.value[`${subject}|${table.id}`] ?? -1;
+  if (idx <= tail) return;
+  const units = ocUnits.value;
+  const target = units[idx];
+  if (!target) return;
+  const desired = new Set(units.slice(tail + 1, idx + 1).map((u) => u.id));
+
+  const toAdd = units.slice(tail + 1, idx + 1).filter((u) => !entryFor(subject, u));
+  const toRemove = units.filter(
+    (u) => ocIndexOf(u) > tail && entryFor(subject, u) && !desired.has(u.id)
+  );
+
+  if (toAdd.length) {
+    overcompletions.value.push(
+      ...toAdd.map((u) => ({ subject, chapter_reached: u.title, node_id: u.id }))
+    );
+  }
+  for (const u of toRemove) removeOcOf(subject, u);
+
+  if (toAdd.length || toRemove.length) {
+    await persistActiveTable(subject, (copy) => {
+      for (const u of toAdd) applyNodeState(subject, table.id, copy, u.id, true);
+      for (const u of toRemove) applyNodeState(subject, table.id, copy, u.id, false);
+    });
+  }
+  ocHint.value = `已将${subjectLabel(subject)}进度推进到「${target.title}」，该章及此前未记录的内容已整段记为本次计划外。`;
+  await nextTick(() => scrollToUnit(target.id));
+}
+
+/** 回退确认：把该科进度基准回退到完成区内所选章节，其后内容恢复未学 */
+async function confirmCorrection() {
+  const node = correctionTarget.value;
+  if (!node) return;
+  const subject = activeSubject.value;
+  const table = activeTable.value;
+  if (!table) return;
+  ensureOcSnapshot(subject);
+  const idx = ocIndexOf(node);
+  const tail = ocTail.value[`${subject}|${table.id}`] ?? -1;
+  if (idx < 0 || idx >= tail) {
+    correctionTarget.value = null;
+    return;
+  }
+  const affected = ocUnits.value.slice(idx + 1, tail + 1);
+  for (const u of affected) removeOcOf(subject, u);
+  await persistActiveTable(subject, (copy) => {
+    for (const u of affected) {
+      const n = copy.nodes.find((x) => x.id === u.id);
+      if (!n) continue;
+      n.status = "pending";
+      if (n.level === "chapter") {
+        for (const k of copy.nodes) {
+          if (k.parent_id === n.id) k.status = "pending";
+        }
+      }
+    }
+  });
+  ocTail.value[`${subject}|${table.id}`] = idx;
+  ocHint.value = `已将${subjectLabel(subject)}的进度基准回退到「${node.title}」，其后内容恢复为未学；后续计划以本次复盘的重排结果为准。`;
+  correctionTarget.value = null;
+}
+
+function cancelCorrection() {
+  correctionTarget.value = null;
+}
+
+/** 章节行点击入口：完成区之前 → 确认回退；完成区尾部 → 提示；之后 → 前向推进 */
+async function onUnitClick(node: ProgressNode) {
+  if (savingProgress.value) return;
+  const idx = ocIndexOf(node);
+  const tail = ocTailIdx.value;
+  if (idx < 0) return;
+  if (idx < tail) {
+    correctionTarget.value = node;
+    ocHint.value = "";
+    return;
+  }
+  if (idx === tail) {
+    ocHint.value = `「${node.title}」正是当前记录进度（已学至此处）；若你本次实际已学到它之后的内容，请点选更靠后的章节。`;
+    return;
+  }
+  await applyForwardPointer(idx);
+}
+
+/** 行提示文案：说明已学区 / 目前进度 / 前向推进的语义 */
+function pointerRowHint(ui: number): string {
+  const tail = ocTailIdx.value;
+  if (ui < tail) {
+    return "系统记录中已学过的章节；点选表示实际进度没有到达记录位置（记录超前），确认后可回退进度";
+  }
+  if (ui === tail) {
+    return "目前进度：已学至此处；若本次实际学得更靠后，请点选其后的章节";
+  }
+  return "点选 = 本次实际进度到达这里，从目前进度到该章之间未记录的内容将整段补记";
+}
+
+/** 未挂靠章节的知识点：保留逐个勾选兜底（不参与进度指针） */
+async function toggleOrphan(subject: string, node: ProgressNode) {
   const existing = entryFor(subject, node);
   if (existing) {
     overcompletions.value = overcompletions.value.filter((oc) => oc !== existing);
@@ -498,20 +776,43 @@ async function toggleChapter(subject: string, node: ProgressNode) {
   overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
   await persistActiveTable(subject, (t) => {
     const n = t.nodes.find((x) => x.id === node.id);
-    if (n && n.status !== "mastered") n.status = "mastered";
+    if (n && ocRankOf(n) < STATUS_RANK.basic) n.status = "basic";
   });
 }
+
+/** 自动定位：把进度锚点后的首个待学章节滚入视野 */
+function scrollToUnit(id: string, behavior: ScrollBehavior = "smooth") {
+  ocListRef.value
+    ?.querySelector(`[data-uid="${id}"]`)
+    ?.scrollIntoView({ block: "nearest", behavior });
+}
+function scrollToCurrentProgress() {
+  const u = ocNextUnit.value ?? ocTailUnit.value;
+  if (u) scrollToUnit(u.id);
+}
+
+// 进入第 6 步 / 切换科目或进度表时：锁定快照并把进度锚点滚入视野
+watch(
+  [step, activeSubject, () => activeTable.value?.id, hasOvercompletion],
+  () => {
+    if (step.value === 5 && hasOvercompletion.value && activeTable.value) {
+      ensureOcSnapshot(activeSubject.value);
+      nextTick(scrollToCurrentProgress);
+    }
+  },
+  { flush: "post" }
+);
 
 function newNodeId(): string {
   return `n-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
-/** 新建节点：有章节→建章节节点；无章节→建知识点节点；创建后落盘并勾选 */
+/** 新建节点：有章节→建章节节点；无章节→建知识点节点；创建后落盘并勾选（状态按「基础」起步） */
 async function createChapter(subject: string) {
   const title = newChapterTitle.value.trim();
   if (!title) return;
   newChapterError.value = "";
-  if (selectableNodes.value.some((n) => n.title.trim() === title)) {
+  if ((activeTable.value?.nodes ?? []).some((n) => n.title.trim() === title)) {
     newChapterError.value = "该章节已存在";
     return;
   }
@@ -521,7 +822,7 @@ async function createChapter(subject: string) {
     level: hasChapters.value ? "chapter" : "knowledge",
     parent_id: null,
     phase: hasChapters.value ? title : "",
-    status: "mastered",
+    status: "basic",
     planned_date: null,
     note: "",
   };
@@ -530,91 +831,6 @@ async function createChapter(subject: string) {
   });
   overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
   newChapterTitle.value = "";
-}
-
-// ── 拖拽重排章节（复制自 ProgressTableView 的 doReorder + canonicalizeNodes）──
-function onChapterDragStart(e: DragEvent, node: ProgressNode) {
-  draggingChapterId.value = node.id;
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", node.id);
-  }
-}
-
-function onChapterDragOver(e: DragEvent, node: ProgressNode) {
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-  dragOverChapterId.value = node.id;
-}
-
-async function onChapterDrop(e: DragEvent, node: ProgressNode) {
-  e.preventDefault();
-  const draggedId = e.dataTransfer?.getData("text/plain") || draggingChapterId.value;
-  dragOverChapterId.value = null;
-  draggingChapterId.value = null;
-  if (!draggedId || draggedId === node.id) return;
-  await reorderChapters(activeSubject.value, draggedId, node.id);
-}
-
-function onChapterDragEnd() {
-  draggingChapterId.value = null;
-  dragOverChapterId.value = null;
-}
-
-/** 将 flat 列表规范为「章节及子树连续」顺序（同 ProgressTableView.canonicalizeNodes） */
-function canonicalizeNodes(list: ProgressNode[]): ProgressNode[] {
-  const chapters = list.filter((n) => n.level === "chapter");
-  const childrenOf = (chId: string) =>
-    list.filter((n) => n.level === "knowledge" && n.parent_id === chId);
-  const byId = new Map(list.map((n) => [n.id, n]));
-  const out: ProgressNode[] = [];
-  const placed = new Set<string>();
-  for (const ch of chapters) {
-    out.push(ch);
-    placed.add(ch.id);
-    for (const c of childrenOf(ch.id)) {
-      if (!placed.has(c.id)) {
-        out.push(c);
-        placed.add(c.id);
-      }
-    }
-  }
-  for (const n of list) {
-    if (placed.has(n.id)) continue;
-    if (n.level === "chapter") continue;
-    const p = n.parent_id ? byId.get(n.parent_id) : null;
-    if (n.level === "knowledge" && p && p.level === "chapter") continue;
-    out.push(n);
-    placed.add(n.id);
-  }
-  for (const n of list) {
-    if (!placed.has(n.id)) {
-      out.push(n);
-      placed.add(n.id);
-    }
-  }
-  return out;
-}
-
-async function reorderChapters(subject: string, draggedId: string, targetId: string) {
-  const t = resolveActiveTable(subject);
-  if (!t || draggedId === targetId || savingProgress.value) return;
-  const list = [...t.nodes];
-  const from = list.findIndex((n) => n.id === draggedId);
-  const to = list.findIndex((n) => n.id === targetId);
-  if (from < 0 || to < 0) return;
-  const [moved] = list.splice(from, 1);
-  const toAfter = list.findIndex((n) => n.id === targetId);
-  list.splice(toAfter >= 0 ? toAfter : to, 0, moved);
-  await persistActiveTable(subject, (copy) => {
-    copy.nodes = canonicalizeNodes(list);
-  });
-}
-
-/** 更新已勾选章节的备注 */
-function updateNodeNote(subject: string, node: ProgressNode, e: Event) {
-  const oc = entryFor(subject, node);
-  if (oc) oc.note = (e.target as HTMLInputElement).value;
 }
 
 function subjectBadgeVariant(s: string): "math" | "english" | "politics" | "professional" | "default" {
@@ -734,6 +950,11 @@ function resetForm() {
   overcompletions.value = [];
   progressIndex.value = null;
   activeSubject.value = "math";
+  viewTableIds.value = {};
+  correctionTarget.value = null;
+  ocHint.value = "";
+  ocOrig.value = {};
+  ocTail.value = {};
 }
 
 // ── Navigation ──
@@ -1186,11 +1407,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
     <EmptyState
       v-else-if="!plan"
       :title="`${selectedDate} 没有学习计划`"
-      :description="isToday ? '请先生成周计划，日计划将自动从周计划中拆分生成' : '该日无学习计划，无法复盘'"
+      :description="isToday ? '今天还没有学习计划：周计划已内置，可在「今日计划」页一键生成，日计划会自动拆分' : '该日无学习计划，无法复盘'"
     >
       <template #actions>
-        <Button v-if="isToday" variant="primary" @click="router.push('/week')">
-          前往周计划
+        <Button v-if="isToday" variant="primary" @click="router.push({ name: 'plan' })">
+          去今日计划生成
         </Button>
         <Button v-if="!isToday" variant="secondary" @click="goToday">回到今天</Button>
       </template>
@@ -1571,7 +1792,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       <!-- Step 6: 计划外学习 (extra, optional) -->
       <Card v-if="step === 5" padding="lg" class="step-card">
         <h2 class="step-title">计划外学习（可选）</h2>
-        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如 AI 安排的任务超前，你已提前学到后面的章节），请勾选进度表中实际学到的章节，AI 会根据它修正后续计划和学习状态。</p>
+        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如提前学到了后面的章节），点选你实际到达的最新章节即可：从目前进度到所选章节之间会整段记为本次计划外（状态推进到「基础」，之后由复盘掌握情况决定是否升为掌握），AI 会以这份实际进度为基准修正后续计划。若点选了已学区域内的章节，说明系统记录快于实际进度，可确认后将进度回退到该章。</p>
         <div class="overcompletion-toggle">
           <button type="button" class="oc-switch" :class="{ active: hasOvercompletion }"
             @click="hasOvercompletion = !hasOvercompletion">
@@ -1607,60 +1828,140 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             description="请先到「进度」页创建或启用一份进度表，再回来记录计划外进度。"
           >
             <template #actions>
-              <Button variant="primary" size="sm" @click="router.push('/progress')">
-                <FolderOpen :size="14" /> 前往进度页
+              <Button variant="primary" size="sm" @click="router.push({ path: '/progress', query: { subject: activeSubject } })">
+                <FolderOpen :size="14" /> 前往进度页创建
               </Button>
             </template>
           </EmptyState>
 
           <template v-else>
+            <!-- 科目内多张进度表切换（专业课通常 = 总进度表 + 各指定教材表） -->
+            <div v-if="tablesOfSubject(activeSubject).length > 1" class="oc-tables">
+              <span class="oc-tables-label">选择进度表</span>
+              <button
+                v-for="t in tablesOfSubject(activeSubject)"
+                :key="t.id"
+                type="button"
+                class="oc-table-chip"
+                :class="{ active: activeTable?.id === t.id }"
+                :title="`${t.name}（${t.variant}）· 已勾选 ${ocCountOfTable(activeSubject, t)} 项`"
+                @click="setViewTable(activeSubject, t.id)"
+              >
+                <FolderOpen :size="12" />
+                <span class="oc-table-chip-name">{{ t.name }}</span>
+                <span v-if="ocCountOfTable(activeSubject, t) > 0" class="oc-table-chip-count">
+                  {{ ocCountOfTable(activeSubject, t) }}
+                </span>
+              </button>
+            </div>
+
             <div class="oc-table-caption">
               <Badge variant="default">{{ subjectLabel(activeSubject) }}</Badge>
               <Badge variant="info">{{ activeTable.variant }}</Badge>
               <span class="oc-table-name">{{ activeTable.name }}（{{ activeTable.nodes.length }} 节点）</span>
             </div>
 
-            <p v-if="!selectableNodes.length" class="oc-empty-hint">
-              该进度表还没有可勾选的{{ hasChapters ? '章节' : '节点' }}，可在下方新建一个。
+            <p v-if="!chapterNodes.length && !knowledgeNodes.length" class="oc-empty-hint">
+              该进度表还没有可点选的{{ hasChapters ? '章节' : '节点' }}，可在下方新建一个。
             </p>
 
-            <!-- 章节/节点清单：勾选 + 拖拽重排 -->
-            <div class="oc-node-list">
-              <div
-                v-for="node in selectableNodes"
-                :key="node.id"
-                class="oc-node-row"
-                :class="{ checked: isChecked(activeSubject, node), 'drag-over': dragOverChapterId === node.id, dragging: draggingChapterId === node.id }"
-                draggable="true"
-                @dragstart="onChapterDragStart($event, node)"
-                @dragover="onChapterDragOver($event, node)"
-                @drop="onChapterDrop($event, node)"
-                @dragend="onChapterDragEnd"
+            <!-- 进度指针：点击你实际到达的最新章节，其前未记录内容自动整段补记 -->
+            <div v-if="ocUnits.length" class="oc-progress-bar">
+              <div class="oc-progress-item">
+                <span class="oc-progress-label">目前进度</span>
+                <span v-if="ocTailUnit" class="oc-progress-name">{{ ocTailUnit.title }}</span>
+                <span v-else class="oc-progress-name">尚未开始</span>
+              </div>
+              <span class="oc-progress-legend">
+                <span class="oc-legend-dot oc-legend-now"></span>本次
+                <span class="oc-legend-dot oc-legend-learned"></span>已学
+                <span class="oc-legend-dot oc-legend-wait"></span>待学
+              </span>
+            </div>
+
+            <div v-if="ocUnits.length" class="oc-section-desc">
+              <Info :size="13" />
+              <span>在下方点选你本次<strong>实际到达的最新{{ hasChapters ? '章节' : '内容' }}</strong>即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span>
+            </div>
+
+            <div v-if="ocUnits.length" ref="ocListRef" class="oc-node-list oc-pointer-list">
+              <button
+                v-for="(u, ui) in ocUnits"
+                :key="u.id"
+                type="button"
+                class="oc-node-row oc-pointer-row"
+                :class="{
+                  checked: isChecked(activeSubject, u),
+                  learned: !isChecked(activeSubject, u) && ocIsLearned(u),
+                  cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
+                }"
+                :data-uid="u.id"
+                :title="pointerRowHint(ui)"
+                @click="onUnitClick(u)"
               >
-                <button
-                  type="button"
-                  class="oc-check"
-                  :class="{ active: isChecked(activeSubject, node) }"
-                  draggable="false"
-                  @click="toggleChapter(activeSubject, node)"
-                >
-                  <CheckCircle2 v-if="isChecked(activeSubject, node)" :size="17" />
+                <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
+                  <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
+                  <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
                   <Circle v-else :size="17" />
-                </button>
-                <span class="oc-node-icon"><CircleDot v-if="!hasChapters" :size="13" /></span>
-                <span class="oc-node-title">{{ node.title }}</span>
-                <GripVertical :size="14" class="oc-grip" />
-                <input
-                  v-if="isChecked(activeSubject, node)"
-                  :value="entryFor(activeSubject, node)?.note"
-                  draggable="false"
-                  type="text"
-                  class="field-input oc-note-input"
-                  placeholder="备注（可选）"
-                  @input="updateNodeNote(activeSubject, node, $event)"
-                />
+                </span>
+                <span class="oc-node-icon">
+                  <FolderOpen v-if="u.level === 'chapter'" :size="13" />
+                  <CircleDot v-else :size="13" />
+                </span>
+                <span class="oc-node-title">{{ u.title }}</span>
+                <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now">本次</span>
+                <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned">已学</span>
+                <span v-if="u.level === 'chapter' && childrenOfChapter(u.id).length" class="oc-kid-count">
+                  {{ childrenOfChapter(u.id).length }} 知识点
+                </span>
+              </button>
+            </div>
+
+            <!-- 未挂靠章节的知识点：保留逐个勾选兜底（不参与章节顺序进度） -->
+            <template v-if="hasChapters && orphanKnowledge.length">
+              <div class="oc-group-title">未分组知识点（单独勾选，不影响章节顺序进度）</div>
+              <div class="oc-node-list">
+                <div
+                  v-for="k in orphanKnowledge"
+                  :key="k.id"
+                  class="oc-node-row oc-knowledge-row"
+                  :class="{ checked: isChecked(activeSubject, k) }"
+                >
+                  <button
+                    type="button"
+                    class="oc-check"
+                    :class="{ active: isChecked(activeSubject, k) }"
+                    @click="toggleOrphan(activeSubject, k)"
+                  >
+                    <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
+                    <Circle v-else :size="16" />
+                  </button>
+                  <span class="oc-node-icon"><CircleDot :size="13" /></span>
+                  <span class="oc-node-title">{{ k.title }}</span>
+                </div>
+              </div>
+            </template>
+
+            <!-- 点选已学区域：系统记录进度快于实际进度 → 确认回退 -->
+            <div v-if="correctionTarget" class="oc-correction">
+              <AlertTriangle :size="17" class="oc-correction-icon" />
+              <div class="oc-correction-body">
+                <p class="oc-correction-title">你点选了已学区域内的章节：系统记录进度快于实际进度</p>
+                <p class="oc-correction-text">
+                  系统记录的进度为已学至「{{ ocTailUnit?.title ?? '—' }}」，而你选择的「{{ correctionTarget.title }}」位于其内，
+                  说明目前的记录<strong>快于</strong>你的实际学习进度（此前记录超前）。
+                  确认后会把{{ subjectLabel(activeSubject) }}的进度基准回退到该章：其后的章节/知识点恢复为未学、本轮相应记录一并撤销，后续计划以复盘重排结果为准。
+                </p>
+                <div class="oc-correction-actions">
+                  <Button variant="danger" size="sm" :loading="savingProgress" @click="confirmCorrection">
+                    确认回退进度
+                  </Button>
+                  <Button variant="ghost" size="sm" @click="cancelCorrection">取消</Button>
+                </div>
               </div>
             </div>
+
+            <p v-if="ocHint" class="oc-hint"><Info :size="13" /> {{ ocHint }}</p>
 
             <!-- 新建节点 -->
             <div class="oc-create">
@@ -1693,11 +1994,6 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
               </div>
             </div>
           </template>
-
-          <div v-if="hasOvercompletion && activeTable && overcompletions.length === 0" class="empty-step">
-            <Sparkles :size="32" class="empty-icon" />
-            <p>勾选本次计划外学到的章节；若进度表里没有，可先新建。</p>
-          </div>
         </div>
       </Card>
 
@@ -1705,7 +2001,12 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       <div class="step-nav">
         <Button v-if="step > 0" variant="ghost" @click="goPrev"><ArrowLeft :size="16" /> 上一步</Button>
         <div class="nav-right">
-          <Button v-if="step < totalSteps - 1 && !(quickMode && step === 4)" variant="primary" :disabled="!canNext()" @click="goNext">
+          <Button
+            v-if="step < totalSteps - 1"
+            variant="primary"
+            :disabled="!canNext()"
+            @click="goNext"
+          >
             下一步 <ArrowRight :size="16" />
           </Button>
           <Button v-else variant="primary" @click="doSubmit" :loading="submitting">
@@ -2260,6 +2561,31 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .oc-subject-chip:hover:not(:disabled) { border-color: var(--border-color-strong); color: var(--text-primary); }
 .oc-subject-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
 .oc-subject-chip.disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 科目内多张进度表切换（专业课多教材 / 多考纲方案） */
+.oc-tables {
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary); border-radius: var(--radius-md);
+}
+.oc-tables-label { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; }
+.oc-table-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 220px;
+  padding: 3px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-full);
+  background: var(--bg-primary); color: var(--text-secondary);
+  font-family: inherit; font-size: var(--text-xs); font-weight: var(--font-medium);
+  cursor: pointer; transition: all var(--transition-fast);
+}
+.oc-table-chip:hover { border-color: var(--border-color-strong); color: var(--text-primary); }
+.oc-table-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
+.oc-table-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-table-chip-count {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px;
+  padding: 0 4px; border-radius: var(--radius-full);
+  background: var(--accent); color: #fff; font-size: 10px; font-weight: var(--font-semibold);
+}
+.oc-table-chip:not(.active) .oc-table-chip-count { background: var(--text-quaternary); }
+
 .oc-loading { margin: var(--space-4) auto; }
 .oc-table-caption {
   display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
@@ -2267,6 +2593,38 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 .oc-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oc-empty-hint { margin: 0; font-size: var(--text-xs); color: var(--text-tertiary); }
+
+/* 章节 → 知识点 两级选择树 */
+.oc-tree { gap: 2px; }
+.oc-chapter-row { font-weight: var(--font-medium); }
+.oc-expand {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex-shrink: 0; padding: 0;
+  border: none; background: transparent; color: var(--text-tertiary);
+  cursor: pointer; border-radius: var(--radius-sm);
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.oc-expand:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.oc-expand.open { transform: rotate(90deg); }
+.oc-expand-spacer { width: 18px; flex-shrink: 0; }
+.oc-node-children {
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 0 0 2px 27px; padding-left: 11px;
+  border-left: 1.5px dashed var(--border-color);
+}
+.oc-knowledge-row { padding-top: 5px; padding-bottom: 5px; background: var(--bg-tertiary); }
+.oc-knowledge-row .oc-node-title { font-weight: var(--font-normal); }
+.oc-group-title {
+  margin: var(--space-2) var(--space-3) 0;
+  font-size: var(--text-xs); color: var(--text-tertiary);
+}
+.oc-kid-count, .oc-partial {
+  flex-shrink: 0; font-size: var(--text-xs);
+  padding: 1px 8px; border-radius: var(--radius-full);
+}
+.oc-kid-count { color: var(--text-tertiary); background: var(--bg-overlay); }
+.oc-partial { color: var(--accent); background: var(--accent-subtle); }
+.oc-knowledge-row .oc-node-title { font-weight: var(--font-normal); }
 .oc-node-list { display: flex; flex-direction: column; gap: var(--space-1); }
 .oc-node-row {
   display: flex; align-items: center; gap: var(--space-2);
@@ -2286,14 +2644,61 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .oc-check.active { color: var(--color-success, #16a34a); }
 .oc-node-icon { color: var(--text-quaternary); display: inline-flex; flex-shrink: 0; }
 .oc-node-title { flex: 1; min-width: 0; font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-primary); word-break: break-word; }
-.oc-grip { color: var(--text-quaternary); cursor: grab; flex-shrink: 0; }
-.oc-note-input { max-width: 200px; flex-shrink: 1; }
 .oc-create { display: flex; align-items: center; gap: var(--space-2); }
 .oc-create-input { flex: 1; }
 .oc-error { margin: 0; font-size: var(--text-xs); color: var(--color-danger); }
 .oc-unmatched { display: flex; flex-direction: column; gap: var(--space-2); }
 .oc-unmatched-title { font-size: var(--text-xs); color: var(--text-tertiary); }
 .oc-unmatched-subject { flex-shrink: 0; font-size: var(--text-xs); color: var(--text-tertiary); background: var(--bg-tertiary); padding: 2px 8px; border-radius: var(--radius-full); }
+
+/* ── 计划外学习 v2：进度指针 ── */
+.oc-progress-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); background: var(--bg-tertiary);
+  border-radius: var(--radius-md); flex-wrap: wrap;
+}
+.oc-progress-item { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.oc-progress-label { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; }
+.oc-progress-name {
+  font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--accent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px;
+}
+.oc-progress-legend { display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-xs); color: var(--text-tertiary); }
+.oc-legend-dot { width: 8px; height: 8px; border-radius: var(--radius-full); display: inline-block; }
+.oc-legend-now { background: var(--accent); }
+.oc-legend-learned { background: var(--text-quaternary); }
+.oc-legend-wait { border: 1.5px solid var(--border-color-strong); background: transparent; }
+.oc-section-desc {
+  display: flex; align-items: flex-start; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+  background: var(--accent-subtle, color-mix(in srgb, var(--accent) 8%, transparent));
+  color: var(--text-secondary); font-size: var(--text-xs); line-height: var(--leading-normal);
+}
+.oc-section-desc svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
+.oc-pointer-list { gap: var(--space-1); }
+.oc-pointer-row {
+  width: 100%; text-align: left; font-family: inherit; cursor: pointer; color: inherit;
+}
+.oc-pointer-row.learned { opacity: 0.72; }
+.oc-pointer-row.learned .oc-check { color: var(--text-quaternary); }
+.oc-pointer-row.cur {
+  border-color: var(--accent); background: var(--bg-tertiary);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.oc-tag-now { color: var(--accent); background: var(--accent-subtle); font-weight: var(--font-semibold); }
+.oc-tag-learned { color: var(--text-tertiary); background: var(--bg-overlay); }
+.oc-correction {
+  display: flex; gap: var(--space-2); padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-danger, #dc2626); border-radius: var(--radius-md);
+  background: var(--color-danger-subtle, color-mix(in srgb, var(--color-danger) 8%, transparent));
+}
+.oc-correction-icon { color: var(--color-danger); flex-shrink: 0; margin-top: 1px; }
+.oc-correction-body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.oc-correction-title { margin: 0; font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--text-primary); }
+.oc-correction-text { margin: 0; font-size: var(--text-xs); color: var(--text-secondary); line-height: var(--leading-normal); }
+.oc-correction-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.oc-hint { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; font-size: var(--text-xs); color: var(--text-secondary); line-height: var(--leading-normal); }
+.oc-hint svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 
 /* ── 日期切换过渡动画 ── */
 .date-slide-left-enter-active,

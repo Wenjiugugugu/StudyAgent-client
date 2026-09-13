@@ -349,7 +349,7 @@ onMounted(() => {
 }
 
 .header-icon {
-  color: var(--accent);
+  color: var(--text-tertiary);
   flex-shrink: 0;
 }
 
@@ -480,8 +480,7 @@ onMounted(() => {
 
 .date-card.done {
   border-color: var(--color-success, #10b981);
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(16, 185, 129, 0.02));
-  box-shadow: 0 0 0 1px var(--color-success, #10b981), var(--shadow-sm);
+  background: var(--color-success-subtle, rgba(16, 185, 129, 0.08));
 }
 
 .date-card.pending {
@@ -496,12 +495,11 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
-  background: var(--color-success, #10b981);
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.4);
+  background: transparent;
+  color: var(--color-success, #10b981);
 }
 
 .rate-text {

@@ -1,19 +1,17 @@
 //! Progress Table Commands — 各科「进度表」命令
 //!
-//! 提供进度表的 列表 / 保存(增改) / 删除 / 启用切换 / AI 生成 / 联网搜索配置。
-//! AI 生成默认以内置官方考研考纲（core::chapter_seq）为依据；当用户在设置中启用了
-//! 联网搜索（WebSearchConfig）时，会先联网拉取「最新考研大纲」相关结果作为考纲参考。
+//! 提供进度表的 列表 / 保存(增改) / 删除 / 启用切换 / AI 生成。
+//! AI 生成以内置官方考研考纲（core::chapter_seq）为依据；专业课另附内置教材章节参考。
 
 use std::sync::Mutex;
 
 use serde::Deserialize;
-use serde_json::Value;
 use tauri::State;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::data::{
     load_progress_index, new_progress_id, now_string, save_progress_index, NodeLevel, NodeStatus,
-    ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet, TableOrigin, WebSearchConfig,
+    ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet, TableOrigin,
 };
 use crate::{get_data_dir, get_data_dir_and_ai, AppState};
 
@@ -330,31 +328,6 @@ pub fn default_progress_variants(
 }
 
 // ============================================================================
-// 联网搜索配置
-// ============================================================================
-
-/// 读取进度表相关的设置（目前为联网搜索配置）
-/// 前端调用: `invoke('get_progress_settings')`
-#[tauri::command]
-pub fn get_progress_settings(state: State<'_, Mutex<AppState>>) -> Result<WebSearchConfig, String> {
-    let data_dir = get_data_dir(state.inner())?;
-    Ok(load_progress_index(&data_dir).web_search)
-}
-
-/// 保存进度表相关的设置（联网搜索配置）
-/// 前端调用: `invoke('set_progress_settings', { webSearch })`
-#[tauri::command]
-pub fn set_progress_settings(
-    web_search: WebSearchConfig,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), String> {
-    let data_dir = get_data_dir(state.inner())?;
-    let mut index = load_progress_index(&data_dir);
-    index.web_search = web_search;
-    save_progress_index(&data_dir, &index)
-}
-
-// ============================================================================
 // AI 生成进度表
 // ============================================================================
 
@@ -441,95 +414,22 @@ fn book_sections_text(subject: &str, exam_type: &str) -> String {
     lines.join("\n")
 }
 
-/// 联网搜索最新考研大纲（provider: bocha 博查查）
-/// 返回搜索结果摘要拼成的考纲文本；失败返回 Err（调用方回退内置考纲）。
-async fn web_search_syllabus(
-    subject_label: &str,
-    exam_type: &str,
-    cfg: &WebSearchConfig,
-) -> Result<String, String> {
-    if !cfg.enabled || cfg.api_key.is_empty() {
-        return Err("联网搜索未启用或未填写 API Key".to_string());
-    }
-    let base = if cfg.base_url.trim().is_empty() {
-        "https://api.bochaai.com/v1/web-search".to_string()
-    } else {
-        cfg.base_url.trim().to_string()
-    };
-    let ver_note = if exam_type.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", exam_type)
-    };
-    let query = format!("{}考研大纲{} 最新版完整考试内容", subject_label, ver_note);
-
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "query": query,
-        "freshness": "oneYear",
-        "summary": true,
-        "count": 5,
-    });
-    let resp = client
-        .post(&base)
-        .header("Authorization", format!("Bearer {}", cfg.api_key.trim()))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("联网搜索请求失败: {}", e))?;
-
-    let status = resp.status();
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("解析搜索结果失败: {}", e))?;
-    if !status.is_success() {
-        return Err(format!("联网搜索返回错误 {}: {}", status, json));
-    }
-
-    let mut out = String::new();
-    if let Some(pages) = json
-        .pointer("/data/webPages/learning")
-        .or_else(|| json.pointer("/data/webPages"))
-    {
-        if let Some(arr) = pages.as_array() {
-            for item in arr.iter().take(5) {
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let summary = item
-                    .get("summary")
-                    .or_else(|| item.get("snippet"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if !summary.is_empty() {
-                    out.push_str(&format!("【{}】{}\n", name, summary));
-                }
-            }
-        }
-    }
-    if out.trim().is_empty() {
-        return Err("联网搜索未返回有效考纲内容".to_string());
-    }
-    Ok(out)
-}
-
 /// AI 生成一份进度表（返回草稿，不自动落盘；前端预览确认后再保存）
 ///
 /// - `subject`: 学科 key
 /// - `variant`: 考纲方案（如「数二」「英一」「408 计算机」），可从进度表页当前启用方案读取
 /// - `name`: 生成的进度表名称
-/// - `use_web`: 是否优先联网查询最新考研大纲（若未配置则回退内置考纲）
-/// 前端调用: `invoke('generate_progress_table', { subject, variant, name, useWeb })`
+/// 考纲来源为随包内置的官方考研考纲（`core::chapter_seq`）。
+/// 前端调用: `invoke('generate_progress_table', { subject, variant, name })`
 #[tauri::command]
 pub async fn generate_progress_table(
     subject: String,
     variant: String,
     name: String,
-    use_web: bool,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<ProgressTable, String> {
     validate_subject(&subject)?;
-    let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
+    let (_data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     if !ai_service.has_provider() {
         return Err(
@@ -543,27 +443,10 @@ pub async fn generate_progress_table(
     let ver = version_for(&subject, &effective_exam);
     let subject_label = crate::data::subject_label(&subject);
 
-    // 1. 考纲来源：联网搜索（可选）→ 内置考纲 → 空（交由 AI 自行组织）
-    let mut used_web = false;
-    let syllabus_text = if use_web {
-        let index = load_progress_index(&data_dir);
-        match web_search_syllabus(subject_label, &effective_exam, &index.web_search).await {
-            Ok(text) => {
-                used_web = true;
-                text
-            }
-            Err(e) => {
-                log::warn!("[进度表] 联网搜索失败，回退内置考纲: {}", e);
-                builtin_syllabus(&subject, ver.as_deref().unwrap_or(""))
-                    .unwrap_or_default()
-                    .join("\n")
-            }
-        }
-    } else {
-        builtin_syllabus(&subject, ver.as_deref().unwrap_or(""))
-            .unwrap_or_default()
-            .join("\n")
-    };
+    // 1. 考纲来源：内置官方考纲（无内置条目时留空，交由 AI 自行组织）
+    let syllabus_text = builtin_syllabus(&subject, ver.as_deref().unwrap_or(""))
+        .unwrap_or_default()
+        .join("\n");
 
     // 2. 构建 prompt（专业课附带内置教材章节参考）
     let book_sections = book_sections_text(&subject, &effective_exam);
@@ -573,7 +456,6 @@ pub async fn generate_progress_table(
         &effective_exam,
         &name,
         &syllabus_text,
-        used_web,
         &book_sections,
     );
 
@@ -626,6 +508,10 @@ pub async fn generate_progress_table(
 /// 数学知识点按大章分组（用于内置考纲两级结构）。
 /// 注意：高数里也有「向量代数与空间解析几何」，所以「向量」单独出现要留给高数，
 /// 只有「向量组」及其后续线性代数特征词才归到线代。
+///
+/// 仅数学需要运行时关键词分组：数学由高数/线代/概率三个板块拼装、扁平表无法携带
+/// 板块归属。政治/英语已改为编译期分组结构（chapter_seq::builtin_sections），
+/// 直接消费，不再走关键词猜测。
 fn chapter_for_math(title: &str) -> &'static str {
     let t = title;
     // 线代：用「向量组」而不是「向量」，避免把高数空间向量误判进线代
@@ -655,83 +541,6 @@ fn chapter_for_math(title: &str) -> &'static str {
     }
 }
 
-/// 政治知识点按大章分组
-fn chapter_for_politics(title: &str) -> &'static str {
-    let t = title;
-    if t.contains("马克思主义")
-        || t.contains("辩证唯物")
-        || t.contains("唯物辩证法")
-        || t.contains("认识论")
-        || t.contains("唯物史观")
-        || t.contains("商品")
-        || t.contains("剩余价值")
-        || t.contains("资本主义")
-        || t.contains("垄断")
-    {
-        "马克思主义基本原理"
-    } else if t.contains("毛泽东")
-        || t.contains("新民主主义")
-        || t.contains("社会主义改造")
-        || t.contains("社会主义建设")
-        || (t.contains("中国特色社会主义") && !t.contains("新时代"))
-        || t.contains("经济发展")
-        || t.contains("全面深化改革")
-        || t.contains("社会主义民主政治")
-        || t.contains("文化建设")
-        || t.contains("社会主义核心价值观")
-        || t.contains("民生")
-        || t.contains("社会治理")
-        || t.contains("生态文明")
-        || t.contains("党的建设")
-        || t.contains("从严治党")
-    {
-        "毛泽东思想和中国特色社会主义理论体系概论"
-    } else if t.contains("新时代")
-        || t.contains("中国式现代化")
-        || t.contains("高质量发展")
-        || t.contains("新质生产力")
-        || t.contains("新发展格局")
-    {
-        "习近平新时代中国特色社会主义思想概论"
-    } else if t.contains("近代")
-        || t.contains("新民主主义革命")
-        || t.contains("中华人民共和国")
-        || t.contains("社会主义制度")
-        || (t.contains("改革开放") && !t.contains("新时代"))
-        || t.contains("社会主义建设道路")
-    {
-        "中国近现代史纲要"
-    } else if t.contains("人生观")
-        || t.contains("理想信念")
-        || t.contains("道德")
-        || t.contains("法治")
-        || t.contains("宪法")
-        || t.contains("依法治国")
-    {
-        "思想道德与法治"
-    } else {
-        "形势与政策以及当代世界经济与政治"
-    }
-}
-
-/// 英语知识点按大章分组
-fn chapter_for_english(title: &str) -> &'static str {
-    let t = title;
-    if t.contains("词汇") || t.contains("长难句") || t.contains("语法") {
-        "词汇与语法"
-    } else if t.contains("完形") || t.contains("知识运用") {
-        "完形填空"
-    } else if t.contains("阅读") || t.contains("新题型") {
-        "阅读理解"
-    } else if t.contains("翻译") {
-        "翻译"
-    } else if t.contains("作文") || t.contains("写作") {
-        "写作"
-    } else {
-        "综合"
-    }
-}
-
 /// 把普通科目的扁平知识点列表按大章整理为两级节点（章节 + 知识点）
 ///
 /// 每个节点附带隐藏的预估学习时长（`estimated_hours`，不展示给用户）：
@@ -739,8 +548,6 @@ fn chapter_for_english(title: &str) -> &'static str {
 fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> {
     let chapter_fn: fn(&str) -> &'static str = match subject {
         "math" => chapter_for_math,
-        "politics" => chapter_for_politics,
-        "english" => chapter_for_english,
         _ => |_| "未分组",
     };
 
@@ -808,6 +615,59 @@ fn build_subject_nodes(subject: &str, points: Vec<String>) -> Vec<ProgressNode> 
     nodes
 }
 
+/// 把编译期分组考纲（chapter_seq::builtin_sections，政治/英语专用）转换为
+/// 两级进度表节点（章节 + 知识点）。
+///
+/// - 章节节点 = 分组板块，顺序 = 考纲/学习顺序（编译期确定，不经关键词猜测）；
+/// - 知识点预估时长：分组数据给出建议时长（>0）时直接采用（clamp 到合法区间），
+///   否则按标题特征自动估算；
+/// - 章节预估时长 = 其下知识点预估值之和（隐藏数据，不展示给用户）。
+fn build_nodes_from_sections(
+    subject: &str,
+    sections: &[crate::core::chapter_seq::BuiltinSection],
+) -> Vec<ProgressNode> {
+    use crate::core::estimated_time::{round1, MAX_KNOWLEDGE_HOURS, MIN_KNOWLEDGE_HOURS};
+
+    let mut nodes: Vec<ProgressNode> = Vec::new();
+    for sec in sections {
+        let cid = new_progress_id("c", sec.phase);
+        let mut chapter_hours = 0.0;
+        let mut kids: Vec<ProgressNode> = Vec::with_capacity(sec.points.len());
+        for (title, suggested) in sec.points {
+            let estimated = if *suggested > 0.0 {
+                round1(suggested.clamp(MIN_KNOWLEDGE_HOURS, MAX_KNOWLEDGE_HOURS))
+            } else {
+                crate::core::estimated_time::estimate_knowledge_hours(subject, title)
+            };
+            chapter_hours += estimated;
+            kids.push(ProgressNode {
+                id: new_progress_id("n", title),
+                title: title.to_string(),
+                level: NodeLevel::Knowledge,
+                parent_id: Some(cid.clone()),
+                phase: sec.phase.to_string(),
+                status: NodeStatus::Pending,
+                planned_date: None,
+                note: String::new(),
+                estimated_hours: Some(estimated),
+            });
+        }
+        nodes.push(ProgressNode {
+            id: cid,
+            title: sec.phase.to_string(),
+            level: NodeLevel::Chapter,
+            parent_id: None,
+            phase: sec.phase.to_string(),
+            status: NodeStatus::Pending,
+            planned_date: None,
+            note: String::new(),
+            estimated_hours: Some(round1(chapter_hours)),
+        });
+        nodes.extend(kids);
+    }
+    nodes
+}
+
 // ============================================================================
 // 内置考纲进度表（不依赖 AI）
 // ============================================================================
@@ -867,15 +727,23 @@ pub fn builtin_progress_table(
         return Err(format!("暂不支持学科「{}」的内置考纲生成", subject));
     }
     let ver = version_for(&subject, &effective_exam);
-    let points = builtin_syllabus(&subject, ver.as_deref().unwrap_or("")).ok_or_else(|| {
-        format!(
-            "学科「{}」暂无内置考纲数据",
-            crate::data::subject_label(&subject)
-        )
-    })?;
+    let ver_str = ver.as_deref().unwrap_or("");
 
     let now = now_string();
-    let nodes = build_subject_nodes(&subject, points);
+    // 政治/英语：编译期分组考纲（板块 → 知识点 + 建议时长），章节归属与顺序在源头确定，
+    // 不再运行时按关键词猜测；数学等其余科目回退扁平表 + 关键词分组。
+    let nodes =
+        if let Some(sections) = crate::core::chapter_seq::builtin_sections(&subject, ver_str) {
+            build_nodes_from_sections(&subject, sections)
+        } else {
+            let points = builtin_syllabus(&subject, ver_str).ok_or_else(|| {
+                format!(
+                    "学科「{}」暂无内置考纲数据",
+                    crate::data::subject_label(&subject)
+                )
+            })?;
+            build_subject_nodes(&subject, points)
+        };
 
     let table = ProgressTable {
         id: String::new(), // 草稿：id 留空，保存时分配
@@ -1028,17 +896,12 @@ fn build_generate_prompt(
     exam_type: &str,
     name: &str,
     syllabus_text: &str,
-    used_web: bool,
     book_sections: &str,
 ) -> String {
     let is_professional = subject_key == "professional" || subject_key == "408";
     let has_books = !book_sections.trim().is_empty();
 
-    let source_note = if used_web {
-        "我已通过联网搜索为你获取了以下最新考研考纲内容（可能包含网页摘要，多来源）作为依据。"
-    } else {
-        "以下为内置的官方考研考纲知识点顺序（如未提供，请按该科目权威最新考纲自行组织，务必覆盖核心考点且符合最新考纲要求）。"
-    };
+    let source_note = "以下为内置的官方考研考纲知识点顺序（如未提供，请按该科目权威最新考纲自行组织，务必覆盖核心考点且符合最新考纲要求）。";
 
     let syllabus_block = if syllabus_text.trim().is_empty() {
         if is_professional {
@@ -1105,6 +968,108 @@ mod tests {
         assert_eq!(version_for("english", "英语二"), Some("英二".to_string()));
         assert_eq!(version_for("politics", "政治"), Some("政治".to_string()));
         assert_eq!(version_for("politics", ""), Some("政治".to_string()));
+    }
+
+    #[test]
+    fn builtin_politics_nodes_keep_section_order_and_grouping() {
+        let sections = crate::core::chapter_seq::builtin_sections("politics", "").unwrap();
+        let nodes = build_nodes_from_sections("politics", sections);
+
+        // 章节顺序 = 板块考纲顺序，形势与政策在最后（旧 bug：被关键词兜底顶到第 2 位）
+        let chapters: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Chapter)
+            .map(|n| n.title.as_str())
+            .collect();
+        assert_eq!(chapters.first(), Some(&"马克思主义基本原理"));
+        assert_eq!(chapters.last(), Some(&"形势与政策以及当代世界经济与政治"));
+
+        // 旧 bug 回归：马原/史纲知识点归属正确，不再落入兜底板块
+        for (title, expected_phase) in [
+            ("联系与发展", "马克思主义基本原理"),
+            ("质变与量变规律", "马克思主义基本原理"),
+            ("真理与谬误", "马克思主义基本原理"),
+            ("旧民主主义革命", "中国近现代史纲要"),
+            ("新民主主义革命", "中国近现代史纲要"),
+            ("社会主义建设道路的探索", "中国近现代史纲要"),
+            ("中国特色社会主义进入新时代", "中国近现代史纲要"),
+        ] {
+            let n = nodes
+                .iter()
+                .find(|n| n.title == title)
+                .unwrap_or_else(|| panic!("缺少知识点「{title}」"));
+            assert_eq!(n.phase, expected_phase, "「{title}」板块归属错误");
+            assert_eq!(n.status, NodeStatus::Pending);
+            assert!(n.estimated_hours.is_some_and(|h| h > 0.0));
+        }
+
+        // 知识点必须归属到对应章节节点（parent_id 直连，phase 与章节 title 一致）
+        for k in nodes.iter().filter(|n| n.level == NodeLevel::Knowledge) {
+            let ch = nodes
+                .iter()
+                .find(|n| n.level == NodeLevel::Chapter && Some(&n.id) == k.parent_id.as_ref())
+                .unwrap_or_else(|| panic!("知识点「{}」无章节归属", k.title));
+            assert_eq!(ch.title, k.phase, "「{}」的 phase 与章节名不一致", k.title);
+        }
+    }
+
+    #[test]
+    fn builtin_english_nodes_learning_order_and_no_duplication() {
+        let sections = crate::core::chapter_seq::builtin_sections("english", "英二").unwrap();
+        let nodes = build_nodes_from_sections("english", sections);
+
+        // 模块顺序 = 学习顺序：词汇打地基在最前（旧 bug：词汇排最后），专项在最后
+        let chapters: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Chapter)
+            .map(|n| n.title.as_str())
+            .collect();
+        assert_eq!(chapters.first(), Some(&"词汇"));
+        assert_eq!(chapters.last(), Some(&"新题型"));
+
+        // 粒度：训练单元 ≥ 40（旧版仅 9 条题型占位）
+        let knowledge_count = nodes
+            .iter()
+            .filter(|n| n.level == NodeLevel::Knowledge)
+            .count();
+        assert!(
+            knowledge_count >= 40,
+            "英语训练单元应 ≥40，实际 {knowledge_count}"
+        );
+
+        // 旧 bug 回归：章节名不得与知识点同名（旧表「完形填空」章节下挂「完形填空」知识点）
+        for ch_title in &chapters {
+            assert!(
+                !nodes
+                    .iter()
+                    .any(|n| n.level == NodeLevel::Knowledge && n.title == *ch_title),
+                "章节「{ch_title}」下不应存在同名知识点"
+            );
+        }
+
+        // 无重复知识点标题
+        let mut seen = std::collections::HashSet::new();
+        for n in nodes.iter().filter(|n| n.level == NodeLevel::Knowledge) {
+            assert!(seen.insert(n.title.as_str()), "知识点标题重复: {}", n.title);
+        }
+
+        // 建议时长直接采用（如真题精读 2.5h），章节 = 子知识点之和
+        let reading = nodes
+            .iter()
+            .find(|n| n.level == NodeLevel::Chapter && n.title == "阅读理解")
+            .unwrap();
+        let kids_sum: f64 = nodes
+            .iter()
+            .filter(|n| {
+                n.level == NodeLevel::Knowledge
+                    && n.parent_id.as_deref() == Some(reading.id.as_str())
+            })
+            .filter_map(|n| n.estimated_hours)
+            .sum();
+        assert!(
+            (reading.estimated_hours.unwrap_or(0.0) - kids_sum).abs() < 0.05,
+            "章节预估应为子知识点之和"
+        );
     }
 
     #[test]
@@ -1177,15 +1142,7 @@ mod tests {
     #[test]
     fn generate_prompt_embeds_book_sections_and_forces_pending() {
         let books = "数据结构（C语言版）·严蔚敏：第一章 绪论 / 第二章 线性表";
-        let p = build_generate_prompt(
-            "professional",
-            "专业课",
-            "408 计算机",
-            "408全程",
-            "",
-            false,
-            books,
-        );
+        let p = build_generate_prompt("professional", "专业课", "408 计算机", "408全程", "", books);
         // 教材参考进入 prompt
         assert!(p.contains("数据结构（C语言版）·严蔚敏"));
         assert!(p.contains("第一章 绪论"));
@@ -1205,12 +1162,12 @@ mod tests {
 
     #[test]
     fn generate_prompt_without_book_sections_keeps_fallback() {
-        let p = build_generate_prompt("math", "数学", "数二", "测试", "", false, "");
+        let p = build_generate_prompt("math", "数学", "数二", "测试", "", "");
         assert!(p.contains("未提供考纲文本"));
         // 无教材参考：不输出独立教材块（仅要求措辞中引用一次该词）
         assert_eq!(p.matches("【内置教材章节参考】").count(), 1);
         assert!(!p.contains("【教材要求】"));
-        let p2 = build_generate_prompt("math", "数学", "数二", "测试", "考纲A\n考纲B", false, "");
+        let p2 = build_generate_prompt("math", "数学", "数二", "测试", "考纲A\n考纲B", "");
         assert!(p2.contains("【数学考纲参考】"));
         assert!(p2.contains("考纲A"));
     }
@@ -1218,15 +1175,7 @@ mod tests {
     #[test]
     fn generate_prompt_professional_without_books_requires_materials() {
         // 396/199/农学等无内置教材的专业课：提示词兜底要求明确考纲规定的教材
-        let p = build_generate_prompt(
-            "professional",
-            "专业课",
-            "396 经济类",
-            "396进度表",
-            "",
-            false,
-            "",
-        );
+        let p = build_generate_prompt("professional", "专业课", "396 经济类", "396进度表", "", "");
         assert!(p.contains("【教材要求】"));
         assert!(p.contains("考纲规定的教材"));
         assert!(p.contains("教材章节名"));

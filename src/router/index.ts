@@ -26,12 +26,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "计划", icon: "Calendar" },
   },
   {
-    path: "/week-plan",
-    name: "week-plan",
-    component: () => import("@/views/WeekPlanView.vue"),
-    meta: { title: "周计划", icon: "CalendarDays" },
-  },
-  {
     path: "/goal-plan",
     name: "goal-plan",
     component: () => import("@/views/GoalPlanView.vue"),
@@ -44,12 +38,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "历史计划", icon: "History" },
   },
   {
-    path: "/textbooks",
-    name: "textbooks",
-    component: () => import("@/views/TextbooksView.vue"),
-    meta: { title: "教材", icon: "BookOpen" },
-  },
-  {
     path: "/progress",
     name: "progress",
     component: () => import("@/views/ProgressView.vue"),
@@ -60,12 +48,6 @@ const routes: RouteRecordRaw[] = [
     name: "review",
     component: () => import("@/views/ReviewView.vue"),
     meta: { title: "复盘", icon: "ClipboardCheck" },
-  },
-  {
-    path: "/doubt",
-    name: "doubt",
-    component: () => import("@/views/DoubtView.vue"),
-    meta: { title: "解惑", icon: "HelpCircle" },
   },
   {
     path: "/focus",

@@ -49,7 +49,18 @@ impl DailyScheduler {
         }
 
         let mut state = crate::data::state::read_state_or_default(data_dir);
-        let remaining_days = days_between(&state.meta.exam_date, date).unwrap_or(0);
+        // 考试日期非法时不再静默按 0 处理：0 天会严重影响后续提示语气，至少留下可定位的日志
+        let remaining_days = match days_between(&state.meta.exam_date, date) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!(
+                    "考试日期「{}」无法解析（{}），剩余天数按 0 处理",
+                    state.meta.exam_date,
+                    e
+                );
+                0
+            }
+        };
         let target = format!(
             "{} {} | 总分 {} / 500",
             state.meta.target_school,
@@ -66,6 +77,8 @@ impl DailyScheduler {
 
         // 收集（科目，任务模板），统一做「防重复已完成内容 / 确定性排序」后再落 ID
         let mut pending: Vec<(SubjectKey, TaskTemplate)> = Vec::new();
+        // 生成过程中的降级提示（目标倒排失败、预算裁剪），随日计划返回给前端展示
+        let mut warnings: Vec<String> = Vec::new();
         for allocation in &day_plan.subject_allocations {
             // 兜底：若该科目在当天还未到开始学习日期，则跳过
             if subject_not_started(&allocation.subject, date, &subject_start_dates) {
@@ -76,45 +89,77 @@ impl DailyScheduler {
                 );
                 continue;
             }
-            // 截止日规划区间：该科目当天有「生效区间」时，用倒排知识点任务接管，
-            // 跳过周计划中该科的 task_templates（分区间的科目不占按学习时长的份额）。
-            if let Some(goal) =
-                crate::data::goal::active_goal_for(data_dir, &allocation.subject, date)
-            {
+            // 截止日规划区间：该科目当天有任一「生效区间」时，按目标倒排知识点任务接管。
+            // 支持同科不同书/板块同时并行推进（每书一条独立目标），所以这里要遍历全部。
+            let active_goals =
+                crate::data::goal::active_goals_for_subject(data_dir, &allocation.subject, date);
+            if !active_goals.is_empty() {
                 let version = goal_subject_version(&state, &allocation.subject);
-                match crate::core::goal_planner::plan_goal_tasks_sync(
-                    data_dir, &goal, date, &version,
-                ) {
-                    Ok(goal_tasks) if !goal_tasks.is_empty() => {
-                        log::info!(
-                            "科目 {:?} 在 {} 处于截止日规划区间，任务由目标倒排接管（{} 条）",
-                            allocation.subject,
-                            date,
-                            goal_tasks.len()
-                        );
-                        // 将倒排任务视为模板加入 pending，走后续统一定序/预算裁剪
-                        let owned: Vec<TaskTemplate> = goal_tasks
-                            .into_iter()
-                            .map(|t| TaskTemplate {
-                                title: t.title,
-                                priority: t.priority,
-                                estimated_hours: t.estimated_hours,
-                                goal: t.goal,
-                                completion_criteria: t.completion_criteria,
-                                ..Default::default()
-                            })
-                            .collect();
-                        pending
-                            .extend(owned.into_iter().map(|tp| (allocation.subject.clone(), tp)));
-                        continue;
+                let mut all_goal_tasks: Vec<crate::data::plan::PlanTask> = Vec::new();
+                let mut any_tasks = false;
+                // 生成失败的书/板块（书 → 失败原因），用于向用户提示
+                let mut failed_books: Vec<(String, String)> = Vec::new();
+                for goal in &active_goals {
+                    match crate::core::goal_planner::plan_goal_tasks_sync(
+                        data_dir, goal, date, &version,
+                    ) {
+                        Ok(ts) if !ts.is_empty() => {
+                            any_tasks = true;
+                            all_goal_tasks.extend(ts);
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::warn!(
+                                "科目 {:?} 书本「{}」目标倒排生成失败: {}",
+                                allocation.subject,
+                                goal.book,
+                                e
+                            );
+                            failed_books.push((goal.book.clone(), e));
+                        }
                     }
-                    other => {
-                        log::warn!(
-                            "科目 {:?} 目标倒排生成失败或不含任务（{:?}），回退周计划任务",
-                            allocation.subject,
-                            other.map(|v| v.is_empty())
-                        );
-                    }
+                }
+                // 多书部分成功时，成功的书照常接管；失败的书当天不会有倒排任务，
+                // 必须让用户能看到原因，否则表现为「某本书今天莫名没有任务」。
+                if any_tasks && !failed_books.is_empty() {
+                    let books = failed_books
+                        .iter()
+                        .map(|(b, _)| {
+                            if b.is_empty() {
+                                "整科目标"
+                            } else {
+                                b.as_str()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    warnings.push(format!(
+                        "{}的「{}」目标计划今日生成失败，未排入该书任务；可尝试重新生成周计划或检查目标设置。",
+                        subject_display_name(&allocation.subject),
+                        books
+                    ));
+                }
+                if any_tasks {
+                    log::info!(
+                        "科目 {:?} 在 {} 有 {} 条生效目标，共生成 {} 条倒排任务",
+                        allocation.subject,
+                        date,
+                        active_goals.len(),
+                        all_goal_tasks.len()
+                    );
+                    let owned: Vec<TaskTemplate> = all_goal_tasks
+                        .into_iter()
+                        .map(|t| TaskTemplate {
+                            title: t.title,
+                            priority: t.priority,
+                            estimated_hours: t.estimated_hours,
+                            goal: t.goal,
+                            completion_criteria: t.completion_criteria,
+                            ..Default::default()
+                        })
+                        .collect();
+                    pending.extend(owned.into_iter().map(|tp| (allocation.subject.clone(), tp)));
+                    continue;
                 }
             }
             // 排程可行性校验：过滤已完成章节的重复任务（防重复安排已完成内容）
@@ -163,37 +208,33 @@ impl DailyScheduler {
             tasks.push(task);
         }
 
-        // 每日任务量预算约束：若当日任务预估时长总和超过设置中的每日目标时长，
-        // 优先裁剪末尾任务（任务已按 estimated_hours 降序排列，大块头在前），
-        // 保留剩余每条任务的真实时长语义，不再等比压缩时长扭曲语义。
-        // 仅当单条任务本身超预算（AI 粒度问题，周计划层已被 normalize 拆分，
-        // 此处是最后兜底）才对该条做等比压缩。
+        // 每日任务量预算约束：按 trim_to_budget 裁剪（每科保底 1 条；必要时等比压缩）
         let raw_total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let budget = settings.daily_target_hours();
-        if budget > 0.0 && raw_total_hours > budget && !tasks.is_empty() {
-            let mut total = raw_total_hours;
-            let mut trimmed = 0usize;
-            while tasks.len() > 1 && total > budget {
-                if let Some(removed) = tasks.pop() {
-                    total -= removed.estimated_hours;
-                    trimmed += 1;
-                }
-            }
-            if total > budget {
-                // 单条任务本身超预算：压缩该条作为最后兜底
-                let scale = budget / total;
-                for t in tasks.iter_mut() {
-                    t.estimated_hours = (t.estimated_hours * scale * 100.0).round() / 100.0;
-                }
-                total = tasks.iter().map(|t| t.estimated_hours).sum();
-            }
+        let (trimmed, compressed) = trim_to_budget(&mut tasks, budget);
+        if trimmed > 0 || compressed {
+            let total: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
             log::warn!(
-                "每日预算：今日任务原总时长 {:.2}h 超过预算 {:.2}h，已裁剪末尾 {} 个任务，最终 {:.2}h",
+                "每日预算：今日任务原总时长 {:.2}h 超过预算 {:.2}h，已裁剪 {} 条（每科保底 1 条）、压缩={}，最终 {:.2}h",
                 raw_total_hours,
                 budget,
                 trimmed,
+                compressed,
                 total
             );
+            if trimmed > 0 {
+                warnings.push(format!(
+                    "今日任务总时长超出每日目标 {:.2}h，已按「每科至少保留 1 条」裁剪 {} 条任务{}；如需更多内容请调高每日目标时长。",
+                    budget,
+                    trimmed,
+                    if compressed { "并等比压缩剩余任务时长" } else { "" }
+                ));
+            } else {
+                warnings.push(format!(
+                    "今日任务时长超出每日目标 {:.2}h，且每科已仅剩 1 条，已按预算等比压缩时长。",
+                    budget
+                ));
+            }
         }
 
         let total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
@@ -227,6 +268,7 @@ impl DailyScheduler {
             reminders: Vec::new(),
             total_hours,
             total_tasks,
+            warnings,
         };
 
         let plan = DailyPlanFile {
@@ -472,6 +514,59 @@ fn template_to_task(
     }
 }
 
+/// 按每日时长预算裁剪任务（原地修改），返回 `(裁剪条数, 是否执行了等比压缩)`。
+///
+/// 规则（顺序即优先级）：
+/// 1. `budget <= 0` 或任务为空、总时长未超预算 → 不做任何改动；
+/// 2. 从末尾（时长最短，调用方已按降序排好）往前裁，**跳过「该科最后一条」**——
+///    周计划层有「每科每天至少 1 条任务」护栏（`pure::min_daily_task_count`），
+///    这里若无视它把某科裁成空白，护栏就形同虚设；
+/// 3. 每科都只剩 1 条仍超预算 → 对保留任务等比压缩作为最后兜底
+///    （单条任务本身超预算属 AI 粒度问题，周计划层已做拆分，此处是兜底）。
+///
+/// 压缩按两位小数取整，可能使总时长极轻微超过预算（≤ 每条 0.005h 的舍入误差）。
+fn trim_to_budget(tasks: &mut Vec<PlanTask>, budget: f64) -> (usize, bool) {
+    if budget <= 0.0 || tasks.is_empty() {
+        return (0, false);
+    }
+    let mut remaining: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
+    if remaining <= budget {
+        return (0, false);
+    }
+
+    // 各科当前任务条数（用于「每科保底 1 条」判定）
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for t in tasks.iter() {
+        *counts.entry(format!("{:?}", t.subject)).or_default() += 1;
+    }
+
+    let mut trimmed = 0usize;
+    let mut idx = tasks.len();
+    while remaining > budget && idx > 0 {
+        idx -= 1;
+        let key = format!("{:?}", tasks[idx].subject);
+        if counts.get(&key).copied().unwrap_or(0) <= 1 {
+            continue; // 该科最后一条：保底不裁
+        }
+        let removed = tasks.remove(idx);
+        remaining -= removed.estimated_hours;
+        if let Some(c) = counts.get_mut(&key) {
+            *c -= 1;
+        }
+        trimmed += 1;
+    }
+
+    let mut compressed = false;
+    if remaining > budget {
+        let scale = budget / remaining;
+        for t in tasks.iter_mut() {
+            t.estimated_hours = (t.estimated_hours * scale * 100.0).round() / 100.0;
+        }
+        compressed = true;
+    }
+    (trimmed, compressed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,5 +799,65 @@ current_focus = "计组"
         assert!((daily.data.total_hours - sum).abs() < 1e-6);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 构造一条用于预算裁剪测试的任务（字段与生产构造保持一致）
+    fn plan_task(title: &str, subject: SubjectKey, hours: f64) -> PlanTask {
+        PlanTask {
+            id: title.to_string(),
+            subject,
+            title: title.to_string(),
+            priority: crate::data::state::TaskPriority::A,
+            estimated_hours: hours,
+            goal: String::new(),
+            completion_criteria: Vec::new(),
+            textbook: None,
+            style_tips: None,
+            fallback_plan: None,
+            status: TaskStatus::Pending,
+            dida_task_id: None,
+        }
+    }
+
+    /// 预算内不做任何改动
+    #[test]
+    fn trim_to_budget_noop_within_budget() {
+        let mut tasks = vec![
+            plan_task("数学-1", SubjectKey::Math, 2.0),
+            plan_task("英语-1", SubjectKey::English, 1.0),
+        ];
+        let (trimmed, compressed) = trim_to_budget(&mut tasks, 5.0);
+        assert_eq!(trimmed, 0);
+        assert!(!compressed);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].estimated_hours, 2.0);
+    }
+
+    /// 每科保底 1 条：只裁「同科多余」的任务，三科各 1 条时改为压缩
+    #[test]
+    fn trim_to_budget_keeps_one_task_per_subject() {
+        // 已按 estimated_hours 降序（大块头在前）
+        let mut tasks = vec![
+            plan_task("数学-1", SubjectKey::Math, 3.0),
+            plan_task("英语-1", SubjectKey::English, 3.0),
+            plan_task("政治-1", SubjectKey::Politics, 3.0),
+            plan_task("数学-2", SubjectKey::Math, 1.0),
+        ];
+        let (trimmed, compressed) = trim_to_budget(&mut tasks, 5.0);
+        // 只能裁掉「数学」多出来的那条；三科各 1 条必须保留
+        assert_eq!(trimmed, 1);
+        assert!(compressed, "每科仅剩 1 条仍超预算时应退回等比压缩");
+        assert_eq!(tasks.len(), 3);
+        let mut subjects: Vec<String> = tasks.iter().map(|t| format!("{:?}", t.subject)).collect();
+        subjects.sort();
+        subjects.dedup();
+        assert_eq!(subjects.len(), 3, "每科至少保留 1 条任务");
+        // 压缩后总时长回到预算附近（两位小数舍入允许极小超出）
+        let total: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
+        assert!(
+            total <= 5.0 + 0.05,
+            "压缩后总时长 {:.2} 应接近预算 5.00",
+            total
+        );
     }
 }

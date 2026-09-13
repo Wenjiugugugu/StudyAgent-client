@@ -123,6 +123,19 @@ pub struct AdaptivePlanParameters {
     /// 各科计划完成率（0..1），用于预估学习时长的复合调整
     pub subject_completion_rates: HashMap<String, f64>,
     pub confidence: f64,
+    /// v2 三信号快照（供周计划校准卡片解释本轮任务量调整）。
+    #[serde(default)]
+    pub completion_window_mean: f64,
+    #[serde(default)]
+    pub completion_trend_pp: f64,
+    #[serde(default)]
+    pub completion_streak_days: u32,
+    #[serde(default)]
+    pub energy_window_mean: f64,
+    #[serde(default)]
+    pub crash_guard_active: bool,
+    #[serde(default)]
+    pub applied_v2_rule: Option<String>,
     pub reasons: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -149,6 +162,30 @@ pub struct WeekPlanningAnalysis {
     pub actual_data_days: i32,
     pub valid_days: i32,
     pub external_day_count: i32,
+    /// v2 完成率信号样本：每日完成率（%），仅限有效学习日、时间升序。运行期使用。
+    #[serde(default)]
+    pub daily_completion_rates: Vec<f64>,
+    /// v2 完成率信号样本：每日精力（1..5，缺失 0），与 daily_completion_rates 对齐。
+    #[serde(default)]
+    pub daily_energies: Vec<f64>,
+    /// v2：近 ≤5 个有效学习日加权完成率均值（0..100）。
+    #[serde(default)]
+    pub completion_window_mean: f64,
+    /// v2：趋势（百分点，近 2 日均 − 前 3 日均；样本不足 5 天为 0）。
+    #[serde(default)]
+    pub completion_trend_pp: f64,
+    /// v2：连续达标天数（rate ≥ 90%）。
+    #[serde(default)]
+    pub completion_streak_days: u32,
+    /// v2：近 3 日精力均值（1..5；0 = 样本不足）。
+    #[serde(default)]
+    pub energy_window_mean: f64,
+    /// v2：单日骤降保护是否激活（观察期，禁止下调）。
+    #[serde(default)]
+    pub crash_guard_active: bool,
+    /// v2：本轮命中的规则标识（如 A3_1.05 / D2_0.90 / keep_1.00）。
+    #[serde(default)]
+    pub applied_v2_rule: Option<String>,
     pub feedback: WorkloadFeedbackSummary,
     pub subjects: Vec<SubjectPlanningAnalysis>,
     pub manual_override: bool,
@@ -372,6 +409,10 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
         ..Default::default()
     };
 
+    // v2 完成率信号样本（有效学习日：有计划 + 有复盘 + 非外部异常/休息日）
+    let mut day_completion_rates: Vec<f64> = Vec::new();
+    let mut day_energies: Vec<f64> = Vec::new();
+
     for daily in &daily_plans {
         let date = &daily.meta.date;
         let is_excluded_day = excluded_days.contains(date);
@@ -560,7 +601,35 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
         }
 
         analysis.completed_planned_hours += completed_planned_hours;
+
+        // v2 有效学习日采样：有计划且已复盘、非外部异常/休息日才计入信号序列。
+        if !external_day && !rest_days.contains(date) && planned_day_hours > 0.0 && review.is_some()
+        {
+            let day_rate = clamp(completed_planned_hours / planned_day_hours, 0.0, 1.0) * 100.0;
+            day_completion_rates.push(day_rate);
+            let energy = review
+                .as_ref()
+                .map(|r| {
+                    if (1..=5).contains(&r.data.energy_level) {
+                        r.data.energy_level as f64
+                    } else {
+                        0.0
+                    }
+                })
+                .unwrap_or(0.0);
+            day_energies.push(energy);
+        }
     }
+
+    // v2 三信号（近因加权窗口 / 趋势 / 连续达标 / 精力）写入分析结果。
+    let v2_signals = crate::core::planning::pure::v2_signals(&day_completion_rates, &day_energies);
+    analysis.daily_completion_rates = day_completion_rates;
+    analysis.daily_energies = day_energies;
+    analysis.completion_window_mean = v2_signals.window_mean;
+    analysis.completion_trend_pp = v2_signals.trend_pp;
+    analysis.completion_streak_days = v2_signals.streak_days;
+    analysis.energy_window_mean = v2_signals.energy_mean;
+    analysis.crash_guard_active = v2_signals.crash_guard;
 
     // 上面的 task_reviews 统计按任务累加；旧版补算的完成量可能已写入 completed_planned_hours。
     if analysis.eligible_planned_hours > 0.0 {
@@ -872,6 +941,12 @@ fn build_parameters(
             .map(|s| (s.subject.clone(), s.planned_completion_rate))
             .collect(),
         confidence: analysis.confidence,
+        completion_window_mean: analysis.completion_window_mean,
+        completion_trend_pp: analysis.completion_trend_pp,
+        completion_streak_days: analysis.completion_streak_days,
+        energy_window_mean: analysis.energy_window_mean,
+        crash_guard_active: analysis.crash_guard_active,
+        applied_v2_rule: analysis.applied_v2_rule.clone(),
         reasons,
         warnings,
     }
@@ -904,6 +979,12 @@ pub fn prepare_next_week(
             // 同周刷新不重新跑分析：保留缓存的反馈信号与各科完成率，供预估时长复合调整使用
             refreshed.feedback_signal = parameters.feedback_signal;
             refreshed.subject_completion_rates = parameters.subject_completion_rates.clone();
+            refreshed.completion_window_mean = parameters.completion_window_mean;
+            refreshed.completion_trend_pp = parameters.completion_trend_pp;
+            refreshed.completion_streak_days = parameters.completion_streak_days;
+            refreshed.energy_window_mean = parameters.energy_window_mean;
+            refreshed.crash_guard_active = parameters.crash_guard_active;
+            refreshed.applied_v2_rule = parameters.applied_v2_rule.clone();
             return Ok(refreshed);
         }
     }
@@ -1022,79 +1103,181 @@ pub fn prepare_next_week(
         0.0
     };
 
-    // 任务量反馈和完成率共同决定 workload_factor；用户显式覆盖时保持旧值。
-    if analysis.feedback.valid_days > 0 && !analysis.manual_override {
-        let feedback_week = analysis.feedback.weighted_score;
-        adaptive.workload_ema = 0.65 * adaptive.workload_ema + 0.35 * feedback_week;
-        analysis.feedback.ema = adaptive.workload_ema;
-
-        let completion_signal = clamp((analysis.planned_completion_rate - 0.85) / 0.15, -1.0, 1.0);
-        let expected_actual: f64 = analysis
-            .subjects
-            .iter()
-            .map(|subject| {
-                let factor = adaptive
-                    .subjects
-                    .get(&subject.subject)
-                    .map(|s| s.estimation_factor)
-                    .unwrap_or(1.0);
-                subject.planned_hours * factor
-            })
-            .sum();
-        let residual_signal = if expected_actual > 0.0 && analysis.eligible_actual_hours > 0.0 {
-            clamp(
-                analysis.eligible_actual_hours / expected_actual - 1.0,
-                -0.5,
-                0.5,
-            )
-        } else {
-            0.0
-        };
-        let load_signal = clamp(
-            0.60 * adaptive.workload_ema + 0.25 * completion_signal + 0.15 * residual_signal,
-            -1.0,
-            1.0,
+    // ──────────────────────────────────────────────────────────────
+    // 任务量自动调整（v2 三信号 + 用户显式反馈 EMA）
+    //
+    // 取代旧的「整周平均完成率 → 连续系数」做法——旧式只依赖历史均值，
+    // 个别前期低谷日会把整周拖低。v2 规则（见 pure::v2_decide）：
+    //   - 完成率信号只用近 ≤5 个有效学习日的加权窗口（低谷日权重低）；
+    //   - 趋势明显回升 / 单日骤降 → 只观察不降，避免个别天打满整周；
+    //   - 连续达标（≥90%）触发逐级上调，无用户反馈时也生效；
+    //   - 下调后进入保持期，连续 2 天达标才解除。
+    // 用户显式覆盖（manual_override）时保持旧值。
+    // ──────────────────────────────────────────────────────────────
+    if !analysis.manual_override {
+        let signals = crate::core::planning::pure::v2_signals(
+            &analysis.daily_completion_rates,
+            &analysis.daily_energies,
         );
-        let direction = sign(load_signal);
-        if direction != 0 {
-            let reversing =
-                adaptive.workload_direction != 0 && adaptive.workload_direction != direction;
-            if adaptive.workload_direction == direction {
-                adaptive.workload_streak = adaptive.workload_streak.saturating_add(1);
+        analysis.completion_window_mean = signals.window_mean;
+        analysis.completion_trend_pp = signals.trend_pp;
+        analysis.completion_streak_days = signals.streak_days;
+        analysis.energy_window_mean = signals.energy_mean;
+        analysis.crash_guard_active = signals.crash_guard;
+        let decision = crate::core::planning::pure::v2_decide(&signals);
+        analysis.applied_v2_rule = Some(decision.rule.to_string());
+
+        let feedback_active = analysis.feedback.valid_days > 0;
+
+        // —— 通道 1：用户显式反馈 EMA（原语义保留；向下方向受 v2 保护约束）——
+        let mut ema_delta = 0.0f64;
+        if feedback_active {
+            let feedback_week = analysis.feedback.weighted_score;
+            adaptive.workload_ema = 0.65 * adaptive.workload_ema + 0.35 * feedback_week;
+            analysis.feedback.ema = adaptive.workload_ema;
+
+            // 完成率信号改用 v2 滑窗均值，不再使用整周平均（避免个别低谷日拖低）。
+            let completion_signal = clamp((signals.window_mean - 85.0) / 15.0, -1.0, 1.0);
+            let expected_actual: f64 = analysis
+                .subjects
+                .iter()
+                .map(|subject| {
+                    let factor = adaptive
+                        .subjects
+                        .get(&subject.subject)
+                        .map(|s| s.estimation_factor)
+                        .unwrap_or(1.0);
+                    subject.planned_hours * factor
+                })
+                .sum();
+            let residual_signal = if expected_actual > 0.0 && analysis.eligible_actual_hours > 0.0 {
+                clamp(
+                    analysis.eligible_actual_hours / expected_actual - 1.0,
+                    -0.5,
+                    0.5,
+                )
             } else {
-                adaptive.workload_streak = 1;
-            }
-            adaptive.workload_direction = direction;
-            let persistence = match adaptive.workload_streak {
-                0 | 1 => 0.4,
-                2 => 0.7,
-                _ => 1.0,
-            };
-            let deadband = if load_signal.abs() <= 0.15 {
                 0.0
-            } else {
-                load_signal.signum() * ((load_signal.abs() - 0.15) / 0.85)
             };
-            let mut delta = 0.08 * deadband * analysis.confidence * persistence;
-            if reversing {
-                delta *= 0.5;
+            let load_signal = clamp(
+                0.60 * adaptive.workload_ema + 0.25 * completion_signal + 0.15 * residual_signal,
+                -1.0,
+                1.0,
+            );
+            let direction = sign(load_signal);
+            if direction != 0 {
+                let reversing =
+                    adaptive.workload_direction != 0 && adaptive.workload_direction != direction;
+                if adaptive.workload_direction == direction {
+                    adaptive.workload_streak = adaptive.workload_streak.saturating_add(1);
+                } else {
+                    adaptive.workload_streak = 1;
+                }
+                adaptive.workload_direction = direction;
+                let persistence = match adaptive.workload_streak {
+                    0 | 1 => 0.4,
+                    2 => 0.7,
+                    _ => 1.0,
+                };
+                let deadband = if load_signal.abs() <= 0.15 {
+                    0.0
+                } else {
+                    load_signal.signum() * ((load_signal.abs() - 0.15) / 0.85)
+                };
+                let mut delta = 0.08 * deadband * analysis.confidence * persistence;
+                if reversing {
+                    delta *= 0.5;
+                }
+                ema_delta = delta;
             }
-            let old_workload_factor = adaptive.workload_factor;
-            adaptive.workload_factor = clamp(adaptive.workload_factor + delta, 0.85, 1.15);
-            analysis.workload_adjustment = adaptive.workload_factor - 1.0;
-            if (adaptive.workload_factor - old_workload_factor).abs() >= 0.005 {
-                let direction_label = if delta > 0.0 { "增加" } else { "降低" };
-                analysis.reasons.push(format!(
-                    "任务量反馈与执行数据连续指向{}，下一周自动任务量系数{}至 {:.1}%",
-                    if delta > 0.0 {
-                        "仍有余量"
-                    } else {
-                        "偏多"
-                    },
-                    direction_label,
-                    adaptive.workload_factor * 100.0
-                ));
+
+            // v2 保护：窗口 ≥85% 且趋势回升（或 A 档升级、单日骤降观察期）时，
+            // 即使历史 EMA 仍为负也取消本次向下修正——避免「个别前期低谷」长期压制任务量。
+            if ema_delta < 0.0
+                && (signals.crash_guard
+                    || decision.direction > 0
+                    || (signals.window_mean >= 85.0 && signals.trend_pp >= 0.0))
+            {
+                if ema_delta.abs() >= 0.005 {
+                    analysis.reasons.push(
+                        "近期完成率窗口处于回升/达标区间，本次取消基于历史反馈的向下修正"
+                            .to_string(),
+                    );
+                }
+                ema_delta = 0.0;
             }
+        }
+
+        // —— 通道 2：v2 完成率规则（无用户反馈也生效）——
+        let mut v2_target = decision.target;
+        // 下调保持期：维持类规则不直接弹回；连续 2 天达标（≥90%）可提前解除下调。
+        if decision.direction == 0 && adaptive.workload_factor < 1.0 {
+            v2_target = if signals.streak_days >= 2 && signals.window_mean >= 85.0 {
+                1.0
+            } else {
+                adaptive.workload_factor
+            };
+        }
+        // 上调逐级：每轮最多升一档（+0.05），避免从 1.00 直接跳至上限档。
+        if decision.direction > 0 {
+            v2_target = v2_target.min(adaptive.workload_factor + 0.05);
+        }
+        // 用户显式反馈与 v2 方向冲突时，尊重用户显式意图。
+        if feedback_active {
+            if decision.direction > 0 && analysis.feedback.weighted_score <= -0.2 {
+                v2_target = adaptive.workload_factor; // 用户反馈「偏多」：不上调
+            } else if decision.direction < 0 && analysis.feedback.weighted_score >= 0.2 {
+                v2_target = adaptive.workload_factor; // 用户反馈「偏少」：不下调
+            }
+        }
+        let v2_delta = clamp(
+            v2_target,
+            adaptive.workload_factor - crate::core::planning::pure::V2_MAX_STEP,
+            adaptive.workload_factor + crate::core::planning::pure::V2_MAX_STEP,
+        ) - adaptive.workload_factor;
+
+        // —— 合并两条通道：冲突取幅度大的方向，同向取更强；仅一条激活则用该条 ——
+        let (final_delta, source) = if ema_delta != 0.0 && v2_delta != 0.0 {
+            if ema_delta * v2_delta < 0.0 {
+                if v2_delta.abs() > ema_delta.abs() {
+                    (v2_delta, "近5个有效学习日完成率窗口")
+                } else {
+                    (ema_delta, "用户反馈与执行数据")
+                }
+            } else if ema_delta.abs() >= v2_delta.abs() {
+                (ema_delta, "用户反馈与执行数据")
+            } else {
+                (v2_delta, "近5个有效学习日完成率窗口")
+            }
+        } else if ema_delta != 0.0 {
+            (ema_delta, "用户反馈与执行数据")
+        } else {
+            (v2_delta, "近5个有效学习日完成率窗口")
+        };
+
+        let old_workload_factor = adaptive.workload_factor;
+        adaptive.workload_factor = clamp(
+            adaptive.workload_factor + final_delta,
+            crate::core::planning::pure::V2_MIN_FACTOR,
+            crate::core::planning::pure::V2_MAX_FACTOR,
+        );
+        analysis.workload_adjustment = adaptive.workload_factor - 1.0;
+        if (adaptive.workload_factor - old_workload_factor).abs() >= 0.005 {
+            let direction_label = if final_delta > 0.0 {
+                "提高"
+            } else {
+                "降低"
+            };
+            analysis.reasons.push(format!(
+                "{}(加权完成率 {:.0}%、趋势 {:+.0}pp、连续达标 {} 天) → 自动任务量系数{}至 {:.0}% [规则 {}]",
+                source,
+                signals.window_mean,
+                signals.trend_pp,
+                signals.streak_days,
+                direction_label,
+                adaptive.workload_factor * 100.0,
+                decision.rule
+            ));
         }
     } else {
         analysis.feedback.ema = adaptive.workload_ema;

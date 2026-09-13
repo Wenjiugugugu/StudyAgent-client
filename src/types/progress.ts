@@ -66,19 +66,9 @@ export interface SubjectProgressSet {
   tables: ProgressTable[];
 }
 
-/** 联网搜索配置（AI 生成进度表时可选拉取最新考研大纲） */
-export interface ProgressWebSearchConfig {
-  enabled: boolean;
-  /** 搜索厂商：当前支持 "bocha"（博查查） */
-  provider: string;
-  base_url: string;
-  api_key: string;
-}
-
 /** 全部进度表索引 */
 export interface ProgressIndex {
   subjects: Record<string, SubjectProgressSet>;
-  web_search: ProgressWebSearchConfig;
 }
 
 /** 导出/分享用便携格式 */

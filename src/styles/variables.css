@@ -166,25 +166,27 @@
 }
 
 /* ── Dark Theme ── */
-/* Aligned with Apple design library .dark block */
+/* Aligned with Apple design library .dark block.
+   基础底色不使用纯黑（#000 在 OLED/大屏上过重），统一抬到 #17171a 一档，
+   上层 surface / sidebar 同步抬升相同幅度以保持原有层次差。 */
 :root[data-theme="dark"] {
-  --bg-primary: #000000;
-  --bg-solid: #000000;
-  --bg-secondary: #1c1c1e;
-  --bg-tertiary: #242426;
-  --bg-elevated: #1c1c1e;
+  --bg-primary: #17171a;
+  --bg-solid: #17171a;
+  --bg-secondary: #242428;
+  --bg-tertiary: #2c2c30;
+  --bg-elevated: #242428;
   --bg-overlay: rgba(255, 255, 255, 0.04);
 
   /* Layered surfaces — dark equivalents */
-  --surface-1: #1c1c1e;
-  --surface-2: #242426;
-  --surface-3: #2a2a2e;
-  --surface-accent: #1a2230;
+  --surface-1: #242428;
+  --surface-2: #2c2c30;
+  --surface-3: #323236;
+  --surface-accent: #202a3a;
 
-  --header-bg: rgba(0, 0, 0, 0.72);
+  --header-bg: rgba(23, 23, 26, 0.72);
 
-  --sidebar-bg: rgba(38, 38, 42, 0.82);
-  --sidebar-solid: #26262a;
+  --sidebar-bg: rgba(48, 48, 52, 0.82);
+  --sidebar-solid: #2e2e32;
   --sidebar-item-hover: rgba(255, 255, 255, 0.07);
   --sidebar-item-active: rgba(255, 255, 255, 0.11);
 
@@ -240,10 +242,10 @@
 }
 
 :root[data-theme="dark"][data-has-background="true"] {
-  --bg-primary: rgba(0, 0, 0, 0.72);
-  --bg-secondary: rgba(28, 28, 30, 0.72);
-  --bg-tertiary: rgba(36, 36, 38, 0.72);
-  --bg-elevated: rgba(28, 28, 30, 0.85);
-  --sidebar-bg: rgba(38, 38, 42, 0.72);
-  --header-bg: rgba(0, 0, 0, 0.6);
+  --bg-primary: rgba(23, 23, 26, 0.72);
+  --bg-secondary: rgba(36, 36, 40, 0.72);
+  --bg-tertiary: rgba(44, 44, 48, 0.72);
+  --bg-elevated: rgba(36, 36, 40, 0.85);
+  --sidebar-bg: rgba(48, 48, 52, 0.72);
+  --header-bg: rgba(23, 23, 26, 0.6);
 }

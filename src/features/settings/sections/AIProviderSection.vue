@@ -6,6 +6,7 @@ import Select from "@/components/ui/Select.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
 import { useSettingsStore } from "@/stores/settings";
 import { useProviderEditor } from "../composables/useProviderEditor";
+import { ref } from "vue";
 import {
   Bot,
   Plus,
@@ -18,6 +19,7 @@ import {
   RefreshCw,
   Search,
   Wallet,
+  SlidersHorizontal,
 } from "lucide-vue-next";
 
 const settingsStore = useSettingsStore();
@@ -56,6 +58,77 @@ const {
   formatBalance,
   supportsBalance,
 } = useProviderEditor();
+
+// ── 功能 → Provider 分配（核心 5 类） ──
+interface FeatureSpec {
+  key: string;
+  label: string;
+  desc: string;
+  /** 时效性要求高：建议选择支持联网搜索或知识库较新的 Provider */
+  timeSensitive: boolean;
+}
+
+const FEATURES: FeatureSpec[] = [
+  {
+    key: "assistant",
+    label: "进度表 / 考纲生成",
+    desc: "AI 依据最新考纲生成进度表节点",
+    timeSensitive: true,
+  },
+  {
+    key: "briefing",
+    label: "每日简报",
+    desc: "基于昨日复盘与今日进度生成寄语与阶段估时",
+    timeSensitive: true,
+  },
+  {
+    key: "planner",
+    label: "周计划与目标倒排",
+    desc: "生成每周每日任务排程与目标倒排估时",
+    timeSensitive: false,
+  },
+  {
+    key: "reviewer",
+    label: "复盘分析",
+    desc: "整理复盘数据并给出后续建议",
+    timeSensitive: false,
+  },
+  {
+    key: "doubt",
+    label: "解惑答疑",
+    desc: "结合本地教材的引导式答疑",
+    timeSensitive: false,
+  },
+];
+
+const featureSaving = ref(false);
+const featureSavedFlash = ref(false);
+/** 功能 Provider 分配保存失败信息（保存失败时回滚本地选择并提示） */
+const featureSaveError = ref("");
+let featureSaveTimer: number | null = null;
+
+async function onFeatureProviderChange(feature: string, providerId: string | number | null) {
+  const value = providerId == null ? "" : String(providerId);
+  const previous = settingsStore.settings?.feature_providers?.[feature] ?? "";
+  settingsStore.setFeatureProvider(feature, value);
+  if (!settingsStore.settings) return;
+  featureSaveError.value = "";
+  featureSaving.value = true;
+  try {
+    await settingsStore.save();
+    featureSavedFlash.value = true;
+    if (featureSaveTimer != null) window.clearTimeout(featureSaveTimer);
+    featureSaveTimer = window.setTimeout(() => {
+      featureSavedFlash.value = false;
+    }, 1500);
+  } catch (e) {
+    // 保存失败：回滚下拉选择，避免界面显示已生效但实际未落盘
+    settingsStore.setFeatureProvider(feature, previous);
+    featureSaveError.value = `保存失败：${e instanceof Error ? e.message : String(e)}`;
+  } finally {
+    featureSaving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -269,4 +342,127 @@ const {
       </div>
     </div>
   </Card>
+
+  <!-- 功能 → Provider 分配 -->
+  <Card id="settings-feature-providers" padding="lg" class="settings-section">
+    <div class="section-head">
+      <div class="section-title">
+        <SlidersHorizontal :size="18" />
+        <span>功能 Provider 分配</span>
+      </div>
+      <span v-if="featureSavedFlash" class="saved-flash"><Check :size="13" /> 已保存</span>
+      <span v-else-if="featureSaving" class="saved-flash">保存中…</span>
+    </div>
+    <p class="section-desc">
+      为不同功能单独指定 AI Provider。未指定的功能使用默认 Provider。
+    </p>
+    <p v-if="featureSaveError" class="feature-save-error">{{ featureSaveError }}</p>
+
+    <div v-if="settingsStore.aiProviders.length === 0" class="empty-inline">
+      请先在上方添加 AI Provider。
+    </div>
+
+    <div v-else class="feature-map">
+      <div
+        v-for="f in FEATURES"
+        :key="f.key"
+        class="feature-row"
+      >
+        <div class="feature-info">
+          <div class="feature-name-row">
+            <span class="feature-name">{{ f.label }}</span>
+            <Badge v-if="f.timeSensitive" variant="warning">时效敏感</Badge>
+          </div>
+          <div class="feature-sub">{{ f.desc }}</div>
+          <div v-if="f.timeSensitive" class="feature-hint">
+            建议选择自带联网搜索能力或知识库更新较新的 API（云端大模型更合适），避免知识滞后导致考纲与教材内容过时。本地模型（Ollama）的知识取决于加载的权重，<strong>不建议</strong>用于此功能。
+          </div>
+        </div>
+        <Select
+          class="feature-select"
+          :model-value="settingsStore.settings?.feature_providers?.[f.key] ?? ''"
+          @update:model-value="(v) => onFeatureProviderChange(f.key, v)"
+        >
+          <option value="">跟随默认 Provider</option>
+          <option v-for="p in settingsStore.aiProviders" :key="p.id" :value="p.id">
+            {{ p.name }} · {{ p.model || p.type }}
+          </option>
+        </Select>
+      </div>
+    </div>
+  </Card>
 </template>
+
+<style scoped>
+.section-desc {
+  margin: 0 0 var(--space-3) 0;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.feature-save-error {
+  margin: 0 0 var(--space-3) 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  line-height: 1.5;
+}
+.saved-flash {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--color-success, #34c759);
+}
+.feature-map {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.feature-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  flex-wrap: wrap;
+}
+.feature-info {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.feature-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.feature-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.feature-sub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.feature-hint {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+.feature-select {
+  min-width: 220px;
+}
+.empty-inline {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+</style>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 withDefaults(defineProps<{
-  variant?: "primary" | "secondary" | "ghost" | "danger";
+  variant?: "primary" | "secondary" | "ghost" | "danger" | "soft";
   size?: "sm" | "md" | "lg";
   disabled?: boolean;
   loading?: boolean;
@@ -74,6 +74,23 @@ withDefaults(defineProps<{
 .secondary:hover:not(:disabled) {
   background: var(--sidebar-item-hover);
   border-color: var(--border-color-strong);
+}
+
+/* 柔和强调：同色极浅底 + 同色文字，层级高于 ghost、弱于 primary，
+   用于重要但不抢眼的主推操作（如「内置考纲 / AI 生成」） */
+.soft {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: var(--font-medium);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.soft:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, var(--accent-soft));
+  color: var(--accent-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 36%, transparent);
+}
+.soft:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, var(--accent-soft));
 }
 
 .ghost {

@@ -43,9 +43,6 @@ function goToday() {
 function goReview() {
   router.push("/review");
 }
-function goWeekPlan() {
-  router.push({ name: "week-plan" });
-}
 
 // ── 简报加载（含首次查看的闪烁提示与入场动画） ──
 async function loadBriefing() {
@@ -187,7 +184,6 @@ onBeforeUnmount(() => {
           @regenerate="briefing.regenerateBriefing"
           @go-today="goToday"
           @go-review="goReview"
-          @go-week-plan="goWeekPlan"
         />
 
         <!-- 右侧：昨日复盘摘要侧栏 -->
