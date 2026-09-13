@@ -11,12 +11,24 @@ use parking_lot::{Mutex, RwLock};
 
 use super::provider::*;
 
+/// 取消表类型：agent 键 → 该键下所有进行中请求的取消信号发送端
+pub type CancellationMap = Arc<Mutex<HashMap<String, Vec<Arc<tokio::sync::watch::Sender<bool>>>>>>;
+
 /// AI Service — 统一 AI 服务管理器
 pub struct AiService {
     /// Provider 实例缓存（按 provider ID 索引）
     providers: RwLock<HashMap<String, Arc<dyn AiProvider>>>,
     /// 默认 Provider ID
     default_provider_id: RwLock<String>,
+    /// 功能 → Provider ID 映射（按功能分别指定 Provider；缺省/未命中时回退默认 Provider）
+    ///
+    /// 键为功能标识（与 AgentType 小写一致），当前实际使用的有 5 个：
+    /// planner / reviewer / briefing / doubt / assistant。
+    /// `teacher` 的 system prompt 虽已定义（见 provider.rs），但目前没有任何调用入口，
+    /// 因此设置页的「功能 Provider 分配」只列出上述 5 项；将来启用 teacher 时
+    /// 需同步加入 `AIProviderSection.vue` 的 FEATURES 列表。
+    /// 值空串或指向不存在的 Provider 时回退默认。
+    feature_providers: RwLock<HashMap<String, String>>,
     /// 活跃请求的取消令牌（按 agent 键索引）
     ///
     /// 前端通过 `cancel_ai_request` 命令触发取消，`chat`/`chat_stream`
@@ -24,7 +36,12 @@ pub struct AiService {
     /// 值改为 Vec（C2）：同一 agent 可能并发发起多个请求，各自 push 自己的
     /// sender；结束按指针移除自项。key 保持为 agent 键，前端契约不变，取消时
     /// 对同 agent 的所有并发请求发信号（语义：取消该 agent 的进行中请求）。
-    cancellations: Mutex<HashMap<String, Vec<Arc<tokio::sync::watch::Sender<bool>>>>>,
+    ///
+    /// 用 `Arc` 共享：`reinitialize_services` 会整体替换服务实例（保存设置时），
+    /// 而进行中的流注册在旧实例上；两张表各自独立的话，替换后前端就再也取消不了
+    /// 这些流（`cancel_request` 在新实例里查不到）。重建时用
+    /// `adopt_cancellations` 复用同一张表即可。
+    cancellations: CancellationMap,
 }
 
 impl AiService {
@@ -33,39 +50,108 @@ impl AiService {
         Self {
             providers: RwLock::new(HashMap::new()),
             default_provider_id: RwLock::new(String::new()),
-            cancellations: Mutex::new(HashMap::new()),
+            feature_providers: RwLock::new(HashMap::new()),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    /// 取取消表句柄（供重建服务时共享，见 `adopt_cancellations`）
+    pub fn cancellations_handle(&self) -> CancellationMap {
+        Arc::clone(&self.cancellations)
+    }
+
+    /// 复用另一实例的取消表：保证服务重建前后「进行中的流」仍可被取消
+    pub fn adopt_cancellations(&mut self, map: CancellationMap) {
+        self.cancellations = map;
+    }
+
     /// 从配置列表创建 AI Service
-    pub fn from_configs(configs: Vec<AIProviderConfig>) -> Self {
+    ///
+    /// `feature_providers`：功能键 → Provider ID（可为空 = 全部使用默认 Provider）。
+    pub fn from_configs(
+        configs: Vec<AIProviderConfig>,
+        feature_providers: HashMap<String, String>,
+    ) -> Self {
         let service = Self::new();
 
+        // 记录配置（注册）顺序，用于「无默认 Provider」时的确定性回退：
+        // HashMap 的 keys().next() 顺序不确定，会让默认 Provider 随机漂移。
+        let mut configured_order: Vec<String> = Vec::new();
+
         for config in configs {
-            if config.enabled {
-                let id = config.id.clone();
-                let is_default = config.is_default;
+            if !config.enabled {
+                continue;
+            }
+            let id = config.id.clone();
+            let is_default = config.is_default;
+            configured_order.push(id.clone());
 
-                if let Ok(provider) = create_provider(config) {
+            match create_provider(config) {
+                Ok(provider) => {
                     service.providers.write().insert(id.clone(), provider);
-
                     if is_default {
-                        *service.default_provider_id.write() = id.clone();
+                        *service.default_provider_id.write() = id;
                     }
+                }
+                Err(e) => {
+                    // 不静默失败：否则用户看到「配置了却不生效」，且无从定位
+                    log::error!("创建 AI Provider「{}」失败，该 Provider 不可用: {}", id, e);
                 }
             }
         }
 
-        // 如果没有默认 provider，使用第一个
+        // 没有可用默认 Provider 时，按配置顺序取第一个成功注册的（确定性回退）
         let default_id = service.default_provider_id.read().clone();
         if default_id.is_empty() {
             let providers = service.providers.read();
-            if let Some(first_id) = providers.keys().next() {
+            if let Some(first_id) = configured_order
+                .iter()
+                .find(|id| providers.contains_key(id.as_str()))
+            {
                 *service.default_provider_id.write() = first_id.clone();
             }
         }
 
+        service.set_feature_providers(feature_providers);
+
         service
+    }
+
+    /// 更新「功能 → Provider」映射
+    pub fn set_feature_providers(&self, map: HashMap<String, String>) {
+        *self.feature_providers.write() = map;
+    }
+
+    /// 读取「功能 → Provider」映射
+    pub fn feature_providers(&self) -> HashMap<String, String> {
+        self.feature_providers.read().clone()
+    }
+
+    /// 解析某功能应使用的 Provider ID。
+    ///
+    /// 命中映射且该 Provider 已注册 → 用它；否则回退默认 Provider。
+    pub fn provider_id_for_feature(&self, feature: &str) -> String {
+        let default_id = self.default_provider_id.read().clone();
+        let mapped = self
+            .feature_providers
+            .read()
+            .get(feature)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        if mapped.is_empty() || mapped == default_id {
+            return default_id;
+        }
+        if self.providers.read().contains_key(&mapped) {
+            mapped
+        } else {
+            log::warn!(
+                "功能 {} 指定的 Provider {} 不存在或未启用，回退默认 Provider {}",
+                feature,
+                mapped,
+                default_id
+            );
+            default_id
+        }
     }
 
     /// 添加 Provider
@@ -187,8 +273,17 @@ impl AiService {
         }
     }
 
-    /// 根据请求的 agent 类型生成取消键
-    fn cancel_key(req: &ChatRequest) -> String {
+    /// 取消键（同时用作「功能 → Provider」映射键）：由请求的 agent 类型小写化得到。
+    ///
+    /// **同一字符串承担两种职责**，这是有意的：
+    /// - 作为功能键：`provider_id_for_feature` 用它查「功能 → Provider」映射；
+    /// - 作为取消键：`cancel_request` 按它取消该 agent 的**全部**进行中请求。
+    ///
+    /// 副作用边界：同一 agent 键下若并发跑多个不同业务（例如都是 `assistant` 的
+    /// 「进度表生成」与「通用助手」），取消其中一个会把同键的另一个一并取消。
+    /// 当前前端各视图用各自专属键（planner/doubt 等）发起请求，实际冲突面很小；
+    /// 若将来需要精确取消，应引入请求级 requestId 并把两种键解耦。
+    fn agent_key(req: &ChatRequest) -> String {
         req.agent
             .as_ref()
             .map(|a| format!("{:?}", a).to_lowercase())
@@ -219,8 +314,8 @@ impl AiService {
     /// 聊天（非流式）
     ///
     /// 1. 根据 agent 类型注入 system prompt
-    /// 2. 使用默认 provider 发送请求
-    /// 3. 如果默认 provider 失败，尝试备用 provider
+    /// 2. 按「功能 → Provider」映射选择 Provider（未配置则用默认）
+    /// 3. 如果该 Provider 失败，尝试其余的备用 provider
     /// 4. 记录 token 用量到持久化日志
     pub async fn chat(&self, mut req: ChatRequest) -> Result<ChatResponse, String> {
         // 注入 system prompt
@@ -233,25 +328,31 @@ impl AiService {
             inject_system_prompt(&mut req, &agent);
         }
 
-        // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发
-        let cancel_key = Self::cancel_key(&req);
+        // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发。
+        //
+        // 顺序要求：**先解析 Provider，再注册令牌**（同 chat_stream）。
+        // 若先注册再 `get_provider(...)?` 失败返回，令牌会残留在 cancellations 中，
+        // 导致后续 cancel_request 命中陈旧 sender、误报「已请求取消」。
+        let cancel_key = Self::agent_key(&req);
+        let primary_id = self.provider_id_for_feature(&cancel_key);
+        let primary_provider = self.get_provider(&primary_id)?;
+
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         // C2：sender 包成 Arc 存入 Vec，支持同 agent 并发多个请求
         let cancel_tx = Arc::new(cancel_tx);
         self.register_cancellation(&cancel_key, Arc::clone(&cancel_tx));
 
-        let default_provider = self.get_default_provider()?;
         let req_model = req
             .model
             .clone()
-            .unwrap_or_else(|| default_provider.config().model.clone());
+            .unwrap_or_else(|| primary_provider.config().model.clone());
         let started = std::time::Instant::now();
 
         let result = if *cancel_rx.borrow() {
             Err(REQUEST_CANCELLED.to_string())
         } else {
             tokio::select! {
-                r = default_provider.chat(&req) => r,
+                r = primary_provider.chat(&req) => r,
                 _ = cancel_rx.changed() => Err(REQUEST_CANCELLED.to_string()),
             }
         };
@@ -265,14 +366,19 @@ impl AiService {
                     // 用户主动取消：不切换 fallback provider
                     Err(e)
                 } else {
-                    log::warn!("默认 Provider 调用失败: {}", e);
+                    log::warn!(
+                        "Provider {}（功能 {}）调用失败: {}",
+                        primary_id,
+                        cancel_key,
+                        e
+                    );
                     // M31：仅有一个 provider（无备用）时，跳过 fallback 遍历，
                     // 直接返回主调用的原始错误，避免无意义的循环与困惑日志
                     if !self.has_backup_provider() {
                         log::debug!("[AI-DEBUG] 无备用 provider，跳过 fallback");
                         Err(e)
                     } else {
-                        let fallback = self.fallback_chat(&req).await;
+                        let fallback = self.fallback_chat(&req, &primary_id).await;
                         if fallback.is_err() {
                             return Err(format!("Provider 调用失败: {}", e));
                         }
@@ -293,7 +399,7 @@ impl AiService {
     /// 通过回调函数返回每个 chunk
     /// 完成后记录 token 用量到持久化日志
     ///
-    /// H9：默认 provider 失败时尝试备用 provider；
+    /// H9：主 Provider 失败时尝试其余备用 provider；
     /// 若已发出部分 chunk，先发送 reset 标记通知前端清空再切换。
     pub async fn chat_stream(
         &self,
@@ -310,8 +416,15 @@ impl AiService {
             inject_system_prompt(&mut req, &agent);
         }
 
-        // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发
-        let cancel_key = Self::cancel_key(&req);
+        // 注册取消令牌（按 agent 键），供前端 cancel_ai_request 触发。
+        //
+        // 顺序要求：**先解析 Provider，再注册令牌**。`get_provider` 失败会以 `?` 提前返回，
+        // 若注册发生在它之前，令牌会永久残留在 cancellations 里，之后 cancel_request
+        // 会命中陈旧 sender 并误报「已请求取消」。
+        let cancel_key = Self::agent_key(&req);
+        let primary_id = self.provider_id_for_feature(&cancel_key);
+        let primary_provider = self.get_provider(&primary_id)?;
+
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         // C2：sender 包成 Arc 存入 Vec，支持同 agent 并发多个请求
         let cancel_tx = Arc::new(cancel_tx);
@@ -320,17 +433,16 @@ impl AiService {
         let on_chunk_ref: &(dyn Fn(ChatStreamChunk) + Send + Sync) = &on_chunk;
         let started = std::time::Instant::now();
 
-        let default_provider = self.get_default_provider()?;
         let req_model = req
             .model
             .clone()
-            .unwrap_or_else(|| default_provider.config().model.clone());
+            .unwrap_or_else(|| primary_provider.config().model.clone());
 
         let result = if *cancel_rx.borrow() {
             Err(REQUEST_CANCELLED.to_string())
         } else {
             tokio::select! {
-                r = default_provider.chat_stream(&req, on_chunk_ref) => r,
+                r = primary_provider.chat_stream(&req, on_chunk_ref) => r,
                 _ = cancel_rx.changed() => Err(REQUEST_CANCELLED.to_string()),
             }
         };
@@ -339,8 +451,13 @@ impl AiService {
             Ok(resp) => Ok(resp),
             Err(e) if e.contains(REQUEST_CANCELLED) => Err(e),
             Err(e) => {
-                log::warn!("默认 Provider 流式调用失败: {}", e);
-                // 若默认 provider 已发出部分内容，先发 reset 标记通知前端清空，再切换
+                log::warn!(
+                    "Provider {}（功能 {}）流式调用失败: {}",
+                    primary_id,
+                    cancel_key,
+                    e
+                );
+                // 若主 Provider 已发出部分内容，先发 reset 标记通知前端清空，再切换
                 on_chunk(ChatStreamChunk {
                     content: String::new(),
                     done: false,
@@ -357,7 +474,7 @@ impl AiService {
                 } else {
                     // 尝试备用 provider（带取消检测）
                     match self
-                        .fallback_chat_stream(&req, on_chunk_ref, &mut cancel_rx)
+                        .fallback_chat_stream(&req, on_chunk_ref, &mut cancel_rx, &primary_id)
                         .await
                     {
                         Ok(resp) => Ok(resp),
@@ -376,17 +493,16 @@ impl AiService {
         result
     }
 
-    /// Fallback 流式聊天：依次尝试备用 provider（跳过默认 provider）
+    /// Fallback 流式聊天：依次尝试备用 provider（跳过已失败的主 Provider）
     ///
-    /// 与 `fallback_chat` 对应，供 `chat_stream` 在默认 provider 失败时使用。
+    /// 与 `fallback_chat` 对应，供 `chat_stream` 在主 Provider 失败时使用。
     async fn fallback_chat_stream(
         &self,
         req: &ChatRequest,
         on_chunk: &(dyn Fn(ChatStreamChunk) + Send + Sync),
         cancel_rx: &mut tokio::sync::watch::Receiver<bool>,
+        skip_id: &str,
     ) -> Result<ChatResponse, String> {
-        let default_id = self.default_provider_id.read().clone();
-
         // 克隆出 provider 列表后立即释放读锁，避免在 `.await` 期间
         // 持有 `RwLockReadGuard`（该守卫不是 `Send`）。
         let providers: Vec<(String, Arc<dyn AiProvider>)> = {
@@ -398,8 +514,8 @@ impl AiService {
         };
 
         for (id, provider) in &providers {
-            if *id == default_id {
-                continue; // 跳过已失败的默认 provider
+            if id == skip_id {
+                continue; // 跳过已失败的主 Provider
             }
             log::info!("尝试备用 Provider 流式: {}", id);
             let r = if *cancel_rx.borrow() {
@@ -423,10 +539,12 @@ impl AiService {
         Err("所有 Provider 均调用失败".to_string())
     }
 
-    /// Fallback 聊天：尝试其他 provider
-    async fn fallback_chat(&self, req: &ChatRequest) -> Result<ChatResponse, String> {
-        let default_id = self.default_provider_id.read().clone();
-
+    /// Fallback 聊天：尝试其他 provider（跳过已失败的主 Provider）
+    async fn fallback_chat(
+        &self,
+        req: &ChatRequest,
+        skip_id: &str,
+    ) -> Result<ChatResponse, String> {
         // 克隆出 provider 列表后立即释放读锁，避免在 `.await` 期间持有
         // `RwLockReadGuard`（该守卫不是 `Send`，会导致 future 不满足 `Send`）。
         // `Arc<dyn AiProvider>` 的克隆仅增加引用计数，开销很小。
@@ -439,8 +557,8 @@ impl AiService {
         };
 
         for (id, provider) in &providers {
-            if *id == default_id {
-                continue; // 跳过已失败的默认 provider
+            if id == skip_id {
+                continue; // 跳过已失败的主 Provider
             }
 
             log::info!("尝试备用 Provider: {}", id);

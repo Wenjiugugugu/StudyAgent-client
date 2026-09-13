@@ -304,8 +304,59 @@ const weekCompletedTasks = computed(() =>
 
 const goals = computed(() => weekPlan.value?.data?.goals ?? []);
 
-// 本周任务量自校准信息（基于上周完成率自动下调每日任务数）
+// 本周任务量自校准信息（v2：近 5 日加权窗口/趋势/连续达标 自动调整每日任务数）
 const calibration = computed(() => weekPlan.value?.data?.calibration);
+
+/** 校准方向：下调 / 上调 / 仅预算变化（条数不变） */
+const calibDirection = computed<"up" | "down" | "none">(() => {
+  const c = calibration.value;
+  if (!c) return "none";
+  if (c.effective_daily_task_count < c.base_daily_task_count) return "down";
+  if (c.effective_daily_task_count > c.base_daily_task_count) return "up";
+  if (c.coefficient < 0.995) return "down";
+  if (c.coefficient > 1.005) return "up";
+  return "none";
+});
+
+/** v2 命中规则 → 一句话原因 */
+function calibRuleLabel(rule?: string): string {
+  if (!rule) return "基于近期完成率与任务量反馈自动校准";
+  if (rule.startsWith("A1")) return "连续 7 天达标且窗口高位 → 适度加量";
+  if (rule.startsWith("A2")) return "连续 5 天达标 → 适度加量";
+  if (rule.startsWith("A3")) return "近端连续达标且窗口回升 → 适度加量";
+  if (rule.startsWith("D")) return "近期完成率窗口不足且无回升趋势 → 暂下调，优先保证完成";
+  if (rule === "recovering_observe") return "完成率明显回升中 → 暂观察，不加不降";
+  if (rule === "observe_single_day_crash") return "仅单日完成率骤降 → 先观察一天，不立即减量";
+  if (rule === "upgrade_blocked_low_energy") return "连续达标但精力不足 → 暂不加量，恢复精力后再升";
+  if (rule === "no_adjust_insufficient_data") return "有效学习日数据不足 → 暂不调整";
+  if (rule === "keep_1.00") return "近期信号平稳 → 保持基准任务量";
+  return "基于近期完成率与任务量反馈自动校准";
+}
+
+/** v2 三信号摘要（供校准卡片解释） */
+const calibSignalsText = computed(() => {
+  const c = calibration.value;
+  if (!c) return "";
+  const parts: string[] = [];
+  if (typeof c.window_mean === "number" && c.window_mean > 0) {
+    parts.push(`近5个学习日加权完成率 ${Math.round(c.window_mean)}%`);
+  }
+  if (typeof c.trend_pp === "number" && c.trend_pp !== 0) {
+    parts.push(`趋势 ${c.trend_pp >= 0 ? "+" : ""}${Math.round(c.trend_pp)}pp`);
+  }
+  if (typeof c.streak_days === "number" && c.streak_days > 0) {
+    parts.push(`连续达标 ${c.streak_days} 天`);
+  }
+  return parts.join("、");
+});
+
+/** 是否展示校准卡片：条数有变化，或 v2 规则明确触发（含加量） */
+const showCalibration = computed(() => {
+  const c = calibration.value;
+  if (!c) return false;
+  if (c.effective_daily_task_count !== c.base_daily_task_count) return true;
+  return !!c.applied_rule && (c.coefficient < 0.995 || c.coefficient > 1.005);
+});
 
 // 是否启用「记录学习时长」：关闭时隐藏计划学时相关展示
 const timeTrackingEnabled = computed(
@@ -677,20 +728,38 @@ onMounted(async () => {
         </div>
       </Card>
 
-      <!-- 任务量自动校准提示 -->
+      <!-- 任务量自动校准提示（v2：近 5 日窗口/趋势/连续达标） -->
       <Card
-        v-if="calibration && calibration.effective_daily_task_count < calibration.base_daily_task_count"
+        v-if="calibration && showCalibration"
         padding="md"
         class="calib-banner"
+        :class="calibDirection === 'up' ? 'calib-banner--up' : ''"
       >
         <div class="calib-content">
           <Info :size="16" class="calib-icon" />
           <div class="calib-text">
-            <span class="calib-strong">本周每日任务数已自动调整</span>
+            <span class="calib-strong">
+              {{
+                calibDirection === 'up'
+                  ? '本周每日任务数已自动上调'
+                  : calibDirection === 'down'
+                    ? '本周每日任务数已自动调整'
+                    : '本周任务量已自动校准'
+              }}
+            </span>
             <span class="calib-detail">
-              因上周复盘完成率仅 {{ Math.round(calibration.avg_completion_rate) }}% 未达标，
-              本周每日任务数由 {{ calibration.base_daily_task_count }} 自动下调至 {{ calibration.effective_daily_task_count }}，
-              优先保证完成；完成率回升后会自动恢复正常任务量。
+              <template v-if="calibDirection !== 'none'">
+                由 {{ calibration.base_daily_task_count }} 调整至
+                {{ calibration.effective_daily_task_count }}：{{
+                  calibRuleLabel(calibration.applied_rule)
+                }}
+              </template>
+              <template v-else>
+                {{ calibRuleLabel(calibration.applied_rule) }}
+              </template>
+              <span v-if="calibSignalsText" class="calib-signals">
+                （{{ calibSignalsText }}）
+              </span>
             </span>
           </div>
         </div>
@@ -1046,7 +1115,7 @@ onMounted(async () => {
 }
 
 .bar-icon {
-  color: var(--accent);
+  color: var(--text-tertiary);
   flex-shrink: 0;
 }
 
@@ -1118,6 +1187,20 @@ onMounted(async () => {
 .calib-detail {
   font-size: var(--text-xs);
   color: var(--text-secondary);
+}
+
+/* 上调变体（下调沿用原有 accent 样式） */
+.calib-banner--up {
+  border-color: rgba(29, 158, 117, 0.45);
+  background: rgba(29, 158, 117, 0.08);
+}
+
+.calib-banner--up .calib-icon {
+  color: #1d9e75;
+}
+
+.calib-signals {
+  color: var(--text-tertiary);
 }
 
 .summary-grid {

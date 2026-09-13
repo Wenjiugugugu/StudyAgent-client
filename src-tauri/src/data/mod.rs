@@ -44,11 +44,23 @@ use chrono::Datelike;
 /// 应用统一 Result 类型别名
 pub type DataResult<T> = Result<T, String>;
 
+/// 写入串行锁：`atomic_write` 的临时文件名与目标同名（`<name>.tmp`），
+/// 若同进程内两个 async 命令并发写同一文件，会互相覆盖临时文件并产生错乱内容。
+/// 这里用进程级互斥把「创建临时文件 → 写入 → rename」整体串行化。
+///
+/// 注意：本锁只保证**单次写入**的原子性，不保证「读-改-写」序列的互斥
+///（两个命令各自读到旧值再分别写回，仍会丢更新）。需要防丢更新的调用方
+/// 应在命令层串行化，或改用带版本校验的读改写封装。
+static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 原子写入文件：先写临时文件，再 rename 到目标路径
 ///
 /// 临时文件与目标文件在同一目录，保证同卷 rename 在 Windows/Linux 上均为原子操作。
-/// 若写入过程中进程崩溃，临时文件残留但目标文件不受影响。
+/// 若写入过程中进程崩溃，临时文件残留但目标文件不受影响
+///（固定临时名意味着下次写入会直接覆盖残留，不会累积垃圾文件）。
 pub fn atomic_write(path: &Path, content: &str) -> DataResult<()> {
+    // 写入期间持锁；锁中毒（持锁线程 panic）时按「可继续使用」处理，避免一次 panic 永废写能力
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = path.with_extension("tmp");
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -192,14 +204,19 @@ fn parse_naive_date(date: &str) -> DataResult<chrono::NaiveDate> {
         .map_err(|e| format!("无效日期格式: {} ({})", date, e))
 }
 
-/// 校验日期字符串是否符合 `YYYY-MM-DD` 格式（C4-c）
+/// 校验日期字符串是否为合法的 `YYYY-MM-DD` 格式**且日期真实存在**（C4-c）
 ///
 /// 用于所有接收 `date` 参数的命令入口，防止恶意输入（如 `../../config/settings`）
 /// 通过路径拼接穿越数据目录。
+///
+/// 除格式外还做语义校验（复用 `parse_naive_date`）：`2026-13-45`、`2026-02-30`
+/// 这类字符串格式合法但日期不存在，若放行会被下游的字符串日期比较误判为
+/// 「永不过期」（`"2026-99-99" >= today` 恒真），并在 `add_days`/解析链路静默失败。
 pub fn validate_date(date: &str) -> DataResult<()> {
     if !is_valid_date_format(date) {
         return Err(format!("无效日期格式: {}", date));
     }
+    parse_naive_date(date)?;
     Ok(())
 }
 
@@ -310,4 +327,33 @@ pub fn clean_ai_json(content: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_date_accepts_real_dates() {
+        assert!(validate_date("2026-09-13").is_ok());
+        assert!(validate_date("2024-02-29").is_ok()); // 闰年 2/29 存在
+    }
+
+    #[test]
+    fn validate_date_rejects_bad_format() {
+        assert!(validate_date("2026-9-13").is_err());
+        assert!(validate_date("2026/09/13").is_err());
+        assert!(validate_date("").is_err());
+        // 路径穿越防护（原职责）仍生效
+        assert!(validate_date("../../config/settings").is_err());
+    }
+
+    #[test]
+    fn validate_date_rejects_nonexistent_dates() {
+        // 格式合法但日期不存在：必须拒绝，否则字符串比较会把它当成「永不过期」
+        assert!(validate_date("2026-13-45").is_err());
+        assert!(validate_date("2026-02-30").is_err());
+        assert!(validate_date("2025-02-29").is_err()); // 非闰年
+        assert!(validate_date("2026-00-10").is_err());
+    }
 }

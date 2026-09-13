@@ -87,6 +87,8 @@ export interface DailyPlanData {
   reminders?: string[];
   total_hours: number;
   total_tasks: number;
+  /** 生成时的降级提示（如某本书目标倒排失败、任务因时长预算被裁剪），供前端展示 */
+  warnings?: string[];
 }
 
 /** 日计划文件（完整 JSON） */
@@ -123,16 +125,28 @@ export interface WeekPlanData {
   calibration?: WeekCalibration;
 }
 
-/** 每周任务量自校准元数据（记录自动减量原因） */
+/** 每周任务量自校准元数据（记录自动调整原因） */
 export interface WeekCalibration {
   /** 基准每日任务数（用户设置） */
   base_daily_task_count: number;
   /** 自动校准后的有效每日任务数 */
   effective_daily_task_count: number;
-  /** 自校准系数（<1.0 表示减量） */
+  /** 自校准系数（<1.0 减量，>1.0 加量） */
   coefficient: number;
-  /** 上周复盘平均完成率（0-100） */
+  /** 上周复盘平均完成率（0-100），仅历史参考（v2 决策不使用它） */
   avg_completion_rate: number;
+  /** v2：近 ≤5 个有效学习日加权完成率均值（0..100，0 = 数据不足） */
+  window_mean?: number;
+  /** v2：趋势（百分点，近 2 日均 − 前 3 日均） */
+  trend_pp?: number;
+  /** v2：连续达标天数（完成率 ≥ 90%） */
+  streak_days?: number;
+  /** v2：近 3 日精力均值（1..5，0 = 样本不足） */
+  energy_mean?: number;
+  /** v2：单日骤降保护是否激活 */
+  crash_guard_active?: boolean;
+  /** v2：本轮命中的规则标识（A1/A2/A3/D1..D4/keep_1.00 等） */
+  applied_rule?: string;
 }
 
 /** 特殊情况排除日类型 */

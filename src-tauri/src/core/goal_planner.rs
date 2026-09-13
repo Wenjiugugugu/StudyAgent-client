@@ -44,6 +44,14 @@ pub fn subject_display_name(subject: &SubjectKey) -> &'static str {
     }
 }
 
+/// 去掉任务标题中的「（科目）」前缀，取回纯知识点名。
+///
+/// 用 `strip_prefix` 只剥一次：`trim_start_matches` 会重复剥离，
+/// 当知识点名本身也以该串开头时（如「（数学）数学分析」）会被误剥两层。
+fn strip_subject_prefix<'a>(title: &'a str, prefix: &str) -> &'a str {
+    title.strip_prefix(prefix).unwrap_or(title)
+}
+
 /// 从 StudyState 取某科目当前的 math/english 版本标签（用于 chapter_seq 定位）
 pub fn subject_version(state: &crate::data::state::StudyState, key: &str) -> String {
     match key {
@@ -69,12 +77,21 @@ fn backward_schedule(
         // 已达标，无需安排
         return out;
     }
+    // 截止日早于起始日：区间为空。调用方（调度器）已用 active_goals_for_subject 过滤过，
+    // 但命令层可指定任意 goal_id，这里必须短路——否则下面的按日推进循环永远等不到
+    // `cur == deadline`（日期会一路加到溢出），造成死循环。
+    if deadline < today {
+        return out;
+    }
     let remaining = target_pos - current_pos;
+
+    // 兜底上限（约 10 年）：即使日期字符串异常，也不允许无限推进
+    const MAX_DAYS: usize = 3660;
 
     // 收集 today..=deadline 内可用的学习日（剔除休息/排除日）
     let mut study_days: Vec<String> = Vec::new();
     let mut cur = today.to_string();
-    loop {
+    for _ in 0..MAX_DAYS {
         if !rest_or_excluded.iter().any(|d| d == &cur) {
             study_days.push(cur.clone());
         }
@@ -123,6 +140,14 @@ pub fn plan_goal_tasks_sync(
     let Some((start_pos, target_pos)) = goal.current_position.zip(goal.target_position) else {
         return Err("目标未初始化 current_position/target_position".to_string());
     };
+
+    // 空区间短路：截止日缺失或早于 `date`（已过期）时，倒排区间为空。
+    // 必须在这里返回，而不是依赖下游——下游的 `rest_days_as_dates` / `backward_schedule`
+    // 都按「从 date 逐日推进到 deadline」实现，区间反向时会等待永远不成立的
+    // `cur == deadline` 而陷入死循环（2026-09-13 由运行时冒烟测试发现）。
+    if goal.deadline.is_empty() || goal.deadline.as_str() < date {
+        return Ok(Vec::new());
+    }
 
     // 把「周日」这类休息日名称转成区间 [date, deadline] 内的具体日期集合
     let settings = crate::load_settings(data_dir);
@@ -191,19 +216,14 @@ pub async fn plan_goal_tasks(
     let mut tasks = plan_goal_tasks_sync(data_dir, goal, date, version)?;
     let subject = &goal.subject;
     // AI 估时（按知识点标题匹配叠加）
+    let prefix = format!("（{}）", subject_display_name(subject));
     let knowledge: Vec<String> = tasks
         .iter()
-        .map(|t| {
-            t.title
-                .trim_start_matches(&format!("（{}）", subject_display_name(subject)))
-                .to_string()
-        })
+        .map(|t| strip_subject_prefix(&t.title, &prefix).to_string())
         .collect();
     let estimate = estimate_tasks_hours(data_dir, ai, subject, version, &knowledge).await;
     for t in tasks.iter_mut() {
-        let kp = t
-            .title
-            .trim_start_matches(&format!("（{}）", subject_display_name(subject)));
+        let kp = strip_subject_prefix(&t.title, &prefix);
         if let Some(h) = estimate.get(kp) {
             t.estimated_hours = *h;
         }
@@ -407,8 +427,14 @@ fn rest_days_as_dates(rest_day_names: &[String], from: &str, to: &str) -> Vec<St
         return Vec::new();
     }
     let mut out = Vec::new();
+    // 终点早于起点：区间为空。旧实现会一路 `add_days` 等 `cur == to`（永远等不到）→ 死循环。
+    if to < from {
+        return out;
+    }
+    // 兜底上限（约 10 年）：即使日期字符串异常，也不允许无限推进
+    const MAX_DAYS: usize = 3660;
     let mut cur = from.to_string();
-    loop {
+    for _ in 0..MAX_DAYS {
         if let Ok(wd) = crate::data::get_weekday(&cur) {
             let wd_name = names[wd.min(6) as usize];
             if rest_day_names.iter().any(|n| n == wd_name) {
@@ -463,6 +489,87 @@ mod tests {
     fn backward_schedule_target_reached_is_empty() {
         let schedule = backward_schedule("2026-09-04", "2026-09-09", 10, 10, &[]);
         assert!(schedule.is_empty());
+    }
+
+    /// 截止日早于起始日：必须立即返回空，且**不能死循环**
+    ///（旧实现会一路 add_days 等 `cur == deadline`，日期早于 today 时永远等不到）
+    #[test]
+    fn backward_schedule_with_past_deadline_returns_empty() {
+        let schedule = backward_schedule("2026-09-10", "2026-09-01", 0, 5, &[]);
+        assert!(schedule.is_empty());
+        // 同一天不算过期，应正常排出 1 天
+        let same_day = backward_schedule("2026-09-10", "2026-09-10", 0, 3, &[]);
+        assert_eq!(same_day.len(), 1);
+        assert_eq!(same_day[0].1, vec![1, 2, 3]);
+    }
+
+    /// 休息日展开：反向区间同样不得死循环（与 backward_schedule 同源的实现缺陷）
+    #[test]
+    fn rest_days_as_dates_with_reversed_range_returns_empty() {
+        let rest = vec!["周日".to_string()];
+        assert!(
+            rest_days_as_dates(&rest, "2026-09-10", "2026-09-01").is_empty(),
+            "终点早于起点时应返回空而非死循环"
+        );
+        // 正向仍正常：2026-09-06 是周日
+        assert_eq!(
+            rest_days_as_dates(&rest, "2026-09-01", "2026-09-07"),
+            vec!["2026-09-06".to_string()]
+        );
+    }
+
+    /// 过期目标：`plan_goal_tasks_sync` 应安全返回空（区间为空时短路）
+    #[test]
+    fn plan_goal_tasks_sync_returns_empty_for_expired_deadline() {
+        let goal = Goal {
+            id: "g-expired".to_string(),
+            subject: SubjectKey::Math,
+            title: "过期目标".to_string(),
+            deadline: "2026-07-01".to_string(),
+            target_chapter: String::new(),
+            current_position: Some(0),
+            target_position: Some(5),
+            active: true,
+            status: "active".to_string(),
+            ..Default::default()
+        };
+        let out = plan_goal_tasks_sync(std::path::Path::new("."), &goal, "2026-07-28", "数二")
+            .expect("过期目标应返回空而非报错");
+        assert!(out.is_empty());
+    }
+
+    /// `current_position` 语义回归测试：它表示「已完成到的位置」，倒排必须从 +1 开始派发。
+    ///
+    /// 这条语义是 `create_goal`/`update_goal` 里「起始位置」取值方式的前提：
+    /// 用户选的起始章本身要学，因此那里存的是 `position(start_chapter) - 1`。
+    /// 一旦有人把 `backward_schedule` 改成从 `current_pos` 本身开始，起始章就会被重复学；
+    /// 反之若 create/update 存了 `position`，起始章会被静默跳过（2026-09-13 修复的 bug）。
+    #[test]
+    fn backward_schedule_starts_right_after_current_position() {
+        // 已完成到下标 4，目标下标 6 → 应推进 [5] 与 [6]
+        let schedule = backward_schedule("2026-09-13", "2026-09-14", 4, 6, &[]);
+        assert_eq!(schedule.len(), 2);
+        assert_eq!(schedule[0].1, vec![5]);
+        assert_eq!(schedule[1].1, vec![6]);
+        assert!(
+            !schedule.iter().any(|(_, s)| s.contains(&4)),
+            "已完成的 current_position 不应再次出现在推进列表"
+        );
+    }
+
+    /// 起始位置回归：`position(start_chapter) - 1` 时，起始章本身必须出现在第一个学习日。
+    #[test]
+    fn start_chapter_is_included_when_current_position_is_previous() {
+        // 起始章下标 5 → current_position = 4（模拟 create_goal 的换算）
+        let start_chapter_pos = 5usize;
+        let current_position = start_chapter_pos.saturating_sub(1);
+        let schedule = backward_schedule("2026-09-13", "2026-09-13", current_position, 5, &[]);
+        assert_eq!(schedule.len(), 1);
+        assert_eq!(
+            schedule[0].1,
+            vec![5],
+            "用户选中的起始章（下标 5）必须被安排学习，不能被跳过"
+        );
     }
 
     #[test]

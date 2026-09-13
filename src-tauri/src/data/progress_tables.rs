@@ -6,8 +6,7 @@
 //! 持久化到 `{data_dir}/progress_tables/progress_index.json`：
 //! ```json
 //! {
-//!   "subjects": { "math": { "active_id": "t1", "tables": [ ... ] } },
-//!   "web_search": { "enabled": false, "provider": "bocha", "base_url": "", "api_key": "" }
+//!   "subjects": { "math": { "active_id": "t1", "tables": [ ... ] } }
 //! }
 //! ```
 
@@ -186,23 +185,11 @@ pub struct SubjectProgressSet {
     pub tables: Vec<ProgressTable>,
 }
 
-/// 联网搜索配置（AI 生成进度表时可选拉取最新考研大纲）
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", default)]
-pub struct WebSearchConfig {
-    pub enabled: bool,
-    /// 搜索厂商：暂支持 "bocha"（博查查）
-    pub provider: String,
-    pub base_url: String,
-    pub api_key: String,
-}
-
 /// 全部进度表索引
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", default)]
 pub struct ProgressIndex {
     pub subjects: HashMap<String, SubjectProgressSet>,
-    pub web_search: WebSearchConfig,
 }
 
 // ============================================================================

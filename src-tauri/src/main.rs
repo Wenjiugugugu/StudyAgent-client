@@ -223,7 +223,6 @@ fn main() {
             update_goal,
             delete_goal,
             generate_goal_plan,
-            get_goal_start_chapter,
             // Analytics
             get_analytics,
             // Review
@@ -256,8 +255,6 @@ fn main() {
             apply_progress_statuses,
             batch_update_progress,
             default_progress_variants,
-            get_progress_settings,
-            set_progress_settings,
             // Background image
             save_background_image,
             delete_background_image,

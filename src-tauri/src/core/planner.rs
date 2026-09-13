@@ -294,8 +294,7 @@ impl<'a> Planner<'a> {
         // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
         // （区间科目内容由 scheduler 确定性倒排接管）。
         let week_start = &week_plan.meta.week_start;
-        let goal_subjects =
-            goal_active_subjects(data_dir, &state, review_date, week_start, &week_end);
+        let goal_subjects = goal_active_subjects(data_dir, review_date, week_start);
         let (subject_time_allocation, daily_target_hours) =
             deduct_goal_allocations(subject_time_allocation, daily_target_hours, &goal_subjects);
 
@@ -906,7 +905,7 @@ impl<'a> Planner<'a> {
         let enable_review_tasks = settings.enable_review_tasks();
         // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
         // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
-        let goal_subjects = goal_active_subjects(data_dir, &state, &today, week_start, &week_end);
+        let goal_subjects = goal_active_subjects(data_dir, &today, week_start);
         let (subject_time_allocation, daily_target_hours) =
             deduct_goal_allocations(subject_time_allocation, daily_target_hours, &goal_subjects);
         let active_count = crate::core::planning::pure::active_subject_count_for(
@@ -914,6 +913,31 @@ impl<'a> Planner<'a> {
             &week_end,
             &subject_start_dates,
         );
+
+        // 任务量下限护栏：自适应下调（workload_factor < 1）或用户手动减量只允许调整
+        // 总量与时长，不允许把某科当天的任务清零——每日任务数下限 = 当周应有任务的
+        // 科目数（active 且已开课；占比 0 的科目为用户显式排除，不计入），
+        // 从而保证每科每天至少 1 条任务。注意：需在「截止日规划区间」扣减占比之后
+        // 计算，与后面 prompt 里 subject_task_budget 的分配池保持同一口径。
+        let daily_task_floor = crate::core::planning::pure::min_daily_task_count(
+            &state,
+            &week_end,
+            &subject_start_dates,
+            subject_time_allocation.as_ref(),
+        );
+        let max_daily_tasks = crate::core::planning::pure::MAX_DAILY_TASKS;
+        let capped_floor = daily_task_floor.min(max_daily_tasks);
+        if adaptive_parameters.daily_task_count < capped_floor {
+            log::info!(
+                "[周计划] 每日任务数由 {} 抬升到 {}（每科每天至少 1 条任务护栏）",
+                adaptive_parameters.daily_task_count,
+                capped_floor
+            );
+            adaptive_parameters.daily_task_count = capped_floor;
+        }
+        adaptive_parameters.daily_task_count = adaptive_parameters
+            .daily_task_count
+            .clamp(1, max_daily_tasks);
         let prompt = self.build_week_plan_prompt(
             data_dir,
             &state,
@@ -999,8 +1023,8 @@ impl<'a> Planner<'a> {
         week_plan.data.workload_adjustment = workload_adjustment.cloned();
 
         // 3.5 持久化任务量调整元数据，供周计划页解释本周任务数变化。
-        // coefficient 来自自适应算法的综合任务量系数；完成率仅作为历史参考展示，
-        // 不再单独决定下一周计划量。
+        // v2：近 5 日加权窗口/趋势/连续达标 与用户反馈共同决定 workload_factor；
+        // avg_completion_rate 仅作历史参考展示，不再单独决定下一周计划量。
         let calib_base_count =
             crate::core::planning::pure::derive_task_count(daily_target_hours, 1.0, active_count);
         let calib_effective = adaptive_parameters.daily_task_count;
@@ -1014,6 +1038,12 @@ impl<'a> Planner<'a> {
                 effective_daily_task_count: calib_effective,
                 coefficient: adaptive_parameters.workload_factor,
                 avg_completion_rate: calib_avg_rate,
+                window_mean: adaptive_parameters.completion_window_mean,
+                trend_pp: adaptive_parameters.completion_trend_pp,
+                streak_days: adaptive_parameters.completion_streak_days,
+                energy_mean: adaptive_parameters.energy_window_mean,
+                crash_guard_active: adaptive_parameters.crash_guard_active,
+                applied_rule: adaptive_parameters.applied_v2_rule.clone(),
             });
         }
 
@@ -1227,11 +1257,31 @@ impl<'a> Planner<'a> {
                     .unwrap_or(0.85),
                 confidence: adaptive_parameters.confidence,
             };
-            let points: Vec<String> = table
+            // 待学知识点全量统计（表尾守护）：取前 MAX_PER_SUBJECT 条进 prompt，
+            // 但剩余条数用于判断「即将学空 / 已学空」
+            const LOW_PENDING_THRESHOLD: usize = 5;
+            let pending: Vec<&crate::data::progress_tables::ProgressNode> = table
                 .nodes
                 .iter()
                 .filter(|n| n.level == NodeLevel::Knowledge)
                 .filter(|n| matches!(n.status, NodeStatus::Pending | NodeStatus::Learning))
+                .collect();
+            let pending_count = pending.len();
+
+            let cn = crate::data::subject_label(subject);
+            let factor_pct = (adjustment.combined_factor() * 100.0).round();
+
+            if pending_count == 0 {
+                // 已学空：明确告知 AI 安排滚动巩固任务，不要虚构新进度
+                lines.push(format!(
+                    "- {}：该科进度表知识点已全部推进完毕（无待学节点）。本周任务请安排滚动巩固类内容（真题二刷、错题重做、限时模考、背诵复习等），不要虚构新的章节/知识点进度。",
+                    cn
+                ));
+                continue;
+            }
+
+            let points: Vec<String> = pending
+                .iter()
                 .take(MAX_PER_SUBJECT)
                 .map(|n| {
                     let base = n
@@ -1241,12 +1291,7 @@ impl<'a> Planner<'a> {
                     format!("{} ≈{:.1}h", n.title, adjusted)
                 })
                 .collect();
-            if points.is_empty() {
-                continue;
-            }
-            let cn = crate::data::subject_label(subject);
-            let factor_pct = (adjustment.combined_factor() * 100.0).round();
-            lines.push(format!(
+            let mut line = format!(
                 "- {}（综合校准系数 ≈{:.0}%，效率 {:.2}/反馈 {:.1}/完成率 {:.0}%）：{}",
                 cn,
                 factor_pct,
@@ -1254,7 +1299,15 @@ impl<'a> Planner<'a> {
                 adjustment.feedback_signal,
                 adjustment.completion_rate * 100.0,
                 points.join("；")
-            ));
+            );
+            if pending_count < LOW_PENDING_THRESHOLD {
+                // 即将学空：新内容为主但需提示用户生成二轮/强化表
+                line.push_str(&format!(
+                    "（注意：该科待学知识点仅剩 {} 条，进度表即将学空——本周巩固类任务应占该科大头，并在 style_tips 中建议用户生成二轮/强化进度表）",
+                    pending_count
+                ));
+            }
+            lines.push(line);
         }
         if lines.is_empty() {
             return String::new();
@@ -1268,6 +1321,22 @@ impl<'a> Planner<'a> {
             "\n要求：安排单条任务 estimated_hours 时，优先以上述预估值为主要依据（可结合每日预算在 0.5~3h 内合并/拆分微调）；未列出的内容仍按原规则估算。\n\n",
         );
         out
+    }
+
+    /// 内容来源优先级说明（内置表 ↔ AI 知识库）。
+    ///
+    /// 用户规则：AI 知识库认为内置表缺少某章节/知识点时以 AI 为准（补齐）；
+    /// 内置表提供的内容比 AI 更全时以内置表为准（不得漏）。二者合起来即「取并集」，
+    /// 因此这里同时写明两个方向，避免模型只保留其中一侧。
+    fn content_source_priority_block() -> String {
+        String::from(
+            "## 内容来源优先级（内置表 ↔ AI 知识库，重要）\n\
+             - 上文「各科待学知识点」来自用户启用的进度表（下称**内置表**，可能是内置官方考纲表，也可能是用户/AI 生成的表），是本周排任务的主要依据。\n\
+             - 若你依据最新官方考纲判断内置表**遗漏**了某个章节或知识点，以你的知识库为准：补齐该章节/知识点并为其安排任务，不得因为内置表里没有就跳过考纲要求的内容。\n\
+             - 反之，若内置表列出的内容比你能覆盖的更全（条目更多、更细），以内置表为准：表内列出的每个待学章节/知识点都必须被本周任务覆盖推进，不得遗漏、跳过或合并省略。\n\
+             - 最终两侧取并集：既不丢弃内置表已列内容，也不被它的范围限制而漏掉考纲真实要求的章节/知识点。\n\
+             - 某科没有内置表时，完全以你的考纲知识为准组织该科内容。\n\n",
+        )
     }
 
     /// 构建周计划 prompt
@@ -1394,7 +1463,7 @@ impl<'a> Planner<'a> {
             ));
         }
         prompt.push_str(&format!(
-            "- 每日任务数量：约 {} 个（由每日有效目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；每科约一条；同时遵循各科开始学习日期，未开始的科目不安排任务，相应减少当日任务数）\n",
+            "- 每日任务数量：约 {} 个（由每日有效目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；**每科每天至少 1 条任务**，任务量下调只允许调整任务时长/合并粒度，不得把某科的当日任务清零；同时遵循各科开始学习日期，未开始的科目不安排任务，相应减少当日任务数）\n",
             effective_daily_task_count, effective_target_hours, standard_granularity
         ));
         prompt.push_str(&format!(
@@ -1430,6 +1499,8 @@ impl<'a> Planner<'a> {
         if !progress_estimate_block.is_empty() {
             prompt.push_str(&progress_estimate_block);
         }
+        // 内容来源优先级（内置表 ↔ AI 知识库）：按「并集」取舍，两侧都不丢。
+        prompt.push_str(&Self::content_source_priority_block());
 
         // 各科学时分配（用户配置占比，重要约束）：按占比给出每科每周/每日学时，
         // 并要求各科 subject_allocations 的 hours 按占比分配
@@ -1475,9 +1546,9 @@ impl<'a> Planner<'a> {
                 .collect();
             if !nonzero.is_empty() {
                 let distribution_note = if subject_time_allocation.is_some() {
-                    "（按用户配置的占比分配；占比为 0 的科目不安排；每日总数不足以覆盖所有科目时，优先高占比科目）"
+                    "（按用户配置的占比分配；占比为 0 的科目不安排；**每科每天至少 1 条任务**，任务量下调不得把某科清零）"
                 } else {
-                    "（每科至少 1 条；每日总数不足以覆盖所有科目时，优先高时长科目）"
+                    "（**每科每天至少 1 条任务**，任务量下调不得把某科清零；条数多了才按时长权重分散）"
                 };
                 prompt.push_str(&format!(
                     "- 每日任务在各科的分布参考：{}\n",
@@ -1536,7 +1607,7 @@ impl<'a> Planner<'a> {
                 };
                 prompt.push_str(&format!("- 方向: {}（{}）\n", dir_label, level_label));
                 prompt.push_str(&format!(
-                    "- 要求: 相比上一周的任务总量，本周整体任务量应{}约 20%（小幅）或 40%（大幅）。通过调整每日任务数（在每日 {} 个基准上 ±1）或任务难度来实现，不得通过删减必要章节来减量。\n",
+                    "- 要求: 相比上一周的任务总量，本周整体任务量应{}约 20%（小幅）或 40%（大幅）。通过调整每日任务数（在每日 {} 个基准上 ±1）或任务难度来实现，不得通过删减必要章节来减量；减量时**每科每天至少保留 1 条任务**，不得把任何科目整周/整天清零。\n",
                     dir_label, effective_daily_task_count
                 ));
                 if let Some(note) = &adj.note {
@@ -3523,15 +3594,10 @@ fn subject_version(state: &StudyState, key: &str) -> String {
 
 /// 收集本周处于「截止日规划区间」的科目键集合。
 ///
-/// 区间生效判定：该科目存在 active 目标且其 deadline 不早于本周开始。
+/// 区间生效判定：该科目存在任意一条 active 目标且其 deadline 不早于本周开始。
 /// （deadline 落在本周内或更远则视为本周区间内；已过期不在其中。）
-fn goal_active_subjects(
-    data_dir: &Path,
-    _state: &StudyState,
-    today: &str,
-    week_start: &str,
-    week_end: &str,
-) -> Vec<String> {
+/// 每书一条独立目标，但「该科目整体是否走倒排」仍以科目为粒度判断。
+fn goal_active_subjects(data_dir: &Path, today: &str, week_start: &str) -> Vec<String> {
     use crate::data::state::SubjectKey;
     let order = [
         SubjectKey::Math,
@@ -3542,16 +3608,13 @@ fn goal_active_subjects(
     order
         .into_iter()
         .filter(|subject| {
-            let goal = crate::data::goal::active_goal_for(data_dir, subject, today);
-            match goal {
-                Some(g) => {
-                    // deadline 不在本周开始之前（即尚未过期于本周）
-                    !g.deadline.is_empty()
-                        && (g.deadline.as_str() >= week_start
-                            || crate::data::days_between(&g.deadline, week_end).unwrap_or(0) <= 0)
-                }
-                None => false,
-            }
+            let goals = crate::data::goal::active_goals_for_subject(data_dir, subject, today);
+            // 区间生效判定：存在任意一条 active 目标且其 deadline 不早于本周开始。
+            // active_goals_for_subject 已过滤掉 deadline < today 的过期目标，而本周
+            // 的 week_start ≤ today，因此这里只需一个下界比较即可覆盖「本周内或更远」。
+            goals
+                .iter()
+                .any(|g| !g.deadline.is_empty() && g.deadline.as_str() >= week_start)
         })
         .map(|subject| planner_subject_key_str(&subject).to_string())
         .collect()

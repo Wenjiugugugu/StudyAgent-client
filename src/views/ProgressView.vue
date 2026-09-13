@@ -277,7 +277,7 @@ onMounted(reload);
   align-items: center;
   gap: var(--space-2);
 }
-.subject-icon { color: var(--accent); }
+.subject-icon { color: var(--text-tertiary); }
 .subject-name {
   margin: 0;
   font-size: var(--text-lg);

@@ -116,6 +116,13 @@ pub struct AppSettings {
     /// 默认 AI Provider ID（默认空字符串）
     #[serde(default)]
     pub default_provider_id: String,
+    /// 功能 → AI Provider ID 映射（当前使用：planner / reviewer / briefing / doubt / assistant）
+    ///
+    /// 为不同功能指定不同 Provider（例如把时效性强的「进度表生成」「每日简报」交给
+    /// 支持联网搜索或知识库更新的 Provider）；未配置的功能统一使用默认 Provider。
+    /// `teacher` 的 prompt 已定义但暂无调用入口，设置页也未列出（详见 ai::service 的字段注释）。
+    #[serde(default)]
+    pub feature_providers: std::collections::HashMap<String, String>,
     /// 启用的 MCP ID 列表（默认空 Vec）
     #[serde(default)]
     pub enabled_mcp_ids: Vec<String>,
@@ -336,6 +343,7 @@ impl Default for AppSettings {
             sidebar_style: default_sidebar_style(),
             language: default_language(),
             default_provider_id: String::new(),
+            feature_providers: std::collections::HashMap::new(),
             enabled_mcp_ids: Vec::new(),
             study_schedule: serde_json::Value::Null,
             ticktick: serde_json::Value::Null,
@@ -588,7 +596,10 @@ pub fn init_app_state(data_dir: PathBuf) -> Mutex<AppState> {
     };
 
     // 创建 AI Service
-    let ai_service = Arc::new(AiService::from_configs(settings.ai_providers.clone()));
+    let ai_service = Arc::new(AiService::from_configs(
+        settings.ai_providers.clone(),
+        settings.feature_providers.clone(),
+    ));
 
     // 创建 Tool Dispatcher（异步初始化）
     let tool_dispatcher = Arc::new(tauri::async_runtime::block_on(async {
@@ -691,8 +702,19 @@ pub async fn reinitialize_services(
     }
     save_settings_file(&data_dir, &merged)?;
 
-    // 创建新的 AI Service
-    let new_ai_service = Arc::new(AiService::from_configs(merged.ai_providers.clone()));
+    // 创建新的 AI Service。
+    // 复用旧实例的取消表：进行中的流（chat_stream）注册在旧实例上，
+    // 若新实例用一张全新的表，保存设置后前端再也取消不了这些流。
+    let old_cancellations = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        s.ai_service.cancellations_handle()
+    };
+    let mut new_service = AiService::from_configs(
+        merged.ai_providers.clone(),
+        merged.feature_providers.clone(),
+    );
+    new_service.adopt_cancellations(old_cancellations);
+    let new_ai_service = Arc::new(new_service);
 
     // 创建新的 Tool Dispatcher
     let new_tool_dispatcher =

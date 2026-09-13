@@ -49,6 +49,16 @@ export interface AppSettings {
   ai_providers: AIProviderConfig[];
   /** 默认 AI Provider ID */
   default_provider_id: string;
+  /**
+   * 功能 → AI Provider ID 映射（核心 5 类）
+   *
+   * 键：`planner`（周计划/目标倒排）、`reviewer`（复盘分析）、
+   *     `briefing`（每日简报）、`doubt`（解惑答疑）、
+   *     `assistant`（进度表/考纲生成与通用助手）。
+   * 值：Provider ID；空串或缺省 = 使用默认 Provider。
+   * 不识别的功能键也会回退默认 Provider。
+   */
+  feature_providers?: Record<string, string>;
   /** MCP Server 列表 */
   mcp_servers: MCPServerConfig[];
   /** 启用的 MCP Server IDs */

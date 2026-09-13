@@ -94,10 +94,28 @@ pub struct WeekCalibration {
     pub base_daily_task_count: i64,
     /// 自动校准后的有效每日任务数
     pub effective_daily_task_count: i64,
-    /// 自校准系数（<1.0 表示减量）
+    /// 自校准系数（<1.0 表示减量，>1.0 表示加量）
     pub coefficient: f64,
-    /// 上周复盘平均完成率（0-100），说明减量依据
+    /// 上周复盘平均完成率（0-100），仅作历史参考展示（v2 决策不直接使用它）
     pub avg_completion_rate: f64,
+    /// v2：近 ≤5 个有效学习日加权完成率均值（0..100，0 = 数据不足）
+    #[serde(default)]
+    pub window_mean: f64,
+    /// v2：趋势（百分点，近 2 日均 − 前 3 日均）
+    #[serde(default)]
+    pub trend_pp: f64,
+    /// v2：连续达标天数（rate ≥ 90%）
+    #[serde(default)]
+    pub streak_days: u32,
+    /// v2：近 3 日精力均值（1..5，0 = 样本不足）
+    #[serde(default)]
+    pub energy_mean: f64,
+    /// v2：单日骤降保护是否激活
+    #[serde(default)]
+    pub crash_guard_active: bool,
+    /// v2：本轮命中的规则标识（A1/A2/A3/D1..D4/keep_1.00 等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_rule: Option<String>,
 }
 
 /// 特殊情况排除日（用户主动声明本周某天不学习）
@@ -209,6 +227,10 @@ pub struct DailyPlanData {
     pub reminders: Vec<String>,
     pub total_hours: f64,
     pub total_tasks: i32,
+    /// 生成过程中的降级/异常提示（如某本书的目标倒排生成失败、因预算裁剪了任务），
+    /// 供前端展示给用户，避免「任务莫名变少」而无从解释。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

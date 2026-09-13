@@ -843,8 +843,7 @@ onUnmounted(() => {
                 <p class="hero-desc">{{ step.description }}</p>
                 <ul class="hero-features">
                   <li><Check :size="15" /> 个性化每日学习计划</li>
-                  <li><Check :size="15" /> 知识图谱与教材管理</li>
-                  <li><Check :size="15" /> AI 助手随时答疑</li>
+                  <li><Check :size="15" /> 学科进度表与章节管理</li>
                   <li><Check :size="15" /> 每日复盘持续改进</li>
                 </ul>
                 <div class="hero-actions">
@@ -1299,10 +1298,9 @@ onUnmounted(() => {
                     <span class="ai-notice-title">哪些功能依赖 AI？</span>
                   </div>
                   <ul class="ai-notice-list">
-                    <li>智能生成日计划 / 周计划（自动按科目、进度与剩余时间编排）</li>
-                    <li>教学讲解与答疑（知识点讲解、错题分析）</li>
+                    <li>智能生成周/日学习计划（自动按科目、进度与剩余时间编排）</li>
+                    <li>AI 生成学科进度表（按考纲/教材拆分章节与知识点）</li>
                     <li>每日复盘生成与改进建议</li>
-                    <li>基于教材的智能问答与检索</li>
                   </ul>
                   <div class="ai-notice-warn">
                     <AlertTriangle :size="13" />

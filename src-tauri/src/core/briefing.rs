@@ -665,9 +665,7 @@ mod tests {
 
     #[test]
     fn progress_table_summary_counts_done_and_total() {
-        use crate::data::progress_tables::{
-            ProgressNode, ProgressTable, SubjectProgressSet, WebSearchConfig,
-        };
+        use crate::data::progress_tables::{ProgressNode, ProgressTable, SubjectProgressSet};
         use std::collections::HashMap;
 
         let node = |title: &str, level: NodeLevel, status: NodeStatus| ProgressNode {
@@ -705,10 +703,7 @@ mod tests {
                 tables: vec![table],
             },
         );
-        let index = ProgressIndex {
-            subjects,
-            web_search: WebSearchConfig::default(),
-        };
+        let index = ProgressIndex { subjects };
         // basic + mastered = 2 个已完成；章节节点不计入总数
         let (done, total) = progress_table_summary(&index, "math").expect("应有统计");
         assert_eq!(done, 2);
@@ -751,8 +746,7 @@ mod tests {
         }
       ]
     }
-  },
-  "web_search": {"enabled": false, "provider": "", "base_url": "", "api_key": ""}
+  }
 }"#,
         )
         .unwrap();

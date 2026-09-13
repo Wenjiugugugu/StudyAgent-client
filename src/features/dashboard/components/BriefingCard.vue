@@ -81,7 +81,6 @@ defineEmits<{
   regenerate: [];
   goToday: [];
   goReview: [];
-  goWeekPlan: [];
 }>();
 </script>
 
@@ -231,11 +230,10 @@ defineEmits<{
       </div>
 
       <!-- 迷你本周进度 -->
-      <div v-if="week.hasWeekProgress" class="briefing-section mini-week-progress" @click="$emit('goWeekPlan')">
-        <div class="briefing-section-title clickable-title">
+      <div v-if="week.hasWeekProgress" class="briefing-section mini-week-progress">
+        <div class="briefing-section-title">
           <Calendar :size="13" />
           <span>本周进度</span>
-          <ChevronRight :size="12" class="briefing-section-arrow" />
         </div>
         <div class="mini-week-stats">
           <span class="mini-week-percent">{{ week.progress }}%</span>
@@ -276,7 +274,7 @@ defineEmits<{
     >
       <div class="briefing-empty-icon"><Sparkles :size="28" /></div>
       <span class="briefing-empty-title">今日暂无计划</span>
-      <span class="briefing-empty-desc">请先生成周计划，日计划将自动从周计划中拆分生成</span>
+      <span class="briefing-empty-desc">请先在「今日计划」页生成周计划，日计划将自动拆分</span>
     </div>
   </Card>
 </template>

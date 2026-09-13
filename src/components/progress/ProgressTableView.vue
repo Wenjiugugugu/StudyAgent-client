@@ -44,7 +44,6 @@ import type {
   ProgressNode,
   ProgressNodeStatus,
   ProgressNodeLevel,
-  ProgressWebSearchConfig,
   ProgressIndex,
 } from "@/types";
 
@@ -607,18 +606,11 @@ async function saveEdit() {
 // ── AI 生成 ──
 const showGenModal = ref(false);
 const genName = ref("");
-const genUseWeb = ref(false);
 const generating = ref(false);
 const genPreview = ref<ProgressTable | null>(null);
 // AI 生成内容风险提示：首次点击「AI 生成」先弹警告，确认后本会话不再重复提醒
 const showAiRiskModal = ref(false);
 const aiRiskAccepted = ref(false);
-const webConfig = ref<ProgressWebSearchConfig>({
-  enabled: false,
-  provider: "bocha",
-  base_url: "",
-  api_key: "",
-});
 
 function openGenModal() {
   // 首次先弹风险警告，确认后再进入配置弹窗
@@ -627,7 +619,6 @@ function openGenModal() {
     return;
   }
   genName.value = "";
-  genUseWeb.value = webConfig.value.enabled;
   genPreview.value = null;
   showGenModal.value = true;
 }
@@ -637,7 +628,6 @@ function confirmAiRisk() {
   aiRiskAccepted.value = true;
   showAiRiskModal.value = false;
   genName.value = "";
-  genUseWeb.value = webConfig.value.enabled;
   genPreview.value = null;
   showGenModal.value = true;
 }
@@ -649,11 +639,10 @@ async function runGenerate() {
     const draft = await api.generateProgressTable(
       props.subject,
       props.variant,
-      genName.value.trim(),
-      genUseWeb.value
+      genName.value.trim()
     );
     genPreview.value = draft;
-    saveMsg(genUseWeb.value && draft ? "已基于最新考纲生成（联网）" : "已基于内置考纲生成");
+    saveMsg("已基于内置考纲生成");
   } catch (e) {
     error.value = `AI 生成失败：${errMsg(e)}`;
   } finally {
@@ -819,25 +808,6 @@ async function confirmEstimate() {
   }
 }
 
-// 联网搜索配置（AI 生成时可选拉取最新大纲）
-const showWebCfg = ref(false);
-const savingWebCfg = ref(false);
-function openWebCfg() {
-  showWebCfg.value = true;
-}
-async function saveWebConfig() {
-  savingWebCfg.value = true;
-  try {
-    await api.setProgressSettings(webConfig.value);
-    showWebCfg.value = false;
-    saveMsg("已保存联网搜索配置");
-  } catch (e) {
-    error.value = `保存联网配置失败：${errMsg(e)}`;
-  } finally {
-    savingWebCfg.value = false;
-  }
-}
-
 // ── 导出 / 导入 ──
 async function exportTable() {
   const t = activeTable.value;
@@ -914,18 +884,10 @@ watch(
 );
 
 onMounted(async () => {
-  await Promise.all([reload(), loadWebConfig()]);
+  await reload();
   // 首次打开默认展示内置考纲
   await autoSyncBuiltin();
 });
-
-async function loadWebConfig() {
-  try {
-    webConfig.value = await api.getProgressSettings();
-  } catch {
-    // 忽略，保持默认
-  }
-}
 </script>
 
 <template>
@@ -972,11 +934,11 @@ async function loadWebConfig() {
     <div v-else class="editor">
       <p v-if="lastActionMsg" class="action-toast">{{ lastActionMsg }}</p>
 
-      <!-- 顶部：表切换 + 操作 -->
+      <!-- 顶部：表切换 + 操作；「生成进度表」两个入口（内置考纲 / AI 生成）独占右侧强调集群，其他为弱化工具按钮 -->
       <div class="toolbar">
         <div class="table-picker">
-          <Badge variant="default" class="subj-badge">{{ subjectLabel }}</Badge>
-          <Badge variant="info">{{ variant }}</Badge>
+          <span class="context-pill">{{ subjectLabel }}</span>
+          <span class="context-pill quiet">{{ variant }}</span>
           <Select
             :model-value="subjectSet?.active_id ?? ''"
             placeholder="选择进度表"
@@ -996,30 +958,32 @@ async function loadWebConfig() {
           </Select>
         </div>
         <div class="toolbar-actions">
-          <Button variant="primary" size="sm" @click="openGenModal">
-            <Sparkles :size="14" /> AI 生成
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            :loading="loadingBuiltin"
-            @click="loadBuiltin"
-            title="内置官方考研大纲，无需 AI 直接生成"
-          >
-            <BookOpen :size="14" /> 内置考纲
-          </Button>
-          <Button variant="ghost" size="sm" @click="() => (showNewTableModal = true)">
-            <Plus :size="14" /> 新建
-          </Button>
-          <Button variant="ghost" size="sm" @click="openWebCfg" title="联网搜索最新考纲配置">
-            <CircleDot :size="14" /> 联网
-          </Button>
-          <Button variant="ghost" size="sm" @click="exportTable" title="导出/分享">
-            <Download :size="14" /> 导出
-          </Button>
-          <Button variant="ghost" size="sm" @click="importTable" title="导入">
-            <Upload :size="14" /> 导入
-          </Button>
+          <div class="util-cluster">
+            <Button variant="ghost" size="sm" @click="() => (showNewTableModal = true)">
+              <Plus :size="13" /> 新建
+            </Button>
+            <Button variant="ghost" size="sm" @click="exportTable" title="导出/分享">
+              <Download :size="13" /> 导出
+            </Button>
+            <Button variant="ghost" size="sm" @click="importTable" title="导入">
+              <Upload :size="13" /> 导入
+            </Button>
+          </div>
+          <!-- 强调组：两个「生成进度表」入口用柔和同色强调，与左侧弱化工具按钮区分 -->
+          <div class="primary-cluster">
+            <Button
+              variant="soft"
+              size="sm"
+              :loading="loadingBuiltin"
+              @click="loadBuiltin"
+              title="内置官方考研大纲，无需 AI 直接生成"
+            >
+              <BookOpen :size="13" /> 内置考纲
+            </Button>
+            <Button variant="soft" size="sm" @click="openGenModal">
+              <Sparkles :size="14" /> AI 生成
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -1044,9 +1008,8 @@ async function loadWebConfig() {
         </template>
 
         <div class="stats">
-          <Badge variant="default">{{ stats.total }} 节点</Badge>
-          <Badge variant="success">{{ stats.pct }}% 已推进</Badge>
-          <div class="mini-bar">
+          <span class="stat-text">{{ stats.total }} 节点 · <b>{{ stats.pct }}%</b> 已推进</span>
+          <div class="mini-bar slim">
             <div class="mini-bar-fill" :style="{ width: `${stats.pct}%` }" />
           </div>
         </div>
@@ -1063,9 +1026,8 @@ async function loadWebConfig() {
             />
             <span class="group-title">{{ g.title }}</span>
             <span v-if="hasChapterNodes && g.headId" class="group-level-tag">章节</span>
-            <span class="group-count">
-              {{ g.nodes.length }}<template v-if="g.nodes.length"> · {{ groupStats(g).advanced }}/{{ g.nodes.length }} 已推进</template>
-            </span>
+            <span class="group-count">{{ g.nodes.length }} 知识点</span>
+            <span class="group-meta" v-if="g.nodes.length">{{ groupStats(g).advanced }}/{{ g.nodes.length }}</span>
             <span class="mini-bar group-bar">
               <span class="mini-bar-fill" :style="{ width: `${groupStats(g).pct}%` }" />
             </span>
@@ -1107,13 +1069,6 @@ async function loadWebConfig() {
               </template>
 
               <template v-else>
-                <button class="status-pill" :class="`st-${node.status}`" title="点击切换状态" @click="cycleStatus(node)">
-                  <component
-                    :is="node.status === 'mastered' ? CheckCircle2 : node.status === 'learning' ? CircleDot : RotateCcw"
-                    :size="13"
-                  />
-                  {{ statusLabel(node.status) }}
-                </button>
                 <div class="node-main">
                   <span class="node-title">{{ node.title }}</span>
                   <span v-if="node.planned_date" class="node-date">{{ node.planned_date }}</span>
@@ -1122,6 +1077,13 @@ async function loadWebConfig() {
                   <button class="icon-btn" title="编辑" @click="beginEdit(node)"><Pencil :size="13" /></button>
                   <button class="icon-btn danger" title="删除" @click="removeNode(node)"><Trash2 :size="13" /></button>
                 </div>
+                <button class="status-pill" :class="`st-${node.status}`" title="点击切换状态" @click="cycleStatus(node)">
+                  <component
+                    :is="node.status === 'mastered' ? CheckCircle2 : node.status === 'learning' ? CircleDot : RotateCcw"
+                    :size="11"
+                  />
+                  {{ statusLabel(node.status) }}
+                </button>
                 <GripVertical
                   :size="14"
                   class="grip"
@@ -1285,10 +1247,6 @@ async function loadWebConfig() {
           <label class="form-label">进度表名称</label>
           <input v-model="genName" class="form-input" placeholder="留空则自动命名，如「数学进度表」" />
         </div>
-        <label class="web-toggle">
-          <Checkbox v-model="genUseWeb" />
-          <span>联网查询最新考研大纲（未配置使用内置考纲）</span>
-        </label>
         <p class="form-hint">将依据 {{ subjectLabel }}「{{ variant }}」的最新考研考纲，按章节先后顺序生成可供长期打卡的进度节点。</p>
       </div>
       <template #footer v-if="!generating && !genPreview">
@@ -1296,33 +1254,6 @@ async function loadWebConfig() {
         <Button variant="primary" size="sm" :loading="generating" @click="runGenerate">
           <Sparkles :size="14" /> 生成
         </Button>
-      </template>
-    </Modal>
-
-    <!-- 联网搜索配置 -->
-    <Modal :open="showWebCfg" title="联网搜索最新考研大纲" :width="460" @close="showWebCfg = false">
-      <div class="form-field">
-        <label class="web-toggle">
-          <Checkbox v-model="webConfig.enabled" />
-          <span>启用联网搜索</span>
-        </label>
-      </div>
-      <div class="form-field">
-        <label class="form-label">厂商</label>
-        <input v-model="webConfig.provider" class="form-input" disabled />
-      </div>
-      <div class="form-field">
-        <label class="form-label">API Base URL</label>
-        <input v-model="webConfig.base_url" class="form-input" placeholder="留空使用博查查默认 https://api.bochaai.com/v1/web-search" />
-      </div>
-      <div class="form-field">
-        <label class="form-label">API Key</label>
-        <input v-model="webConfig.api_key" type="password" class="form-input" placeholder="粘贴博查查 API Key" />
-      </div>
-      <p class="form-hint">启用后，AI 生成进度表会先联网检索最新考研大纲；未配置或检索失败时自动回退内置官方考纲。</p>
-      <template #footer>
-        <Button variant="ghost" size="sm" @click="showWebCfg = false">取消</Button>
-        <Button variant="primary" size="sm" :loading="savingWebCfg" @click="saveWebConfig">保存</Button>
       </template>
     </Modal>
   </div>
@@ -1407,8 +1338,10 @@ async function loadWebConfig() {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-4) var(--space-6) var(--space-10);
+  padding: var(--space-3) var(--space-5) var(--space-10);
 }
+
+/* ── 工具条 ── 主体上下文 + 主操作独占集群 */
 .toolbar {
   display: flex;
   align-items: center;
@@ -1418,24 +1351,63 @@ async function loadWebConfig() {
   margin-bottom: var(--space-3);
 }
 .table-picker { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.subj-badge { flex-shrink: 0; }
-/* 表下拉按内容自适应宽度（默认 100% 会让它占满整行，覆盖为 auto 并给最小/最大边界） */
+.context-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+  padding: 2px 10px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.context-pill.quiet {
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 1px solid var(--border-color);
+}
 .table-picker .table-picker-select {
   width: auto;
   min-width: 200px;
   max-width: 100%;
 }
-.toolbar-actions { display: flex; gap: var(--space-1); flex-wrap: wrap; }
-.table-head {
+.toolbar-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.util-cluster { display: flex; align-items: center; gap: 2px; }
+.util-cluster .ui-button {
+  color: var(--text-tertiary);
+  font-weight: 400;
+}
+.util-cluster .ui-button:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+/* 主操作前加细分隔，让「内置考纲 / AI 生成」两个生成入口在视觉上成组独立 */
+.primary-cluster {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--divider-color);
+}
+
+/* ── 表名行 ── 标题独占；统计信息弱化 */
+.table-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   flex-wrap: wrap;
   margin-bottom: var(--space-4);
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--divider-color);
 }
-.table-name { font-size: var(--text-xl); font-weight: var(--font-bold); margin: 0; color: var(--text-primary); }
+.table-name {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  margin: 0;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
 .rename-input {
   height: 32px;
   padding: 0 var(--space-3);
@@ -1462,11 +1434,23 @@ async function loadWebConfig() {
 }
 .icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 .icon-btn.danger:hover { color: var(--color-danger); }
+
+/* 元信息：N 节点 · X% 已推进 + 细进度条 */
 .stats {
   margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+.stat-text {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.stat-text b {
+  color: var(--text-secondary);
+  font-weight: var(--font-medium);
+  font-variant-numeric: tabular-nums;
 }
 .mini-bar {
   width: 120px;
@@ -1475,8 +1459,10 @@ async function loadWebConfig() {
   background: var(--bg-tertiary);
   overflow: hidden;
 }
+.mini-bar.slim { width: 80px; height: 4px; }
 .mini-bar-fill { height: 100%; background: var(--color-success, #22c55e); transition: width 0.3s ease; }
 
+/* ── 节点树 ── 章节（结构标题）→ 知识点（内容） 之间的层级差 */
 .node-list { display: flex; flex-direction: column; gap: var(--space-3); }
 .node-group {
   display: flex;
@@ -1486,70 +1472,108 @@ async function loadWebConfig() {
   background: var(--bg-elevated);
   overflow: hidden;
 }
+/* 章节头：弱化文件夹 / 标签颜色，结构标题保持清晰但不再抢眼 */
 .group-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: 9px var(--space-3);
   cursor: pointer;
   user-select: none;
-  background: var(--bg-tertiary);
+  background: transparent;
+  border-bottom: 1px solid var(--divider-color);
 }
 .group-head:hover { background: var(--bg-tertiary); }
-.group-folder { color: var(--accent); flex-shrink: 0; }
-.group-title { font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-folder { color: var(--text-tertiary); flex-shrink: 0; transition: color var(--transition-fast); }
+.group-head:hover .group-folder { color: var(--text-secondary); }
+.group-title {
+  font-size: 14px;
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
 .group-level-tag {
   flex-shrink: 0;
   font-size: 10px;
-  color: var(--accent);
-  background: var(--accent-subtle);
-  border-radius: var(--radius-xs);
-  padding: 1px 6px;
+  letter-spacing: 0.06em;
+  color: var(--text-quaternary);
+  text-transform: uppercase;
+  padding: 0 2px;
 }
-.group-count { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; }
-.group-bar { width: 80px; flex-shrink: 0; }
+.group-count { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.group-meta { font-size: var(--text-xs); color: var(--text-quaternary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.group-bar { width: 60px; flex-shrink: 0; }
 .group-chev { color: var(--text-tertiary); flex-shrink: 0; }
-.group-body { display: flex; flex-direction: column; gap: 2px; padding: var(--space-1); }
+
+/* 知识点列表：紧凑、无背景，hover 出底色 / 边框 */
+.group-body { display: flex; flex-direction: column; gap: 0; padding: 2px 0; }
 .group-empty { padding: var(--space-3); font-size: var(--text-xs); color: var(--text-tertiary); text-align: center; }
 .node-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  transition: border-color var(--transition-fast), opacity var(--transition-fast);
+  padding: 5px var(--space-3) 5px var(--space-3);
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--divider-color);
+  background: transparent;
+  transition: background var(--transition-fast);
 }
-.node-row:hover { border-color: var(--border-color-strong); }
-.node-row.editing { border-color: var(--accent); }
-.node-row.drag-over { border-color: var(--accent); background: var(--accent-subtle); }
+.group-body .node-row:last-child { border-bottom: none; }
+.node-row:hover { background: var(--bg-tertiary); }
+.node-row.editing { background: var(--accent-subtle); }
+.node-row.drag-over { background: var(--accent-subtle); }
 .node-row.dragging { opacity: 0.4; }
-.grip { color: var(--text-quaternary); cursor: grab; flex-shrink: 0; }
+
+.grip {
+  color: var(--text-quaternary);
+  cursor: grab;
+  flex-shrink: 0;
+  opacity: 0.4;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
 .grip:active { cursor: grabbing; }
-.grip:hover { color: var(--text-secondary); }
+.node-row:hover .grip { opacity: 0.9; color: var(--text-tertiary); }
+
+/* 状态胶囊：挪到右侧，尺寸与色彩更克制 */
 .status-pill {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 4px;
   flex-shrink: 0;
-  padding: 2px 8px;
+  padding: 1px 8px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-xs);
+  font-weight: var(--font-medium);
   cursor: pointer;
   transition: all var(--transition-fast);
+  min-width: 56px;
+  justify-content: center;
 }
-.status-pill:hover { transform: scale(1.04); }
-.st-pending { color: var(--text-tertiary); }
-.st-learning { color: var(--accent); border-color: var(--accent-soft, var(--border-color)); background: var(--accent-subtle); }
-.st-basic { color: var(--info-color, #0284c7); border-color: var(--info-color-soft, var(--border-color)); background: var(--info-subtle, transparent); }
-.st-reinforcing { color: var(--warning-color, #d97706); border-color: var(--warning-color-soft, var(--border-color)); background: var(--warning-subtle, transparent); }
-.st-mastered { color: var(--color-success, #16a34a); border-color: var(--color-success-soft, var(--border-color)); }
-.node-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.node-title { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-primary); word-break: break-word; }
-.node-date { font-size: var(--text-xs); color: var(--text-tertiary); }
+.status-pill:hover { transform: none; background: var(--bg-tertiary); }
+.st-pending { color: var(--text-tertiary); border-color: var(--divider-color); }
+.st-learning { color: var(--accent); border-color: var(--accent-subtle); background: var(--accent-subtle); }
+.st-basic { color: var(--info-color, #0284c7); border-color: var(--color-info-subtle, transparent); background: var(--color-info-subtle, transparent); }
+.st-reinforcing { color: var(--warning-color, #d97706); border-color: var(--color-warning-subtle, transparent); background: var(--color-warning-subtle, transparent); }
+.st-mastered { color: var(--color-success, #16a34a); border-color: var(--color-success-subtle, transparent); background: var(--color-success-subtle, transparent); }
+
+.node-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0; }
+.node-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+  word-break: break-word;
+  letter-spacing: -0.01em;
+}
+.node-date { font-size: var(--text-xs); color: var(--text-tertiary); margin-top: 1px; }
 .node-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity var(--transition-fast); }
 .node-row:hover .node-actions, .node-row.editing .node-actions { opacity: 1; }
 .edit-grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
@@ -1593,7 +1617,6 @@ async function loadWebConfig() {
 .confirm-chapter { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-title { font-size: var(--text-sm); color: var(--text-primary); flex: 1; min-width: 0; }
 .confirm-suggest { font-size: var(--text-xs); border: 1px solid var(--border-color); border-radius: var(--radius-full); padding: 1px 6px; flex-shrink: 0; }
-.web-toggle { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; }
 .gen-form { display: flex; flex-direction: column; gap: var(--space-4); }
 .preview-box {
   display: flex;

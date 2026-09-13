@@ -42,7 +42,7 @@ const steps: TourStep[] = [
     target: ".today-view",
     title: "计划页",
     description:
-      "今日任务与周计划一览无余。AI 根据你的进度安排每天的学习任务，完成后勾选即可。",
+      "今天具体学什么一目了然：任务按科目分组，点左侧圆圈即可标记完成。",
     placement: "bottom",
   },
   {
@@ -65,7 +65,7 @@ const steps: TourStep[] = [
     target: ".sidebar",
     title: "其余模块，自由探索",
     description:
-      "专注计时、教材、解惑、时间线等更多功能都在左侧侧边栏里。现在，开始你的学习之旅吧！",
+      "专注计时、进度、分析、时间线等更多功能都在左侧侧边栏里。现在，开始你的学习之旅吧！",
     placement: "right",
   },
 ];

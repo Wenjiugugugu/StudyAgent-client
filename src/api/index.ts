@@ -18,7 +18,6 @@ import { useAiDebugStore } from "@/stores/aiDebug";
 import type {
   ProgressIndex,
   ProgressTable,
-  ProgressWebSearchConfig,
   ProgressNode,
   ProgressNodeLevel,
   ProgressNodeStatus,
@@ -39,7 +38,6 @@ export const AI_CANCEL_KEYS = {
   briefing: "briefing",
   teacher: "teacher",
   assistant: "assistant",
-  doubt: "doubt",
 } as const;
 
 export type AiCancelKey = (typeof AI_CANCEL_KEYS)[keyof typeof AI_CANCEL_KEYS];
@@ -69,7 +67,7 @@ export interface AiInvokeOptions<T = unknown> {
 
 /**
  * 从 AI 调用结果中提取推理模型的思考过程（reasoning_content）。
- * 仅对话类命令（chat / chatDoubt）的返回里带 reasoning 字段。
+ * 部分对话类命令的返回里带 reasoning 字段。
  */
 function extractReasoning(result: unknown): string | null {
   if (result && typeof result === "object" && "reasoning" in result) {
@@ -152,9 +150,6 @@ import type {
   ChatRequest,
   ChatResponse,
   ToolCallResult,
-  TextbookInfo,
-  TextbookContent,
-  TextbookSearchHit,
   PlanSummary,
   UpdateCheckResult,
   DownloadProgress,
@@ -321,13 +316,14 @@ export async function listGoals(): Promise<import("@/types").GoalPlanFile> {
   return invokeWithFallback("list_goals", undefined, async () => ({ version: "1.0.0", meta: { generated_at: new Date().toISOString() }, data: { goals: [] } }));
 }
 
-/** 创建一条目标区间（subject/title/deadline/targetChapter 必填，startChapter 可选） */
+/** 创建一条目标区间（subject/title/deadline/targetChapter/book 必填，startChapter 可选） */
 export async function createGoal(
   subject: import("@/types").SubjectKey,
   title: string,
   deadline: string,
   targetChapter: string,
-  startChapter?: string,
+  startChapter: string | undefined,
+  book: string,
 ): Promise<import("@/types").Goal> {
   return invokeDirect<import("@/types").Goal>("create_goal", {
     subject,
@@ -335,6 +331,7 @@ export async function createGoal(
     deadline,
     targetChapter,
     startChapter: startChapter || null,
+    book,
   });
 }
 
@@ -348,21 +345,21 @@ export async function deleteGoal(goalId: string): Promise<void> {
   return invokeDirect<void>("delete_goal", { goalId });
 }
 
-/** 为目标区间内某科目生成当天任务（仅展示预览用；任务确认后由后端正常落日计划） */
+/**
+ * 为目标区间内某科目生成当天任务。
+ * 传 `goalId` 时仅生成该条目标的任务；不传则聚合该科目当天所有生效目标
+ * （支持同科多书/板块并行推进）。
+ */
 export async function generateGoalPlan(
   subject: import("@/types").SubjectKey,
   date: string,
+  goalId?: string,
 ): Promise<import("@/types").PlanTask[]> {
-  return invokeDirect<import("@/types").PlanTask[]>("generate_goal_plan", { subject, date });
-}
-
-/** 从当前 state 反推某科目的当前进度章节（预填新建时的起点） */
-export async function getGoalStartChapter(
-  subject: import("@/types").SubjectKey,
-): Promise<string | null> {
-  return invokeDirect<{ goal?: string } | null>("get_goal_start_chapter", { subject }).then(
-    (r) => r?.goal ?? null,
-  );
+  return invokeDirect<import("@/types").PlanTask[]>("generate_goal_plan", {
+    subject,
+    date,
+    goalId: goalId ?? null,
+  });
 }
 
 export async function updateTaskStatus(taskId: string, status: string): Promise<void> {
@@ -566,17 +563,6 @@ export async function chat(request: ChatRequest): Promise<ChatResponse> {
   });
 }
 
-export async function chatDoubt(request: ChatRequest): Promise<ChatResponse> {
-  return aiInvoke<ChatResponse>({
-    command: "chat",
-    label: `解惑对话（${request.messages.length} 条消息）`,
-    args: { request },
-    cancelKey: AI_CANCEL_KEYS.doubt,
-    timeoutMs: 120_000,
-    timeoutMessage: "解惑对话超时（超过 120 秒）。请检查 AI Provider 配置或网络连接。",
-  });
-}
-
 /**
  * 取消指定 agent 的进行中 AI 请求（M9：超时过长且无取消机制）
  *
@@ -706,50 +692,6 @@ export async function importBackup(filePath: string): Promise<import("@/types").
   return invokeDirect<import("@/types").ImportSummary>("import_backup", { filePath });
 }
 
-// ── Textbooks ──
-
-export async function listTextbooks(): Promise<TextbookInfo[]> {
-  return invokeWithFallback("list_textbooks", undefined, async () => {
-    // Mock 数据
-    return [
-      { id: "408-wangdao-co", subject: "408", title: "计算机组成原理", filename: "wangdao-co.md", file_path: "" },
-      { id: "408-wangdao-os", subject: "408", title: "操作系统", filename: "wangdao-os.md", file_path: "" },
-    ];
-  });
-}
-
-export async function readTextbook(id: string): Promise<TextbookContent> {
-  return invokeWithFallback("read_textbook", { id }, async () => {
-    return {
-      id,
-      content: "# 教材内容\n\n这是 Mock 数据，请在桌面应用中查看真实教材内容。\n\n## 第一节\n\n示例段落内容。\n\n## 第二节\n\n- 列表项一\n- 列表项二\n",
-      file_path: "",
-    };
-  });
-}
-
-/** 导入教材文件（调用 Tauri 文件对话框选择 .md 文件） */
-export async function importTextbook(subject: string, title?: string): Promise<TextbookInfo> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
-  const filePath = await open({
-    multiple: false,
-    filters: [{ name: "Markdown", extensions: ["md", "markdown", "txt"] }],
-  });
-  if (!filePath || typeof filePath !== "string") {
-    throw new Error("未选择文件");
-  }
-  return invokeDirect<TextbookInfo>("import_textbook", {
-    subject,
-    filePath,
-    title: title ?? null,
-  });
-}
-
-/** 删除已导入的教材 */
-export async function deleteTextbook(id: string): Promise<void> {
-  return invokeDirect<void>("delete_textbook", { id });
-}
-
 /**
  * 选择并保存背景图到应用数据目录
  *
@@ -784,24 +726,12 @@ export async function readBackgroundAsDataUrl(relativePath: string): Promise<str
   return invokeDirect<string>("read_background_as_data_url", { relativePath });
 }
 
-/** 重命名已导入的教材 */
-export async function renameTextbook(id: string, newTitle: string): Promise<TextbookInfo> {
-  return invokeDirect<TextbookInfo>("rename_textbook", { id, newTitle });
-}
-
-/** 在已导入教材中进行全文搜索 */
-export async function searchInTextbook(query: string): Promise<TextbookSearchHit[]> {
-  if (!query.trim()) return [];
-  return invokeWithFallback("search_in_textbook", { query }, async () => []);
-}
-
 // ── Progress Tables（各科进度表） ──
 
 /** 列出全部进度表索引 */
 export async function listProgressTables(): Promise<ProgressIndex> {
   return invokeWithFallback("list_progress_tables", undefined, async () => ({
     subjects: {},
-    web_search: { enabled: false, provider: "bocha", base_url: "", api_key: "" },
   }));
 }
 
@@ -846,37 +776,19 @@ export async function setActiveProgressVariant(subject: string, variant: string)
   return invokeDirect<void>("set_active_progress_variant", { subject, variant });
 }
 
-/** 读取进度表相关设置（联网搜索配置） */
-export async function getProgressSettings(): Promise<ProgressWebSearchConfig> {
-  return invokeWithFallback("get_progress_settings", undefined, async () => ({
-    enabled: false,
-    provider: "bocha",
-    base_url: "",
-    api_key: "",
-  }));
-}
-
-/** 保存进度表相关设置（联网搜索配置） */
-export async function setProgressSettings(
-  webSearch: ProgressWebSearchConfig
-): Promise<void> {
-  return invokeDirect<void>("set_progress_settings", { webSearch });
-}
-
 /**
  * AI 生成一份进度表草稿（不自动落盘，预览确认后再 saveProgressTable）。
- * useWeb=true 时联网查询最新考研大纲；未配置联网则回退内置考纲。
+ * 考纲来源为随包内置的官方考研考纲。
  */
 export function generateProgressTable(
   subject: string,
   variant: string,
-  name: string,
-  useWeb: boolean
+  name: string
 ): Promise<ProgressTable> {
   return aiInvoke<ProgressTable>({
     command: "generate_progress_table",
     label: `AI 生成进度表（${subject}）`,
-    args: { subject, variant, name, useWeb },
+    args: { subject, variant, name },
     cancelKey: AI_CANCEL_KEYS.assistant,
     timeoutMs: 240_000,
     timeoutMessage: `AI 生成进度表超时（超过 240 秒）。请检查 AI Provider 配置或网络连接。`,
