@@ -596,13 +596,19 @@ mod tests {
         );
 
         // 同书 → 放行
-        assert!(
-            ensure_positions_within_book(&tmp, "math", &version, "书甲", (item_a, pos_a), None)
-                .is_ok()
-        );
+        assert!(ensure_positions_within_book(
+            &tmp,
+            "math",
+            &version,
+            "书甲",
+            (item_a, pos_a),
+            None
+        )
+        .is_ok());
         // 跨书目标章节 → 拒绝
-        let err = ensure_positions_within_book(&tmp, "math", &version, "书甲", (item_b, pos_b), None)
-            .expect_err("跨书章节必须被拒绝");
+        let err =
+            ensure_positions_within_book(&tmp, "math", &version, "书甲", (item_b, pos_b), None)
+                .expect_err("跨书章节必须被拒绝");
         assert!(err.contains("不属于所选的"), "错误信息应便于定位: {err}");
         // 跨书起始位置 → 拒绝
         assert!(ensure_positions_within_book(
