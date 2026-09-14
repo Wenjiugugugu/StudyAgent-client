@@ -23,6 +23,7 @@ import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import WeekPlanGenerateModal from "@/components/plan/WeekPlanGenerateModal.vue";
 import {
   ChevronLeft,
   ChevronRight,
@@ -511,18 +512,32 @@ async function loadPlan() {
   await loadActiveGoals();
 }
 
-// ── 无周计划时的快捷生成（周计划页已下线，作为内置数据供日计划切分）──
+// ────────────────────────────────────────────────────────────
+// 生成周计划（周计划页已下线，生成前配置迁移到日计划页）
+// ────────────────────────────────────────────────────────────
+// 周计划是日计划的数据来源：原先「每周计划」页提供的生成前配置
+// （上周报告 / 任务量调整 / 排除日）由 WeekPlanGenerateModal 承载，
+// 这里只负责打开弹窗与生成后刷新当日计划。
 const generatingWeek = ref(false);
-async function generateCurrentWeek() {
+const showWeekConfig = ref(false);
+
+/** 目标周：当前查看日期所在周的周一 */
+const targetWeekStart = computed(() => getWeekStart(currentDate.value));
+
+function generateCurrentWeek() {
   if (generatingWeek.value) return;
+  showWeekConfig.value = true;
+}
+
+/** 弹窗内生成成功 → 重新加载当日计划（周计划变更后日计划需重新切分） */
+async function onWeekPlanGenerated() {
   generatingWeek.value = true;
   try {
-    await api.generateWeekPlan(getWeekStart(currentDate.value), [], undefined);
     await loadPlan();
     actionError.value = "";
   } catch (e) {
-    console.error("生成周计划失败:", e);
-    reportActionError("生成周计划失败", e);
+    console.error("刷新日计划失败:", e);
+    reportActionError("刷新日计划失败", e);
   } finally {
     generatingWeek.value = false;
   }
@@ -545,6 +560,15 @@ const isBeforeDailyStart = computed(() => {
 });
 
 const dailyStartTimeLabel = computed(() => settingsStore.settings?.study_schedule?.start_time ?? "09:00");
+
+/** 昨日复盘提示只在「每日开始时间之前」展示：已到学习开始时间后不再打扰 */
+const showYesterdayReviewBanner = computed(() => {
+  if (!todayStore.missingYesterdayReview) return false;
+  if (!isToday.value) return true;
+  // 未配置开始时间时保持原有行为
+  if (dailyStartMinutes.value < 0) return true;
+  return nowMinutes.value < dailyStartMinutes.value;
+});
 
 // ── 休息日 / 排除日 ──
 const isCurrentDateRestDay = computed(() => {
@@ -763,6 +787,15 @@ onUnmounted(() => {
                 <button class="text-btn" type="button" @click="goBack">{{ backLabel }}</button>
               </template>
               <button
+                v-if="isToday"
+                class="text-btn"
+                type="button"
+                title="查看上周报告，调整本周任务量或排除日期后重新生成本周计划"
+                @click="generateCurrentWeek"
+              >
+                生成本周计划
+              </button>
+              <button
                 class="icon-btn"
                 type="button"
                 title="刷新"
@@ -799,7 +832,7 @@ onUnmounted(() => {
           <span v-for="(w, i) in planWarnings" :key="i">{{ w }}</span>
         </div>
       </div>
-      <div v-if="todayStore.missingYesterdayReview" class="review-banner">
+      <div v-if="showYesterdayReviewBanner" class="review-banner">
         <AlertTriangle :size="16" />
         <span>昨日复盘尚未完成，建议先完成复盘再开始今日学习。</span>
         <button class="text-btn" type="button" @click="goToReview">去复盘</button>
@@ -943,6 +976,14 @@ onUnmounted(() => {
         </aside>
       </div>
     </template>
+
+    <!-- 生成周计划配置弹窗：上周报告 / 任务量调整 / 排除日（原每周计划页功能） -->
+    <WeekPlanGenerateModal
+      :open="showWeekConfig"
+      :week-start="targetWeekStart"
+      @close="showWeekConfig = false"
+      @generated="onWeekPlanGenerated"
+    />
   </div>
 </template>
 

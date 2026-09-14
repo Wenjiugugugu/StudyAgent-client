@@ -1170,7 +1170,10 @@ export async function getUiFlag(key: string): Promise<string> {
   if (!isTauri()) {
     return localStorage.getItem(`studyagent.${key}`) ?? "";
   }
-  return invokeDirect<string>("get_ui_flag", { key });
+  // 注意：后端注册的命令名是 get_ui_flag_cmd（app_commands.rs），
+  // 此前调用 "get_ui_flag" 会报 command not found，导致更新日志弹窗等所有
+  // 依赖 UI 标记的功能静默失效。
+  return invokeDirect<string>("get_ui_flag_cmd", { key });
 }
 
 /**
@@ -1183,5 +1186,5 @@ export async function setUiFlag(key: string, value: string): Promise<void> {
     /* localStorage 不可用时不阻塞后端写入 */
   }
   if (!isTauri()) return;
-  return invokeDirect<void>("set_ui_flag", { key, value });
+  return invokeDirect<void>("set_ui_flag_cmd", { key, value });
 }
