@@ -59,13 +59,9 @@ pub async fn check_for_updates(
         }
     };
 
-    // 请求 latest release：GitCode（国内加速）优先，GitHub 兜底
-    let release_json = match fetch_remote_json(
-        &client,
-        &[GITCODE_RELEASES_LATEST_URL, GITHUB_RELEASES_LATEST_URL],
-    )
-    .await
-    {
+    // 请求 latest release：双源都拉取后择优（GitCode 国内加速优先，
+    // 但若其版本落后于 GitHub，则采用 GitHub 的新版本，避免单源滞后卡住更新）
+    let release_json = match fetch_best_release(&client).await {
         Some((json, _used_url)) => json,
         None => {
             return Ok(unavailable_result(

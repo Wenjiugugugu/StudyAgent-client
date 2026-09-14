@@ -369,7 +369,7 @@ impl<'a> Planner<'a> {
 
         // 9. 更新周计划（兜底路径已直接改写 week_plan，跳过 update）
         if !used_fallback {
-            update_week_plan_remaining_days(&mut week_plan, &updated_days);
+            update_week_plan_remaining_days(&mut week_plan, &updated_days, standard_granularity);
         }
 
         // 9.5 一致性校验与确定性修正：
@@ -434,7 +434,11 @@ impl<'a> Planner<'a> {
                     .await
                 {
                     Ok(days) if !days.is_empty() => {
-                        update_week_plan_remaining_days(&mut week_plan, &days);
+                        update_week_plan_remaining_days(
+                            &mut week_plan,
+                            &days,
+                            standard_granularity,
+                        );
                         consistency_warnings = consistency_check_and_correct(
                             &mut week_plan,
                             &state,
@@ -756,7 +760,7 @@ impl<'a> Planner<'a> {
 
         // 更新周计划（兜底路径已直接改写 week_plan，跳过 update）
         if !used_fallback {
-            update_week_plan_remaining_days(&mut week_plan, &updated_days);
+            update_week_plan_remaining_days(&mut week_plan, &updated_days, standard_granularity);
         }
         // enforce 确保排除日仍为休息日（AI 可能在重排时误塞任务）
         let excluded_snapshot2 = week_plan.data.excluded_days.clone();
@@ -990,7 +994,55 @@ impl<'a> Planner<'a> {
         );
         log::debug!("[AI-DEBUG] 周计划原始响应全文:\n{}", response.content);
 
-        let mut week_plan = parse_week_plan_json(&response.content, week_start, &week_end)?;
+        // 3. 解析 AI 返回的周计划 JSON。
+        // 解析失败时自动重试一次：把原始响应与解析错误位置发回给 AI，
+        // 要求只修正 JSON 语法（常见：字符串内未转义的英文双引号、尾随逗号），
+        // 不得改动任何内容。两次都失败才向用户报错。
+        let mut week_plan = match parse_week_plan_json(&response.content, week_start, &week_end) {
+            Ok(plan) => plan,
+            Err(first_err) => {
+                log::error!(
+                    "[周计划] AI 响应解析失败（{} 字符）: {}",
+                    response.content.len(),
+                    first_err
+                );
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    "week_plan_parse_error",
+                    &format!(
+                        "解析失败: {}\n--- 原始响应全文 ---\n{}",
+                        first_err, response.content
+                    ),
+                );
+                let repair_prompt = Self::build_json_repair_prompt(&response.content, &first_err);
+                let repair_request = ChatRequest {
+                    messages: vec![ChatMessage {
+                        role: MessageRole::User,
+                        content: repair_prompt,
+                        ..Default::default()
+                    }],
+                    agent: Some(AgentType::Planner),
+                    temperature: Some(0.2),
+                    timeout_override: Some(300),
+                    math_version: state.subjects.math.version.clone(),
+                    ..Default::default()
+                };
+                let repair_response = self.ai_service.chat(repair_request).await.map_err(|e| {
+                    format!(
+                        "解析 AI 返回的周计划 JSON 失败: {}（自动修复重试也失败: {}）",
+                        first_err, e
+                    )
+                })?;
+                parse_week_plan_json(&repair_response.content, week_start, &week_end).map_err(
+                    |e2| {
+                        format!(
+                            "解析 AI 返回的周计划 JSON 失败: 首次 {}；修复后仍失败 {}",
+                            first_err, e2
+                        )
+                    },
+                )?
+            }
+        };
 
         // 3.1 后置校验：强制周计划的 is_rest_day 与用户设置一致
         enforce_rest_days(&mut week_plan, &rest_days, week_start, &week_end)?;
@@ -1013,7 +1065,7 @@ impl<'a> Planner<'a> {
         );
 
         // 3.4b 任务粒度规范化：时长上限拆分 / 下限合并 / 原子性拆分（兜底 AI 不规范输出）
-        normalize_task_granularity(&mut week_plan);
+        normalize_task_granularity(&mut week_plan, standard_granularity);
 
         // AI 输出之后再次应用确定性预算，避免模型自由改变自适应算法给出的数字参数。
         apply_adaptive_parameters(&mut week_plan, &adaptive_parameters);
@@ -2077,6 +2129,7 @@ impl<'a> Planner<'a> {
             "task_templates": [
               {{
                 "title": "任务标题",
+                "estimated_hours": 1.5,
                 "goal": "任务目标",
                 "completion_criteria": ["完成标准1"],
                 "textbook": "教材（可选）",
@@ -2099,7 +2152,7 @@ impl<'a> Planner<'a> {
 4. 任务已不再分级（Priority A/B 已废弃）：task_templates 中不要输出 priority 字段，任务不做 A/B 区分，所有任务同等对待。
 5. subject 字段只能是 "math" / "english" / "politics" / "professional" 之一，严禁使用 "general" 或其他值。出现在 data.subjects[].subject、data.days[].subject_allocations[].subject 中的所有取值都必须严格属于这四个枚举值之一。
 6. 休息日 is_rest_day=true，且 subject_allocations 为空数组。
-7. 任务 estimated_hours 总和应大致等于当天预期学习时长。
+7. 每条任务必须输出 estimated_hours（单位小时，数值型，取值 ∈ [0.5, 3.0]，超过 3.0h 拆成多条）；每天所有任务的 estimated_hours 总和应大致等于当天预期学习时长，严禁省略该字段或填 0。
 8. 必须严格遵守「学习日程」节中声明的休息日配置。weekday 字段（如"周日"）与用户休息日列表匹配的，is_rest_day 必须为 true，且不分配任何任务；weekday 不在休息日列表的，必须有 subject_allocations。
 9. 必须严格遵守「各科开始学习日期」节中的约束：若某科目开始日期晚于本周日（{}），该科目不得出现在 subjects、subject_allocations 中，本周完全不为其安排任务。
 10. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
@@ -2128,6 +2181,32 @@ impl<'a> Planner<'a> {
         }
 
         prompt
+    }
+
+    /// 构建「JSON 语法修复」prompt：解析失败后的自动重试。
+    ///
+    /// 把上一次的完整输出与解析错误位置交回给 AI，只允许修语法、
+    /// 不得改动任何内容——周计划的内容（目标/任务/时长）全部保留。
+    fn build_json_repair_prompt(original_content: &str, parse_error: &str) -> String {
+        format!(
+            r#"你上一轮被要求输出一份考研周计划的 JSON，但你输出的 JSON 存在语法错误，程序解析失败：
+
+解析错误：
+{}
+
+你上一轮的完整输出如下：
+
+<<<BEGIN_PREVIOUS_OUTPUT
+{}
+END_PREVIOUS_OUTPUT>>>
+
+请修复 JSON 的语法错误并重新输出。要求：
+1. 常见语法错误包括：字符串值中出现未转义的英文双引号（必须改为转义 \" 或替换为中文引号「」“”）、尾随逗号、漏写逗号、括号/方括号不匹配、字符串未闭合等。重点检查解析错误提示的位置附近。
+2. 只修正语法，严禁增删改任何字段名与字段内容（标题、目标、任务、时长、数值、文本都必须与原输出完全一致）。
+3. 直接输出修正后的完整 JSON（一个完整的 JSON 对象），不要包裹 ```json 代码块，不要输出任何解释或多余文字。
+"#,
+            parse_error, original_content
+        )
     }
 
     /// 读取考试配置
@@ -3438,18 +3517,21 @@ const ACTIVITY_WORDS: [&str; 24] = [
 ///    单条 < TASK_MIN_HOURS 时合并到同科相邻任务（仅同 allocation 内）。
 /// 2. 原子性判据：标题含并列连词且命中多个活动词时拆为独立任务。
 /// 3. 拆分/合并后重算 allocation.hours（保持周计划层时长不失真）。
-fn normalize_task_granularity(week_plan: &mut WeekPlanFile) {
+fn normalize_task_granularity(week_plan: &mut WeekPlanFile, standard_granularity: f64) {
     for day in week_plan.data.days.iter_mut() {
-        normalize_allocations(&mut day.subject_allocations);
+        normalize_allocations(&mut day.subject_allocations, standard_granularity);
     }
 }
 
 /// 对单个 allocation 列表做任务粒度规范化。
-fn normalize_allocations(allocations: &mut [crate::data::plan::DaySubjectAllocation]) {
+fn normalize_allocations(
+    allocations: &mut [crate::data::plan::DaySubjectAllocation],
+    standard_granularity: f64,
+) {
     for alloc in allocations.iter_mut() {
         let mut expanded: Vec<crate::data::plan::TaskTemplate> = Vec::new();
         for t in alloc.task_templates.drain(..) {
-            expanded.extend(split_task_by_atomicity(&t.title, t.estimated_hours));
+            expanded.extend(split_task_by_atomicity(t));
         }
 
         // 时长上限拆分（> TASK_MAX_HOURS → 按 1.5h 粒度切分）
@@ -3489,21 +3571,38 @@ fn normalize_allocations(allocations: &mut [crate::data::plan::DaySubjectAllocat
         let sum: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
         if sum > 0.0 {
             alloc.hours = sum;
+        } else if !alloc.task_templates.is_empty() {
+            // 兜底：AI 漏填 estimated_hours（历史上输出示例缺该字段导致过全 0）时，
+            // 优先按 allocation.hours 均分；仍无值则退回标准任务粒度，
+            // 避免日计划出现「预估 0h」的任务。
+            let fallback_total = if alloc.hours > 0.0 {
+                alloc.hours
+            } else {
+                standard_granularity
+            };
+            let n = alloc.task_templates.len() as f64;
+            let each = (fallback_total / n).max(0.5);
+            for t in alloc.task_templates.iter_mut() {
+                t.estimated_hours = each;
+            }
+            alloc.hours = fallback_total;
         }
     }
 }
 
 /// 原子性拆分：标题含并列连词且命中 ≥2 个不同学习活动词时，按连接符拆为多条。
-fn split_task_by_atomicity(title: &str, hours: f64) -> Vec<crate::data::plan::TaskTemplate> {
-    let single = || {
-        vec![crate::data::plan::TaskTemplate {
-            title: title.to_string(),
-            estimated_hours: hours,
-            ..Default::default()
-        }]
-    };
+///
+/// 拆分/保留时除 title 与 estimated_hours 外的其余字段
+/// （priority/goal/completion_criteria/textbook/style_tips/fallback_plan）
+/// 必须原样保留——早期实现用 `..Default::default()` 重建模板，
+/// 曾把 AI 输出的任务目标与完成标准整批清空。
+fn split_task_by_atomicity(
+    t: crate::data::plan::TaskTemplate,
+) -> Vec<crate::data::plan::TaskTemplate> {
+    let title = t.title.clone();
+    let hours = t.estimated_hours;
     if !title.contains(['+', '＋', '、', '与', '及']) {
-        return single();
+        return vec![t];
     }
     let matched: Vec<&str> = ACTIVITY_WORDS
         .iter()
@@ -3518,7 +3617,7 @@ fn split_task_by_atomicity(title: &str, hours: f64) -> Vec<crate::data::plan::Ta
     }
     // 命中不同活动词 < 2 时不拆（如"行列式定义与性质"只有一个活动，是同一单元）
     if unique.len() < 2 {
-        return single();
+        return vec![t];
     }
     let parts: Vec<&str> = title
         .split(['+', '＋', '、', '与', '及'])
@@ -3526,7 +3625,7 @@ fn split_task_by_atomicity(title: &str, hours: f64) -> Vec<crate::data::plan::Ta
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return single();
+        return vec![t];
     }
     let each = hours / parts.len() as f64;
     parts
@@ -3534,7 +3633,7 @@ fn split_task_by_atomicity(title: &str, hours: f64) -> Vec<crate::data::plan::Ta
         .map(|p| crate::data::plan::TaskTemplate {
             title: p.to_string(),
             estimated_hours: each,
-            ..Default::default()
+            ..t.clone()
         })
         .collect()
 }
@@ -3722,7 +3821,11 @@ fn filter_ahead_of_progress(
 ///
 /// 用 AI 返回的新安排覆盖对应日期的 subject_allocations。
 /// 休息日的 is_rest_day 保持不变，仅更新非休息日的 allocations。
-fn update_week_plan_remaining_days(week_plan: &mut WeekPlanFile, updated_days: &[RegenDayPlan]) {
+fn update_week_plan_remaining_days(
+    week_plan: &mut WeekPlanFile,
+    updated_days: &[RegenDayPlan],
+    standard_granularity: f64,
+) {
     for updated in updated_days {
         if let Some(day) = week_plan
             .data
@@ -3739,7 +3842,7 @@ fn update_week_plan_remaining_days(week_plan: &mut WeekPlanFile, updated_days: &
             }
             day.subject_allocations = updated.subject_allocations.clone();
             // 任务粒度规范化：兜底 AI 重排输出的不规范粒度
-            normalize_allocations(&mut day.subject_allocations);
+            normalize_allocations(&mut day.subject_allocations, standard_granularity);
             log::info!(
                 "更新周计划: {} 的 subject_allocations 已更新（{} 个科目分配）",
                 updated.date,
@@ -4099,6 +4202,53 @@ mod tests {
         let plan = parse_week_plan_json(raw, "2026-07-20", "2026-07-26").unwrap();
         assert_eq!(plan.meta.week_start, "2026-07-20");
         assert_eq!(plan.meta.week_number, 30);
+    }
+
+    #[test]
+    fn test_split_task_by_atomicity_preserves_template_fields() {
+        // 回归：早期实现用 ..Default::default() 重建模板，丢失 goal/completion_criteria 等
+        let t = crate::data::plan::TaskTemplate {
+            title: "背 30 个新词 + 阅读精读 1 篇".to_string(),
+            estimated_hours: 2.0,
+            goal: "积累词汇与阅读能力".to_string(),
+            completion_criteria: vec!["完成 30 词".to_string(), "完成 1 篇精读".to_string()],
+            textbook: Some("考研英语".to_string()),
+            ..Default::default()
+        };
+        let parts = split_task_by_atomicity(t);
+        // 「新词/词汇」与「阅读/精读」命中 ≥2 个活动词 → 拆分为 2 条
+        assert_eq!(parts.len(), 2);
+        for p in &parts {
+            assert_eq!(p.goal, "积累词汇与阅读能力");
+            assert_eq!(p.completion_criteria.len(), 2);
+            assert_eq!(p.textbook.as_deref(), Some("考研英语"));
+            assert!((p.estimated_hours - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_normalize_allocations_fills_zero_estimated_hours() {
+        // 回归：周计划 prompt 输出示例曾缺 estimated_hours 字段，AI 照抄输出后全为 0，
+        // 日计划出现「预估 0h」任务；normalize 必须用 alloc.hours / 标准粒度兜底。
+        let mut allocs = vec![crate::data::plan::DaySubjectAllocation {
+            subject: SubjectKey::Math,
+            hours: 0.0,
+            focus: "测试".to_string(),
+            task_templates: vec![crate::data::plan::TaskTemplate {
+                title: "学习矩阵相似对角化".to_string(),
+                estimated_hours: 0.0,
+                goal: "掌握判定条件".to_string(),
+                completion_criteria: vec!["能独立完成例题".to_string()],
+                ..Default::default()
+            }],
+        }];
+        normalize_allocations(&mut allocs, 1.5);
+        let alloc = &allocs[0];
+        assert_eq!(alloc.task_templates.len(), 1);
+        assert!(alloc.task_templates[0].estimated_hours > 0.0);
+        assert!(alloc.hours > 0.0);
+        // goal/completion_criteria 不因兜底丢失
+        assert_eq!(alloc.task_templates[0].goal, "掌握判定条件");
     }
 
     #[test]

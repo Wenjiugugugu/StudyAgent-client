@@ -1399,6 +1399,61 @@ pub(super) async fn fetch_remote_json(
     None
 }
 
+/// 从 release JSON 提取版本号（剥离 tag 的前导 v/V）
+fn release_tag_version(release: &serde_json::Value) -> String {
+    release
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .trim_start_matches('V')
+        .to_string()
+}
+
+/// 双源 latest release 择优（纯函数，便于测试）。
+///
+/// 规则：
+/// - 仅一源成功 → 用该源；
+/// - 两源都成功 → 比较 tag 版本取**更高**的一方；版本相同时优先 GitCode
+///   （附件下载走国内 CDN，速度更快）。
+///
+/// 修复背景：此前检查更新「GitCode 成功即返回」，GitCode 源停留在旧版本
+/// （如 0.7.0 未同步上传 GitCode、latest 停在 v0.6.1）时，0.6.1 / 0.7.0-indev
+/// 客户端永远发现不了 GitHub 上已发布的新版本。
+pub(super) fn pick_newer_release(
+    gitcode: Option<(serde_json::Value, String)>,
+    github: Option<(serde_json::Value, String)>,
+) -> Option<(serde_json::Value, String)> {
+    match (gitcode, github) {
+        (Some(g), None) => Some(g),
+        (None, Some(h)) => Some(h),
+        (Some(g), Some(h)) => {
+            let gv = release_tag_version(&g.0);
+            let hv = release_tag_version(&h.0);
+            if is_newer_version(&hv, &gv) {
+                log::info!(
+                    "[Update] GitCode 源落后（{} < {}），采用 GitHub release",
+                    gv,
+                    hv
+                );
+                Some(h)
+            } else {
+                Some(g)
+            }
+        }
+        (None, None) => None,
+    }
+}
+
+/// 双源拉取 latest release 并择优（GitCode 优先、GitHub 兜底 → 版本更高者胜出）。
+pub(super) async fn fetch_best_release(
+    client: &reqwest::Client,
+) -> Option<(serde_json::Value, String)> {
+    let gitcode = fetch_remote_json(client, &[GITCODE_RELEASES_LATEST_URL]).await;
+    let github = fetch_remote_json(client, &[GITHUB_RELEASES_LATEST_URL]).await;
+    pick_newer_release(gitcode, github)
+}
+
 /// 请求远端版本策略清单（双源：GitCode contents API 优先，GitHub raw 兜底）。
 ///
 /// GitCode 端点返回 base64 编码的 `content` 字段，此处统一解码为原始文本后再解析。
@@ -1636,6 +1691,36 @@ mod tests {
     }
 
     // ── GitCode 双源加速相关测试 ────────────────────────────────
+
+    /// 双源择优：GitCode 落后（如 0.7.0 未同步、latest 停在 v0.6.1）时必须采用 GitHub 的新版本
+    #[test]
+    fn pick_newer_release_prefers_newer_tag() {
+        let mk = |tag: &str| {
+            (
+                serde_json::json!({ "tag_name": tag, "name": tag }),
+                "https://example.invalid".to_string(),
+            )
+        };
+
+        // GitCode 停留在旧版本 → 取 GitHub
+        let picked = pick_newer_release(Some(mk("v0.6.1")), Some(mk("v0.7.0"))).unwrap();
+        assert_eq!(release_tag_version(&picked.0), "0.7.0");
+
+        // GitHub 落后 → 取 GitCode
+        let picked = pick_newer_release(Some(mk("v0.7.1")), Some(mk("v0.7.0"))).unwrap();
+        assert_eq!(release_tag_version(&picked.0), "0.7.1");
+
+        // 版本相同 → 优先 GitCode（国内 CDN）
+        let picked = pick_newer_release(Some(mk("v0.7.0")), Some(mk("v0.7.0"))).unwrap();
+        assert_eq!(release_tag_version(&picked.0), "0.7.0");
+        assert_eq!(picked.1, "https://example.invalid");
+
+        // 单源可用 → 直接采用
+        assert!(pick_newer_release(None, Some(mk("v0.7.0"))).is_some());
+        assert!(pick_newer_release(Some(mk("v0.6.1")), None).is_some());
+        // 双源均失败 → None
+        assert!(pick_newer_release(None, None).is_none());
+    }
 
     /// 下载白名单：GitCode 直链 / CDN 重定向 / API 端点均放行，越权主机拒绝
     #[test]
