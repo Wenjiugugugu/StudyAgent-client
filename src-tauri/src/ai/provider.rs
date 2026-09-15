@@ -99,7 +99,7 @@ pub enum AgentType {
     Reviewer,
     #[default]
     Assistant,
-    /// 每日简报生成器：基于昨日复盘与当前进度，生成今日寄语与阶段估时
+    /// 每日简报生成器：基于昨日复盘与当前进度，生成阶段估时与建议
     Briefing,
     /// 解惑导师：引导式答疑，结合本地教材与联网能力
     Doubt,

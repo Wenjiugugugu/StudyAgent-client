@@ -186,7 +186,6 @@ function onPlanClick() {
         >
           <component :is="entry.item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
           <span class="nav-label">{{ entry.item.label }}</span>
-          <span v-if="entry.item.name === 'doubt'" class="nav-badge">测试版</span>
         </router-link>
 
         <!-- 「计划」二级菜单 -->

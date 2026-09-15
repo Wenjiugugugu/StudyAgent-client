@@ -59,7 +59,7 @@ const {
   supportsBalance,
 } = useProviderEditor();
 
-// ── 功能 → Provider 分配（核心 5 类） ──
+// ── 功能 → Provider 分配（核心 3 类） ──
 interface FeatureSpec {
   key: string;
   label: string;
@@ -76,12 +76,6 @@ const FEATURES: FeatureSpec[] = [
     timeSensitive: true,
   },
   {
-    key: "briefing",
-    label: "每日简报",
-    desc: "基于昨日复盘与今日进度生成寄语与阶段估时",
-    timeSensitive: true,
-  },
-  {
     key: "planner",
     label: "周计划与目标倒排",
     desc: "生成每周每日任务排程与目标倒排估时",
@@ -91,12 +85,6 @@ const FEATURES: FeatureSpec[] = [
     key: "reviewer",
     label: "复盘分析",
     desc: "整理复盘数据并给出后续建议",
-    timeSensitive: false,
-  },
-  {
-    key: "doubt",
-    label: "解惑答疑",
-    desc: "结合本地教材的引导式答疑",
     timeSensitive: false,
   },
 ];
@@ -341,59 +329,74 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
         </div>
       </div>
     </div>
-  </Card>
 
-  <!-- 功能 → Provider 分配 -->
-  <Card id="settings-feature-providers" padding="lg" class="settings-section">
-    <div class="section-head">
-      <div class="section-title">
-        <SlidersHorizontal :size="18" />
-        <span>功能 Provider 分配</span>
-      </div>
-      <span v-if="featureSavedFlash" class="saved-flash"><Check :size="13" /> 已保存</span>
-      <span v-else-if="featureSaving" class="saved-flash">保存中…</span>
-    </div>
-    <p class="section-desc">
-      为不同功能单独指定 AI Provider。未指定的功能使用默认 Provider。
-    </p>
-    <p v-if="featureSaveError" class="feature-save-error">{{ featureSaveError }}</p>
-
-    <div v-if="settingsStore.aiProviders.length === 0" class="empty-inline">
-      请先在上方添加 AI Provider。
-    </div>
-
-    <div v-else class="feature-map">
-      <div
-        v-for="f in FEATURES"
-        :key="f.key"
-        class="feature-row"
-      >
-        <div class="feature-info">
-          <div class="feature-name-row">
-            <span class="feature-name">{{ f.label }}</span>
-            <Badge v-if="f.timeSensitive" variant="warning">时效敏感</Badge>
-          </div>
-          <div class="feature-sub">{{ f.desc }}</div>
-          <div v-if="f.timeSensitive" class="feature-hint">
-            建议选择自带联网搜索能力或知识库更新较新的 API（云端大模型更合适），避免知识滞后导致考纲与教材内容过时。本地模型（Ollama）的知识取决于加载的权重，<strong>不建议</strong>用于此功能。
-          </div>
+    <!-- 功能 → Provider 分配（与 Provider 配置同一张卡片） -->
+    <div id="settings-feature-providers" class="feature-block">
+      <div class="feature-block-head">
+        <div class="section-title">
+          <SlidersHorizontal :size="16" />
+          <span>功能 Provider 分配</span>
         </div>
-        <Select
-          class="feature-select"
-          :model-value="settingsStore.settings?.feature_providers?.[f.key] ?? ''"
-          @update:model-value="(v) => onFeatureProviderChange(f.key, v)"
+        <span v-if="featureSavedFlash" class="saved-flash"><Check :size="13" /> 已保存</span>
+        <span v-else-if="featureSaving" class="saved-flash">保存中…</span>
+      </div>
+      <p class="section-desc">
+        为不同功能单独指定 AI Provider。未指定的功能使用默认 Provider。
+      </p>
+      <p v-if="featureSaveError" class="feature-save-error">{{ featureSaveError }}</p>
+
+      <div v-if="settingsStore.aiProviders.length === 0" class="empty-inline">
+        请先在上方添加 AI Provider。
+      </div>
+
+      <div v-else class="feature-map">
+        <div
+          v-for="f in FEATURES"
+          :key="f.key"
+          class="feature-row"
         >
-          <option value="">跟随默认 Provider</option>
-          <option v-for="p in settingsStore.aiProviders" :key="p.id" :value="p.id">
-            {{ p.name }} · {{ p.model || p.type }}
-          </option>
-        </Select>
+          <div class="feature-info">
+            <div class="feature-name-row">
+              <span class="feature-name">{{ f.label }}</span>
+              <Badge v-if="f.timeSensitive" variant="warning">时效敏感</Badge>
+            </div>
+            <div class="feature-sub">{{ f.desc }}</div>
+            <div v-if="f.timeSensitive" class="feature-hint">
+              建议选择自带联网搜索能力或知识库更新较新的 API（云端大模型更合适），避免知识滞后导致考纲与教材内容过时。本地模型（Ollama）的知识取决于加载的权重，<strong>不建议</strong>用于此功能。
+            </div>
+          </div>
+          <Select
+            class="feature-select"
+            :model-value="settingsStore.settings?.feature_providers?.[f.key] ?? ''"
+            @update:model-value="(v) => onFeatureProviderChange(f.key, v)"
+          >
+            <option value="">跟随默认 Provider</option>
+            <option v-for="p in settingsStore.aiProviders" :key="p.id" :value="p.id">
+              {{ p.name }} · {{ p.model || p.type }}
+            </option>
+          </Select>
+        </div>
       </div>
     </div>
   </Card>
 </template>
 
 <style scoped>
+/* 功能 Provider 分配：与 Provider 配置同一张卡片，用分隔线区分子区块 */
+.feature-block {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+.feature-block-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.feature-block-head .section-title {
+  font-size: var(--text-sm);
+}
 .section-desc {
   margin: 0 0 var(--space-3) 0;
   font-size: var(--text-sm);

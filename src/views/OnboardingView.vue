@@ -77,12 +77,12 @@ interface OnboardingStep {
 const steps: OnboardingStep[] = [
   { key: "welcome", title: "欢迎使用 StudyAgent", description: "你的个人考研学习智能体，让每一步都更有方向。", skippable: false },
   { key: "name", title: "该怎么称呼你", description: "我们会用这个名字称呼你，也会出现在工作台问候中。", skippable: false },
-  { key: "subjects", title: "考试科目", description: "选择你的考试科目和版本（如数学二、英语一）。", skippable: false },
+  { key: "subjects", title: "考试科目", description: "选择你的考试科目和版本（如数二、英一）。", skippable: false },
   { key: "progress", title: "当前进度", description: "告诉我们各科目的当前学习阶段，帮助 AI 更好地规划。", skippable: false },
   { key: "date", title: "考研年份", description: "考试默认在每年 12 月 20 日，设置年份即可自动计算倒计时。", skippable: false },
   { key: "schedule", title: "学习节奏", description: "设置每周学习天数和休息日，帮助我们安排可持续的学习计划。", skippable: true },
   { key: "dida", title: "滴答清单同步", description: "同步每日任务到滴答清单，手机端查看并勾选。", skippable: true },
-  { key: "ai", title: "配置 AI 助手", description: "智能计划、教学讲解与复盘等核心功能依赖 AI。未配置可跳过，稍后在设置中补全。", skippable: true },
+  { key: "ai", title: "配置 AI 助手", description: "智能计划、进度表生成与复盘等核心功能依赖 AI。未配置可跳过，稍后在设置中补全。", skippable: true },
   { key: "done", title: "配置完成", description: "一切就绪，开始你的考研之旅吧。", skippable: false },
 ];
 
@@ -127,6 +127,14 @@ const hasProfessional = ref(true);
 // 专业课：从支持的统考科目中下拉选择；PROFESSIONAL_OTHER = 其他/自命题（可自由填写，不加载内置进度表）
 const professionalOptions = api.PROGRESS_VARIANTS.professional;
 const PROFESSIONAL_OTHER = "其他/自命题";
+/** 专业课泛称：引导未指定统考科目时写入 exam_type 的词，回填时不作为自定义名 */
+const GENERIC_PROFESSIONAL_NAMES = new Set([
+  "专业课",
+  "其他",
+  "自命题",
+  "其他/自命题",
+  "其他/自命题科目",
+]);
 const professionalName = ref("");
 const professionalCustomName = ref("");
 const professionalIsCustom = computed(
@@ -730,6 +738,9 @@ function initFormFromSettings() {
       else if (p === "英一" || p === "英二") englishVersion.value = p as "英一" | "英二";
       else if (p === "政治") hasPolitics.value = true;
       else if (professionalOptions.includes(p)) { hasProfessional.value = true; professionalName.value = p; }
+      // 专业课泛称（未指定统考科目）：视为「其他/自命题」，但不回填自定义名，
+      // 否则重开引导会出现「其他/自命题 · 专业课」这种无意义显示
+      else if (GENERIC_PROFESSIONAL_NAMES.has(p)) { hasProfessional.value = true; professionalName.value = PROFESSIONAL_OTHER; }
       // 历史自由文本（如"408计算机综合"）精确匹配失败 → 归入「其他/自命题」并回填自定义名
       else if (p) { hasProfessional.value = true; professionalName.value = PROFESSIONAL_OTHER; professionalCustomName.value = p; }
     }
