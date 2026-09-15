@@ -50,11 +50,12 @@ export interface AppSettings {
   /** 默认 AI Provider ID */
   default_provider_id: string;
   /**
-   * 功能 → AI Provider ID 映射（核心 5 类）
+   * 功能 → AI Provider ID 映射（设置页仅暴露 planner / reviewer / assistant 三类）
    *
    * 键：`planner`（周计划/目标倒排）、`reviewer`（复盘分析）、
-   *     `briefing`（每日简报）、`doubt`（解惑答疑）、
    *     `assistant`（进度表/考纲生成与通用助手）。
+   * 历史键（`briefing` 每日简报、`doubt` 解惑答疑）已不再提供配置入口，
+   * 若旧配置中仍存在，后端解析时照旧生效（不改动用户已有设置）。
    * 值：Provider ID；空串或缺省 = 使用默认 Provider。
    * 不识别的功能键也会回退默认 Provider。
    */

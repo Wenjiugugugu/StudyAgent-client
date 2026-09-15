@@ -119,29 +119,45 @@ const SUBJECT_COLOR: Record<SubjectKey, string> = {
   professional: "var(--color-professional)",
 };
 
+/** 数学卷种：数一 / 数二 / 数三（引导页写入的简称）或 数学一 / 数学二 / 数学三 / 数学（历史全称） */
+const MATH_LABEL_RE = /^(数[一二三]|数学[一二三]?)$/;
+/** 英语卷种：英一 / 英二（简称）或 英语一 / 英语二 / 英语（全称） */
+const ENGLISH_LABEL_RE = /^(英[一二]|英语[一二]?)$/;
+/** 专业课泛称：未选择具体统考科目时引导页会写入这些词，不能当作专业课的显示名 */
+const GENERIC_PROFESSIONAL_LABELS = new Set([
+  "专业课",
+  "其他",
+  "自命题",
+  "其他/自命题",
+  "其他/自命题科目",
+]);
+
 /**
- * 科目显示名：优先使用设置中的考试类型（如「数学二 / 英语二 / 政治 / 408计算机」），
+ * 科目显示名：优先使用设置中的考试类型（如「数二 / 英二 / 政治 / 408 计算机」），
  * 与引导页写入 exam_type 的口径一致；未配置时回退到通用科目名。
+ *
+ * 注意：必须同时兼容引导页写入的简称（数二 / 英二）与历史数据的全称（数学二 / 英语二），
+ * 且专业课不能用「第一个未被占用的部分」兜底——否则数学卷种简称匹配失败时，
+ * 「数二」会被误当作专业课的显示名。
  */
 const subjectLabels = computed<Record<SubjectKey, string>>(() => {
   const parts = (settingsStore.settings?.exam_type ?? "")
     .split("/")
     .map((s) => s.trim())
     .filter(Boolean);
-  const pick = (prefix: string) => parts.find((p) => p.startsWith(prefix));
-  const used = new Set<string>();
-  const math = pick("数学");
-  const english = pick("英语");
-  const politics = pick("政治");
-  if (math) used.add(math);
-  if (english) used.add(english);
-  if (politics) used.add(politics);
+  const math = parts.find((p) => MATH_LABEL_RE.test(p));
+  const english = parts.find((p) => ENGLISH_LABEL_RE.test(p));
+  const politics = parts.find((p) => p.startsWith("政治"));
+  const used = new Set([math, english, politics].filter((p): p is string => !!p));
+  // 专业课：排除前三科与泛称后，取具体的统考科目名（如「408 计算机」）；找不到则用通用名
+  const professional = parts.find(
+    (p) => !used.has(p) && !GENERIC_PROFESSIONAL_LABELS.has(p)
+  );
   return {
     math: math ?? FALLBACK_SUBJECT_LABEL.math,
     english: english ?? FALLBACK_SUBJECT_LABEL.english,
     politics: politics ?? FALLBACK_SUBJECT_LABEL.politics,
-    // 专业课：取 exam_type 中未被前三科占用的部分（如「408计算机」）
-    professional: parts.find((p) => !used.has(p)) ?? FALLBACK_SUBJECT_LABEL.professional,
+    professional: professional ?? FALLBACK_SUBJECT_LABEL.professional,
   };
 });
 
