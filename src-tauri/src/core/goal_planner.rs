@@ -149,9 +149,8 @@ pub fn plan_goal_tasks_sync(
     // 把「周日」这类休息日名称转成区间 [date, deadline] 内的具体日期集合
     let settings = crate::load_settings(data_dir);
     // 单条任务估时兜底沿用用户设置的任务粒度（不再硬编码 1.5h）
-    let granularity = crate::core::planning::pure::normalize_granularity(
-        settings.standard_granularity(),
-    );
+    let granularity =
+        crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
     let rest_date_set = rest_days_as_dates(&settings.rest_days(), date, &goal.deadline);
 
     let schedule = backward_schedule(date, &goal.deadline, start_pos, target_pos, &rest_date_set);

@@ -946,7 +946,11 @@ mod tests {
             &n.phase,
             "阅读真题第23篇精读 + 词汇句法积累"
         ));
-        assert!(!node_matches(&n, &n.phase, "背诵30个新考研词汇（第27篇语境词）"));
+        assert!(!node_matches(
+            &n,
+            &n.phase,
+            "背诵30个新考研词汇（第27篇语境词）"
+        ));
         // 章节名本身仍应命中（用户直接声明整章已学）
         assert!(node_matches(&n, &n.phase, "词汇"));
     }
@@ -980,7 +984,10 @@ mod tests {
             "内存管理·连续分配管理方式（动态分区分配算法与内存回收）"
         ));
         // 次日计划预置：分页/分段任务应能点亮对应知识点
-        let paging = kn_node("分页存储管理（基本分页、地址变换、快表）", "第四章 存储器管理");
+        let paging = kn_node(
+            "分页存储管理（基本分页、地址变换、快表）",
+            "第四章 存储器管理",
+        );
         assert!(node_matches(
             &paging,
             &paging.phase,

@@ -289,9 +289,8 @@ impl<'a> Planner<'a> {
         let subject_start_dates = settings.subject_start_dates();
         let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
-        let standard_granularity = crate::core::planning::pure::normalize_granularity(
-            settings.standard_granularity(),
-        );
+        let standard_granularity =
+            crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
         // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
         // （区间科目内容由 scheduler 确定性倒排接管）。
@@ -637,9 +636,8 @@ impl<'a> Planner<'a> {
         let subject_start_dates = settings.subject_start_dates();
         let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
-        let standard_granularity = crate::core::planning::pure::normalize_granularity(
-            settings.standard_granularity(),
-        );
+        let standard_granularity =
+            crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
 
         // 8. 构建 prompt
@@ -909,9 +907,8 @@ impl<'a> Planner<'a> {
         let subject_start_dates = settings.subject_start_dates();
         let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
-        let standard_granularity = crate::core::planning::pure::normalize_granularity(
-            settings.standard_granularity(),
-        );
+        let standard_granularity =
+            crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
         // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
         // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
@@ -1559,12 +1556,11 @@ impl<'a> Planner<'a> {
         prompt.push_str("- 一条任务 = 单一主旨的同动作学习单元。不同学习动作（如背诵/阅读/分析/做题/听课）即使总时长合理也必须拆为独立任务，不得用 + 拼接；判定：该单元完成后能否单独勾选完成？能 → 独立成条。\n\n");
 
         // 各科待学知识点预估时长参考（隐藏数据，已按用户效率系数校准）
-        let progress_estimate_block =
-            Self::progress_estimate_prompt_block(
-                data_dir,
-                adaptive_parameters,
-                standard_granularity,
-            );
+        let progress_estimate_block = Self::progress_estimate_prompt_block(
+            data_dir,
+            adaptive_parameters,
+            standard_granularity,
+        );
         if !progress_estimate_block.is_empty() {
             prompt.push_str(&progress_estimate_block);
         }
@@ -3647,13 +3643,11 @@ fn normalize_allocation_granularity(
     // 份数超出：把「单份时长」最小的合并回（合并后仍不超过粒度上限太多）
     while parts.iter().sum::<usize>() > target && guard < 128 {
         guard += 1;
-        let idx = (0..parts.len())
-            .filter(|&i| parts[i] > 1)
-            .min_by(|&a, &b| {
-                let fa = per_part_hours(templates[a].estimated_hours, parts[a]);
-                let fb = per_part_hours(templates[b].estimated_hours, parts[b]);
-                fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
-            });
+        let idx = (0..parts.len()).filter(|&i| parts[i] > 1).min_by(|&a, &b| {
+            let fa = per_part_hours(templates[a].estimated_hours, parts[a]);
+            let fb = per_part_hours(templates[b].estimated_hours, parts[b]);
+            fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+        });
         match idx {
             Some(i) => parts[i] -= 1,
             None => break,
@@ -4393,11 +4387,7 @@ mod tests {
         let alloc = &allocs[0];
         // 条数 = 总时长 ÷ 粒度 = 7
         assert_eq!(alloc.task_templates.len(), 7);
-        let total: f64 = alloc
-            .task_templates
-            .iter()
-            .map(|t| t.estimated_hours)
-            .sum();
+        let total: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
         assert!((total - 7.0).abs() < 0.05, "总时长不得失真: {}", total);
         // 单条不得超过粒度上限（1.5 × 粒度）
         assert!(alloc
