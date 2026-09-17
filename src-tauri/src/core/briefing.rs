@@ -254,6 +254,8 @@ impl<'a> BriefingAgent<'a> {
             }
 
             // 任务掌握度摘要
+            // 复盘自 0.7.3 起不再采集掌握程度（该职责由进度表承担），故仅在
+            // 历史复盘确实带有掌握度记录时才输出，避免向 AI 提供「0 项已掌握」这类噪声。
             let mastered_count = review
                 .task_reviews
                 .iter()
@@ -264,7 +266,7 @@ impl<'a> BriefingAgent<'a> {
                 .iter()
                 .filter(|t| t.mastery == "weak")
                 .count();
-            if !review.task_reviews.is_empty() {
+            if mastered_count + weak_count > 0 {
                 prompt.push_str(&format!(
                     "- 任务掌握: {} 项已掌握, {} 项需巩固\n",
                     mastered_count, weak_count

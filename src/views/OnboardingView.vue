@@ -549,6 +549,17 @@ function persistCurrentStep() {
         rest_days: [...restDays.value],
         review_reminder_time: "23:00",
         standard_granularity: Number(standardGranularity.value),
+        // 落盘条数与设置页只读显示同口径：由「每日目标学时 ÷ 任务粒度」派生
+        daily_task_count: Math.max(
+          1,
+          Math.min(
+            8,
+            Math.round(
+              Number(dailyTargetHours.value || 0) /
+                Math.max(0.5, Number(standardGranularity.value) || 1.5),
+            ),
+          ),
+        ),
         subject_time_allocation:
           subjectTimeAllocation.value ? { ...subjectTimeAllocation.value } : null,
         enable_review_tasks: enableReviewTasks.value,
@@ -654,6 +665,17 @@ async function finish() {
       rest_days: [...restDays.value],
       review_reminder_time: s.study_schedule?.review_reminder_time ?? "23:00",
       standard_granularity: Number(standardGranularity.value),
+      // 落盘条数与设置页只读显示同口径：由「每日目标学时 ÷ 任务粒度」派生
+      daily_task_count: Math.max(
+        1,
+        Math.min(
+          8,
+          Math.round(
+            Number(dailyTargetHours.value || 0) /
+              Math.max(0.5, Number(standardGranularity.value) || 1.5),
+          ),
+        ),
+      ),
       subject_time_allocation:
         subjectTimeAllocation.value ? { ...subjectTimeAllocation.value } : null,
       enable_review_tasks: enableReviewTasks.value,

@@ -4,7 +4,7 @@
 //! - **任务来源确定性**：给定某科目的生效区间，用 chapter_seq 顺序表
 //!   算出区间内每天「该推进到哪个知识点」，据此生成每日任务（不调 AI 决定内容）。
 //! - **任务估时由 AI 参与**：把当天的知识点交给 AI 细化为带估时的任务；
-//!   AI 失败时回退到标准粒度常量 `STANDARD_GRANULARITY_HOURS`。
+//!   AI 失败时回退到用户设置的任务粒度（`AppSettings::standard_granularity()`）。
 //! - **复盘双轨重排**：复盘后按「当前进度 vs 目标差距」确定性重排截止日科目
 //!   的后续任务量（完成多→减少、完成少→增多、达标→提前退出）。
 //!
@@ -20,9 +20,6 @@ use crate::data::goal::{read_goals, save_goals, Goal};
 use crate::data::plan::PlanTask;
 use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
 use crate::data::{add_days, clean_ai_json, DataResult};
-
-/// 估算单条知识的任务粒度（小时），AI 失败时兜底
-const STANDARD_GRANULARITY_HOURS: f64 = 1.5;
 
 /// 把 subject 转为设置/顺序表键
 pub fn subject_key_str(subject: &SubjectKey) -> &'static str {
@@ -151,6 +148,10 @@ pub fn plan_goal_tasks_sync(
 
     // 把「周日」这类休息日名称转成区间 [date, deadline] 内的具体日期集合
     let settings = crate::load_settings(data_dir);
+    // 单条任务估时兜底沿用用户设置的任务粒度（不再硬编码 1.5h）
+    let granularity = crate::core::planning::pure::normalize_granularity(
+        settings.standard_granularity(),
+    );
     let rest_date_set = rest_days_as_dates(&settings.rest_days(), date, &goal.deadline);
 
     let schedule = backward_schedule(date, &goal.deadline, start_pos, target_pos, &rest_date_set);
@@ -181,7 +182,7 @@ pub fn plan_goal_tasks_sync(
             subject: subject.clone(),
             title: format!("（{}）{}", subject_display_name(subject), kp),
             priority: TaskPriority::A,
-            estimated_hours: STANDARD_GRANULARITY_HOURS,
+            estimated_hours: granularity,
             goal: format!("推进至「{}」", kp),
             completion_criteria: vec![format!("完成 {} 的学习", kp)],
             textbook: None,
@@ -250,13 +251,17 @@ async fn estimate_tasks_hours(
     if knowledge.is_empty() {
         return HashMap::new();
     }
+    let gran = crate::core::planning::pure::normalize_granularity(
+        crate::load_settings(data_dir).standard_granularity(),
+    );
     let points = knowledge.join("、");
     let prompt = format!(
         "你是考研各科学习任务拆分与估时助手。请为以下「{}」科目的一小节学习知识点估算需要的学习时长（小时，取 0.5 的整数倍），\
-         每个知识点拆成一条任务。\
+         每个知识点拆成一条任务。用户设置的任务粒度为 {:.2} 小时/条，单条估时请尽量贴近该粒度。\
          知识点：{}\n\
          只返回 JSON 数组，每项 {json_example},不要输出其他内容。",
         subject_display_name(subject),
+        gran,
         points,
         json_example = r#"{"knowledge":"知识点原文","hours":数字}"#,
     );
@@ -289,9 +294,9 @@ async fn estimate_tasks_hours(
             HashMap::new()
         }
     };
-    // 确保每个知识点都有估值
+    // 确保每个知识点都有估值（兜底沿用用户设置的任务粒度）
     for kp in knowledge {
-        map.entry(kp.clone()).or_insert(STANDARD_GRANULARITY_HOURS);
+        map.entry(kp.clone()).or_insert(gran);
     }
     map
 }

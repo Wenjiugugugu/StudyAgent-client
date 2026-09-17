@@ -119,32 +119,59 @@ async function checkSelectedDateExcluded() {
 
 // ── State ──
 const step = ref(0);
-const totalSteps = 6;
+const totalSteps = 5;
 const quickMode = ref(false);
 const submitting = ref(false);
 const loading = ref(true);
 
 // 提交复盘的加载进度：展示给用户当前执行到哪个阶段
+// 数组顺序即展示顺序。每条步骤都必须对应后端的真实工作：
+// 旧版「正在应用修改」在 submit_review 返回后由前端瞬时切步（耗时恒为 0ms），
+// 用户看不到，改由「正在保存复盘」一并覆盖（保存复盘文件 + 更新 State 状态）。
 interface SubmitStep { key: string; label: string; }
 const SUBMIT_STEPS: SubmitStep[] = [
-  { key: "analyzing", label: "正在分析" },
-  { key: "applying", label: "正在应用修改" },
+  { key: "analyzing", label: "正在保存复盘" },
   { key: "adjusting", label: "正在调整" },
-  { key: "syncing", label: "正在调整滴答同步" },
+  { key: "syncing", label: "正在同步滴答" },
 ];
+/** 无需 AI 调整后续计划时的默认步骤（「正在调整」按需插入） */
+const DEFAULT_SUBMIT_STEP_KEYS = ["analyzing", "syncing"];
+/** 按 key 构造步骤列表：避免用数组下标硬编码步骤（下标会随步骤增删而失效） */
+function buildSubmitSteps(keys: string[]): SubmitStep[] {
+  return keys
+    .map(key => SUBMIT_STEPS.find(s => s.key === key))
+    .filter((s): s is SubmitStep => !!s);
+}
 /** 当前展示的步骤列表（无需 AI 调整时动态省略「正在调整」步骤） */
-const submitSteps = ref<SubmitStep[]>([SUBMIT_STEPS[0], SUBMIT_STEPS[1], SUBMIT_STEPS[3]]);
+const submitSteps = ref<SubmitStep[]>(buildSubmitSteps(DEFAULT_SUBMIT_STEP_KEYS));
 /** 当前进度步骤索引：-1 表示不在提交/调整流程中（不显示进度卡片） */
 const submitStepIndex = ref(-1);
+/** 单步最短展示时长（ms）：步骤对应的工作过快时补足，避免进度条一闪而过 */
+const SUBMIT_STEP_MIN_MS = 450;
+let submitStepShownAt = 0;
 function setSubmitStep(i: number) {
   submitStepIndex.value = i;
+  submitStepShownAt = Date.now();
+}
+/** 推进到下一步：若当前步骤展示时间不足最短时长，先补足再切换 */
+async function advanceSubmitStep(i: number) {
+  const shownFor = Date.now() - submitStepShownAt;
+  if (submitStepIndex.value >= 0 && i !== submitStepIndex.value && shownFor < SUBMIT_STEP_MIN_MS) {
+    await new Promise(resolve => setTimeout(resolve, SUBMIT_STEP_MIN_MS - shownFor));
+  }
+  setSubmitStep(i);
 }
 /** 确保某步骤存在于当前列表（重试/恢复时补充），返回其在列表中的索引 */
 function ensureSubmitStep(key: string): number {
   let idx = submitSteps.value.findIndex(s => s.key === key);
   if (idx === -1) {
     const step = SUBMIT_STEPS.find(s => s.key === key);
-    if (step) submitSteps.value.push(step);
+    if (step) {
+      submitSteps.value.push(step);
+      // 按 SUBMIT_STEPS 的规范顺序重排：动态插入的步骤不能排到「同步滴答」之后
+      const order = new Map(SUBMIT_STEPS.map((s, i) => [s.key, i]));
+      submitSteps.value.sort((a, b) => (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0));
+    }
     idx = submitSteps.value.findIndex(s => s.key === key);
   }
   return idx;
@@ -255,10 +282,7 @@ const didaMatchedCount = ref(0);
 const taskBlockers = ref<Record<string, string[]>>({});
 const blockerNotes = ref<Record<string, string>>({});
 
-// Step 3: mastery (per completed task)
-const taskMastery = ref<Record<string, string>>({});
-
-// Step 4: overall feeling
+// Step 2: overall feeling
 const overallFeeling = ref("normal");
 
 // Step 5: main difficulty
@@ -323,12 +347,6 @@ const blockerOptions = [
   { value: "energy", label: "今天状态不好" },
   { value: "resource", label: "资源不足" },
   { value: "other", label: "其它" },
-];
-
-const masteryOptions = [
-  { value: "mastered", label: "已掌握，可以继续下一部分" },
-  { value: "basic", label: "基本掌握，建议简单复习" },
-  { value: "weak", label: "掌握不足，希望继续巩固" },
 ];
 
 const feelingOptions = [
@@ -687,7 +705,18 @@ async function applyForwardPointer(idx: number) {
       ...toAdd.map((u) => ({ subject, chapter_reached: u.title, node_id: u.id }))
     );
   }
-  for (const u of toRemove) removeOcOf(subject, u);
+  for (const u of toRemove) {
+    removeOcOf(subject, u);
+    if (u.level === "chapter") {
+      for (const k of childrenOfChapter(u.id)) removeOcOf(subject, k);
+    }
+  }
+  // 整章推进后章内知识点已被章条目覆盖，清掉本轮零散的知识点条目避免冗余
+  for (const u of toAdd) {
+    if (u.level === "chapter") {
+      for (const k of childrenOfChapter(u.id)) removeOcOf(subject, k);
+    }
+  }
 
   if (toAdd.length || toRemove.length) {
     await persistActiveTable(subject, (copy) => {
@@ -714,7 +743,12 @@ async function confirmCorrection() {
     return;
   }
   const affected = ocUnits.value.slice(idx + 1, tail + 1);
-  for (const u of affected) removeOcOf(subject, u);
+  for (const u of affected) {
+    removeOcOf(subject, u);
+    if (u.level === "chapter") {
+      for (const k of childrenOfChapter(u.id)) removeOcOf(subject, k);
+    }
+  }
   await persistActiveTable(subject, (copy) => {
     for (const u of affected) {
       const n = copy.nodes.find((x) => x.id === u.id);
@@ -766,11 +800,46 @@ function pointerRowHint(ui: number): string {
   return "点选 = 本次实际进度到达这里，从目前进度到该章之间未记录的内容将整段补记";
 }
 
-/** 未挂靠章节的知识点：保留逐个勾选兜底（不参与进度指针） */
-async function toggleOrphan(subject: string, node: ProgressNode) {
+/** 已展开的章节 id（章节可展开，逐条勾选其下具体知识点） */
+const ocExpanded = ref<Set<string>>(new Set());
+function isOcExpanded(chapterId: string): boolean {
+  return ocExpanded.value.has(chapterId);
+}
+function toggleOcExpand(chapterId: string) {
+  const next = new Set(ocExpanded.value);
+  if (next.has(chapterId)) next.delete(chapterId);
+  else next.add(chapterId);
+  ocExpanded.value = next;
+}
+
+/** 章节内知识点统计：状态 ≥ 基础 或 本轮已勾选 记入已学 */
+function chapterKidStats(chapterId: string): { learned: number; total: number } {
+  const kids = childrenOfChapter(chapterId);
+  let learned = 0;
+  for (const k of kids) {
+    if (ocIsLearned(k) || isChecked(activeSubject.value, k)) learned += 1;
+  }
+  return { learned, total: kids.length };
+}
+
+/**
+ * 单个知识点的勾选：只推进该知识点自身（状态 → 基础）并记入本次计划外，
+ * 不改变章节顺序进度指针 —— 用于「只学到本章中间几个知识点」的精确声明。
+ * 取消勾选时把该节点状态还原到进入本轮会话时的快照。
+ */
+async function toggleKnowledgePoint(subject: string, node: ProgressNode) {
+  if (savingProgress.value) return;
+  const table = viewTableOf(subject);
+  if (!table) return;
+  ensureOcSnapshot(subject);
   const existing = entryFor(subject, node);
   if (existing) {
     overcompletions.value = overcompletions.value.filter((oc) => oc !== existing);
+    await persistActiveTable(subject, (t) => {
+      const n = t.nodes.find((x) => x.id === node.id);
+      if (n) n.status = ocSnapshotStatus(subject, table.id, n.id);
+    });
+    ocHint.value = `已撤销本次对「${node.title}」的计划外记录。`;
     return;
   }
   overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
@@ -778,6 +847,7 @@ async function toggleOrphan(subject: string, node: ProgressNode) {
     const n = t.nodes.find((x) => x.id === node.id);
     if (n && ocRankOf(n) < STATUS_RANK.basic) n.status = "basic";
   });
+  ocHint.value = `已将「${node.title}」记为本次计划外学习（状态推进到「基础」）。`;
 }
 
 /** 自动定位：把进度锚点后的首个待学章节滚入视野 */
@@ -795,7 +865,7 @@ function scrollToCurrentProgress() {
 watch(
   [step, activeSubject, () => activeTable.value?.id, hasOvercompletion],
   () => {
-    if (step.value === 5 && hasOvercompletion.value && activeTable.value) {
+    if (step.value === 4 && hasOvercompletion.value && activeTable.value) {
       ensureOcSnapshot(activeSubject.value);
       nextTick(scrollToCurrentProgress);
     }
@@ -906,7 +976,6 @@ function initFromReview(review: ReviewRecord) {
   if (review.task_reviews?.length) {
     for (const tr of review.task_reviews) {
       taskCompleted.value[tr.task_id] = tr.status === "completed";
-      if (tr.mastery) taskMastery.value[tr.task_id] = tr.mastery;
       if (tr.blockers?.length) taskBlockers.value[tr.task_id] = [...tr.blockers];
       if (tr.blocker_note) blockerNotes.value[tr.task_id] = tr.blocker_note;
     }
@@ -941,7 +1010,6 @@ function resetForm() {
   taskCompleted.value = {};
   taskBlockers.value = {};
   blockerNotes.value = {};
-  taskMastery.value = {};
   overallFeeling.value = "normal";
   mainDifficulty.value = "";
   workloadFeedback.value = "reasonable";
@@ -958,55 +1026,61 @@ function resetForm() {
 }
 
 // ── Navigation ──
+// 步骤顺序：0 完成情况 → 1 未完成原因（可跳过）→ 2 整体感受 → 3 最大困难 → 4 计划外学习
 function canNext(): boolean {
   switch (step.value) {
     case 0: return allTasks.value.length > 0;
-    case 3: return !!overallFeeling.value;
+    case 2: return !!overallFeeling.value;
     default: return true;
   }
 }
 
 function startQuickReview() {
   quickMode.value = true;
-  step.value = 3;
+  step.value = 2;
 }
 
 function goNext() {
   if (step.value >= totalSteps - 1) return;
   // 若所有任务均已完成，则跳过「未完成原因」步骤
-  if (step.value === 0 && incompleteTasks.value.length === 0) {
+  if (step.value === 0) {
+    step.value = incompleteTasks.value.length === 0 ? 2 : 1;
+    return;
+  }
+  if (step.value === 1) {
     step.value = 2;
     return;
   }
   step.value++;
 }
 function goPrev() {
-  if (quickMode.value && step.value === 3) {
+  if (quickMode.value && step.value === 2) {
     quickMode.value = false;
     step.value = 0;
-  } else if (step.value > 0) {
-    step.value--;
-    // 若所有任务均已完成，则跳过「未完成原因」步骤
-    if (step.value === 1 && incompleteTasks.value.length === 0) {
-      step.value = 0;
-    }
+    return;
   }
+  if (step.value <= 0) return;
+  if (step.value === 2) {
+    // 若所有任务均已完成，则跳过「未完成原因」步骤
+    step.value = incompleteTasks.value.length === 0 ? 0 : 1;
+    return;
+  }
+  step.value--;
 }
 
 // ── Submit ──
 async function doSubmit() {
   submitting.value = true;
-  // 动态步骤：分析 → 应用修改 →（可能）调整 → 同步
-  submitSteps.value = [SUBMIT_STEPS[0], SUBMIT_STEPS[1], SUBMIT_STEPS[3]];
-  setSubmitStep(0); // 正在分析
+  // 动态步骤：保存复盘 →（可能）调整后续计划 → 同步滴答
+  submitSteps.value = buildSubmitSteps(DEFAULT_SUBMIT_STEP_KEYS);
+  setSubmitStep(0); // 正在保存复盘
   try {
     const taskReviews: TaskReviewEntry[] = allTasks.value.map(t => ({
       task_id: t.id,
       status: taskCompleted.value[t.id] ? "completed" : "incomplete",
       completion: taskCompleted.value[t.id] ? 1.0 : 0.0,
-      // 快速复盘会跳过「掌握情况」步骤：已完成任务若未手动选择，默认视为已掌握
-      mastery: taskMastery.value[t.id]
-        || (quickMode.value && taskCompleted.value[t.id] ? "mastered" : ""),
+      // 掌握程度不再由复盘采集（该职责已由进度表承担）：字段留空，兼容历史记录
+      mastery: "",
       blockers: taskBlockers.value[t.id] || [],
       blocker_note: blockerNotes.value[t.id] || undefined,
       title: t.title,
@@ -1037,17 +1111,14 @@ async function doSubmit() {
     });
     submitted.value = true;
 
-    // 复盘已保存：应用修改阶段完成
-    setSubmitStep(1);
-
     // 若需要 AI 重排剩余天数，插入「正在调整」步骤并执行
     if (result.needs_regeneration) {
-      setSubmitStep(ensureSubmitStep("adjusting"));
+      await advanceSubmitStep(ensureSubmitStep("adjusting"));
       await executeRegeneration();
     }
 
     // 收尾：清理滴答中过往未完成任务
-    setSubmitStep(ensureSubmitStep("syncing"));
+    await advanceSubmitStep(ensureSubmitStep("syncing"));
     try {
       await api.cleanupDidaStale();
     } catch (e) {
@@ -1082,7 +1153,10 @@ async function cancelRegeneration() {
 
 /** 执行 AI 重排剩余天数（doSubmit 和 retry 共用） */
 async function executeRegeneration() {
-  setSubmitStep(ensureSubmitStep("adjusting")); // 正在调整
+  // 已在「正在调整」步骤时不重复切换：否则会重置该步的最短展示计时
+  if (submitSteps.value[submitStepIndex.value]?.key !== "adjusting") {
+    setSubmitStep(ensureSubmitStep("adjusting")); // 正在调整
+  }
   regenFailed.value = false;
   regenerating.value = true;
   regenMessage.value = "正在调整后续计划，请勿关闭应用…";
@@ -1138,6 +1212,9 @@ async function executeRegeneration() {
 
 /** 重试 AI 重排剩余天数 */
 async function retryRegeneration() {
+  // 重试只跑「正在调整」一步：重置步骤列表，避免展示与本次无关的步骤
+  submitSteps.value = buildSubmitSteps(["adjusting"]);
+  submitStepIndex.value = -1;
   await executeRegeneration();
   // 关闭进度卡片，回到复盘结果页（无论成败都回到页面展示提示/重试按钮）
   setSubmitStep(-1);
@@ -1717,32 +1794,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </div>
       </Card>
 
-      <!-- Step 3: Mastery -->
-      <Card v-if="step === 2 && doneTasks.length > 0" padding="lg" class="step-card">
-        <h2 class="step-title">掌握情况</h2>
-        <p class="step-desc">针对已完成的任务，评估你的掌握程度</p>
-        <div v-for="task in doneTasks" :key="task.id" class="mastery-item">
-          <div class="mastery-task">
-            <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">{{ subjectLabel(task.subject) }}</Badge>
-            <span class="mastery-title">{{ task.title }}</span>
-          </div>
-          <div class="mastery-chips">
-            <button v-for="opt in masteryOptions" :key="opt.value" type="button" class="mastery-chip"
-              :class="{ active: taskMastery[task.id] === opt.value }"
-              @click="taskMastery[task.id] = opt.value">{{ opt.label }}</button>
-          </div>
-        </div>
-      </Card>
-
-      <Card v-if="step === 2 && doneTasks.length === 0" padding="lg" class="step-card">
-        <div class="empty-step">
-          <AlertTriangle :size="32" class="empty-icon warn" />
-          <p>没有已完成的任务需要评估掌握程度。</p>
-        </div>
-      </Card>
-
-      <!-- Step 4: Overall Feeling -->
-      <Card v-if="step === 3" padding="lg" class="step-card">
+      <!-- Step 3: Overall Feeling -->
+      <Card v-if="step === 2" padding="lg" class="step-card">
         <h2 class="step-title">整体学习感受</h2>
         <p class="step-desc">{{ isYesterday ? '昨天' : '今天' }}整体学习感觉如何？</p>
         <div class="feeling-grid">
@@ -1777,8 +1830,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </div>
       </Card>
 
-      <!-- Step 5: Main Difficulty -->
-      <Card v-if="step === 4" padding="lg" class="step-card">
+      <!-- Step 4: Main Difficulty -->
+      <Card v-if="step === 3" padding="lg" class="step-card">
         <h2 class="step-title">最大困难（可选）</h2>
         <p class="step-desc">{{ isYesterday ? '昨天' : '今天' }}最大的困难是什么？用于 Analytics 分析。</p>
         <div class="difficulty-grid">
@@ -1789,10 +1842,10 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </div>
       </Card>
 
-      <!-- Step 6: 计划外学习 (extra, optional) -->
-      <Card v-if="step === 5" padding="lg" class="step-card">
+      <!-- Step 5: 计划外学习 (extra, optional) -->
+      <Card v-if="step === 4" padding="lg" class="step-card">
         <h2 class="step-title">计划外学习（可选）</h2>
-        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如提前学到了后面的章节），点选你实际到达的最新章节即可：从目前进度到所选章节之间会整段记为本次计划外（状态推进到「基础」，之后由复盘掌握情况决定是否升为掌握），AI 会以这份实际进度为基准修正后续计划。若点选了已学区域内的章节，说明系统记录快于实际进度，可确认后将进度回退到该章。</p>
+        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如提前学到了后面的章节），点选你实际到达的最新章节即可：从目前进度到所选章节之间会整段记为本次计划外（状态推进到「基础」；是否需要「强化中/掌握」由你在进度表内自行推进），AI 会以这份实际进度为基准修正后续计划。只学到某章内的部分知识点时，展开该章逐条勾选即可。若点选了已学区域内的章节，说明系统记录快于实际进度，可确认后将进度回退到该章。</p>
         <div class="overcompletion-toggle">
           <button type="button" class="oc-switch" :class="{ active: hasOvercompletion }"
             @click="hasOvercompletion = !hasOvercompletion">
@@ -1881,40 +1934,92 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
             <div v-if="ocUnits.length" class="oc-section-desc">
               <Info :size="13" />
-              <span>在下方点选你本次<strong>实际到达的最新{{ hasChapters ? '章节' : '内容' }}</strong>即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span>
+              <span>在下方点选你本次<strong>实际到达的最新{{ hasChapters ? '章节' : '内容' }}</strong>即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。只学到某章中间的<strong>部分知识点</strong>时，展开该章逐条勾选即可，不会把整章记完。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span>
             </div>
 
             <div v-if="ocUnits.length" ref="ocListRef" class="oc-node-list oc-pointer-list">
-              <button
-                v-for="(u, ui) in ocUnits"
-                :key="u.id"
-                type="button"
-                class="oc-node-row oc-pointer-row"
-                :class="{
-                  checked: isChecked(activeSubject, u),
-                  learned: !isChecked(activeSubject, u) && ocIsLearned(u),
-                  cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
-                }"
-                :data-uid="u.id"
-                :title="pointerRowHint(ui)"
-                @click="onUnitClick(u)"
-              >
-                <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
-                  <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
-                  <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
-                  <Circle v-else :size="17" />
-                </span>
-                <span class="oc-node-icon">
-                  <FolderOpen v-if="u.level === 'chapter'" :size="13" />
-                  <CircleDot v-else :size="13" />
-                </span>
-                <span class="oc-node-title">{{ u.title }}</span>
-                <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now">本次</span>
-                <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned">已学</span>
-                <span v-if="u.level === 'chapter' && childrenOfChapter(u.id).length" class="oc-kid-count">
-                  {{ childrenOfChapter(u.id).length }} 知识点
-                </span>
-              </button>
+              <div v-for="(u, ui) in ocUnits" :key="u.id" class="oc-unit-block">
+                <div
+                  class="oc-node-row oc-pointer-row"
+                  :class="{
+                    checked: isChecked(activeSubject, u),
+                    learned: !isChecked(activeSubject, u) && ocIsLearned(u),
+                    cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
+                  }"
+                  :data-uid="u.id"
+                >
+                  <button
+                    v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
+                    type="button"
+                    class="oc-expand"
+                    :class="{ open: isOcExpanded(u.id) }"
+                    :title="isOcExpanded(u.id) ? '收起本章知识点' : '展开本章知识点，可逐条勾选本次学到的具体知识点'"
+                    @click="toggleOcExpand(u.id)"
+                  >
+                    <ChevronRight :size="14" />
+                  </button>
+                  <span v-else class="oc-expand-spacer"></span>
+                  <button type="button" class="oc-pointer-main" :title="pointerRowHint(ui)" @click="onUnitClick(u)">
+                    <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
+                      <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
+                      <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
+                      <Circle v-else :size="17" />
+                    </span>
+                    <span class="oc-node-icon">
+                      <FolderOpen v-if="u.level === 'chapter'" :size="13" />
+                      <CircleDot v-else :size="13" />
+                    </span>
+                    <span class="oc-node-title">{{ u.title }}</span>
+                    <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now">本次</span>
+                    <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned">已学</span>
+                    <span
+                      v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
+                      class="oc-kid-count"
+                      :class="{
+                        'oc-partial':
+                          !isChecked(activeSubject, u) &&
+                          !ocIsLearned(u) &&
+                          chapterKidStats(u.id).learned > 0,
+                      }"
+                    >
+                      {{ chapterKidStats(u.id).learned }}/{{ chapterKidStats(u.id).total }} 知识点
+                    </span>
+                  </button>
+                </div>
+
+                <!-- 展开章节：逐个勾选本章内本次学到的具体知识点（不改变章节顺序进度指针） -->
+                <div
+                  v-if="u.level === 'chapter' && isOcExpanded(u.id) && childrenOfChapter(u.id).length"
+                  class="oc-node-children"
+                >
+                  <div
+                    v-for="k in childrenOfChapter(u.id)"
+                    :key="k.id"
+                    class="oc-node-row oc-knowledge-row"
+                    :class="{ checked: isChecked(activeSubject, k) }"
+                  >
+                    <button
+                      type="button"
+                      class="oc-check"
+                      :class="{ active: isChecked(activeSubject, k) }"
+                      :title="
+                        isChecked(activeSubject, k)
+                          ? '撤销本次对该知识点的记录'
+                          : '记为本次学到的知识点（状态推进到「基础」）'
+                      "
+                      @click="toggleKnowledgePoint(activeSubject, k)"
+                    >
+                      <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
+                      <CheckCircle2 v-else-if="ocIsLearned(k)" :size="16" />
+                      <Circle v-else :size="16" />
+                    </button>
+                    <span class="oc-node-icon"><CircleDot :size="13" /></span>
+                    <span class="oc-node-title">{{ k.title }}</span>
+                    <span v-if="isChecked(activeSubject, k)" class="oc-kid-count oc-tag-now">本次</span>
+                    <span v-else-if="ocIsLearned(k)" class="oc-kid-count oc-tag-learned">已学</span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 未挂靠章节的知识点：保留逐个勾选兜底（不参与章节顺序进度） -->
@@ -1931,7 +2036,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                     type="button"
                     class="oc-check"
                     :class="{ active: isChecked(activeSubject, k) }"
-                    @click="toggleOrphan(activeSubject, k)"
+                    @click="toggleKnowledgePoint(activeSubject, k)"
                   >
                     <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
                     <Circle v-else :size="16" />
@@ -2294,23 +2399,6 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 .field-input:focus { border-color: var(--accent); }
 
-/* Mastery */
-.mastery-item {
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-4); background: var(--bg-tertiary); border-radius: var(--radius-md);
-}
-.mastery-task { display: flex; align-items: center; gap: var(--space-2); }
-.mastery-title { font-size: var(--text-base); font-weight: var(--font-semibold); color: var(--text-primary); }
-.mastery-chips { display: flex; flex-direction: column; gap: var(--space-2); }
-.mastery-chip {
-  padding: var(--space-3) var(--space-4); border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-elevated);
-  color: var(--text-secondary); font-size: var(--text-sm);
-  cursor: pointer; transition: all var(--transition-fast); font-family: inherit; text-align: left;
-}
-.mastery-chip:hover { border-color: var(--accent); }
-.mastery-chip.active { border-color: var(--accent); background: var(--accent-subtle); color: var(--accent); font-weight: var(--font-semibold); }
-
 /* Empty step */
 .empty-step {
   display: flex; flex-direction: column; align-items: center; gap: var(--space-3);
@@ -2595,8 +2683,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .oc-empty-hint { margin: 0; font-size: var(--text-xs); color: var(--text-tertiary); }
 
 /* 章节 → 知识点 两级选择树 */
-.oc-tree { gap: 2px; }
-.oc-chapter-row { font-weight: var(--font-medium); }
+.oc-unit-block { display: flex; flex-direction: column; gap: 2px; }
 .oc-expand {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; flex-shrink: 0; padding: 0;
@@ -2677,8 +2764,17 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 .oc-section-desc svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 .oc-pointer-list { gap: var(--space-1); }
 .oc-pointer-row {
-  width: 100%; text-align: left; font-family: inherit; cursor: pointer; color: inherit;
+  padding: 2px 4px; gap: 2px;
 }
+.oc-pointer-main {
+  display: flex; align-items: center; gap: var(--space-2);
+  flex: 1; min-width: 0;
+  padding: 4px 6px; border-radius: var(--radius-sm);
+  border: none; background: transparent; color: inherit;
+  font-family: inherit; text-align: left; cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.oc-pointer-main:hover { background: var(--bg-tertiary); }
 .oc-pointer-row.learned { opacity: 0.72; }
 .oc-pointer-row.learned .oc-check { color: var(--text-quaternary); }
 .oc-pointer-row.cur {

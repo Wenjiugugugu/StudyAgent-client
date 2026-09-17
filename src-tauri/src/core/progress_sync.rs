@@ -53,16 +53,61 @@ pub fn norm(s: &str) -> String {
         .collect()
 }
 
-/// `b` 是否作为子串出现在 `a` 中（两侧均需至少 2 个字符，避免过短误配）
+/// 参与包含匹配的最短有效串长度：短于此长度的标题/章节名不用于包含判断，
+/// 避免「词汇」「图」这类短名把整章知识点误命中
+const MIN_MATCH_LEN: usize = 3;
+/// 2-gram 重叠系数阈值：低于该值视为不同知识点（用于召回措辞不同的任务标题）
+const BIGRAM_RECALL_THRESHOLD: f64 = 0.35;
+/// 「整章条目」允许的额外修饰字数（如「第二章 进程的描述与控制 已学完」）
+const CHAPTER_ENTRY_SLACK: usize = 4;
+
+/// `b` 是否作为子串出现在 `a` 中（`b` 需达到 `MIN_MATCH_LEN`，避免过短误配）
 fn contains(a: &str, b: &str) -> bool {
     let b = b.trim();
-    if b.is_empty() || b.chars().count() < 2 {
+    if b.is_empty() || b.chars().count() < MIN_MATCH_LEN {
         return false;
     }
     a.contains(b)
 }
 
-/// 节点是否命中任务标题/章节条目（标题或章节名双向包含匹配）
+/// 归一化字符串的 2-gram 集合（单字串返回空集）
+fn bigrams(s: &str) -> HashSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut set: HashSet<String> = HashSet::new();
+    if chars.len() < 2 {
+        return set;
+    }
+    for w in chars.windows(2) {
+        set.insert(w.iter().collect());
+    }
+    set
+}
+
+/// 2-gram 重叠系数 = |A ∩ B| / min(|A|, |B|)，取值 0.0 ~ 1.0
+fn bigram_overlap(a: &str, b: &str) -> f64 {
+    let ga = bigrams(a);
+    let gb = bigrams(b);
+    if ga.is_empty() || gb.is_empty() {
+        return 0.0;
+    }
+    let inter = ga.intersection(&gb).count();
+    inter as f64 / ga.len().min(gb.len()) as f64
+}
+
+/// 节点是否命中任务标题 / 进展条目。三级判据，任一成立即命中：
+///
+/// 1. **标题互含**：条目与知识点标题互相包含（被包含方需 ≥ `MIN_MATCH_LEN`）；
+/// 2. **整章条目**：条目本身即章节名（规范化后相等，或仅多出 ≤ `CHAPTER_ENTRY_SLACK`
+///    字的修饰），此时命中该章全部知识点；
+/// 3. **相似度召回**：条目与知识点标题的 2-gram 重叠系数 ≥ `BIGRAM_RECALL_THRESHOLD`。
+///
+/// 2026-09-16 修复的两个历史缺陷：
+/// - 旧版把「条目中出现章节名」也算命中，于是英语「词汇」章（章节名仅 2 字）被
+///   「阅读真题第23篇精读 + 词汇句法积累」整章命中并标为「掌握」；同理
+///   「第二章 进程的描述与控制」会整章命中。判据 2 现已收紧为「条目本身即章节名」。
+/// - 旧版纯包含匹配无法对上「内存管理·连续分配管理方式（动态分区分配算法与内存回收）」
+///   与「连续分配存储管理（单一、固定、动态分区、伙伴系统）」，日计划任务长期漏标，
+///   判据 3 解决。
 pub fn node_matches(node: &ProgressNode, chapter_title: &str, haystack: &str) -> bool {
     let h = norm(haystack);
     if h.is_empty() {
@@ -70,7 +115,33 @@ pub fn node_matches(node: &ProgressNode, chapter_title: &str, haystack: &str) ->
     }
     let t = norm(&node.title);
     let c = norm(chapter_title);
-    contains(&h, &t) || contains(&t, &h) || contains(&h, &c) || contains(&c, &h)
+
+    // 1) 标题互含
+    if contains(&h, &t) || contains(&t, &h) {
+        return true;
+    }
+
+    // 2) 整章条目：条目本身即章节名
+    if !c.is_empty() {
+        if h == c {
+            return true;
+        }
+        let hlen = h.chars().count();
+        let clen = c.chars().count();
+        if hlen >= clen
+            && hlen - clen <= CHAPTER_ENTRY_SLACK
+            && (h.starts_with(&c) || h.ends_with(&c))
+        {
+            return true;
+        }
+    }
+
+    // 3) 相似度召回（标题需足够长，避免短名靠偶然 gram 命中）
+    if t.chars().count() >= 5 && bigram_overlap(&h, &t) >= BIGRAM_RECALL_THRESHOLD {
+        return true;
+    }
+
+    false
 }
 
 /// 去掉任务标题开头的学科前缀（如「数学｜」「英语：」），提高匹配命中率
@@ -179,9 +250,12 @@ fn apply_task_to_subject(
 }
 
 /// 复盘提交后同步进度表：
-/// - 今日完成的任务 → 对应知识点：mastered→掌握，basic/weak→基础
-/// - 次日计划的每个任务 → 对应知识点：预置为「强化中」（今日困难或存在掌握不足）
-///   否则「学习中」；只升不降。
+/// - 今日完成的任务 → 对应知识点推进为「基础」（复盘不再采集掌握程度，见下）；
+/// - 次日计划的每个任务 → 对应知识点预置为「学习中」；今日反馈困难或存在薄弱点时预置为「强化中」。
+///   全部只升不降。
+///
+/// 说明：2026-09-16 起复盘的「掌握情况」步骤已移除，「强化中 / 掌握」不再由复盘写入，
+/// 改由用户在进度表内手动推进，避免一次快速复盘就把知识点拉满到「掌握」。
 ///   返回变更节点总数。
 pub fn sync_review_to_progress(
     data_dir: &Path,
@@ -195,21 +269,16 @@ pub fn sync_review_to_progress(
     let has_weak = tasks.iter().any(|t| t.completed && t.mastery == "weak");
     let hard = feeling.trim() == "hard";
 
-    // 今日已完成 → 基础 / 掌握
+    // 今日已完成 → 基础（学完一遍即「基础」，是否「强化中/掌握」由进度表内手动推进）
     for t in tasks {
         if !t.completed {
             continue;
         }
-        let target = if t.mastery == "mastered" {
-            NodeStatus::Mastered
-        } else {
-            NodeStatus::Basic
-        };
         changed += apply_task_to_subject(
             &mut index,
             &progress_subject_key(&t.subject),
             &t.title,
-            target,
+            NodeStatus::Basic,
         );
     }
 
@@ -850,6 +919,126 @@ mod tests {
 
         let m2 = default_progress_variants("");
         assert!(m2.is_empty());
+    }
+
+    // ── 匹配算法（2026-09-16 修复项） ──
+
+    fn kn_node(title: &str, phase: &str) -> ProgressNode {
+        ProgressNode {
+            id: "n1".into(),
+            title: title.into(),
+            level: NodeLevel::Knowledge,
+            parent_id: Some("c1".into()),
+            phase: phase.into(),
+            status: NodeStatus::Pending,
+            planned_date: None,
+            note: String::new(),
+            estimated_hours: None,
+        }
+    }
+
+    #[test]
+    fn short_chapter_name_does_not_match_whole_chapter() {
+        // 英语「词汇」章章节名仅 2 字：旧算法下任何含「词汇」的条目都会整章命中
+        let n = kn_node("核心高频词汇 Unit 1", "词汇");
+        assert!(!node_matches(
+            &n,
+            &n.phase,
+            "阅读真题第23篇精读 + 词汇句法积累"
+        ));
+        assert!(!node_matches(&n, &n.phase, "背诵30个新考研词汇（第27篇语境词）"));
+        // 章节名本身仍应命中（用户直接声明整章已学）
+        assert!(node_matches(&n, &n.phase, "词汇"));
+    }
+
+    #[test]
+    fn exact_chapter_entry_matches_whole_chapter() {
+        let n = kn_node("实时调度", "第三章 处理机调度与死锁");
+        assert!(node_matches(&n, &n.phase, "第三章 处理机调度与死锁"));
+        assert!(node_matches(&n, &n.phase, "第三章 处理机调度与死锁 已学完"));
+        // 具体知识点标题不应借章节名整章命中
+        assert!(!node_matches(&n, &n.phase, "调度算法（FCFS、SJF、优先级）"));
+    }
+
+    #[test]
+    fn task_title_recalls_knowledge_by_similarity() {
+        // 日计划任务标题与考纲知识点标题措辞不同：旧算法漏标
+        let n = kn_node(
+            "连续分配存储管理（单一、固定、动态分区、伙伴系统）",
+            "第四章 存储器管理",
+        );
+        assert!(node_matches(
+            &n,
+            &n.phase,
+            "内存管理·连续分配管理方式（动态分区分配算法与内存回收）"
+        ));
+        // 同章但无关的知识点不应被波及
+        let other = kn_node("对换（Swapping）", "第四章 存储器管理");
+        assert!(!node_matches(
+            &other,
+            &other.phase,
+            "内存管理·连续分配管理方式（动态分区分配算法与内存回收）"
+        ));
+        // 次日计划预置：分页/分段任务应能点亮对应知识点
+        let paging = kn_node("分页存储管理（基本分页、地址变换、快表）", "第四章 存储器管理");
+        assert!(node_matches(
+            &paging,
+            &paging.phase,
+            "操作系统·内存管理：基本分页与分段存储管理"
+        ));
+    }
+
+    #[test]
+    fn completed_task_pushes_basic_not_mastered() {
+        // 复盘不再采集掌握程度：完成即「基础」
+        use crate::data::progress_tables::new_progress_id;
+        let cid = new_progress_id("c", "章");
+        let kid = new_progress_id("n", "点");
+        let mk = |id: &str, title: &str, level: NodeLevel, parent: Option<&str>| ProgressNode {
+            id: id.to_string(),
+            title: title.to_string(),
+            level,
+            parent_id: parent.map(|p| p.to_string()),
+            phase: "第五章 虚拟存储器".to_string(),
+            status: NodeStatus::Pending,
+            planned_date: None,
+            note: String::new(),
+            estimated_hours: None,
+        };
+        let mut index = ProgressIndex::default();
+        {
+            let set = index.subjects.entry("math".to_string()).or_default();
+            set.active_variant = "数二".to_string();
+            set.active_id = "t1".to_string();
+            set.tables = vec![ProgressTable {
+                id: "t1".into(),
+                subject: "math".into(),
+                variant: "数二".into(),
+                name: "测试表".into(),
+                origin: crate::data::progress_tables::TableOrigin::Custom,
+                created_at: String::new(),
+                updated_at: String::new(),
+                nodes: vec![
+                    mk(&cid, "第五章 虚拟存储器", NodeLevel::Chapter, None),
+                    mk(
+                        &kid,
+                        "请求分页存储管理（页表机制、缺页中断、地址变换）",
+                        NodeLevel::Knowledge,
+                        Some(&cid),
+                    ),
+                ],
+            }];
+        }
+
+        let changed =
+            apply_task_to_subject(&mut index, "math", "第五章 虚拟存储器", NodeStatus::Basic);
+        assert_eq!(changed, 1, "整章条目命中该章知识点");
+        let t = index.subjects.get("math").unwrap().tables.first().unwrap();
+        assert_eq!(
+            t.nodes[1].status,
+            NodeStatus::Basic,
+            "完成后推进到「基础」，而不是「掌握」"
+        );
     }
 
     // ── 批量更改进度 ──

@@ -183,7 +183,13 @@ impl DailyScheduler {
         }
 
         // 排程可行性校验：任务数量告警（不裁剪，避免丢失任务；时长超额由下方预算归一化承担）
-        let max_tasks = settings.daily_task_count() as usize;
+        // 期望条数与设置页同口径：由「每日目标学时 ÷ 用户设置的任务粒度」派生
+        let max_tasks = crate::core::planning::pure::derive_task_count_with_granularity(
+            settings.daily_target_hours(),
+            settings.standard_granularity(),
+            1.0,
+            1,
+        ) as usize;
         if pending.len() > max_tasks {
             log::warn!(
                 "排程校验: {} 计划任务 {} 个，超过用户期望的每日 {} 个（仅提醒，不裁剪以免丢失任务）",

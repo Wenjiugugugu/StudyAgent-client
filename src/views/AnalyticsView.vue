@@ -189,16 +189,25 @@ const hoursOption = computed(() => {
   };
 });
 
-// 3. 掌握度分布饼图
-const masteryOption = computed(() => {
-  const m = store.reviewQuality?.mastery;
-  if (!m) return {};
+// 3. 阻碍因素分布饼图（原「任务掌握度分布」位置：复盘已不再采集掌握程度）
+const BLOCKER_COLORS = [
+  palette.warning,
+  palette.danger,
+  palette.info,
+  palette.success,
+  palette.purple,
+  palette.cyan,
+  palette.primary,
+];
+const blockersOption = computed(() => {
+  const blockers = store.reviewQuality?.blockers ?? [];
   return {
     tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
     legend: {
       bottom: 0,
       textStyle: { color: textColor.value },
     },
+    color: BLOCKER_COLORS,
     series: [
       {
         type: "pie",
@@ -208,48 +217,7 @@ const masteryOption = computed(() => {
         itemStyle: { borderRadius: 6, borderColor: isDark.value ? "#1e293b" : "#fff", borderWidth: 2 },
         label: { show: false, position: "center" },
         emphasis: { label: { show: true, fontSize: 14, fontWeight: "bold" } },
-        data: [
-          { value: m.mastered, name: "已掌握", itemStyle: { color: palette.success } },
-          { value: m.basic, name: "基本掌握", itemStyle: { color: palette.info } },
-          { value: m.weak, name: "掌握不足", itemStyle: { color: palette.warning } },
-          { value: m.not_marked, name: "未标记", itemStyle: { color: palette.danger, opacity: 0.5 } },
-        ],
-      },
-    ],
-  };
-});
-
-// 4. 阻碍因素 Top 5
-const blockersOption = computed(() => {
-  const blockers = store.reviewQuality?.blockers ?? [];
-  const top5 = blockers.slice(0, 5);
-  return {
-    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-    grid: { left: 100, right: 30, bottom: 30, top: 20, containLabel: true },
-    xAxis: {
-      type: "value",
-      axisLine: { lineStyle: { color: axisLineColor.value } },
-      axisLabel: { color: textColor.value },
-      splitLine: { lineStyle: { color: gridLineColor.value } },
-    },
-    yAxis: {
-      type: "category",
-      data: top5.map((b) => b.label).reverse(),
-      axisLine: { lineStyle: { color: axisLineColor.value } },
-      axisLabel: { color: textColor.value, fontSize: 12 },
-    },
-    series: [
-      {
-        type: "bar",
-        data: top5.map((b) => b.count).reverse(),
-        itemStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-            { offset: 0, color: palette.warning },
-            { offset: 1, color: palette.danger },
-          ]),
-          borderRadius: [0, 4, 4, 0],
-        },
-        label: { show: true, position: "right", color: textColor.value },
+        data: blockers.map((b) => ({ value: b.count, name: b.label })),
       },
     ],
   };
@@ -629,10 +597,10 @@ onMounted(() => {
           </div>
 
           <div class="charts-row two-col">
-            <!-- 掌握度分布 -->
-            <Card padding="md" class="chart-card">
-              <div class="chart-title">任务掌握度分布</div>
-              <v-chart :option="masteryOption" autoresize class="chart" />
+            <!-- 阻碍因素分布 -->
+            <Card v-if="store.reviewQuality.blockers.length > 0" padding="md" class="chart-card">
+              <div class="chart-title">阻碍因素分布</div>
+              <v-chart :option="blockersOption" autoresize class="chart" />
             </Card>
 
             <!-- 困难类型分布 -->
@@ -641,12 +609,6 @@ onMounted(() => {
               <v-chart :option="difficultyOption" autoresize class="chart" />
             </Card>
           </div>
-
-          <!-- 阻碍因素 Top 5 -->
-          <Card v-if="store.reviewQuality.blockers.length > 0" padding="md" class="chart-card">
-            <div class="chart-title">阻碍因素 Top 5</div>
-            <v-chart :option="blockersOption" autoresize class="chart" />
-          </Card>
 
           <!-- 感受曲线 -->
           <Card v-if="store.reviewQuality.feelings.length > 0" padding="md" class="chart-card">

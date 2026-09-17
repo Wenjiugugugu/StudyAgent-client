@@ -61,7 +61,7 @@ const GRANULARITY_OPTIONS = [
         />
         <p class="field-hint">
           当前目标学时 {{ form.daily_target_hours }}h ÷ 粒度 {{ form.standard_granularity }}h/条 ≈
-          {{ derivedTaskCount }} 个任务（每科约一条；未开始的科目不安排，实际会相应减少）
+          {{ derivedTaskCount }} 个任务（每科至少一条；未开始的科目不安排。后端会按上周完成率自校准，实际条数可能略有出入）
         </p>
       </div>
       <div class="form-field">

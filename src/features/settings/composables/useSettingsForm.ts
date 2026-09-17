@@ -262,7 +262,19 @@ export function useSettingsForm() {
         review_reminder_time: form.value.review_reminder_time,
         rest_days: [...form.value.rest_days],
         study_days_per_week: 7 - form.value.rest_days.length,
-        daily_task_count: form.value.daily_task_count,
+        // 任务数落盘值与设置页只读显示同口径：由「每日目标学时 ÷ 任务粒度」派生。
+        // 历史上这里写的是过期的手填值（如 3），而后端/设置页都按派生值展示，
+        // 造成「设置 7 条、实际生成 5 条」这类口径不一致。
+        daily_task_count: Math.max(
+          1,
+          Math.min(
+            8,
+            Math.round(
+              Math.max(0, form.value.daily_target_hours || 0) /
+                Math.max(0.5, form.value.standard_granularity || 1.5),
+            ),
+          ),
+        ),
         standard_granularity: form.value.standard_granularity,
         enable_review_tasks: form.value.enable_review_tasks,
         enable_time_tracking: form.value.enable_time_tracking,

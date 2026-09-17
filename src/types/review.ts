@@ -103,7 +103,11 @@ export interface TaskReviewEntry {
   status: string;
   /** 0.0 - 1.0 */
   completion: number;
-  /** mastered | basic | weak */
+  /**
+   * 掌握程度：mastered | basic | weak
+   * @deprecated 2026-09-16 起复盘不再采集掌握程度（该职责由进度表承担），
+   * 提交时恒为空串；仅为兼容历史 review JSON 保留，历史记录仍会展示。
+   */
   mastery: string;
   /** 未完成原因标签 */
   blockers: string[];

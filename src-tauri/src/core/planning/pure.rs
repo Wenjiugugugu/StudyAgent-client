@@ -11,25 +11,105 @@ pub(crate) const STANDARD_GRANULARITY_HOURS: f64 = 1.5;
 pub(crate) const TASK_MIN_HOURS: f64 = 0.5;
 /// 单条任务时长上限（小时）：超过则必须拆分。
 pub(crate) const TASK_MAX_HOURS: f64 = 3.0;
+/// 任务粒度可接受范围（小时/条）：超出该范围的用户设置视为异常，回退标准粒度。
+pub(crate) const TASK_GRANULARITY_MIN_HOURS: f64 = 0.5;
+pub(crate) const TASK_GRANULARITY_MAX_HOURS: f64 = 3.0;
 /// 每日任务条数上限（认知负荷兜底）。
 pub(crate) const MAX_DAILY_TASKS: i64 = 8;
 
-/// 由「每日目标学时 × 效率系数」确定性派生每日任务条数。
+/// 归一化用户配置的任务粒度：非法/缺省值回退 `STANDARD_GRANULARITY_HOURS`。
 ///
-/// 公式：`task_count = round(每日目标学时 × 效率 ÷ 标准任务粒度)`，
+/// 所有「按粒度折算条数 / 按粒度拆分任务」的路径都必须先过这里，
+/// 避免 `0`、`NaN`、负数导致除零或条数爆炸。
+pub(crate) fn normalize_granularity(granularity: f64) -> f64 {
+    if granularity.is_finite()
+        && granularity >= TASK_GRANULARITY_MIN_HOURS
+        && granularity <= TASK_GRANULARITY_MAX_HOURS
+    {
+        granularity
+    } else {
+        STANDARD_GRANULARITY_HOURS
+    }
+}
+
+/// 由「每日目标学时 × 效率系数 ÷ 任务粒度」确定性派生每日任务条数。
+///
+/// 公式：`task_count = round(每日目标学时 × 效率 ÷ 任务粒度)`，
 /// 再 clamp 到 `[活跃科目数, MAX_DAILY_TASKS]`。
-/// 这样"每日 N 个任务"恒等于"N × 标准粒度"小时，含义稳定可复现；
-/// 调学时即调条数，换算确定，避免条数与时长两套指标解耦。
-pub(crate) fn derive_task_count(
+/// 这样"每日 N 个任务"恒等于"N × 任务粒度"小时，含义稳定可复现；
+/// 调学时或调粒度即调条数，换算确定，避免条数与时长两套指标解耦。
+///
+/// `granularity` 传用户设置（`AppSettings::standard_granularity()`）；
+/// 非法值由 `normalize_granularity` 回退标准粒度。
+pub(crate) fn derive_task_count_with_granularity(
     daily_target_hours: f64,
+    granularity: f64,
     efficiency: f64,
     active_subject_count: i64,
 ) -> i64 {
     let target = daily_target_hours.max(0.0);
     let eff = efficiency.clamp(0.0, 1.0);
-    let raw = (target * eff) / STANDARD_GRANULARITY_HOURS;
+    let gran = normalize_granularity(granularity);
+    let raw = (target * eff) / gran;
     let count = raw.round() as i64;
     count.clamp(active_subject_count.max(1), MAX_DAILY_TASKS)
+}
+
+/// 标准粒度版本：仅供单测与无用户粒度上下文的场景使用，
+/// 生产路径一律走 `derive_task_count_with_granularity`（必须传用户设置）。
+#[cfg(test)]
+pub(crate) fn derive_task_count(
+    daily_target_hours: f64,
+    efficiency: f64,
+    active_subject_count: i64,
+) -> i64 {
+    derive_task_count_with_granularity(
+        daily_target_hours,
+        STANDARD_GRANULARITY_HOURS,
+        efficiency,
+        active_subject_count,
+    )
+}
+
+#[cfg(test)]
+mod granularity_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_granularity_falls_back_on_invalid() {
+        assert_eq!(normalize_granularity(1.0), 1.0);
+        assert_eq!(normalize_granularity(0.5), 0.5);
+        // 0 / 负数 / NaN / 超上限 → 回退标准粒度，不得导致除零或条数爆炸
+        assert_eq!(normalize_granularity(0.0), STANDARD_GRANULARITY_HOURS);
+        assert_eq!(normalize_granularity(-1.0), STANDARD_GRANULARITY_HOURS);
+        assert_eq!(normalize_granularity(f64::NAN), STANDARD_GRANULARITY_HOURS);
+        assert_eq!(
+            normalize_granularity(TASK_GRANULARITY_MAX_HOURS + 1.0),
+            STANDARD_GRANULARITY_HOURS
+        );
+    }
+
+    #[test]
+    fn derive_task_count_follows_user_granularity() {
+        // 用户设置：每天 7h、粒度 1h/条 → 7 条（旧实现硬编码 1.5h 会得到 5 条）
+        assert_eq!(derive_task_count_with_granularity(7.0, 1.0, 1.0, 1), 7);
+        // 同一学时、默认 1.5h 粒度 → 5 条
+        assert_eq!(derive_task_count_with_granularity(7.0, 1.5, 1.0, 1), 5);
+        // 粒度更细 → 条数更多；更粗 → 更少
+        assert_eq!(derive_task_count_with_granularity(6.0, 0.5, 1.0, 1), 8); // 12 → 上限 8
+        assert_eq!(derive_task_count_with_granularity(6.0, 2.0, 1.0, 1), 3);
+    }
+
+    #[test]
+    fn derive_task_count_with_granularity_still_clamps() {
+        // 下限仍不得低于活跃科目数（每科每天至少 1 条）
+        assert_eq!(derive_task_count_with_granularity(1.0, 1.0, 1.0, 4), 4);
+        // 非法粒度回退标准粒度后派生，不 panic
+        assert_eq!(
+            derive_task_count_with_granularity(6.0, 0.0, 1.0, 1),
+            derive_task_count_with_granularity(6.0, STANDARD_GRANULARITY_HOURS, 1.0, 1)
+        );
+    }
 }
 
 /// 活跃科目数：科目 active 且（未设置开始日期 或 开始日期不晚于 week_end）。

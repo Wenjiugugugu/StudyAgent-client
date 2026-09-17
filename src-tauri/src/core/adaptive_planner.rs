@@ -892,7 +892,17 @@ fn build_parameters(
         .iter()
         .map(|(subject, share)| (subject.clone(), nominal_total * share))
         .collect();
-    let task_count = ((settings.daily_task_count() as f64) * state.workload_factor)
+    // 每日任务条数与「每日目标学时 ÷ 用户设置的任务粒度」保持一致：
+    // 条数必须由学时和粒度共同派生（前端设置页显示的条数用同一公式），
+    // 否则 UI 显示 7 条、后端按 3 条出任务，用户的粒度/条数设置形同失效。
+    // 自校准系数仍参与（任务量下调时条数与时长同步收缩）。
+    let task_count = (crate::core::planning::pure::derive_task_count_with_granularity(
+        settings.daily_target_hours(),
+        settings.standard_granularity(),
+        1.0,
+        1,
+    ) as f64
+        * state.workload_factor)
         .round()
         .clamp(1.0, 8.0) as i64;
 

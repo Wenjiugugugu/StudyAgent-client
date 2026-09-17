@@ -289,7 +289,9 @@ impl<'a> Planner<'a> {
         let subject_start_dates = settings.subject_start_dates();
         let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
-        let standard_granularity = settings.standard_granularity();
+        let standard_granularity = crate::core::planning::pure::normalize_granularity(
+            settings.standard_granularity(),
+        );
         let enable_review_tasks = settings.enable_review_tasks();
         // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
         // （区间科目内容由 scheduler 确定性倒排接管）。
@@ -635,7 +637,9 @@ impl<'a> Planner<'a> {
         let subject_start_dates = settings.subject_start_dates();
         let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
-        let standard_granularity = settings.standard_granularity();
+        let standard_granularity = crate::core::planning::pure::normalize_granularity(
+            settings.standard_granularity(),
+        );
         let enable_review_tasks = settings.enable_review_tasks();
 
         // 8. 构建 prompt
@@ -905,7 +909,9 @@ impl<'a> Planner<'a> {
         let subject_start_dates = settings.subject_start_dates();
         let subject_time_allocation = settings.subject_time_allocation();
         let daily_target_hours = settings.daily_target_hours();
-        let standard_granularity = settings.standard_granularity();
+        let standard_granularity = crate::core::planning::pure::normalize_granularity(
+            settings.standard_granularity(),
+        );
         let enable_review_tasks = settings.enable_review_tasks();
         // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
         // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
@@ -1077,8 +1083,12 @@ impl<'a> Planner<'a> {
         // 3.5 持久化任务量调整元数据，供周计划页解释本周任务数变化。
         // v2：近 5 日加权窗口/趋势/连续达标 与用户反馈共同决定 workload_factor；
         // avg_completion_rate 仅作历史参考展示，不再单独决定下一周计划量。
-        let calib_base_count =
-            crate::core::planning::pure::derive_task_count(daily_target_hours, 1.0, active_count);
+        let calib_base_count = crate::core::planning::pure::derive_task_count_with_granularity(
+            daily_target_hours,
+            standard_granularity,
+            1.0,
+            active_count,
+        );
         let calib_effective = adaptive_parameters.daily_task_count;
         let (_, calib_avg_rate) = prev_week_calibration_stats(&prev_week_reviews);
         if calib_effective != calib_base_count
@@ -1269,6 +1279,7 @@ impl<'a> Planner<'a> {
     fn progress_estimate_prompt_block(
         data_dir: &Path,
         adaptive_parameters: &AdaptivePlanParameters,
+        standard_granularity: f64,
     ) -> String {
         use crate::core::estimated_time::{
             adjust_hours, estimate_knowledge_hours, EstimateAdjustment,
@@ -1369,9 +1380,11 @@ impl<'a> Planner<'a> {
              以下为各科启用进度表中待学知识点的预估学习时长，已按用户近期学习效率（时间比、任务量反馈、完成率）自动校准：\n",
         );
         out.push_str(&lines.join("\n"));
-        out.push_str(
-            "\n要求：安排单条任务 estimated_hours 时，优先以上述预估值为主要依据（可结合每日预算在 0.5~3h 内合并/拆分微调）；未列出的内容仍按原规则估算。\n\n",
-        );
+        out.push_str(&format!(
+            "\n要求：安排单条任务 estimated_hours 时，优先以上述预估值为主要依据，并按用户设置的任务粒度 {:.2}h/条 合并/拆分（单条不超过 {:.2}h）；未列出的内容仍按原规则估算。\n\n",
+            standard_granularity,
+            standard_granularity * 1.5
+        ));
         out
     }
 
@@ -1515,8 +1528,8 @@ impl<'a> Planner<'a> {
             ));
         }
         prompt.push_str(&format!(
-            "- 每日任务数量：约 {} 个（由每日有效目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；**每科每天至少 1 条任务**，任务量下调只允许调整任务时长/合并粒度，不得把某科的当日任务清零；同时遵循各科开始学习日期，未开始的科目不安排任务，相应减少当日任务数）\n",
-            effective_daily_task_count, effective_target_hours, standard_granularity
+            "- 每日任务数量：{} 个（由每日有效目标学时 {:.2}h ÷ 用户设置的任务粒度 {:.2}h/条 派生；单条任务目标时长 ≈ {:.2}h；**每科每天至少 1 条任务**，任务量下调只允许调整任务时长/合并粒度，不得把某科的当日任务清零；同时遵循各科开始学习日期，未开始的科目不安排任务，相应减少当日任务数）\n",
+            effective_daily_task_count, effective_target_hours, standard_granularity, standard_granularity
         ));
         prompt.push_str(&format!(
             "- 是否安排总结/复习任务：{}（{}）\n\n",
@@ -1547,7 +1560,11 @@ impl<'a> Planner<'a> {
 
         // 各科待学知识点预估时长参考（隐藏数据，已按用户效率系数校准）
         let progress_estimate_block =
-            Self::progress_estimate_prompt_block(data_dir, adaptive_parameters);
+            Self::progress_estimate_prompt_block(
+                data_dir,
+                adaptive_parameters,
+                standard_granularity,
+            );
         if !progress_estimate_block.is_empty() {
             prompt.push_str(&progress_estimate_block);
         }
@@ -2306,16 +2323,18 @@ END_PREVIOUS_OUTPUT>>>
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
-        // 任务条数由「每日目标学时 ÷ 标准粒度」确定性派生（重排沿用基准学时，不叠加自校准）
-        let effective_daily_task_count = crate::core::planning::pure::derive_task_count(
-            daily_target_hours,
-            1.0,
-            crate::core::planning::pure::active_subject_count_for(
-                state,
-                week_end,
-                subject_start_dates,
-            ),
-        );
+        // 任务条数由「每日目标学时 ÷ 用户设置的任务粒度」确定性派生（重排沿用基准学时，不叠加自校准）
+        let effective_daily_task_count =
+            crate::core::planning::pure::derive_task_count_with_granularity(
+                daily_target_hours,
+                standard_granularity,
+                1.0,
+                crate::core::planning::pure::active_subject_count_for(
+                    state,
+                    week_end,
+                    subject_start_dates,
+                ),
+            );
 
         let mut prompt = String::new();
         prompt.push_str(&format!(
@@ -2482,8 +2501,12 @@ END_PREVIOUS_OUTPUT>>>
             rest_days.join("、")
         ));
         prompt.push_str(&format!(
-            "- 每日任务数量: {} 个（由每日目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；每科约一条；未开始的科目不安排）\n",
-            effective_daily_task_count, daily_target_hours, standard_granularity
+            "- 每日任务数量: {} 个（由每日目标学时 {:.2}h ÷ 用户设置的任务粒度 {:.2}h/条 派生）；单条任务 estimated_hours 目标 ≈ {:.2}h，不得超过 {:.2}h；每科约一条；未开始的科目不安排）\n",
+            effective_daily_task_count,
+            daily_target_hours,
+            standard_granularity,
+            standard_granularity,
+            standard_granularity * 1.5
         ));
         prompt.push_str(&format!(
             "- 总结/复习任务: {}\n",
@@ -2707,16 +2730,18 @@ END_PREVIOUS_OUTPUT>>>
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
-        // 任务条数由「每日目标学时 ÷ 标准粒度」确定性派生（重排沿用基准学时，不叠加自校准）
-        let effective_daily_task_count = crate::core::planning::pure::derive_task_count(
-            daily_target_hours,
-            1.0,
-            crate::core::planning::pure::active_subject_count_for(
-                state,
-                week_end,
-                subject_start_dates,
-            ),
-        );
+        // 任务条数由「每日目标学时 ÷ 用户设置的任务粒度」确定性派生（重排沿用基准学时，不叠加自校准）
+        let effective_daily_task_count =
+            crate::core::planning::pure::derive_task_count_with_granularity(
+                daily_target_hours,
+                standard_granularity,
+                1.0,
+                crate::core::planning::pure::active_subject_count_for(
+                    state,
+                    week_end,
+                    subject_start_dates,
+                ),
+            );
 
         let type_label = match excluded_day.reason_type.as_str() {
             "travel" => "外出旅行",
@@ -2834,8 +2859,12 @@ END_PREVIOUS_OUTPUT>>>
             rest_days.join("、")
         ));
         prompt.push_str(&format!(
-            "- 每日任务数量: {} 个（由每日目标学时 {:.2}h ÷ 标准任务粒度 {:.1}h/条 派生；每科约一条；未开始的科目不安排）\n",
-            effective_daily_task_count, daily_target_hours, standard_granularity
+            "- 每日任务数量: {} 个（由每日目标学时 {:.2}h ÷ 用户设置的任务粒度 {:.2}h/条 派生）；单条任务 estimated_hours 目标 ≈ {:.2}h，不得超过 {:.2}h；每科约一条；未开始的科目不安排）\n",
+            effective_daily_task_count,
+            daily_target_hours,
+            standard_granularity,
+            standard_granularity,
+            standard_granularity * 1.5
         ));
         prompt.push_str(&format!(
             "- 总结/复习任务: {}\n",
@@ -3513,9 +3542,9 @@ const ACTIVITY_WORDS: [&str; 24] = [
 
 /// 任务粒度规范化：AI 输出的兜底确定性后处理。
 ///
-/// 1. 时长判据：单条 > TASK_MAX_HOURS 拆分为多条（每条 ≈ 原/ceil(原/1.5)）；
-///    单条 < TASK_MIN_HOURS 时合并到同科相邻任务（仅同 allocation 内）。
-/// 2. 原子性判据：标题含并列连词且命中多个活动词时拆为独立任务。
+/// 1. 原子性判据：标题含并列连词且命中多个活动词时拆为独立任务。
+/// 2. 时长判据：单条 < TASK_MIN_HOURS 时合并到同科相邻任务（仅同 allocation 内）；
+///    之后按用户设置的**任务粒度**切分（目标条数 = 该科当日总时长 ÷ 粒度）。
 /// 3. 拆分/合并后重算 allocation.hours（保持周计划层时长不失真）。
 fn normalize_task_granularity(week_plan: &mut WeekPlanFile, standard_granularity: f64) {
     for day in week_plan.data.days.iter_mut() {
@@ -3528,36 +3557,16 @@ fn normalize_allocations(
     allocations: &mut [crate::data::plan::DaySubjectAllocation],
     standard_granularity: f64,
 ) {
+    let gran = crate::core::planning::pure::normalize_granularity(standard_granularity);
     for alloc in allocations.iter_mut() {
         let mut expanded: Vec<crate::data::plan::TaskTemplate> = Vec::new();
         for t in alloc.task_templates.drain(..) {
             expanded.extend(split_task_by_atomicity(t));
         }
 
-        // 时长上限拆分（> TASK_MAX_HOURS → 按 1.5h 粒度切分）
-        let mut after_cap: Vec<crate::data::plan::TaskTemplate> = Vec::new();
-        for t in expanded {
-            if t.estimated_hours > crate::core::planning::pure::TASK_MAX_HOURS {
-                let n = (t.estimated_hours / 1.5).ceil() as usize;
-                let each = t.estimated_hours / n as f64;
-                for i in 0..n {
-                    let mut sub = t.clone();
-                    sub.title = format!("{}({})", t.title, i + 1);
-                    sub.estimated_hours = if i == n - 1 {
-                        t.estimated_hours - each * (n as f64 - 1.0)
-                    } else {
-                        each
-                    };
-                    after_cap.push(sub);
-                }
-            } else {
-                after_cap.push(t);
-            }
-        }
-
         // 时长下限合并（< TASK_MIN_HOURS 且存在前一条时并入，标题用 + 拼接）
         let mut merged: Vec<crate::data::plan::TaskTemplate> = Vec::new();
-        for t in after_cap {
+        for t in expanded {
             if t.estimated_hours < crate::core::planning::pure::TASK_MIN_HOURS {
                 if let Some(last) = merged.last_mut() {
                     last.title = format!("{} + {}", t.title, last.title);
@@ -3567,6 +3576,12 @@ fn normalize_allocations(
             }
             merged.push(t);
         }
+
+        // 按用户设置的任务粒度切分：目标条数 = 该科当日总时长 ÷ 粒度。
+        // AI 常见输出是「5 条 × 1.4h」——总时长对得上，但「7 条 × 1h」的条数与细粒度
+        // 设置都没落地。粒度设置必须在确定性后处理里真正生效，不能只进 prompt。
+        normalize_allocation_granularity(&mut merged, gran);
+
         alloc.task_templates = merged;
         let sum: f64 = alloc.task_templates.iter().map(|t| t.estimated_hours).sum();
         if sum > 0.0 {
@@ -3588,6 +3603,112 @@ fn normalize_allocations(
             alloc.hours = fallback_total;
         }
     }
+}
+
+/// 按用户设置的任务粒度切分一个 allocation 的任务列表。
+///
+/// 目标条数 `target = round(该科当日总时长 ÷ 粒度)`（上限 `MAX_DAILY_TASKS`）。
+/// 每条任务的目标份数 `parts = round(时长 ÷ 粒度)`，再按「单份时长最大 / 最小」把总份数
+/// 收敛到 `target`：份数不足 → 继续切分单份最长的任务；份数超出 → 把单份最短的合并回。
+/// 这样「每天 N 条、每条 ≈ 粒度小时」在 AI 输出不规范时也能确定性成立。
+fn normalize_allocation_granularity(
+    templates: &mut Vec<crate::data::plan::TaskTemplate>,
+    gran: f64,
+) {
+    use crate::core::planning::pure::MAX_DAILY_TASKS;
+
+    let total: f64 = templates.iter().map(|t| t.estimated_hours.max(0.0)).sum();
+    if templates.is_empty() || total <= 0.0 {
+        return;
+    }
+    let target = ((total / gran).round() as i64).clamp(1, MAX_DAILY_TASKS) as usize;
+
+    let mut parts: Vec<usize> = templates
+        .iter()
+        .map(|t| granularity_part_count(t.estimated_hours, gran))
+        .collect();
+
+    // 份数不足：优先切分「单份时长」最大的（越接近粒度上限越该再切一刀）
+    let mut guard = 0usize;
+    while parts.iter().sum::<usize>() < target && guard < 64 {
+        guard += 1;
+        let idx = (0..parts.len())
+            .filter(|&i| parts[i] < 12)
+            .max_by(|&a, &b| {
+                let fa = per_part_hours(templates[a].estimated_hours, parts[a]);
+                let fb = per_part_hours(templates[b].estimated_hours, parts[b]);
+                fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        match idx {
+            Some(i) => parts[i] += 1,
+            None => break,
+        }
+    }
+    // 份数超出：把「单份时长」最小的合并回（合并后仍不超过粒度上限太多）
+    while parts.iter().sum::<usize>() > target && guard < 128 {
+        guard += 1;
+        let idx = (0..parts.len())
+            .filter(|&i| parts[i] > 1)
+            .min_by(|&a, &b| {
+                let fa = per_part_hours(templates[a].estimated_hours, parts[a]);
+                let fb = per_part_hours(templates[b].estimated_hours, parts[b]);
+                fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        match idx {
+            Some(i) => parts[i] -= 1,
+            None => break,
+        }
+    }
+
+    let mut out: Vec<crate::data::plan::TaskTemplate> = Vec::new();
+    for (t, k) in templates.drain(..).zip(parts.into_iter()) {
+        let k = k.max(1);
+        if k == 1 {
+            out.push(t);
+            continue;
+        }
+        let hours = t.estimated_hours;
+        let each = round2(hours / k as f64);
+        for i in 0..k {
+            let mut sub = t.clone();
+            sub.title = format!("{}({})", t.title, i + 1);
+            sub.estimated_hours = if i == k - 1 {
+                round2(hours - each * (k as f64 - 1.0))
+            } else {
+                each
+            };
+            out.push(sub);
+        }
+    }
+    // 单份时长不超过硬上限由 `granularity_part_count` 保证，此处无需再兜底切分。
+    *templates = out;
+}
+
+/// 单条任务的目标份数：`round(时长 ÷ 粒度)`，至少 1 份、最多 12 份；
+/// 同时保证单份不超过硬上限 `TASK_MAX_HOURS`。
+fn granularity_part_count(hours: f64, gran: f64) -> usize {
+    if !hours.is_finite() || hours <= 0.0 {
+        return 1;
+    }
+    let mut k = ((hours / gran).round() as usize).clamp(1, 12);
+    let max_parts = (hours / crate::core::planning::pure::TASK_MAX_HOURS).ceil() as usize;
+    if max_parts > k {
+        k = max_parts.min(12);
+    }
+    k
+}
+
+/// 单份时长（用于挑选该切分/合并哪条任务）。
+fn per_part_hours(hours: f64, parts: usize) -> f64 {
+    if parts == 0 || !hours.is_finite() {
+        return 0.0;
+    }
+    hours / parts as f64
+}
+
+/// 两位小数取整。
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
 }
 
 /// 原子性拆分：标题含并列连词且命中 ≥2 个不同学习活动词时，按连接符拆为多条。
@@ -4249,6 +4370,67 @@ mod tests {
         assert!(alloc.hours > 0.0);
         // goal/completion_criteria 不因兜底丢失
         assert_eq!(alloc.task_templates[0].goal, "掌握判定条件");
+    }
+
+    #[test]
+    fn test_normalize_allocations_splits_to_user_granularity() {
+        // 回归：用户设置「每天 7 条 / 1h 每条」，AI 输出 5 条 × 1.4h（总 7h）。
+        // 旧实现只按硬编码 1.5h 硬上限拆分，条数与细粒度设置都不生效。
+        let make = |h: f64| crate::data::plan::TaskTemplate {
+            title: format!("任务{}", h),
+            estimated_hours: h,
+            goal: "保持目标字段".to_string(),
+            completion_criteria: vec!["保持完成标准".to_string()],
+            ..Default::default()
+        };
+        let mut allocs = vec![crate::data::plan::DaySubjectAllocation {
+            subject: SubjectKey::Math,
+            hours: 7.0,
+            focus: "测试".to_string(),
+            task_templates: vec![make(1.4), make(1.4), make(1.4), make(1.4), make(1.4)],
+        }];
+        normalize_allocations(&mut allocs, 1.0);
+        let alloc = &allocs[0];
+        // 条数 = 总时长 ÷ 粒度 = 7
+        assert_eq!(alloc.task_templates.len(), 7);
+        let total: f64 = alloc
+            .task_templates
+            .iter()
+            .map(|t| t.estimated_hours)
+            .sum();
+        assert!((total - 7.0).abs() < 0.05, "总时长不得失真: {}", total);
+        // 单条不得超过粒度上限（1.5 × 粒度）
+        assert!(alloc
+            .task_templates
+            .iter()
+            .all(|t| t.estimated_hours <= 1.5));
+        // 拆分后仍保留 AI 输出的目标 / 完成标准
+        assert!(alloc
+            .task_templates
+            .iter()
+            .all(|t| t.goal == "保持目标字段" && !t.completion_criteria.is_empty()));
+    }
+
+    #[test]
+    fn test_normalize_allocations_keeps_conforming_tasks() {
+        // AI 已按粒度输出（7 条 × 1h）时不改动条数与时长
+        let make = |i: usize| crate::data::plan::TaskTemplate {
+            title: format!("任务{}", i),
+            estimated_hours: 1.0,
+            ..Default::default()
+        };
+        let mut allocs = vec![crate::data::plan::DaySubjectAllocation {
+            subject: SubjectKey::English,
+            hours: 7.0,
+            focus: "测试".to_string(),
+            task_templates: (0..7).map(make).collect(),
+        }];
+        normalize_allocations(&mut allocs, 1.0);
+        assert_eq!(allocs[0].task_templates.len(), 7);
+        assert!(allocs[0]
+            .task_templates
+            .iter()
+            .all(|t| (t.estimated_hours - 1.0).abs() < 1e-6));
     }
 
     #[test]
