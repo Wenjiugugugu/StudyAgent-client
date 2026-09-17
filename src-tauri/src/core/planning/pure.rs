@@ -23,8 +23,7 @@ pub(crate) const MAX_DAILY_TASKS: i64 = 8;
 /// 避免 `0`、`NaN`、负数导致除零或条数爆炸。
 pub(crate) fn normalize_granularity(granularity: f64) -> f64 {
     if granularity.is_finite()
-        && granularity >= TASK_GRANULARITY_MIN_HOURS
-        && granularity <= TASK_GRANULARITY_MAX_HOURS
+        && (TASK_GRANULARITY_MIN_HOURS..=TASK_GRANULARITY_MAX_HOURS).contains(&granularity)
     {
         granularity
     } else {

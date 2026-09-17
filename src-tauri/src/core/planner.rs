@@ -3655,7 +3655,7 @@ fn normalize_allocation_granularity(
     }
 
     let mut out: Vec<crate::data::plan::TaskTemplate> = Vec::new();
-    for (t, k) in templates.drain(..).zip(parts.into_iter()) {
+    for (t, k) in templates.drain(..).zip(parts) {
         let k = k.max(1);
         if k == 1 {
             out.push(t);
