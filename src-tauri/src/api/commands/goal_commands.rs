@@ -135,6 +135,8 @@ pub async fn create_goal(
         book: book_trimmed,
         current_position,
         target_position: Some(target_position),
+        // 顺延基准起点 = 用户设置的截止日；超期未达标时 deadline 会在此基础上自动顺延
+        extend_base_deadline: deadline.clone(),
         active: true,
         status: "active".to_string(),
     };
@@ -358,6 +360,14 @@ pub async fn update_goal(
                 ));
             }
         }
+    }
+
+    // 顺延基准重置：用户手改了截止日 → 以新截止日为自动顺延的起算基准。
+    // 未改动时沿用原基准（本字段由复盘自动顺延维护，不能被前端旧快照覆盖掉）。
+    if goal.deadline != prev.deadline {
+        goal.extend_base_deadline = goal.deadline.clone();
+    } else {
+        goal.extend_base_deadline = prev.extend_base_deadline.clone();
     }
 
     // 生命周期重算：每书唯一，无法用「删掉再建」重启目标，因此编辑即重启入口

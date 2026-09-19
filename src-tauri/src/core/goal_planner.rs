@@ -325,11 +325,123 @@ fn parse_estimate_json(content: &str) -> HashMap<String, f64> {
     }
 }
 
+/// 目标超期顺延的**封顶日**：目标截止日 + 缓冲天数。
+///
+/// 缓冲天数由 `AppSettings::goal_extension_max_days` 给出（用户显式配置优先，
+/// 否则按每日学习时段跨度推导，夹在 [7, 180] 天）；为 0 表示**不封顶**。
+/// 放在这里只是把「+N 天」的日期运算收口，口径单一真源仍在设置层。
+fn goal_extension_cap_date(extend_base: &str, cap_days: i64) -> Result<String, String> {
+    if cap_days <= 0 || extend_base.is_empty() {
+        return Ok(String::new());
+    }
+    add_days(extend_base, cap_days)
+}
+
+/// 单条目标的顺延/终止判定（就地修改，返回是否有改写）。
+///
+/// 抽成纯函数是为了让「未达标 → 顺延 1 天 → 直至完成」的主路径可被单元测试直接覆盖
+/// （`replan_goals_after_review` 需要 data_dir + StudyState，不便构造多轮场景）。
+///
+/// 流水线（**顺序不可颠倒**）：
+/// 1. 终态短路：`completed`（`!active` 且 status != "expired"）→ 不动，返回 false。
+/// 2. **先顺延**：未达标（`deadline < today`，含已过期、deadline 为空）→ deadline 推进一步，
+///    并把 `active`/`status` 拉回 "active"。
+///    步长以**基准日** `extend_base` 为原点累计：deadline 落在 base+N 天，本次取 base+N+1。
+///    因此「同一天多次复盘」最多推进到 base+1（再次进入时 deadline 已 == today，自然停下），
+///    「长期未复盘」也只推进一天，不会一次性补齐到 today。
+/// 3. **后封顶**：`cap_days > 0` 时以「基准日 + cap_days」为封顶日。
+///    截止日越过封顶日则回填到封顶日；`today` 严格越过截止日（或截止日本就超出封顶日）
+///    才置 `expired`。**封顶日当天仍生效**——否则「顺延到封顶日」这一步会在同一天被自己判死。
+///
+/// 为什么先顺延后封顶：长期未复盘时若先判封顶，deadline 会停在基准日上被直接判死，
+/// 用户看不到「实际能追到哪一天」；先顺延则至少推进一天，语义更直观。
+fn extend_goal_deadline_on_miss(
+    goal: &mut Goal,
+    today: &str,
+    cap_days: i64,
+    extend_base: &str,
+) -> Result<bool, String> {
+    if !goal.active && goal.status != "expired" {
+        return Ok(false);
+    }
+
+    let mut changed = false;
+
+    // 第 1 步：未达标（deadline 早于 today，含已过期、deadline 为空）→ 顺延一天。
+    //
+    // 步长以**基准日** `extend_base` 为原点累计：deadline 落在 base+N 天，本次即取 base+N+1。
+    // 于是「同一天多次复盘」最多推进到 base+1，第二次进来 deadline 已 == today 便停下；
+    // 「长期未复盘」也只推进一天，不会一次性补齐到 today。
+    if goal.deadline.is_empty() || goal.deadline.as_str() < today {
+        let base = if extend_base.is_empty() {
+            goal.deadline.as_str()
+        } else {
+            extend_base
+        };
+        let step = if goal.deadline.is_empty() {
+            0
+        } else {
+            day_diff(base, &goal.deadline)
+        };
+        let next = add_days(base, if step <= 0 { 1 } else { step + 1 })?;
+        // 截止日真的被改写，或状态被从 expired/非 active 拉回 → 都算有改写（调用方据此落盘）
+        if next != goal.deadline || !goal.active || goal.status != "active" {
+            changed = true;
+        }
+        goal.deadline = next;
+        goal.active = true;
+        goal.status = "active".to_string();
+    }
+
+    // 第 2 步：封顶判定（必须晚于顺延）。
+    //
+    // 顺序很重要：先顺延再判封顶，才能保证「截止日至少推进到 base+1」，
+    // 否则长期未复盘的目标会停在基准日上被直接判死，用户看不到实际能追到哪天。
+    // 边界：封顶日**当天**仍生效，严格越过（today > 封顶日）才置 expired。
+    if cap_days > 0 {
+        let cap = goal_extension_cap_date(extend_base, cap_days)?;
+        if !cap.is_empty() {
+            let was_active = goal.active;
+            // 截止日可能被手工改到封顶日之后，统一回填，保证「deadline = 实际能追到的最后一天」
+            let deadline_beyond_cap = goal.deadline.as_str() > cap.as_str();
+            if deadline_beyond_cap {
+                goal.deadline = cap;
+            }
+            if today > goal.deadline.as_str() || deadline_beyond_cap {
+                goal.active = false;
+                goal.status = "expired".to_string();
+            }
+            changed |= goal.active != was_active;
+        }
+    }
+
+    Ok(changed)
+}
+
+/// `to - from` 的天数差（from 晚于 to 时返回负数）；任一日期非法时返回 0。
+fn day_diff(from: &str, to: &str) -> i64 {
+    let (Ok(a), Ok(b)) = (
+        chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d"),
+        chrono::NaiveDate::parse_from_str(to, "%Y-%m-%d"),
+    ) else {
+        return 0;
+    };
+    (b - a).num_days()
+}
+
 /// 复盘后双轨重排：根据复盘实际进度更新各截止日科目。
 ///
 /// - 汇总各科实际推进到的位置（overcompletion + task_reviews 中已完成任务标题定位取最大）。
 /// - 更新 goal.current_position。
-/// - 达标或已过截止日 → active=false、status=completed/expired（提前退出回退默认）。
+/// - **达标** → active=false、status=completed（提前退出回退默认）。
+/// - **未达标** → 把 deadline 顺延一天并**保持 active**（自动延期，直至完成为止；
+///   步长以基准日累计，详见 `extend_goal_deadline_on_miss`）。
+/// - **已完成的条目不回退**（`!active` 且 status != "expired" 直接跳过）。
+/// - **历史遗留的过期条目**（status == "expired"）按未达标处理，同样走顺延路径：
+///   它们在没有自动延期能力时被判过期，不应就此永久失效。
+/// - 封顶：`AppSettings::goal_extension_max_days` > 0 时，`deadline` 超过
+///   「基准截止日 + 该天数」即不再顺延，置 `active=false`、status=expired
+///   （基准日由目标文件里的 `extend_base_deadline` 记录）。
 ///
 /// 返回受影响科目的当前 position 更新映射（供调用方决定是否重生成今日任务）。
 pub fn replan_goals_after_review(
@@ -343,6 +455,8 @@ pub fn replan_goals_after_review(
         Ok(f) => f,
         Err(_) => return HashMap::new(),
     };
+    // 顺延封顶阈值：用户显式配置优先，否则按每日学习时段跨度 / 目标学时推导（0 = 不封顶）
+    let cap_days = crate::load_settings(data_dir).goal_extension_max_days();
     let mut did_change = false;
     let mut updated: HashMap<String, usize> = HashMap::new();
 
@@ -350,9 +464,15 @@ pub fn replan_goals_after_review(
         let key = subject_key_str(&goal.subject);
         let version = subject_version(state, key);
 
-        // 已达标/已过期：标记退出并跳过
-        if !goal.active {
+        // 已达标（completed）的条目终态，不再推进也不再顺延
+        if !goal.active && goal.status != "expired" {
             continue;
+        }
+        // 旧数据没有封顶基准：把当前（尚未被顺延过的）截止日作为基准。
+        // 历史遗留的 expired 条目会丢掉原本的真实截止日，只能以现状为基准，可接受。
+        if goal.extend_base_deadline.is_empty() && !goal.deadline.is_empty() {
+            goal.extend_base_deadline = goal.deadline.clone();
+            did_change = true;
         }
 
         let new_pos =
@@ -365,16 +485,32 @@ pub fn replan_goals_after_review(
             did_change = true;
         }
 
-        // 终止判定
         let target_pos = goal.target_position.unwrap_or(usize::MAX);
         if advanced_pos >= target_pos {
+            // 达标：结束目标，回退默认安排
             goal.active = false;
             goal.status = "completed".to_string();
             did_change = true;
-        } else if today >= goal.deadline.as_str() {
-            goal.active = false;
-            goal.status = "expired".to_string();
-            did_change = true;
+            continue;
+        }
+
+        // 未达标：自动顺延（直至完成）；越过封顶阈值才真正过期
+        let base = goal.extend_base_deadline.clone();
+        match extend_goal_deadline_on_miss(goal, today, cap_days, &base) {
+            Ok(changed) => did_change |= changed,
+            Err(e) => {
+                // 日期异常：不静默失败，记录原因并保持原状态等人工处理
+                crate::data::write_ai_debug_log(
+                    data_dir,
+                    "goal_deadline_extend_failed",
+                    &format!(
+                        "目标 {}（{}）截止日顺延失败: {}",
+                        goal.id,
+                        subject_display_name(&goal.subject),
+                        e
+                    ),
+                );
+            }
         }
     }
 
@@ -589,5 +725,178 @@ mod tests {
     fn estimate_json_parsing_falls_back_empty_on_garbage() {
         let map = parse_estimate_json("not json");
         assert!(map.is_empty());
+    }
+
+    // ── 超期自动顺延（直至完成） ──────────────────────────────────────────
+
+    fn goal_at(deadline: &str, position: usize, target: usize) -> Goal {
+        Goal {
+            id: "g-ext".to_string(),
+            subject: SubjectKey::Math,
+            title: "目标".to_string(),
+            deadline: deadline.to_string(),
+            extend_base_deadline: deadline.to_string(),
+            current_position: Some(position),
+            target_position: Some(target),
+            active: true,
+            status: "active".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// 未达标 → 顺延 1 天并保持生效；连续多轮逐步追上（核心需求：「直至完成」）
+    #[test]
+    fn deadline_extends_one_day_until_reached() {
+        // 18 号到期、还差 3 个知识点：每轮复盘只推进 1 个 → 需要顺延两次
+        let mut g = goal_at("2026-09-18", 7, 10);
+        // 截止日当天复盘（当天任务还没做完）：deadline 不早于 today → 不顺延，仍生效
+        assert!(!extend_goal_deadline_on_miss(&mut g, "2026-09-18", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-18");
+        assert!(g.active, "截止日当天不应被判过期");
+
+        // 次日仍未达标 → 顺延到 19 号，继续生效
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-19", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-19");
+        assert!(g.active);
+        assert_eq!(g.status, "active");
+
+        // 20 号仍未达标 → 再顺延一天
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-20", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-20");
+        assert!(g.active);
+
+        // 21 号仍未达标 → 再顺延一天（说明「不封顶」下会一直追下去）
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-21", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-21");
+
+        // 22 号达标：调用方先判达标并置 completed，本函数随即停手
+        g.current_position = Some(10);
+        g.active = false;
+        g.status = "completed".to_string();
+        assert!(!extend_goal_deadline_on_miss(&mut g, "2026-09-22", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-21", "达标后截止日不应再被顺延");
+    }
+
+    /// 同一天多次复盘：截止日已被顺延到 today 后不再重复顺延（防止日期被无限前推）
+    #[test]
+    fn deadline_is_extended_at_most_once_per_day() {
+        // 18 号到期，隔两天后才复盘：只顺延 1 天（19 号），不是直接补到 20 号
+        let mut g = goal_at("2026-09-18", 7, 10);
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-20", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-19", "每次复盘只 +1 天");
+        // 同一天再复盘两次：deadline 早于 today，各顺延 1 天
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-20", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-20");
+        // 此时 deadline == today → 当天不再顺延（防止同一天反复复盘把日期一直前推）
+        assert!(!extend_goal_deadline_on_miss(&mut g, "2026-09-20", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-20");
+    }
+
+    /// 历史遗留的 expired 条目应被重新拉起（旧版本没有顺延能力，不应永久失效）
+    #[test]
+    fn expired_goal_is_revived_by_extension() {
+        let mut g = goal_at("2026-09-10", 3, 40);
+        g.active = false;
+        g.status = "expired".to_string();
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-18", 0, "2026-09-10").unwrap());
+        assert_eq!(g.deadline, "2026-09-11");
+        assert!(g.active);
+        assert_eq!(g.status, "active");
+    }
+
+    /// completed 是终态：不再顺延，也不再被拉起
+    #[test]
+    fn completed_goal_is_never_extended() {
+        let mut g = goal_at("2026-09-10", 40, 40);
+        g.active = false;
+        g.status = "completed".to_string();
+        assert!(!extend_goal_deadline_on_miss(&mut g, "2026-09-18", 0, "2026-09-10").unwrap());
+        assert_eq!(g.deadline, "2026-09-10");
+        assert_eq!(g.status, "completed");
+    }
+
+    /// 封顶：顺延产物落在 [基准日, 封顶日] 区间内，越过封顶即真正过期
+    #[test]
+    fn extension_stops_at_cap() {
+        // 基准 9/18 + 2 天 = 9/20 为封顶日
+        let mut g = goal_at("2026-09-18", 7, 10);
+        // 逐日顺延：18 →(19)→(20)，20 就是封顶日，仍生效（19 号那次只推进到 19）
+        extend_goal_deadline_on_miss(&mut g, "2026-09-19", 2, "2026-09-18").unwrap();
+        assert_eq!(g.deadline, "2026-09-19");
+        for day in ["2026-09-19", "2026-09-20"] {
+            extend_goal_deadline_on_miss(&mut g, day, 2, "2026-09-18").unwrap();
+        }
+        assert_eq!(g.deadline, "2026-09-20", "顺延到封顶日为止");
+        assert!(g.active, "到达封顶日当天仍应生效");
+
+        // 次日复盘：封顶日已过 → 不再顺延，目标真正过期
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-21", 2, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-20", "过期后截止日停在封顶日");
+        assert!(!g.active);
+        assert_eq!(g.status, "expired");
+    }
+
+    /// 封顶日已过去时（长期未复盘）直接判过期；截止日保留在最后一次顺延到的日期，
+    /// 不跨越封顶日
+    #[test]
+    fn cap_reached_today_marks_expired() {
+        // 基准 9/18 + 3 天 = 9/21，today 已是 9/28（远超过封顶）
+        let mut g = goal_at("2026-09-18", 7, 10);
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-28", 3, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-19", "过期时截止日不超过封顶日");
+        assert!(!g.active);
+        assert_eq!(g.status, "expired");
+    }
+
+    /// 封顶前 deadline 到达 today：当天不再顺延（避免同一天反复复盘把日期推着走），
+    /// 也不判过期——封顶只由 `today > 封顶日`（严格越过）触发。
+    #[test]
+    fn deadline_stops_at_today_before_cap() {
+        // 基准 9/18 + 2 天 = 9/20 为封顶日；20 号时 deadline 已被推到 20
+        let mut g = goal_at("2026-09-18", 7, 10);
+        for day in ["2026-09-19", "2026-09-20"] {
+            extend_goal_deadline_on_miss(&mut g, day, 2, "2026-09-18").unwrap();
+        }
+        assert_eq!(g.deadline, "2026-09-20");
+        assert!(g.active);
+
+        // 同日再复盘：deadline == today 且 today == 封顶日 → 不判过期（严格大于才过期）
+        assert!(!extend_goal_deadline_on_miss(&mut g, "2026-09-20", 2, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-20");
+        assert!(g.active, "封顶日当天仍生效，不应被判过期");
+        assert_eq!(g.status, "active");
+
+        // 次日（超过封顶日）→ 真正过期
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-09-21", 2, "2026-09-18").unwrap());
+        assert!(!g.active);
+        assert_eq!(g.status, "expired");
+    }
+
+    /// cap_days = 0 表示不封顶（用户显式选择，或配置缺失时的安全默认）：
+    /// 无论拖多久都不会被判过期，直到达标
+    #[test]
+    fn zero_cap_means_unlimited() {
+        let mut g = goal_at("2026-09-18", 7, 10);
+        // 隔一个月未复盘 → 只 +1 天，仍生效
+        assert!(extend_goal_deadline_on_miss(&mut g, "2026-10-19", 0, "2026-09-18").unwrap());
+        assert_eq!(g.deadline, "2026-09-19");
+        assert!(g.active);
+        // 隔一年仍未达标 → 依然不封顶
+        assert!(extend_goal_deadline_on_miss(&mut g, "2027-09-19", 0, "2026-09-18").unwrap());
+        assert!(g.active);
+        assert_eq!(g.status, "active");
+        assert_eq!(g.deadline, "2026-09-20");
+    }
+
+    /// 封顶日由基准日推算，与当前（已被顺延的）deadline 无关
+    #[test]
+    fn cap_is_derived_from_base_not_current_deadline() {
+        assert_eq!(
+            goal_extension_cap_date("2026-09-18", 30).unwrap(),
+            "2026-10-18"
+        );
+        // 不封顶 / 无基准 → 空串（调用方据此跳过封顶判定）
+        assert!(goal_extension_cap_date("2026-09-18", 0).unwrap().is_empty());
+        assert!(goal_extension_cap_date("", 30).unwrap().is_empty());
     }
 }

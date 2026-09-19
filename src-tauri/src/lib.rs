@@ -288,6 +288,57 @@ impl AppSettings {
             .unwrap_or(true)
     }
 
+    /// 每日学习时段跨度（小时）= 结束时间 − 开始时间；跨零点或格式异常返回 0。
+    ///
+    /// 用途：目标计划超期自动顺延的封顶阈值（见 `core::goal_planner::goal_extension_cap_days`）。
+    /// 前端不保证这两个字段一定存在，因此解析失败一律返回 0（表示"无从推算"）。
+    pub fn daily_window_hours(&self) -> f64 {
+        let parse = |key: &str| -> Option<f64> {
+            let raw = self.study_schedule.get(key)?.as_str()?;
+            let (h, m) = raw.split_once(':')?;
+            let hours = h.trim().parse::<f64>().ok()?;
+            let minutes = m.trim().parse::<f64>().ok()?;
+            if !(0.0..24.0).contains(&hours) || !(0.0..60.0).contains(&minutes) {
+                return None;
+            }
+            Some(hours + minutes / 60.0)
+        };
+        let (start, end) = match (parse("start_time"), parse("end_time")) {
+            (Some(s), Some(e)) if e > s => (s, e),
+            _ => return 0.0,
+        };
+        end - start
+    }
+
+    /// 目标计划超期自动顺延的**追期上限**（天，0 = 不封顶）。
+    ///
+    /// 读取顺序：
+    /// 1. `study_schedule.goal_extension_max_days` 用户显式设置（0 表示不封顶）；
+    /// 2. 未设置时按「每日学习时段跨度 ÷ 2」推导（用户每天能投入的时间越多，
+    ///    允许追的天数越少），时段未配置则退化为「每日目标学时 × 2」；
+    /// 3. 两者都拿不到时返回 0（不封顶），不会因为配置缺失而误杀目标。
+    ///
+    /// 结果夹在 [7, 180] 天：下限保证有合理追期，上限防止目标长期悬空。
+    pub fn goal_extension_max_days(&self) -> i64 {
+        if let Some(v) = self
+            .study_schedule
+            .get("goal_extension_max_days")
+            .and_then(|v| v.as_i64())
+        {
+            return v.max(0);
+        }
+        let window = self.daily_window_hours();
+        let derived = if window > 0.0 {
+            window / 2.0
+        } else {
+            self.daily_target_hours() * 2.0
+        };
+        if derived <= 0.0 {
+            return 0;
+        }
+        derived.round().clamp(7.0, 180.0) as i64
+    }
+
     /// 是否启用任务计时功能（默认 false）。
     ///
     /// 开启时：TodayView 任务卡显示开始/暂停按钮，State 中记录每个任务的累计专注分钟数。
@@ -886,5 +937,77 @@ mod tests {
         let alloc = s.subject_time_allocation().expect("应返回 Some");
         assert_eq!(alloc.len(), 2);
         assert!(!alloc.contains_key("politics"));
+    }
+
+    /// 超期顺延上限（天）：显式配置优先，否则由学习时段跨度推导，均夹在 [7, 180]。
+    #[test]
+    fn goal_extension_max_days_derivation() {
+        // 显式配置优先，且允许 0 = 不封顶
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"goal_extension_max_days":45,"start_time":"08:00","end_time":"22:00"}}"#,
+        )
+        .expect("应能解析");
+        assert_eq!(s.goal_extension_max_days(), 45);
+
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"goal_extension_max_days":0,"start_time":"08:00","end_time":"22:00"}}"#,
+        )
+        .expect("应能解析");
+        assert_eq!(
+            s.goal_extension_max_days(),
+            0,
+            "0 应保持不封顶，不被推导覆盖"
+        );
+
+        // 未显式配置：时段 13h（09:00–22:00）÷ 2 ≈ 6.5 → 夹到下限 7
+        let s: AppSettings =
+            serde_json::from_str(r#"{"study_schedule":{"start_time":"09:00","end_time":"22:00"}}"#)
+                .expect("应能解析");
+        assert_eq!(s.goal_extension_max_days(), 7);
+        assert!((s.daily_window_hours() - 13.0).abs() < 1e-9);
+
+        // 时段 6h（13:00–19:00）÷ 2 = 3 → 仍受下限保护
+        let s: AppSettings =
+            serde_json::from_str(r#"{"study_schedule":{"start_time":"13:00","end_time":"19:00"}}"#)
+                .expect("应能解析");
+        assert_eq!(s.goal_extension_max_days(), 7);
+
+        // 时段 9h（08:00–17:00）÷ 2 = 4.5 → 下限 7
+        let s: AppSettings =
+            serde_json::from_str(r#"{"study_schedule":{"start_time":"08:30","end_time":"17:00"}}"#)
+                .expect("应能解析");
+        assert_eq!(s.goal_extension_max_days(), 7);
+
+        // 时段未配置 → 退化为「每日目标学时 × 2」，默认 5h → 10 天
+        let s: AppSettings = serde_json::from_str(r#"{"study_schedule":{"daily_target_hours":5}}"#)
+            .expect("应能解析");
+        assert_eq!(s.goal_extension_max_days(), 10);
+
+        // 时段反向（跨零点或配置异常）→ 视为无时段，走目标学时兜底
+        let s: AppSettings =
+            serde_json::from_str(r#"{"study_schedule":{"start_time":"22:00","end_time":"09:00"}}"#)
+                .expect("应能解析");
+        assert_eq!(s.daily_window_hours(), 0.0);
+        assert_eq!(s.goal_extension_max_days(), 10);
+
+        // 极端配置：超长时段 ÷ 2 仍被 180 天上限夹住
+        let s: AppSettings = serde_json::from_str(
+            r#"{"study_schedule":{"start_time":"00:00","end_time":"23:59","daily_target_hours":5}}"#,
+        )
+        .expect("应能解析");
+        assert_eq!(
+            s.goal_extension_max_days(),
+            12,
+            "23.98h ÷ 2 ≈ 12，未触及上限"
+        );
+
+        let s: AppSettings =
+            serde_json::from_str(r#"{"study_schedule":{"goal_extension_max_days":99999}}"#)
+                .expect("应能解析");
+        assert_eq!(
+            s.goal_extension_max_days(),
+            99999,
+            "显式配置不做夹取：用户明确要求更长追期时应尊重"
+        );
     }
 }

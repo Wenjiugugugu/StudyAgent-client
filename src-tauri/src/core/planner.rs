@@ -292,6 +292,9 @@ impl<'a> Planner<'a> {
         let standard_granularity =
             crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
+        // 基础已学完（启用进度表知识点全部达「基础」及以上）的科目视作已进入强化阶段：
+        // 重排时同样不受「总结/复习任务开关」约束，改为必须安排巩固类任务。
+        let basics_done_labels = basics_done_labels(data_dir);
         // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
         // （区间科目内容由 scheduler 确定性倒排接管）。
         let week_start = &week_plan.meta.week_start;
@@ -314,6 +317,7 @@ impl<'a> Planner<'a> {
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
+            &basics_done_labels,
             &week_plan.data.excluded_days,
         );
         crate::data::write_ai_debug_log(
@@ -639,6 +643,8 @@ impl<'a> Planner<'a> {
         let standard_granularity =
             crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
+        // 基础已学完的科目视作已进入强化阶段：不受「总结/复习任务开关」约束
+        let basics_done_labels = basics_done_labels(data_dir);
 
         // 8. 构建 prompt
         let prompt = self.build_exclusion_regenerate_prompt(
@@ -655,6 +661,7 @@ impl<'a> Planner<'a> {
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
+            &basics_done_labels,
             &week_plan.data.excluded_days,
         );
         crate::data::write_ai_debug_log(
@@ -910,6 +917,9 @@ impl<'a> Planner<'a> {
         let standard_granularity =
             crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
+        // 基础已学完（启用进度表知识点全部达「基础」及以上）的科目视作已进入强化阶段：
+        // 对该科不再受「总结/复习任务开关」约束，一律安排巩固类任务。
+        let basics_done_labels = basics_done_labels(data_dir);
         // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
         // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
         let goal_subjects = goal_active_subjects(data_dir, &today, week_start);
@@ -960,6 +970,7 @@ impl<'a> Planner<'a> {
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
+            &basics_done_labels,
             &prev_week_daily_plans,
             &prev_week_reviews,
             excluded_days,
@@ -1419,6 +1430,7 @@ impl<'a> Planner<'a> {
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
+        basics_done_labels: &[String],
         prev_week_daily_plans: &[DailyPlanFile],
         prev_week_reviews: &[crate::data::records::ReviewFile],
         excluded_days: &[ExcludedDay],
@@ -1532,11 +1544,23 @@ impl<'a> Planner<'a> {
             "- 是否安排总结/复习任务：{}（{}）\n\n",
             if enable_review_tasks { "允许" } else { "禁止" },
             if enable_review_tasks {
-                "可在 task_templates 中安排'回顾'/'总结'/'复习'类任务以巩固知识"
+                "可在 task_templates 中安排'回顾'/'总结'/'复习'类任务以巩固知识".to_string()
+            } else if basics_done_labels.is_empty() {
+                "严禁安排任何形式的复习/巩固类任务，包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'/'巩固练习'等；每日任务必须推进新知识点、新章节或新习题".to_string()
             } else {
-                "严禁安排任何形式的复习/巩固类任务，包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'/'巩固练习'等；每日任务必须推进新知识点、新章节或新习题"
+                // 开关仅约束基础阶段：基础已学完的科目已进入强化阶段，不受该开关限制
+                format!(
+                    "此开关仅对处于基础阶段的科目生效。以下科目的启用进度表知识点已全部达到「基础」，已进入强化阶段，不受本开关限制——**必须为其安排巩固/复习/强化类任务**（真题二刷、错题重做、限时模考、背诵复习等），且**严禁为其虚构新的章节/知识点进度**：{}。其余科目仍严格禁止安排任何形式的复习/巩固类任务（包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'等），每日任务必须推进新知识点、新章节或新习题",
+                    basics_done_labels.join("、")
+                )
             }
         ));
+        if enable_review_tasks && !basics_done_labels.is_empty() {
+            prompt.push_str(&format!(
+                "- 上述科目已进入强化阶段（知识点全部达「基础」），本周巩固类任务应占其任务大头：{}\n\n",
+                basics_done_labels.join("、")
+            ));
+        }
 
         // 任务粒度与学时约束（确定性硬约束，替代仅"大致等于"的软约束）
         prompt.push_str("## 任务粒度与学时约束（重要）\n");
@@ -2170,13 +2194,21 @@ impl<'a> Planner<'a> {
 9. 必须严格遵守「各科开始学习日期」节中的约束：若某科目开始日期晚于本周日（{}），该科目不得出现在 subjects、subject_allocations 中，本周完全不为其安排任务。
 10. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
 11. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
-12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
+12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。{}
 13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
 14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。同时以各科「当前重点」作为实际进度基准：不得在用户尚未到达的章节安排任务，计划的推进顺序必须以教材章节先后为准，不得跳过用户尚未学习的章节跳级到后面（若「当前重点」显示的进度落后于本周计划，以「当前重点」为准相应调整，而非沿用旧计划）。
 15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。**{}应作为本周的起始点**，从各科「已完成」之后的章节开始，逐天分配到剩余学习日（若为周中生成，起点为今天而非周一，已过去的日期不安排任务）。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
 "#,
             week_start, week_end, week_end, effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if basics_done_labels.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "**例外（优先级高于本条禁令）**：{} 的启用进度表知识点已全部达「基础」，已进入强化阶段，不受本开关限制，必须为其安排巩固/复习/强化类任务（真题二刷、错题重做、限时模考、背诵复习等），并严禁为其虚构新的章节/知识点进度；上述禁令只对处于基础阶段的其余科目生效。",
+                    basics_done_labels.join("、")
+                )
+            },
             if today == week_start { "周一" } else { "今天" },
             math = Self::math_syllabus_constraint(state),
         ));
@@ -2185,7 +2217,7 @@ impl<'a> Planner<'a> {
         if state.subjects.english.active {
             prompt.push_str(&format!(
                 "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
-                if enable_review_tasks {
+                if enable_review_tasks || basics_done_labels.iter().any(|l| l == "英语") {
                     "背 N 个新词（可含单词复习巩固）"
                 } else {
                     "背 N 个新词（推进新词，不含复习字样）"
@@ -2315,6 +2347,7 @@ END_PREVIOUS_OUTPUT>>>
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
+        basics_done_labels: &[String],
         excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
@@ -2507,9 +2540,14 @@ END_PREVIOUS_OUTPUT>>>
         prompt.push_str(&format!(
             "- 总结/复习任务: {}\n",
             if enable_review_tasks {
-                "允许安排"
+                "允许安排".to_string()
+            } else if basics_done_labels.is_empty() {
+                "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）".to_string()
             } else {
-                "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）"
+                format!(
+                    "此开关仅对基础阶段科目生效。以下科目已进入强化阶段（启用进度表知识点全部达「基础」），不受限制，必须安排巩固/复习/强化类任务且严禁虚构新进度：{}；其余科目禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）",
+                    basics_done_labels.join("、")
+                )
             }
         ));
 
@@ -2680,13 +2718,21 @@ END_PREVIOUS_OUTPUT>>>
 5. 未完成任务必须尽快安排在剩余天数的前几天（仅限位于用户实际进度之后的未完成任务；已被实际进度声明覆盖的按已学习处理，不再安排）。
 6. 用户声明的实际进度是各科的进度基准，重排允许双向调整（超前或修正）。所有科目的任务必须从用户实际进度**之后**继续推进，不得在用户尚未到达的章节安排任务；若原计划凌驾于用户实际进度之前，应删除或后置。
 7. 每天的 task_templates 数量约 {} 个，每科约一条。
-8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
+8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。{}
 9. 休息日的 subject_allocations 为空数组。
 10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
 11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。若存在排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束7）仍须遵守。
 "#,
             regen_start, week_end, effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if basics_done_labels.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "**例外（优先级高于本条禁令）**：{} 的启用进度表知识点已全部达「基础」，已进入强化阶段，不受本开关限制，必须为其安排巩固/复习/强化类任务（真题二刷、错题重做、限时模考、背诵复习等），并严禁为其虚构新的章节/知识点进度；上述禁令只对处于基础阶段的其余科目生效。",
+                    basics_done_labels.join("、")
+                )
+            },
             math = Self::math_syllabus_constraint(state),
         ));
 
@@ -2694,7 +2740,7 @@ END_PREVIOUS_OUTPUT>>>
         if state.subjects.english.active {
             prompt.push_str(&format!(
                 "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
-                if enable_review_tasks {
+                if enable_review_tasks || basics_done_labels.iter().any(|l| l == "英语") {
                     "背 N 个新词（可含单词复习巩固）"
                 } else {
                     "背 N 个新词（推进新词，不含复习字样）"
@@ -2722,6 +2768,7 @@ END_PREVIOUS_OUTPUT>>>
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
+        basics_done_labels: &[String],
         all_excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
@@ -3038,7 +3085,7 @@ END_PREVIOUS_OUTPUT>>>
 5. {math}
 6. 每天的 task_templates 数量约 {} 个，每科约一条。
 7. 排除日原本的任务量必须分摊到剩余学习日，可通过适当增加每日任务数或难度来实现。
-8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
+8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。{}
 9. 休息日的 subject_allocations 为空数组。
 10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
 11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。实际可学习天数 = 7 - 休息日 - 排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束6）仍须遵守。
@@ -3047,6 +3094,14 @@ END_PREVIOUS_OUTPUT>>>
             all_excluded_days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>().join("、"),
             effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if basics_done_labels.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "**例外（优先级高于本条禁令）**：{} 的启用进度表知识点已全部达「基础」，已进入强化阶段，不受本开关限制，必须为其安排巩固/复习/强化类任务（真题二刷、错题重做、限时模考、背诵复习等），并严禁为其虚构新的章节/知识点进度；上述禁令只对处于基础阶段的其余科目生效。",
+                    basics_done_labels.join("、")
+                )
+            },
             math = Self::math_syllabus_constraint(state),
         ));
 
@@ -3804,6 +3859,27 @@ fn subject_version(state: &StudyState, key: &str) -> String {
         "english" => state.subjects.english.version.clone().unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+/// 收集「基础已学完」的科目键集合（启用进度表知识点全部达「基础」及以上）。
+///
+/// 这类科目已进入强化阶段：周计划中总结/复习任务开关不再对其生效，
+/// 改为必须安排巩固类任务；同时也参与复习任务开关的提示文案。
+fn basics_done_subjects(data_dir: &Path) -> Vec<String> {
+    let index = crate::data::load_progress_index(data_dir);
+    ["math", "english", "politics", "professional"]
+        .into_iter()
+        .filter(|key| crate::data::progress_tables::active_table_basics_done(&index, key))
+        .map(|key| key.to_string())
+        .collect()
+}
+
+/// 「基础已学完」科目的中文名（按固定科目顺序，供 prompt 注入）
+fn basics_done_labels(data_dir: &Path) -> Vec<String> {
+    basics_done_subjects(data_dir)
+        .iter()
+        .map(|key| planner_subject_cn_from_str(key).to_string())
+        .collect()
 }
 
 /// 收集本周处于「截止日规划区间」的科目键集合。

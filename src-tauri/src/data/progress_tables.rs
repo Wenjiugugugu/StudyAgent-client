@@ -82,6 +82,46 @@ pub fn parse_node_status(s: &str) -> NodeStatus {
     }
 }
 
+/// 该科启用进度表是否「基础已学完」——知识点全部达「基础」及以上（无待学节点）。
+///
+/// 口径与 `planner::progress_estimate_prompt_block` 的「已学空」分支一致：
+/// 只看启用表（`active_id`，为空时取该科第一张表）+ 知识点节点（`NodeLevel::Knowledge`），
+/// 待学 = `Pending | Learning`。
+///
+/// 用途：周计划调度时判定该科是否已进入强化阶段（巩固类任务应占大头），
+/// 以及总结/复习任务开关是否仍对其生效。
+/// 无启用表或表中无知识点节点时返回 `false`（无法判定为已学完）。
+pub fn active_table_basics_done(
+    index: &crate::data::progress_tables::ProgressIndex,
+    subject: &str,
+) -> bool {
+    let Some(set) = index.subjects.get(subject) else {
+        return false;
+    };
+    let active_id = if set.active_id.is_empty() {
+        match set.tables.first() {
+            Some(t) => t.id.clone(),
+            None => return false,
+        }
+    } else {
+        set.active_id.clone()
+    };
+    let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+        return false;
+    };
+    let mut knowledge = 0usize;
+    for node in &table.nodes {
+        if node.level != NodeLevel::Knowledge {
+            continue;
+        }
+        knowledge += 1;
+        if matches!(node.status, NodeStatus::Pending | NodeStatus::Learning) {
+            return false;
+        }
+    }
+    knowledge > 0
+}
+
 /// 节点级别：章节 / 知识点（默认知识点，兼容旧数据）
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -477,5 +517,95 @@ mod tests {
         assert!(!fixed);
         assert_eq!(table.nodes[0].id, "c1");
         assert_eq!(table.nodes[1].id, "n1");
+    }
+
+    fn knowledge(id: &str, status: NodeStatus) -> ProgressNode {
+        ProgressNode {
+            id: id.to_string(),
+            title: id.to_string(),
+            level: NodeLevel::Knowledge,
+            parent_id: Some("c1".to_string()),
+            phase: "高数".to_string(),
+            status,
+            planned_date: None,
+            note: String::new(),
+            estimated_hours: None,
+        }
+    }
+
+    fn index_with(nodes: Vec<ProgressNode>) -> ProgressIndex {
+        let table = ProgressTable {
+            id: "t1".to_string(),
+            subject: "math".to_string(),
+            variant: "数二".to_string(),
+            name: "数学表".to_string(),
+            origin: TableOrigin::Builtin,
+            created_at: String::new(),
+            updated_at: String::new(),
+            nodes,
+        };
+        let mut subjects = HashMap::new();
+        subjects.insert(
+            "math".to_string(),
+            SubjectProgressSet {
+                active_variant: "数二".to_string(),
+                active_id: "t1".to_string(),
+                tables: vec![table],
+            },
+        );
+        ProgressIndex { subjects }
+    }
+
+    #[test]
+    fn basics_done_when_all_knowledge_basic_or_above() {
+        // 全量 basic 及以上 → 基础已学完（强化阶段）
+        let index = index_with(vec![
+            knowledge("n1", NodeStatus::Basic),
+            knowledge("n2", NodeStatus::Reinforcing),
+            knowledge("n3", NodeStatus::Mastered),
+        ]);
+        assert!(active_table_basics_done(&index, "math"));
+    }
+
+    #[test]
+    fn basics_done_false_when_pending_or_learning_remains() {
+        let index = index_with(vec![
+            knowledge("n1", NodeStatus::Basic),
+            knowledge("n2", NodeStatus::Pending),
+        ]);
+        assert!(!active_table_basics_done(&index, "math"));
+
+        let index = index_with(vec![
+            knowledge("n1", NodeStatus::Basic),
+            knowledge("n2", NodeStatus::Learning),
+        ]);
+        assert!(!active_table_basics_done(&index, "math"));
+    }
+
+    #[test]
+    fn basics_done_false_when_no_table_or_no_knowledge() {
+        assert!(!active_table_basics_done(&ProgressIndex::default(), "math"));
+
+        // 只有章节节点、无知识点：无法判定为已学完
+        let chapter = ProgressNode {
+            id: "c1".to_string(),
+            title: "高数".to_string(),
+            level: NodeLevel::Chapter,
+            parent_id: None,
+            phase: "高数".to_string(),
+            status: NodeStatus::Basic,
+            planned_date: None,
+            note: String::new(),
+            estimated_hours: None,
+        };
+        assert!(!active_table_basics_done(
+            &index_with(vec![chapter.clone()]),
+            "math"
+        ));
+
+        // 表存在但 active_id 指向不存在的表：同样不判定为已学完
+        let mut index = index_with(vec![chapter]);
+        index.subjects.get_mut("math").unwrap().active_id = "missing".to_string();
+        assert!(!active_table_basics_done(&index, "math"));
     }
 }
