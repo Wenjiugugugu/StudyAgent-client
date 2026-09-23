@@ -35,11 +35,6 @@
     跳过 tauri 的 beforeBuildCommand（前端 vue-tsc + vite build）。当 dist 已是最新、
     只想快速重编嵌入时使用；否则默认会先重建前端（需要 npm 可用）。
 
-.PARAMETER RequireSignature
-    要求对主程序和安装包执行 Authenticode 签名。缺少 signtool 或证书指纹时立即失败，
-    适合正式发布流水线。也可通过 STUDYAGENT_SIGNTOOL 与
-    STUDYAGENT_CERT_THUMBPRINT 环境变量提供配置。
-
 .EXAMPLE
     # 完整打包（含前端重建；首次会全量编译 Rust）
     .\installer\build.ps1
@@ -57,17 +52,10 @@
 param(
     [switch]$SkipBuild,
     [string]$TargetDir = '',
-    [switch]$SkipFrontend,
-    [switch]$RequireSignature,
-    [string]$SignToolPath = $env:STUDYAGENT_SIGNTOOL,
-    [string]$CertificateThumbprint = $env:STUDYAGENT_CERT_THUMBPRINT
+    [switch]$SkipFrontend
 )
 
 $ErrorActionPreference = 'Stop'
-
-if ($RequireSignature -and $SkipBuild) {
-    throw '正式签名发布不能使用 -SkipBuild：必须重新编译主程序以嵌入发布证书指纹。'
-}
 
 $InstallerDir = $PSScriptRoot
 $DesktopDir = Split-Path -Parent $InstallerDir
@@ -121,40 +109,10 @@ function Get-AppVersion {
     (Get-Content $confPath -Raw | ConvertFrom-Json).version
 }
 
-function Invoke-CodeSign([string]$FilePath) {
-    $configured = -not [string]::IsNullOrWhiteSpace($SignToolPath) -and
-                  -not [string]::IsNullOrWhiteSpace($CertificateThumbprint)
-    if (-not $configured) {
-        if ($RequireSignature) {
-            throw '正式发布要求代码签名，但未配置 STUDYAGENT_SIGNTOOL / STUDYAGENT_CERT_THUMBPRINT。'
-        }
-        Write-Host "==> 未配置代码签名，跳过：$FilePath" -ForegroundColor Yellow
-        return
-    }
-    if (-not (Test-Path -LiteralPath $SignToolPath -PathType Leaf)) {
-        throw "未找到 signtool：$SignToolPath"
-    }
-    & $SignToolPath sign /sha1 $CertificateThumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 $FilePath
-    if ($LASTEXITCODE -ne 0) { throw "Authenticode 签名失败（exit=$LASTEXITCODE）：$FilePath" }
-    $signature = Get-AuthenticodeSignature -LiteralPath $FilePath
-    if ($signature.Status -ne 'Valid') {
-        throw "签名验证失败（$($signature.Status)）：$FilePath"
-    }
-    $actualThumbprint = ($signature.SignerCertificate.Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-    $expectedThumbprint = ($CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-    if ($actualThumbprint -ne $expectedThumbprint) {
-        throw "签名证书指纹不匹配：期望 $expectedThumbprint，实际 $actualThumbprint"
-    }
-}
-
 # ── 1. 构建 Tauri 应用（release，写持久缓存目录）───────────────────────
 if (-not $SkipBuild) {
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
     $env:CARGO_TARGET_DIR = $TargetDir
-    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
-        # 编译进主程序，更新安装前必须与该发布证书完全匹配。
-        $env:STUDYAGENT_UPDATE_CERT_THUMBPRINT = ($CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-    }
     Write-Host "==> CARGO_TARGET_DIR = $TargetDir" -ForegroundColor Cyan
 
     # 优先使用仓库自带的 tauri CLI（node_modules），避免依赖全局 pnpm/npm
@@ -199,8 +157,6 @@ Write-Host "==> 准备打包文件 -> $StagingDir" -ForegroundColor Cyan
 if (Test-Path $StagingDir) { Remove-Item $StagingDir -Recurse -Force }
 New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 Copy-Item $MainExe -Destination $StagingDir
-$StagedExe = Join-Path $StagingDir $ExeName
-Invoke-CodeSign $StagedExe
 
 # 若将来在 tauri.conf.json 里配置了 resources / externalBin，把目录一起带上
 $resourcesDir = Join-Path $TauriDir 'resources'
@@ -219,7 +175,6 @@ if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（exit=$LASTEXITCODE）" }
 
 $setupExe = Join-Path $OutputDir "StudyAgent_${version}_x64-setup.exe"
 if (-not (Test-Path $setupExe)) { throw "未生成预期的安装程序：$setupExe" }
-Invoke-CodeSign $setupExe
 
 $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
 $sizeMb = [math]::Round((Get-Item $setupExe).Length / 1MB, 2)
