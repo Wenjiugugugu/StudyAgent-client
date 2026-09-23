@@ -135,11 +135,7 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
 
     <!-- Provider 列表 -->
     <div class="item-list">
-      <div
-        v-for="provider in settingsStore.aiProviders"
-        :key="provider.id"
-        class="item-row"
-      >
+      <div v-for="provider in settingsStore.aiProviders" :key="provider.id" class="item-row">
         <div class="item-info">
           <div class="item-name-row">
             <span class="item-name">{{ provider.name }}</span>
@@ -187,10 +183,22 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
             <RefreshCw v-if="balanceLoading[provider.id]" :size="14" class="spin" />
             <Wallet v-else :size="14" />
           </Button>
-          <Button variant="ghost" size="sm" icon :aria-label="`编辑 ${provider.name}`" @click="editProvider(provider)">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon
+            :aria-label="`编辑 ${provider.name}`"
+            @click="editProvider(provider)"
+          >
             <Pencil :size="14" />
           </Button>
-          <Button variant="ghost" size="sm" icon :aria-label="`删除 ${provider.name}`" @click="removeProvider(provider.id)">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon
+            :aria-label="`删除 ${provider.name}`"
+            @click="removeProvider(provider.id)"
+          >
             <Trash2 :size="14" />
           </Button>
         </div>
@@ -227,7 +235,12 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
         </div>
         <div class="form-field form-field-full">
           <label class="form-label">Base URL</label>
-          <input v-model="providerForm.base_url" type="text" class="form-input" placeholder="https://api.openai.com/v1" />
+          <input
+            v-model="providerForm.base_url"
+            type="text"
+            class="form-input"
+            placeholder="https://api.openai.com/v1"
+          />
         </div>
         <div class="form-field form-field-full">
           <label class="form-label">API Key</label>
@@ -296,11 +309,23 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
         </div>
         <div class="form-field">
           <label class="form-label">Temperature</label>
-          <input v-model.number="providerForm.temperature" type="number" step="0.1" min="0" max="2" class="form-input" />
+          <input
+            v-model.number="providerForm.temperature"
+            type="number"
+            step="0.1"
+            min="0"
+            max="2"
+            class="form-input"
+          />
         </div>
         <div class="form-field">
           <label class="form-label">Max Tokens</label>
-          <input v-model.number="providerForm.max_tokens" type="number" min="1" class="form-input" />
+          <input
+            v-model.number="providerForm.max_tokens"
+            type="number"
+            min="1"
+            class="form-input"
+          />
         </div>
         <div class="form-field form-field-checkbox">
           <label class="checkbox-label">
@@ -310,7 +335,11 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
         </div>
       </div>
 
-      <div v-if="testResult" class="test-result" :class="{ error: testResult.includes('失败') || testResult.includes('错误') }">
+      <div
+        v-if="testResult"
+        class="test-result"
+        :class="{ error: testResult.includes('失败') || testResult.includes('错误') }"
+      >
         <Zap :size="14" />
         <span>{{ testResult }}</span>
       </div>
@@ -324,7 +353,7 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
           <Button variant="ghost" size="sm" @click="cancelProviderForm">取消</Button>
           <Button variant="primary" size="sm" :loading="testing" @click="saveProvider">
             <Check :size="14" />
-            <span>{{ testing ? '测试中…' : '保存' }}</span>
+            <span>{{ testing ? "测试中…" : "保存" }}</span>
           </Button>
         </div>
       </div>
@@ -340,9 +369,7 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
         <span v-if="featureSavedFlash" class="saved-flash"><Check :size="13" /> 已保存</span>
         <span v-else-if="featureSaving" class="saved-flash">保存中…</span>
       </div>
-      <p class="section-desc">
-        为不同功能单独指定 AI Provider。未指定的功能使用默认 Provider。
-      </p>
+      <p class="section-desc">为不同功能单独指定 AI Provider。未指定的功能使用默认 Provider。</p>
       <p v-if="featureSaveError" class="feature-save-error">{{ featureSaveError }}</p>
 
       <div v-if="settingsStore.aiProviders.length === 0" class="empty-inline">
@@ -350,11 +377,7 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
       </div>
 
       <div v-else class="feature-map">
-        <div
-          v-for="f in FEATURES"
-          :key="f.key"
-          class="feature-row"
-        >
+        <div v-for="f in FEATURES" :key="f.key" class="feature-row">
           <div class="feature-info">
             <div class="feature-name-row">
               <span class="feature-name">{{ f.label }}</span>
@@ -362,7 +385,8 @@ async function onFeatureProviderChange(feature: string, providerId: string | num
             </div>
             <div class="feature-sub">{{ f.desc }}</div>
             <div v-if="f.timeSensitive" class="feature-hint">
-              建议选择自带联网搜索能力或知识库更新较新的 API（云端大模型更合适），避免知识滞后导致考纲与教材内容过时。本地模型（Ollama）的知识取决于加载的权重，<strong>不建议</strong>用于此功能。
+              建议选择自带联网搜索能力或知识库更新较新的
+              API（云端大模型更合适），避免知识滞后导致考纲与教材内容过时。本地模型（Ollama）的知识取决于加载的权重，<strong>不建议</strong>用于此功能。
             </div>
           </div>
           <Select

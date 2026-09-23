@@ -1,0 +1,6 @@
+# rustfmt 配置（对应重构路线图 Q5）
+#
+# 两项均与 rustfmt 默认值一致：写在文件里是为了「锁住风格」，
+# 避免默认值随工具链版本变化导致 CI（cargo fmt --check）出现无意义抖动。
+edition = "2021"
+max_width = 100

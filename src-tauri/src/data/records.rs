@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::state::{SubjectKey, TaskPriority};
+use super::state::{SubjectKey, TaskPriority, TaskStatus};
 use super::{list_dir_files, read_file_content, DataResult};
 
 // ============================================================================
@@ -40,6 +40,9 @@ pub struct ReviewMeta {
     pub r#type: String,
     pub plan_ref: String,
     pub generated_at: String,
+    /// 未在允许补录的时间内提交复盘时，由系统依据任务状态自动生成。
+    #[serde(default)]
+    pub default_marked: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -340,6 +343,140 @@ pub fn save_review(data_dir: &Path, review: &ReviewFile) -> DataResult<()> {
     Ok(())
 }
 
+/// 为截止日期（含）之前缺失复盘的学习日生成默认复盘。
+///
+/// 默认规则：计划中已勾选完成的任务记为 completed，明确放弃的任务记为
+/// abandoned，其余任务记为 incomplete。休息日、排除日和空计划不会生成记录；
+/// 已有复盘永远不会被覆盖。
+pub fn backfill_default_reviews(data_dir: &Path, cutoff_date: &str) -> DataResult<Vec<String>> {
+    super::validate_date(cutoff_date)?;
+    let dates = crate::data::plan::list_daily_plan_dates(data_dir)?;
+    let mut created = Vec::new();
+
+    for date in dates
+        .into_iter()
+        .filter(|date| date.as_str() <= cutoff_date)
+    {
+        if review_file_path(data_dir, &date).exists() {
+            continue;
+        }
+        let plan = match crate::data::plan::read_daily_plan(data_dir, &date) {
+            Ok(plan) if !plan.data.tasks.is_empty() => plan,
+            _ => continue,
+        };
+        let exempt = crate::data::plan::read_week_plan_for_date(data_dir, &date)
+            .ok()
+            .map(|week| {
+                week.data
+                    .days
+                    .iter()
+                    .any(|day| day.date == date && day.is_rest_day)
+                    || week.data.excluded_days.iter().any(|day| day.date == date)
+            })
+            .unwrap_or(false);
+        if exempt {
+            continue;
+        }
+
+        let task_reviews: Vec<TaskReviewEntry> = plan
+            .data
+            .tasks
+            .iter()
+            .map(|task| {
+                let (status, completion) = match task.status {
+                    TaskStatus::Done => ("completed", 1.0),
+                    TaskStatus::Abandoned => ("abandoned", 0.0),
+                    TaskStatus::Pending | TaskStatus::InProgress => ("incomplete", 0.0),
+                };
+                TaskReviewEntry {
+                    task_id: task.id.clone(),
+                    status: status.to_string(),
+                    completion,
+                    mastery: String::new(),
+                    blockers: if status == "incomplete" {
+                        vec!["no_review".to_string()]
+                    } else {
+                        Vec::new()
+                    },
+                    blocker_note: if status == "incomplete" {
+                        Some("系统默认标记：未提交复盘".to_string())
+                    } else {
+                        None
+                    },
+                    title: task.title.clone(),
+                    subject: task.subject.key().to_string(),
+                    priority: format!("{:?}", task.priority),
+                    estimated_hours: Some(task.estimated_hours),
+                    actual_minutes: None,
+                }
+            })
+            .collect();
+
+        let mut a_total = 0;
+        let mut a_done = 0;
+        let mut b_total = 0;
+        let mut b_done = 0;
+        for task in &task_reviews {
+            let done = task.status == "completed";
+            match task.priority.as_str() {
+                "A" => {
+                    a_total += 1;
+                    if done {
+                        a_done += 1;
+                    }
+                }
+                "B" => {
+                    b_total += 1;
+                    if done {
+                        b_done += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let total = a_total + b_total;
+        let done = a_done + b_done;
+        let completion_rate = if total > 0 {
+            done as f64 / total as f64 * 100.0
+        } else {
+            let all_done = task_reviews
+                .iter()
+                .filter(|t| t.status == "completed")
+                .count();
+            all_done as f64 / task_reviews.len() as f64 * 100.0
+        };
+
+        let review = ReviewFile {
+            version: "1.0.0".to_string(),
+            meta: ReviewMeta {
+                date: date.clone(),
+                r#type: "default_review".to_string(),
+                plan_ref: format!("plan/{}{}", date, crate::data::plan::DAILY_PLAN_FILE_SUFFIX),
+                generated_at: super::now_string(),
+                default_marked: true,
+            },
+            data: ReviewData {
+                completion: ReviewCompletion {
+                    priority_a_total: a_total,
+                    priority_a_done: a_done,
+                    priority_b_total: b_total,
+                    priority_b_done: b_done,
+                    completion_rate,
+                },
+                ..Default::default()
+            },
+            view: None,
+            task_reviews,
+            daily_review: None,
+            overcompletion: Vec::new(),
+        };
+        save_review(data_dir, &review)?;
+        created.push(date);
+    }
+
+    Ok(created)
+}
+
 // ============================================================================
 // 测试
 // ============================================================================
@@ -366,6 +503,7 @@ mod tests {
                 r#type: "review".to_string(),
                 plan_ref: "plan/2026-07-25_day.json".to_string(),
                 generated_at: "2026-07-25T22:00".to_string(),
+                default_marked: false,
             },
             data: ReviewData {
                 completed_tasks: vec![ReviewCompletedTask {
@@ -412,6 +550,68 @@ mod tests {
         assert_eq!(read.data.completed_tasks[0].subject, SubjectKey::Math);
         assert_eq!(read.data.completion.completion_rate, 100.0);
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn backfill_default_review_uses_persisted_task_status_and_is_idempotent() {
+        let tmp = std::env::temp_dir().join(format!(
+            "studyagent_default_review_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let date = "2026-07-24";
+        let plan = crate::data::plan::DailyPlanFile {
+            version: "1.0.0".to_string(),
+            meta: crate::data::plan::DailyPlanMeta {
+                date: date.to_string(),
+                generated_at: format!("{}T08:00:00+08:00", date),
+                r#type: "daily_plan".to_string(),
+                based_on: Default::default(),
+            },
+            data: crate::data::plan::DailyPlanData {
+                tasks: vec![
+                    crate::data::plan::PlanTask {
+                        id: format!("{}-01", date),
+                        subject: SubjectKey::Math,
+                        title: "已完成任务".to_string(),
+                        priority: TaskPriority::A,
+                        estimated_hours: 1.0,
+                        status: TaskStatus::Done,
+                        ..Default::default()
+                    },
+                    crate::data::plan::PlanTask {
+                        id: format!("{}-02", date),
+                        subject: SubjectKey::English,
+                        title: "未完成任务".to_string(),
+                        priority: TaskPriority::B,
+                        estimated_hours: 1.0,
+                        status: TaskStatus::Pending,
+                        ..Default::default()
+                    },
+                ],
+                total_tasks: 2,
+                total_hours: 2.0,
+                ..Default::default()
+            },
+            view: None,
+        };
+        crate::data::plan::save_daily_plan(&tmp, &plan).unwrap();
+
+        let created = backfill_default_reviews(&tmp, date).unwrap();
+        assert_eq!(created, vec![date.to_string()]);
+        let review = read_review(&tmp, date).unwrap();
+        assert!(review.meta.default_marked);
+        assert_eq!(review.meta.r#type, "default_review");
+        assert_eq!(review.task_reviews[0].status, "completed");
+        assert_eq!(review.task_reviews[1].status, "incomplete");
+        assert_eq!(review.data.completion.completion_rate, 50.0);
+
+        let created_again = backfill_default_reviews(&tmp, date).unwrap();
+        assert!(created_again.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

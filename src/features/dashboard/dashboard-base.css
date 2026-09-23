@@ -34,7 +34,9 @@
 .briefing-card {
   opacity: 0;
   transform: translateX(-16px);
-  transition: opacity 0.5s ease, transform 0.5s ease;
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
 }
 .briefing-card.briefing-enter {
   opacity: 1;
@@ -44,7 +46,9 @@
 .review-sidebar {
   opacity: 0;
   transform: translateX(16px);
-  transition: opacity 0.5s ease, transform 0.5s ease;
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -486,7 +490,9 @@
   border-radius: var(--radius-md);
   padding: var(--space-3);
   background: var(--bg-secondary);
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .mini-week-progress:hover {
@@ -686,9 +692,15 @@
   font-weight: var(--font-bold);
 }
 
-.review-metric-value.good { color: var(--color-success, #22c55e); }
-.review-metric-value.warn { color: var(--color-warning, #f59e0b); }
-.review-metric-value.bad { color: var(--color-danger, #ef4444); }
+.review-metric-value.good {
+  color: var(--color-success, #22c55e);
+}
+.review-metric-value.warn {
+  color: var(--color-warning, #f59e0b);
+}
+.review-metric-value.bad {
+  color: var(--color-danger, #ef4444);
+}
 
 .review-metric-text {
   font-size: var(--text-sm);
@@ -780,7 +792,9 @@
   border: 1.5px dashed var(--border-color);
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
   font-family: inherit;
   text-align: left;
   width: 100%;
@@ -832,7 +846,9 @@
   border: 1.5px solid var(--color-success, var(--border-color));
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
   text-align: left;
   width: 100%;
 }
@@ -986,7 +1002,9 @@
 /* ── 可点击卡片 ── */
 .card.clickable {
   cursor: pointer;
-  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .card.clickable:hover {
@@ -1024,7 +1042,9 @@
   height: 8px;
   border-radius: var(--radius-full);
   background: var(--bg-tertiary);
-  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .day-dot.studied .dot {

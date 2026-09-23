@@ -33,12 +33,20 @@ body {
 }
 
 /* 允许在代码块、输入框、文本区域、debug 视图中选择文字 */
-input, textarea, .code-block, .debug-view, .copyable, [data-copyable] {
+input,
+textarea,
+.code-block,
+.debug-view,
+.copyable,
+[data-copyable] {
   user-select: text;
   -webkit-user-select: text;
 }
 
-button, [role="button"], .sidebar, [data-tauri-drag-region] {
+button,
+[role="button"],
+.sidebar,
+[data-tauri-drag-region] {
   user-select: none;
   -webkit-user-select: none;
 }
@@ -75,19 +83,40 @@ button, [role="button"], .sidebar, [data-tauri-drag-region] {
 
 /* ── Typography ── */
 /* Display typography — clear hierarchy: display=bold, heading=semibold, body=regular */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   font-weight: var(--font-heading);
   line-height: var(--leading-tight);
   color: var(--text-primary);
   letter-spacing: -0.015em;
 }
 
-h1 { font-size: var(--text-3xl); letter-spacing: -0.025em; font-weight: var(--font-display); }
-h2 { font-size: var(--text-2xl); letter-spacing: -0.02em; }
-h3 { font-size: var(--text-xl); letter-spacing: -0.015em; }
-h4 { font-size: var(--text-lg); }
-h5 { font-size: var(--text-base); }
-h6 { font-size: var(--text-sm); }
+h1 {
+  font-size: var(--text-3xl);
+  letter-spacing: -0.025em;
+  font-weight: var(--font-display);
+}
+h2 {
+  font-size: var(--text-2xl);
+  letter-spacing: -0.02em;
+}
+h3 {
+  font-size: var(--text-xl);
+  letter-spacing: -0.015em;
+}
+h4 {
+  font-size: var(--text-lg);
+}
+h5 {
+  font-size: var(--text-base);
+}
+h6 {
+  font-size: var(--text-sm);
+}
 
 p {
   line-height: var(--leading-relaxed);
@@ -105,7 +134,8 @@ a:hover {
   color: var(--accent-hover);
 }
 
-code, pre {
+code,
+pre {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
 }
@@ -119,12 +149,16 @@ code, pre {
 /* ── Focus — Apple-style soft blue ring ── */
 :focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--accent-subtle), 0 0 0 1.5px var(--accent);
+  box-shadow:
+    0 0 0 3px var(--accent-subtle),
+    0 0 0 1.5px var(--accent);
   border-radius: var(--radius-xs);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
@@ -133,32 +167,74 @@ code, pre {
 }
 
 @media (forced-colors: active) {
-  :focus-visible { outline: 2px solid CanvasText; }
+  :focus-visible {
+    outline: 2px solid CanvasText;
+  }
 }
 
 /* ── Utility Classes ── */
-.text-primary { color: var(--text-primary); }
-.text-secondary { color: var(--text-secondary); }
-.text-tertiary { color: var(--text-tertiary); }
-.text-accent { color: var(--accent); }
-.text-success { color: var(--color-success); }
-.text-warning { color: var(--color-warning); }
-.text-danger { color: var(--color-danger); }
+.text-primary {
+  color: var(--text-primary);
+}
+.text-secondary {
+  color: var(--text-secondary);
+}
+.text-tertiary {
+  color: var(--text-tertiary);
+}
+.text-accent {
+  color: var(--accent);
+}
+.text-success {
+  color: var(--color-success);
+}
+.text-warning {
+  color: var(--color-warning);
+}
+.text-danger {
+  color: var(--color-danger);
+}
 
-.flex { display: flex; }
-.flex-col { flex-direction: column; }
-.items-center { align-items: center; }
-.justify-center { justify-content: center; }
-.justify-between { justify-content: space-between; }
-.flex-1 { flex: 1; }
-.gap-1 { gap: var(--space-1); }
-.gap-2 { gap: var(--space-2); }
-.gap-3 { gap: var(--space-3); }
-.gap-4 { gap: var(--space-4); }
-.gap-6 { gap: var(--space-6); }
+.flex {
+  display: flex;
+}
+.flex-col {
+  flex-direction: column;
+}
+.items-center {
+  align-items: center;
+}
+.justify-center {
+  justify-content: center;
+}
+.justify-between {
+  justify-content: space-between;
+}
+.flex-1 {
+  flex: 1;
+}
+.gap-1 {
+  gap: var(--space-1);
+}
+.gap-2 {
+  gap: var(--space-2);
+}
+.gap-3 {
+  gap: var(--space-3);
+}
+.gap-4 {
+  gap: var(--space-4);
+}
+.gap-6 {
+  gap: var(--space-6);
+}
 
-.w-full { width: 100%; }
-.h-full { height: 100%; }
+.w-full {
+  width: 100%;
+}
+.h-full {
+  height: 100%;
+}
 
 /* 下拉按内容自适应宽度：替代各处硬编码 max-width，长文案（教材名/任务名等）不被截断。
    覆盖 Select.vue 根节点 .select-root 的默认 width: 100%（scoped 样式，需 !important）。 */
@@ -171,7 +247,9 @@ code, pre {
 /* ── Page Transition ── */
 .page-enter-active,
 .page-leave-active {
-  transition: opacity var(--transition-normal), transform var(--transition-normal);
+  transition:
+    opacity var(--transition-normal),
+    transform var(--transition-normal);
 }
 
 .page-enter-from {
@@ -198,7 +276,9 @@ code, pre {
 /* ── Slide Transition ── */
 .slide-enter-active,
 .slide-leave-active {
-  transition: transform var(--transition-normal), opacity var(--transition-normal);
+  transition:
+    transform var(--transition-normal),
+    opacity var(--transition-normal);
 }
 
 .slide-enter-from {

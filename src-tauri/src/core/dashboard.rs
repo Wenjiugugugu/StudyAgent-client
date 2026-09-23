@@ -9,11 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::core::date_utils::{
+    add_days, days_between, get_week_end, get_week_start, today_string, weekday_name,
+};
 use crate::data::plan::DailyPlanData;
 use crate::data::records::ReviewData;
 use crate::data::state::StudyState;
 use crate::data::state::TaskStatus;
-use crate::data::{add_days, days_between, get_week_end, get_week_start, today_string, DataResult};
+use crate::data::DataResult;
 
 // ============================================================================
 // Dashboard 类型定义
@@ -398,7 +401,7 @@ impl DashboardAggregator {
                 return week_rest.contains(date);
             }
             // 未覆盖日期回退到设置中的休息日（按星期）
-            crate::data::weekday_name(date)
+            weekday_name(date)
                 .map(|w| rest_weekdays.contains(&w))
                 .unwrap_or(false)
         };
@@ -406,7 +409,7 @@ impl DashboardAggregator {
         // 起点：今天已学习或为豁免日则从今天开始；否则（今天尚未学习）从昨天起算
         let mut day = today.to_string();
         if !Self::is_study_day(data_dir, &day) && !is_exempt(&day) {
-            if let Ok(prev) = crate::data::add_days(&day, -1) {
+            if let Ok(prev) = add_days(&day, -1) {
                 day = prev;
             }
         }
@@ -420,7 +423,7 @@ impl DashboardAggregator {
             } else {
                 break;
             }
-            match crate::data::add_days(&day, -1) {
+            match add_days(&day, -1) {
                 Ok(prev) => day = prev,
                 Err(_) => break,
             }
@@ -430,9 +433,18 @@ impl DashboardAggregator {
 
     /// 判断某天是否为学习日：有复盘、有完成任务、或有实际学习时长即算
     fn is_study_day(data_dir: &Path, date: &str) -> bool {
-        // 有复盘（复盘 = 当天实际投入学习的记录）
-        if crate::data::records::read_review(data_dir, date).is_ok() {
-            return true;
+        // 人工复盘代表当天实际投入；系统默认复盘只有在存在完成任务或实际时长时
+        // 才算学习日，避免“未复盘、全部未完成”反而增加连续天数。
+        if let Ok(review) = crate::data::records::read_review(data_dir, date) {
+            if !review.meta.default_marked
+                || crate::data::records::review_actual_hours(&review) > 0.0
+                || review
+                    .task_reviews
+                    .iter()
+                    .any(|task| task.status == "completed")
+            {
+                return true;
+            }
         }
         // 无复盘：日计划中有已完成 / 进行中任务（历史日期由复盘合并状态）
         if let Ok(plan) = crate::data::plan::read_daily_plan_with_merged_status(data_dir, date) {
@@ -466,9 +478,13 @@ impl DashboardAggregator {
     fn compute_total_study_days(data_dir: &Path, state_total: i32) -> i32 {
         let mut study_dates: HashSet<String> = HashSet::new();
 
-        // 复盘日期即学习日
+        // 人工复盘日期即学习日；默认复盘仍按完成任务/实际时长判定
         if let Ok(review_dates) = crate::data::records::list_review_dates(data_dir) {
-            study_dates.extend(review_dates);
+            study_dates.extend(review_dates.into_iter().filter(|date| {
+                crate::data::records::read_review(data_dir, date)
+                    .map(|review| !review.meta.default_marked)
+                    .unwrap_or(false)
+            }));
         }
 
         // 其余候选：日计划日期 + 专注记录日期（无复盘时由任务完成 / 专注时长判定）
@@ -544,7 +560,7 @@ impl DashboardAggregator {
         use std::collections::HashMap;
 
         // 读取前一日的日计划，提取每个科目的章节标题
-        let prev_day = crate::data::add_days(today, -1).unwrap_or_else(|_| today.to_string());
+        let prev_day = add_days(today, -1).unwrap_or_else(|_| today.to_string());
         let prev_plan = crate::data::plan::read_daily_plan(data_dir, &prev_day).ok();
 
         // 前一日没有计划时回退到今日计划
@@ -567,7 +583,6 @@ impl DashboardAggregator {
         }
 
         let mut result = Vec::new();
-        let subjects = &state.subjects;
 
         let mut push_progress = |subject_key: &str,
                                  name: Option<&String>,
@@ -616,37 +631,12 @@ impl DashboardAggregator {
             });
         };
 
-        if subjects.math.active {
-            push_progress(
-                "math",
-                subjects.math.name.as_ref(),
-                &subjects.math,
-                SubjectKey::Math,
-            );
-        }
-        if subjects.english.active {
-            push_progress(
-                "english",
-                subjects.english.name.as_ref(),
-                &subjects.english,
-                SubjectKey::English,
-            );
-        }
-        if subjects.politics.active {
-            push_progress(
-                "politics",
-                subjects.politics.name.as_ref(),
-                &subjects.politics,
-                SubjectKey::Politics,
-            );
-        }
-        if subjects.professional.active {
-            push_progress(
-                "professional",
-                subjects.professional.name.as_ref(),
-                &subjects.professional,
-                SubjectKey::Professional,
-            );
+        // 按固定科目顺序输出（SubjectKey::ALL），避免四处重复的科目分支
+        for key in SubjectKey::ALL {
+            let subject = key.state(state);
+            if subject.active {
+                push_progress(key.key(), subject.name.as_ref(), subject, key);
+            }
         }
 
         result
@@ -856,6 +846,7 @@ mod tests {
                 r#type: "daily".to_string(),
                 plan_ref: format!("plan/{}_day.json", date),
                 generated_at: format!("{}T23:00", date),
+                default_marked: false,
             },
             data: crate::data::records::ReviewData::default(),
             view: None,

@@ -22,7 +22,7 @@
 
 use std::sync::OnceLock;
 
-use crate::data::now_string;
+use crate::core::date_utils::now_string;
 use crate::data::progress_tables::{
     new_progress_id, NodeLevel, NodeStatus, ProgressNode, ProgressTable, TableOrigin,
 };

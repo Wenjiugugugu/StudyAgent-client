@@ -13,25 +13,17 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::date_utils::now_string;
 use crate::data::plan::DailyPlanFile;
 use crate::data::progress_tables::{
     load_progress_index, parse_node_status, save_progress_index, NodeLevel, NodeStatus,
     ProgressIndex, ProgressNode, ProgressTable,
 };
-use crate::data::state::{read_state_or_default, StudyState, SubjectKey, SubjectState};
+use crate::data::state::{read_state_or_default, StudyState, SubjectState};
 
 /// 科目进度表 key（state / plan 均为 snake_case，如 math）
 pub fn progress_subject_key(subject: &str) -> String {
     subject.trim().to_lowercase()
-}
-
-fn subject_key_label(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "math",
-        SubjectKey::English => "english",
-        SubjectKey::Politics => "politics",
-        SubjectKey::Professional => "professional",
-    }
 }
 
 /// 从 State 取某科目状态
@@ -244,7 +236,7 @@ fn apply_task_to_subject(
         }
     }
     if changed > 0 {
-        table.updated_at = crate::data::now_string();
+        table.updated_at = now_string();
     }
     changed
 }
@@ -290,12 +282,7 @@ pub fn sync_review_to_progress(
             NodeStatus::Learning
         };
         for task in &plan.data.tasks {
-            changed += apply_task_to_subject(
-                &mut index,
-                subject_key_label(&task.subject),
-                &task.title,
-                target,
-            );
+            changed += apply_task_to_subject(&mut index, task.subject.key(), &task.title, target);
         }
     }
 
@@ -431,7 +418,7 @@ pub fn apply_estimated_statuses(
         if changed > 0 {
             for t in set.tables.iter_mut() {
                 if changes.iter().any(|c| c.table_id == t.id) {
-                    t.updated_at = crate::data::now_string();
+                    t.updated_at = now_string();
                 }
             }
         }
@@ -506,7 +493,7 @@ pub fn apply_batch_round(
                 };
                 let changed = apply_table_coverage(table, tc, target);
                 if changed > 0 {
-                    table.updated_at = crate::data::now_string();
+                    table.updated_at = now_string();
                     tables_updated += 1;
                     nodes_changed += changed;
                 }
@@ -788,7 +775,7 @@ fn apply_master_derivation(
         }
     }
     if changed > 0 {
-        master.updated_at = crate::data::now_string();
+        master.updated_at = now_string();
     }
     changed
 }

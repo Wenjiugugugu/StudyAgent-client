@@ -10,13 +10,7 @@ import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
-import {
-  RefreshCw,
-  FolderTree,
-  FileText,
-  ChevronRight,
-  ChevronDown,
-} from "lucide-vue-next";
+import { RefreshCw, FolderTree, FileText, ChevronRight, ChevronDown } from "lucide-vue-next";
 import { useDataDirectoryCheck } from "../composables/useDataDirectoryCheck";
 
 const props = defineProps<{ dataDir: string }>();
@@ -66,7 +60,9 @@ defineExpose({ refresh: checkDataDirs });
             <li v-for="entry in dir.entries" :key="entry.name">
               <button
                 class="file-item"
-                :class="{ active: fileContent?.dir === dir.name && fileContent?.name === entry.name }"
+                :class="{
+                  active: fileContent?.dir === dir.name && fileContent?.name === entry.name,
+                }"
                 @click="viewFile(dir.name, entry)"
               >
                 <FileText :size="13" class="file-icon" />
@@ -83,13 +79,15 @@ defineExpose({ refresh: checkDataDirs });
     <div v-if="fileContent" class="file-preview">
       <div class="preview-head">
         <span class="preview-title text-mono">{{ fileContent.dir }}/{{ fileContent.name }}</span>
-        <Button variant="ghost" size="sm" icon @click="fileContent = null">
-          ×
-        </Button>
+        <Button variant="ghost" size="sm" icon @click="fileContent = null"> × </Button>
       </div>
       <LoadingSpinner v-if="loadingFile" :size="20" label="读取文件..." />
       <div v-else-if="fileContent.error" class="error-text">{{ fileContent.error }}</div>
-      <CodeBlock v-else :code="fileContent.content" :label="`${fileContent.dir}/${fileContent.name}`" />
+      <CodeBlock
+        v-else
+        :code="fileContent.content"
+        :label="`${fileContent.dir}/${fileContent.name}`"
+      />
     </div>
   </Card>
 </template>

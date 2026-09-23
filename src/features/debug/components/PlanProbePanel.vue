@@ -53,11 +53,7 @@ defineExpose({ refresh: runPlanTest });
         <span>Plan 解析测试</span>
       </div>
       <div class="section-actions">
-        <input
-          v-model="planTestDate"
-          type="date"
-          class="form-input date-input"
-        />
+        <input v-model="planTestDate" type="date" class="form-input date-input" />
         <Badge :variant="statusBadge(planTest.status)" size="sm">
           {{ statusLabel(planTest.status) }}
         </Badge>
@@ -75,7 +71,11 @@ defineExpose({ refresh: runPlanTest });
         {{ issue }}
       </Badge>
     </div>
-    <LoadingSpinner v-if="planTest.status === 'loading'" :size="20" label="调用 api.getPlanByDate()..." />
+    <LoadingSpinner
+      v-if="planTest.status === 'loading'"
+      :size="20"
+      label="调用 api.getPlanByDate()..."
+    />
     <div v-if="planTest.data" class="plan-summary">
       <div class="info-row">
         <span class="info-key">日期</span>
@@ -83,25 +83,31 @@ defineExpose({ refresh: runPlanTest });
       </div>
       <div class="info-row">
         <span class="info-key">生成时间</span>
-        <span class="info-value text-mono">{{ planTest.data.meta.generated_at || '—' }}</span>
+        <span class="info-value text-mono">{{ planTest.data.meta.generated_at || "—" }}</span>
       </div>
       <div class="info-row">
         <span class="info-key">任务数</span>
-        <span class="info-value">A: {{ planTest.data.data.tasks.filter(t => t.priority === 'A').length }} · B: {{ planTest.data.data.tasks.filter(t => t.priority === 'B').length }} · 合计: {{ planTest.data.data.total_tasks }}</span>
+        <span class="info-value"
+          >A: {{ planTest.data.data.tasks.filter((t) => t.priority === "A").length }} · B:
+          {{ planTest.data.data.tasks.filter((t) => t.priority === "B").length }} · 合计:
+          {{ planTest.data.data.total_tasks }}</span
+        >
       </div>
       <div class="info-row">
         <span class="info-key">完成状态</span>
         <span class="info-value">
-          已完成 {{ planTest.data.data.tasks.filter((t) => t.status === 'done').length }}
-          / {{ planTest.data.data.tasks.length }}
+          已完成 {{ planTest.data.data.tasks.filter((t) => t.status === "done").length }} /
+          {{ planTest.data.data.tasks.length }}
         </span>
       </div>
       <div class="info-row">
         <span class="info-key">目标</span>
-        <span class="info-value">{{ planTest.data.data.target || '—' }}</span>
+        <span class="info-value">{{ planTest.data.data.target || "—" }}</span>
       </div>
     </div>
     <pre v-if="planTest.data" class="code-block">{{ formatJson(planTest.data) }}</pre>
-    <div v-if="planTest.status === 'idle'" class="empty-inline">点击「测试」调用 api.getPlanByDate()。</div>
+    <div v-if="planTest.status === 'idle'" class="empty-inline">
+      点击「测试」调用 api.getPlanByDate()。
+    </div>
   </Card>
 </template>

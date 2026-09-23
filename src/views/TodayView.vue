@@ -19,7 +19,17 @@ import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
 import * as api from "@/api";
-import { todayString, yesterdayString, daysBetween, getWeekStart, prevDateString, nextDateString, currentMinutesShanghai, timeStringToMinutes, weekdayName } from "@/utils/date";
+import {
+  todayString,
+  yesterdayString,
+  daysBetween,
+  getWeekStart,
+  prevDateString,
+  nextDateString,
+  currentMinutesShanghai,
+  timeStringToMinutes,
+  weekdayName,
+} from "@/utils/date";
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
@@ -150,9 +160,7 @@ const subjectLabels = computed<Record<SubjectKey, string>>(() => {
   const politics = parts.find((p) => p.startsWith("政治"));
   const used = new Set([math, english, politics].filter((p): p is string => !!p));
   // 专业课：排除前三科与泛称后，取具体的统考科目名（如「408 计算机」）；找不到则用通用名
-  const professional = parts.find(
-    (p) => !used.has(p) && !GENERIC_PROFESSIONAL_LABELS.has(p)
-  );
+  const professional = parts.find((p) => !used.has(p) && !GENERIC_PROFESSIONAL_LABELS.has(p));
   return {
     math: math ?? FALLBACK_SUBJECT_LABEL.math,
     english: english ?? FALLBACK_SUBJECT_LABEL.english,
@@ -166,7 +174,10 @@ const subjectLabels = computed<Record<SubjectKey, string>>(() => {
 // ────────────────────────────────────────────────────────────
 
 const timeTrackingEnabled = computed(
-  () => !!settingsStore.settings?.study_schedule?.enable_time_tracking && isToday.value && canModifyTasks.value
+  () =>
+    !!settingsStore.settings?.study_schedule?.enable_time_tracking &&
+    isToday.value &&
+    canModifyTasks.value
 );
 
 /** 每个任务的计时状态：accumulated 已累计分钟，startedAt 为正在计时的开始时间戳 */
@@ -282,7 +293,7 @@ async function loadActiveGoals() {
   try {
     const file = await api.listGoals();
     goalActive.value = (file?.data?.goals ?? []).filter(
-      (g) => g.active && g.status === "active" && g.deadline >= currentDate.value,
+      (g) => g.active && g.status === "active" && g.deadline >= currentDate.value
     );
   } catch {
     // 获取失败不影响主流程
@@ -380,7 +391,7 @@ const rows = computed<TaskRow[]>(() =>
       // 多书并行时该科可能有多条生效目标，此处展示的是最早截止日（口径见 goalModeBySubject）
       const goalCount = goalCountBySubject.value[task.subject] ?? 0;
       meta.push(
-        goalCount > 1 ? `截止 ${deadline}（该科 ${goalCount} 个目标中最早）` : `截止 ${deadline}`,
+        goalCount > 1 ? `截止 ${deadline}（该科 ${goalCount} 个目标中最早）` : `截止 ${deadline}`
       );
     }
     // 任务不区分优先级（0.4 起产品已移除优先级口径），无辅助信息时第二行为空即可。
@@ -475,7 +486,12 @@ const statusSegments = computed(() => {
   const c = statusCounts.value;
   return [
     { key: "done", label: "已完成", count: c.done, pct: (c.done / total) * 100 },
-    { key: "in_progress", label: "进行中", count: c.in_progress, pct: (c.in_progress / total) * 100 },
+    {
+      key: "in_progress",
+      label: "进行中",
+      count: c.in_progress,
+      pct: (c.in_progress / total) * 100,
+    },
     { key: "pending", label: "待完成", count: c.pending, pct: (c.pending / total) * 100 },
     { key: "abandoned", label: "已放弃", count: c.abandoned, pct: (c.abandoned / total) * 100 },
   ].filter((s) => s.count > 0);
@@ -575,7 +591,9 @@ const isBeforeDailyStart = computed(() => {
   return currentDate.value >= todayString();
 });
 
-const dailyStartTimeLabel = computed(() => settingsStore.settings?.study_schedule?.start_time ?? "09:00");
+const dailyStartTimeLabel = computed(
+  () => settingsStore.settings?.study_schedule?.start_time ?? "09:00"
+);
 
 /** 昨日复盘提示只在「每日开始时间之前」展示：已到学习开始时间后不再打扰 */
 const showYesterdayReviewBanner = computed(() => {
@@ -655,9 +673,7 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 /** 是否存在正在计时的任务 —— 只有它需要每秒刷新 */
-const hasRunningTimer = computed(() =>
-  Object.values(taskTimers.value).some((t) => !!t.startedAt)
-);
+const hasRunningTimer = computed(() => Object.values(taskTimers.value).some((t) => !!t.startedAt));
 
 function startTimerTick() {
   if (timerInterval != null) return;
@@ -825,9 +841,7 @@ onUnmounted(() => {
         </div>
         <div class="head-plan">
           <h1 class="plan-title">今日计划</h1>
-          <span class="plan-brief">
-            {{ rows.length }} 项 · 预计 {{ formatMin(totalEstMin) }}
-          </span>
+          <span class="plan-brief"> {{ rows.length }} 项 · 预计 {{ formatMin(totalEstMin) }} </span>
         </div>
       </header>
 
@@ -886,12 +900,7 @@ onUnmounted(() => {
               </button>
 
               <div v-show="!isCollapsed(g.subject)" class="group-rows">
-                <div
-                  v-for="row in g.rows"
-                  :key="row.task.id"
-                  class="task-row"
-                  :class="row.status"
-                >
+                <div v-for="row in g.rows" :key="row.task.id" class="task-row" :class="row.status">
                   <button
                     class="task-check"
                     :class="row.status"
@@ -908,7 +917,13 @@ onUnmounted(() => {
                     <span class="row-index">{{ indexLabel(row.index) }}</span>
                     <span class="row-title">{{ row.task.title }}</span>
                     <span class="row-time">
-                      {{ row.remainMin !== null ? formatMin(row.remainMin) : row.estMin > 0 ? formatMin(row.estMin) : "" }}
+                      {{
+                        row.remainMin !== null
+                          ? formatMin(row.remainMin)
+                          : row.estMin > 0
+                            ? formatMin(row.estMin)
+                            : ""
+                      }}
                     </span>
                     <button
                       v-if="timeTrackingEnabled"
@@ -917,7 +932,11 @@ onUnmounted(() => {
                       type="button"
                       :title="isTaskRunning(row.task.id) ? '暂停计时' : '开始计时'"
                       :aria-label="`${row.task.title} — ${isTaskRunning(row.task.id) ? '暂停计时' : '开始计时'}`"
-                      @click="isTaskRunning(row.task.id) ? pauseTimer(row.task.id) : startTimer(row.task.id)"
+                      @click="
+                        isTaskRunning(row.task.id)
+                          ? pauseTimer(row.task.id)
+                          : startTimer(row.task.id)
+                      "
                     >
                       <Pause v-if="isTaskRunning(row.task.id)" :size="12" />
                       <Play v-else :size="12" />
@@ -964,7 +983,10 @@ onUnmounted(() => {
                   <span class="alloc-pct">{{ a.pct }}%</span>
                 </div>
                 <div class="alloc-track">
-                  <span class="alloc-fill" :style="{ width: `${a.pct}%`, background: a.color }"></span>
+                  <span
+                    class="alloc-fill"
+                    :style="{ width: `${a.pct}%`, background: a.color }"
+                  ></span>
                 </div>
               </li>
             </ul>
@@ -1098,7 +1120,9 @@ onUnmounted(() => {
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 .icon-btn:hover:not(:disabled) {
   background: var(--bg-overlay);
@@ -1295,7 +1319,9 @@ onUnmounted(() => {
   flex-shrink: 0;
   cursor: pointer;
   padding: 0;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 .task-check:hover:not(:disabled) {
   border-color: var(--accent);
@@ -1382,7 +1408,9 @@ onUnmounted(() => {
   color: var(--text-quaternary);
   cursor: pointer;
   opacity: 0;
-  transition: opacity var(--transition-fast), color var(--transition-fast),
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast),
     background var(--transition-fast);
 }
 .task-row:hover .timer-btn,

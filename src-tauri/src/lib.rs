@@ -239,7 +239,7 @@ impl AppSettings {
             .get("subject_start_dates")
             .and_then(|v| v.as_object())
         {
-            for key in ["math", "english", "politics", "professional"] {
+            for key in crate::data::state::SubjectKey::ALL.map(|subject| subject.key()) {
                 if let Some(val) = dates.get(key).and_then(|v| v.as_str()) {
                     if !val.is_empty() {
                         result.push((key, val.to_string()));
@@ -361,7 +361,7 @@ impl AppSettings {
             .get("subject_time_allocation")?
             .as_object()?;
         let mut values: Vec<(String, f64)> = Vec::new();
-        for key in ["math", "english", "politics", "professional"] {
+        for key in crate::data::state::SubjectKey::ALL.map(|subject| subject.key()) {
             if let Some(v) = obj.get(key).and_then(|v| v.as_f64()) {
                 if v.is_finite() && v >= 0.0 {
                     values.push((key.to_string(), v));
@@ -487,6 +487,19 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 /// 获取 settings 文件路径
 pub fn settings_file_path(data_dir: &Path) -> PathBuf {
     data_dir.join(CONFIG_DIR).join(SETTINGS_FILE_NAME)
+}
+
+/// 在向前端提供可编辑设置前验证配置文件，避免损坏文件被默认值静默替代后覆盖。
+pub fn validate_settings_file(data_dir: &Path) -> Result<(), String> {
+    let path = settings_file_path(data_dir);
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取设置文件失败 {:?}: {}", path, e))?;
+    serde_json::from_str::<AppSettings>(&content)
+        .map(|_| ())
+        .map_err(|e| format!("设置文件已损坏，未使用默认值覆盖 {:?}: {}", path, e))
 }
 
 /// 从文件加载 AppSettings
@@ -679,20 +692,14 @@ pub fn init_app_state(data_dir: PathBuf) -> Mutex<AppState> {
 /// - assets/registry/
 /// - config/
 pub fn ensure_data_directories(data_dir: &Path) {
-    let subdirs = [
-        "state",
-        "plan",
-        "records",
+    for subdir in crate::data::PERSISTED_DATA_SUBDIRS.iter().copied().chain([
         "logs",
         "assets/user_model/capabilities",
         "assets/user_model/observations",
         "assets/milestones",
         "assets/mapping/entries",
         "assets/registry",
-        "config",
-    ];
-
-    for subdir in &subdirs {
+    ]) {
         let path = data_dir.join(subdir);
         if !path.exists() {
             if let Err(e) = std::fs::create_dir_all(&path) {
@@ -833,6 +840,29 @@ pub fn get_data_dir_and_dispatcher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings_tmpdir(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "studyagent-settings-test-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(path.join(CONFIG_DIR)).unwrap();
+        path
+    }
+
+    #[test]
+    fn corrupt_settings_are_reported_without_overwrite() {
+        let data_dir = settings_tmpdir("corrupt");
+        let path = settings_file_path(&data_dir);
+        std::fs::write(&path, "{not-json").unwrap();
+
+        let error = validate_settings_file(&data_dir).unwrap_err();
+        assert!(error.contains("未使用默认值覆盖"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not-json");
+
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
 
     #[test]
     fn test_app_settings_roundtrip_with_frontend_fields() {

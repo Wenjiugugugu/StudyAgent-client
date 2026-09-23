@@ -43,7 +43,7 @@ function renderInline(s: string): string {
   text = text.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_m, label: string, url: string) =>
-      `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`,
+      `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
   );
 
   // 粗体 **text**
@@ -52,8 +52,9 @@ function renderInline(s: string): string {
   text = text.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
 
   // 还原行内代码占位符
-  text = text.replace(/\u0001CODE_(\d+)\u0001/g, (_m, idx: string) =>
-    codePlaceholders[parseInt(idx, 10)] ?? "",
+  text = text.replace(
+    /\u0001CODE_(\d+)\u0001/g,
+    (_m, idx: string) => codePlaceholders[parseInt(idx, 10)] ?? ""
   );
 
   return text;
@@ -75,11 +76,20 @@ const html = computed(() => {
   const codeBuf: string[] = [];
 
   function closeLists() {
-    if (inUl) { out.push("</ul>"); inUl = false; }
-    if (inOl) { out.push("</ol>"); inOl = false; }
+    if (inUl) {
+      out.push("</ul>");
+      inUl = false;
+    }
+    if (inOl) {
+      out.push("</ol>");
+      inOl = false;
+    }
   }
   function closeQuote() {
-    if (inQuote) { out.push("</blockquote>"); inQuote = false; }
+    if (inQuote) {
+      out.push("</blockquote>");
+      inQuote = false;
+    }
   }
 
   while (i < lines.length) {
@@ -99,7 +109,7 @@ const html = computed(() => {
         out.push(
           `<pre class="md-code-block"><code${
             codeLang ? ` class="language-${escapeHtml(codeLang)}"` : ""
-          }>${code}</code></pre>`,
+          }>${code}</code></pre>`
         );
         inCode = false;
         codeLang = "";
@@ -137,7 +147,7 @@ const html = computed(() => {
       closeLists();
       closeQuote();
       out.push(
-        `<h${level} class="md-h md-h${level}">${renderInline(escapeHtml(heading[2]))}</h${level}>`,
+        `<h${level} class="md-h md-h${level}">${renderInline(escapeHtml(heading[2]))}</h${level}>`
       );
       i++;
       continue;
@@ -161,7 +171,11 @@ const html = computed(() => {
     // 无序列表
     const ul = /^[\s]*[-*+]\s+(.*)$/.exec(line);
     if (ul) {
-      if (!inUl) { closeLists(); out.push('<ul class="md-ul">'); inUl = true; }
+      if (!inUl) {
+        closeLists();
+        out.push('<ul class="md-ul">');
+        inUl = true;
+      }
       out.push(`<li>${renderInline(escapeHtml(ul[1]))}</li>`);
       i++;
       continue;
@@ -170,7 +184,11 @@ const html = computed(() => {
     // 有序列表
     const ol = /^[\s]*\d+\.\s+(.*)$/.exec(line);
     if (ol) {
-      if (!inOl) { closeLists(); out.push('<ol class="md-ol">'); inOl = true; }
+      if (!inOl) {
+        closeLists();
+        out.push('<ol class="md-ol">');
+        inOl = true;
+      }
       out.push(`<li>${renderInline(escapeHtml(ol[1]))}</li>`);
       i++;
       continue;
@@ -213,12 +231,20 @@ const html = computed(() => {
   letter-spacing: -0.01em;
 }
 
-.markdown-text :deep(.md-h1) { font-size: 1.15em; }
-.markdown-text :deep(.md-h2) { font-size: 1.1em; }
-.markdown-text :deep(.md-h3) { font-size: 1.05em; }
+.markdown-text :deep(.md-h1) {
+  font-size: 1.15em;
+}
+.markdown-text :deep(.md-h2) {
+  font-size: 1.1em;
+}
+.markdown-text :deep(.md-h3) {
+  font-size: 1.05em;
+}
 .markdown-text :deep(.md-h4),
 .markdown-text :deep(.md-h5),
-.markdown-text :deep(.md-h6) { font-size: 1em; }
+.markdown-text :deep(.md-h6) {
+  font-size: 1em;
+}
 
 .markdown-text :deep(.md-p) {
   margin: 0.3em 0;
@@ -230,8 +256,12 @@ const html = computed(() => {
   padding-left: 1.4em;
 }
 
-.markdown-text :deep(.md-ul) { list-style: disc; }
-.markdown-text :deep(.md-ol) { list-style: decimal; }
+.markdown-text :deep(.md-ul) {
+  list-style: disc;
+}
+.markdown-text :deep(.md-ol) {
+  list-style: decimal;
+}
 
 .markdown-text :deep(.md-ul li),
 .markdown-text :deep(.md-ol li) {

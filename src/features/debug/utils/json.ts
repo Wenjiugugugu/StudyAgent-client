@@ -20,7 +20,7 @@ export function formatJson(obj: unknown): string {
         }
         return value;
       },
-      2,
+      2
     );
   } catch (e) {
     return `[无法序列化: ${e instanceof Error ? e.message : String(e)}]`;

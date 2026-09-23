@@ -45,7 +45,7 @@ export function useUsageFilters(aiUsageLog: Ref<AiUsageEntry[]>) {
   /** 用量「调用明细」分页：当前页码 */
   const usagePage = ref(1);
   const usagePageCount = computed(() =>
-    Math.max(1, Math.ceil(filteredUsageLog.value.length / USAGE_PAGE_SIZE)),
+    Math.max(1, Math.ceil(filteredUsageLog.value.length / USAGE_PAGE_SIZE))
   );
   /** 当前页展示的用量明细（最新在前） */
   const pagedUsageLog = computed(() => {
@@ -61,7 +61,7 @@ export function useUsageFilters(aiUsageLog: Ref<AiUsageEntry[]>) {
       if (usagePage.value > usagePageCount.value) {
         usagePage.value = usagePageCount.value;
       }
-    },
+    }
   );
 
   /** 单条记录的费用估算（缓存以避免重复计算） */
@@ -70,10 +70,7 @@ export function useUsageFilters(aiUsageLog: Ref<AiUsageEntry[]>) {
     for (const entry of aiUsageLog.value) {
       const key = usageEntryKey(entry);
       if (!map.has(key)) {
-        map.set(
-          key,
-          estimateCost(entry.model, entry.prompt_tokens, entry.completion_tokens),
-        );
+        map.set(key, estimateCost(entry.model, entry.prompt_tokens, entry.completion_tokens));
       }
     }
     return map;
@@ -84,13 +81,19 @@ export function useUsageFilters(aiUsageLog: Ref<AiUsageEntry[]>) {
     const log = filteredUsageLog.value;
     let totalInput = 0;
     let totalOutput = 0;
-    let totalCalls = log.length;
+    const totalCalls = log.length;
     let successCalls = 0;
     let errorCalls = 0;
     let totalCost = 0;
     let totalDurationMs = 0;
-    const byModel = new Map<string, { calls: number; input: number; output: number; cost: number }>();
-    const byAgent = new Map<string, { calls: number; input: number; output: number; cost: number }>();
+    const byModel = new Map<
+      string,
+      { calls: number; input: number; output: number; cost: number }
+    >();
+    const byAgent = new Map<
+      string,
+      { calls: number; input: number; output: number; cost: number }
+    >();
 
     for (const entry of log) {
       totalInput += entry.prompt_tokens;

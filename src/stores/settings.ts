@@ -4,7 +4,14 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import * as api from "@/api";
-import type { AppSettings, ThemeMode, VisualMode, SidebarStyle, AIProviderConfig, MCPServerConfig } from "@/types";
+import type {
+  AppSettings,
+  ThemeMode,
+  VisualMode,
+  SidebarStyle,
+  AIProviderConfig,
+  MCPServerConfig,
+} from "@/types";
 
 /** 默认设置 — 用于后端字段缺失时填充，防止渲染崩溃 */
 const defaultSettings: AppSettings = {
@@ -87,13 +94,17 @@ export const useSettingsStore = defineStore("settings", () => {
 
   async function load() {
     loading.value = true;
+    error.value = null;
     try {
       const raw = await api.getSettings();
       // 后端 Rust 字段名为 data_dir，前端类型为 data_directory，兼容两者
       const backendSettings = raw as AppSettings & { data_dir?: string };
       // 合并默认值，防止后端缺少字段导致渲染崩溃
       settings.value = {
-        data_directory: backendSettings.data_dir || backendSettings.data_directory || defaultSettings.data_directory,
+        data_directory:
+          backendSettings.data_dir ||
+          backendSettings.data_directory ||
+          defaultSettings.data_directory,
         theme: backendSettings.theme || defaultSettings.theme,
         visual_mode: backendSettings.visual_mode || defaultSettings.visual_mode,
         sidebar_style: backendSettings.sidebar_style || defaultSettings.sidebar_style,
@@ -105,13 +116,14 @@ export const useSettingsStore = defineStore("settings", () => {
         target_major: backendSettings.target_major ?? defaultSettings.target_major,
         exam_date: backendSettings.exam_date ?? defaultSettings.exam_date,
         target_score: backendSettings.target_score ?? defaultSettings.target_score,
-        onboarding_completed: backendSettings.onboarding_completed ?? defaultSettings.onboarding_completed,
+        onboarding_completed:
+          backendSettings.onboarding_completed ?? defaultSettings.onboarding_completed,
         study_schedule: {
           ...defaultSettings.study_schedule,
           ...(backendSettings.study_schedule || {}),
         },
         ai_providers: backendSettings.ai_providers || [],
-        default_provider_id: backendSettings.default_provider_id || '',
+        default_provider_id: backendSettings.default_provider_id || "",
         feature_providers: backendSettings.feature_providers || {},
         mcp_servers: backendSettings.mcp_servers || [],
         enabled_mcp_ids: backendSettings.enabled_mcp_ids || [],
@@ -121,12 +133,13 @@ export const useSettingsStore = defineStore("settings", () => {
         show_logo: backendSettings.show_logo ?? defaultSettings.show_logo,
         background_image: backendSettings.background_image ?? defaultSettings.background_image,
         background_blur: backendSettings.background_blur ?? defaultSettings.background_blur,
-        background_opacity: backendSettings.background_opacity ?? defaultSettings.background_opacity,
+        background_opacity:
+          backendSettings.background_opacity ?? defaultSettings.background_opacity,
       };
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
-      // 如果加载失败，使用默认设置
-      settings.value = { ...defaultSettings };
+      settings.value = null;
+      throw e;
     } finally {
       loading.value = false;
     }

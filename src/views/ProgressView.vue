@@ -152,10 +152,7 @@ onMounted(reload);
               class="more-btn"
               @click="showMoreProfessional = !showMoreProfessional"
             >
-              <component
-                :is="showMoreProfessional ? ChevronDown : ChevronRight"
-                :size="12"
-              />
+              <component :is="showMoreProfessional ? ChevronDown : ChevronRight" :size="12" />
               {{ showMoreProfessional ? "收起" : "其他专业课" }}
               <span class="more-count">{{ otherProfessional.length }}</span>
             </button>
@@ -277,7 +274,9 @@ onMounted(reload);
   align-items: center;
   gap: var(--space-2);
 }
-.subject-icon { color: var(--text-tertiary); }
+.subject-icon {
+  color: var(--text-tertiary);
+}
 .subject-name {
   margin: 0;
   font-size: var(--text-lg);
@@ -309,13 +308,18 @@ onMounted(reload);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
-.variant-chip:hover { border-color: var(--border-color-strong); color: var(--text-primary); }
+.variant-chip:hover {
+  border-color: var(--border-color-strong);
+  color: var(--text-primary);
+}
 .variant-chip.active {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-subtle);
 }
-.chip-folded { opacity: 0.6; }
+.chip-folded {
+  opacity: 0.6;
+}
 .more-btn {
   display: inline-flex;
   align-items: center;
@@ -331,7 +335,10 @@ onMounted(reload);
   cursor: pointer;
   transition: all var(--transition-fast);
 }
-.more-btn:hover { color: var(--text-secondary); border-color: var(--border-color-strong); }
+.more-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--border-color-strong);
+}
 .more-count {
   font: var(--weight-medium) var(--text-caption) var(--font-mono);
   color: var(--text-tertiary);

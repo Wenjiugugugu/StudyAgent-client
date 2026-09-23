@@ -19,7 +19,14 @@ import Badge from "@/components/ui/Badge.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
-import { BookOpen, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot } from "lucide-vue-next";
+import {
+  BookOpen,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleDot,
+} from "lucide-vue-next";
 import type { ProgressIndex, ProgressNode, ProgressNodeStatus, ProgressTable } from "@/types";
 
 const props = withDefaults(
@@ -82,7 +89,8 @@ function selKey(subject: string, tableId: string): string {
 }
 function getSel(subject: string, tableId: string): TableSel {
   const k = selKey(subject, tableId);
-  if (!sels[k]) sels[k] = { reached: null, done: new Set(), checked: new Set(), collapsed: new Set() };
+  if (!sels[k])
+    sels[k] = { reached: null, done: new Set(), checked: new Set(), collapsed: new Set() };
   return sels[k];
 }
 function clearSel(subject: string, tableId: string) {
@@ -292,9 +300,7 @@ const summary = computed(() => {
           : chs[sel.reached].kids.filter((k) => sel.checked.has(k.id)).length;
       }
       const alreadyAdvanced = t.nodes.filter(
-        (n) =>
-          n.level === "knowledge" &&
-          STATUS_RANK[n.status as ProgressNodeStatus] >= targetRank
+        (n) => n.level === "knowledge" && STATUS_RANK[n.status as ProgressNodeStatus] >= targetRank
       ).length;
       const toAdvance = Math.max(0, cov - alreadyAdvanced);
       if (toAdvance > 0) {
@@ -409,7 +415,11 @@ const summary = computed(() => {
                         :size="14"
                       />
                     </button>
-                    <button type="button" class="chapter-main" @click="pickChapter(s.key, t.id, idx)">
+                    <button
+                      type="button"
+                      class="chapter-main"
+                      @click="pickChapter(s.key, t.id, idx)"
+                    >
                       <component :is="chapterIcon(s.key, t.id, idx)" :size="14" class="ch-ic" />
                       <span class="ch-title" :title="ch.title">{{ ch.title }}</span>
                       <span class="ch-count">{{ ch.kids.length }} 点</span>
@@ -428,7 +438,10 @@ const summary = computed(() => {
                   </div>
 
                   <!-- 展开章节：显示其知识点（当前章可勾选；已覆盖/整章学完自动显示为已勾选） -->
-                  <div v-if="isChapterExpanded(s.key, t.id, idx) && ch.kids.length" class="kid-list">
+                  <div
+                    v-if="isChapterExpanded(s.key, t.id, idx) && ch.kids.length"
+                    class="kid-list"
+                  >
                     <label
                       v-for="k in ch.kids"
                       :key="k.id"
@@ -503,7 +516,10 @@ const summary = computed(() => {
   color: var(--accent);
   box-shadow: var(--shadow-sm);
 }
-.bar-hint { font-size: var(--text-xs); color: var(--text-tertiary); }
+.bar-hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
 .summary-line {
   margin: 0;
   font-size: var(--text-xs);
@@ -529,7 +545,10 @@ const summary = computed(() => {
   padding-top: var(--space-2);
   border-top: 1px solid var(--divider-color);
 }
-.subj-variant { font-size: var(--text-xs); color: var(--text-tertiary); }
+.subj-variant {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
 .table-block {
   display: flex;
   flex-direction: column;
@@ -545,7 +564,10 @@ const summary = computed(() => {
   gap: var(--space-2);
   flex-wrap: wrap;
 }
-.book-icon { color: var(--accent); flex-shrink: 0; }
+.book-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
 .table-name {
   font-size: var(--text-sm);
   font-weight: var(--font-semibold);
@@ -572,7 +594,10 @@ const summary = computed(() => {
   border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
-.reset-btn:hover { color: var(--color-danger); background: var(--bg-tertiary); }
+.reset-btn:hover {
+  color: var(--color-danger);
+  background: var(--bg-tertiary);
+}
 .chapters {
   display: flex;
   flex-direction: column;
@@ -584,11 +609,19 @@ const summary = computed(() => {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
-.chapter-row:hover { border-color: var(--border-color-strong); }
-.chapter-row.current { border-color: var(--accent); }
-.chapter-row.covered:not(.current) { opacity: 0.85; }
+.chapter-row:hover {
+  border-color: var(--border-color-strong);
+}
+.chapter-row.current {
+  border-color: var(--accent);
+}
+.chapter-row.covered:not(.current) {
+  opacity: 0.85;
+}
 .chapter-line {
   display: flex;
   align-items: center;
@@ -608,9 +641,14 @@ const summary = computed(() => {
   cursor: pointer;
   flex-shrink: 0;
   padding: 0;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
-.collapse-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.collapse-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
 .chapter-main {
   display: flex;
   align-items: center;
@@ -624,10 +662,18 @@ const summary = computed(() => {
   font-family: inherit;
   text-align: left;
 }
-.ch-ic { flex-shrink: 0; }
-.chapter-row.covered .ch-ic { color: var(--color-success, #16a34a); }
-.chapter-row.current .ch-ic { color: var(--accent); }
-.chapter-row:not(.current):not(.covered) .ch-ic { color: var(--text-quaternary); }
+.ch-ic {
+  flex-shrink: 0;
+}
+.chapter-row.covered .ch-ic {
+  color: var(--color-success, #16a34a);
+}
+.chapter-row.current .ch-ic {
+  color: var(--accent);
+}
+.chapter-row:not(.current):not(.covered) .ch-ic {
+  color: var(--text-quaternary);
+}
 .ch-title {
   flex: 1;
   min-width: 0;
@@ -637,7 +683,11 @@ const summary = computed(() => {
   font-size: var(--text-sm);
   color: var(--text-primary);
 }
-.ch-count { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; }
+.ch-count {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
 .full-toggle {
   display: flex;
   align-items: center;
@@ -648,9 +698,15 @@ const summary = computed(() => {
   flex-shrink: 0;
   user-select: none;
 }
-.full-toggle:hover { color: var(--text-secondary); }
-.full-toggle.on { color: var(--accent); }
-.full-toggle input { accent-color: var(--accent); }
+.full-toggle:hover {
+  color: var(--text-secondary);
+}
+.full-toggle.on {
+  color: var(--accent);
+}
+.full-toggle input {
+  accent-color: var(--accent);
+}
 .kid-list {
   display: flex;
   flex-direction: column;
@@ -668,9 +724,17 @@ const summary = computed(() => {
   border-radius: var(--radius-xs);
   cursor: pointer;
 }
-.kid-row:hover { background: var(--bg-elevated); }
-.kid-row.readonly { cursor: default; opacity: 0.9; }
-.kid-row input { accent-color: var(--accent); flex-shrink: 0; }
+.kid-row:hover {
+  background: var(--bg-elevated);
+}
+.kid-row.readonly {
+  cursor: default;
+  opacity: 0.9;
+}
+.kid-row input {
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
 .kid-title {
   font-size: var(--text-xs);
   color: var(--text-secondary);
@@ -686,8 +750,15 @@ const summary = computed(() => {
   border: 1px dashed var(--accent-soft, var(--border-color-strong));
   border-radius: var(--radius-md);
 }
-.master-name { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-primary); }
-.master-tip { font-size: var(--text-xs); color: var(--text-secondary); }
+.master-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+.master-tip {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
 .foot-note {
   margin-right: auto;
   font-size: var(--text-xs);

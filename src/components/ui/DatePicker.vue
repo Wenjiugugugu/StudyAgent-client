@@ -72,25 +72,49 @@ const calendarCells = computed(() => {
   // 周一为第一天：getDay()=0(周日)→6, 1(周一)→0
   const firstWeekday = (first.getDay() + 6) % 7;
   const daysInMonth = last.getDate();
-  const cells: { date: string; day: number; inMonth: boolean; isToday: boolean; disabled: boolean }[] = [];
+  const cells: {
+    date: string;
+    day: number;
+    inMonth: boolean;
+    isToday: boolean;
+    disabled: boolean;
+  }[] = [];
   // 上月填充
   const prevLast = new Date(viewYear.value, viewMonth.value, 0);
   for (let i = firstWeekday - 1; i >= 0; i--) {
     const d = prevLast.getDate() - i;
     const date = `${prevLast.getFullYear()}-${String(prevLast.getMonth() + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    cells.push({ date, day: d, inMonth: false, isToday: date === todayStr, disabled: isDisabled(date) });
+    cells.push({
+      date,
+      day: d,
+      inMonth: false,
+      isToday: date === todayStr,
+      disabled: isDisabled(date),
+    });
   }
   // 本月
   for (let d = 1; d <= daysInMonth; d++) {
     const date = `${viewYear.value}-${String(viewMonth.value + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    cells.push({ date, day: d, inMonth: true, isToday: date === todayStr, disabled: isDisabled(date) });
+    cells.push({
+      date,
+      day: d,
+      inMonth: true,
+      isToday: date === todayStr,
+      disabled: isDisabled(date),
+    });
   }
   // 下月填充至 42 格
   const next = new Date(viewYear.value, viewMonth.value + 1, 1);
   while (cells.length < 42) {
     const d = cells.length - (firstWeekday + daysInMonth) + 1;
     const date = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-    cells.push({ date, day: d, inMonth: false, isToday: date === todayStr, disabled: isDisabled(date) });
+    cells.push({
+      date,
+      day: d,
+      inMonth: false,
+      isToday: date === todayStr,
+      disabled: isDisabled(date),
+    });
   }
   return cells;
 });
@@ -167,9 +191,13 @@ onUnmounted(() => document.removeEventListener("mousedown", handleClickOutside))
     <transition name="dp-fade">
       <div v-if="open" class="dp-panel">
         <div class="dp-header">
-          <button type="button" class="dp-nav" @click="prevMonth"><ChevronLeft :size="16" /></button>
+          <button type="button" class="dp-nav" @click="prevMonth">
+            <ChevronLeft :size="16" />
+          </button>
           <span class="dp-month-label">{{ viewMonthLabel }}</span>
-          <button type="button" class="dp-nav" @click="nextMonth"><ChevronRight :size="16" /></button>
+          <button type="button" class="dp-nav" @click="nextMonth">
+            <ChevronRight :size="16" />
+          </button>
         </div>
         <div class="dp-weekdays">
           <span v-for="w in weekHeaders" :key="w" class="dp-weekday">{{ w }}</span>
@@ -368,7 +396,9 @@ onUnmounted(() => document.removeEventListener("mousedown", handleClickOutside))
 
 .dp-fade-enter-active,
 .dp-fade-leave-active {
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 
 .dp-fade-enter-from,

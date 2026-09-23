@@ -12,7 +12,7 @@
  *   <option v-for="o in options" :key="o" :value="o">{{ o }}</option>
  * </Select>
  */
-import { ref, computed, useSlots, onMounted, onUnmounted, type VNode } from "vue";
+import { ref, computed, useId, useSlots, onMounted, onUnmounted, type VNode } from "vue";
 import { ChevronDown } from "lucide-vue-next";
 
 interface SelectOption {
@@ -56,9 +56,12 @@ const open = ref(false);
 const rootRef = ref<HTMLElement | null>(null);
 /** 键盘导航高亮索引（M17） */
 const highlightIndex = ref(-1);
-/** 实例唯一 ID（用于 aria-controls / aria-activedescendant 关联） */
-let uidCounter = 0;
-const uid = `select-${++uidCounter}`;
+/** 实例唯一 ID（用于 aria-controls / aria-activedescendant 关联）
+ *
+ * 用 Vue 3.5 的 `useId()`（每个组件实例唯一）而非模块级计数器：
+ * 模块级变量在同页多个 Select 之间会得到同一个 id，导致 DOM id 重复。
+ */
+const uid = `select-${useId()}`;
 
 /** 提取 option 子节点的纯文本 */
 function extractText(children: unknown): string {
@@ -68,13 +71,22 @@ function extractText(children: unknown): string {
   return "";
 }
 
+/** vnode 类型名：原生标签（option/optgroup）的 type 是字符串，组件对象上带 `name` */
+function vnodeTypeName(type: VNode["type"]): string {
+  if (type && typeof type === "object" && "name" in type) {
+    const name = (type as { name?: unknown }).name;
+    return typeof name === "string" ? name : "";
+  }
+  return "";
+}
+
 /** 从默认插槽的 <option>/<optgroup> vnodes 提取选项列表，保持与原生 select 用法完全一致 */
 const options = computed<SelectOption[]>(() => {
   const nodes = slots.default?.() ?? [];
   const result: SelectOption[] = [];
   const walk = (list: VNode[], group?: string) => {
     for (const n of list) {
-      const isOption = n.type === "option" || (n.type as any)?.name === "option";
+      const isOption = n.type === "option" || vnodeTypeName(n.type) === "option";
       if (isOption) {
         result.push({
           value: String((n.props as Record<string, unknown>)?.value ?? ""),
@@ -83,11 +95,16 @@ const options = computed<SelectOption[]>(() => {
           disabled: !!(n.props as Record<string, unknown>)?.disabled,
         });
       } else if (n.children && typeof n.children === "object") {
-        const childArr = Array.isArray(n.children) ? (n.children as VNode[]) : [(n.children as any) as VNode];
+        const childArr = Array.isArray(n.children)
+          ? (n.children as VNode[])
+          : [n.children as unknown as VNode];
         // optgroup：取 label 作为分组名，组内 option 继续提取
-        const isGroup = n.type === "optgroup" || (n.type as any)?.name === "optgroup";
+        const isGroup = n.type === "optgroup" || vnodeTypeName(n.type) === "optgroup";
         const g = isGroup ? String((n.props as Record<string, unknown>)?.label ?? "") : group;
-        walk(childArr.filter((c) => c && typeof c === "object"), g);
+        walk(
+          childArr.filter((c) => c && typeof c === "object"),
+          g
+        );
       }
     }
   };
@@ -96,18 +113,20 @@ const options = computed<SelectOption[]>(() => {
 });
 
 /** 按 optgroup 分组后的选项（保持原始顺序，连续同组合并）；条目带扁平下标供面板渲染定位 */
-const groupedOptions = computed<{ group: string; items: (SelectOption & { _idx: number })[] }[]>(() => {
-  const res: { group: string; items: (SelectOption & { _idx: number })[] }[] = [];
-  let idx = 0;
-  for (const o of options.value) {
-    const item = { ...o, _idx: idx++ };
-    const key = o.group ?? "";
-    const last = res[res.length - 1];
-    if (last && last.group === key) last.items.push(item);
-    else res.push({ group: key, items: [item] });
+const groupedOptions = computed<{ group: string; items: (SelectOption & { _idx: number })[] }[]>(
+  () => {
+    const res: { group: string; items: (SelectOption & { _idx: number })[] }[] = [];
+    let idx = 0;
+    for (const o of options.value) {
+      const item = { ...o, _idx: idx++ };
+      const key = o.group ?? "";
+      const last = res[res.length - 1];
+      if (last && last.group === key) last.items.push(item);
+      else res.push({ group: key, items: [item] });
+    }
+    return res;
   }
-  return res;
-});
+);
 
 const currentKey = computed(() => String(props.modelValue ?? ""));
 
@@ -122,8 +141,7 @@ function openPanel() {
   // 打开时高亮当前选中项，无选中则高亮第一个可用项
   const current = currentKey.value;
   const idx = options.value.findIndex((o) => o.value === current && !o.disabled);
-  highlightIndex.value =
-    idx >= 0 ? idx : options.value.findIndex((o) => !o.disabled);
+  highlightIndex.value = idx >= 0 ? idx : options.value.findIndex((o) => !o.disabled);
 }
 
 function toggle() {
@@ -253,7 +271,9 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
       aria-haspopup="listbox"
       :aria-expanded="open"
       :aria-controls="`${uid}-panel`"
-      :aria-activedescendant="open && highlightIndex >= 0 ? `${uid}-opt-${highlightIndex}` : undefined"
+      :aria-activedescendant="
+        open && highlightIndex >= 0 ? `${uid}-opt-${highlightIndex}` : undefined
+      "
       @click="toggle"
       @keydown="onTriggerKeydown"
     >
@@ -279,7 +299,10 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
             :key="`${opt.value}-${opt._idx}`"
             type="button"
             class="select-option"
-            :class="{ selected: opt.value === currentKey, highlighted: highlightIndex === opt._idx }"
+            :class="{
+              selected: opt.value === currentKey,
+              highlighted: highlightIndex === opt._idx,
+            }"
             :disabled="opt.disabled"
             role="option"
             :aria-selected="opt.value === currentKey"
@@ -322,7 +345,9 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
   background: var(--bg-elevated);
   color: var(--text-primary);
   cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .select-trigger:hover:not(:disabled) {
@@ -380,7 +405,9 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
   text-align: left;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .select-option:hover:not(:disabled) {
@@ -433,7 +460,9 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
 /* 弹出动画（对齐 DatePicker / TimePicker） */
 .select-pop-enter-active,
 .select-pop-leave-active {
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .select-pop-enter-from,

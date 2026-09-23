@@ -17,7 +17,7 @@ export const useAnalyticsStore = defineStore("analytics", () => {
 
   async function load(
     range: AnalyticsRange = currentRange.value,
-    exclude: boolean = excludeExemptDates.value,
+    exclude: boolean = excludeExemptDates.value
   ) {
     loading.value = true;
     error.value = null;

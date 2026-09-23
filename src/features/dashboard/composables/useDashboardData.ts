@@ -108,7 +108,9 @@ export function useDashboardData() {
 
   const todayExcludedReasonLabel = computed(() => {
     if (!todayExcludedReason.value) return "今日为特殊情况排除日，不生成学习计划。";
-    const label = { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[todayExcludedReason.value];
+    const label = { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[
+      todayExcludedReason.value
+    ];
     return todayExcludedNote.value ? `${label}（${todayExcludedNote.value}）` : label;
   });
 

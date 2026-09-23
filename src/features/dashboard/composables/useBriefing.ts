@@ -20,12 +20,16 @@ export function useBriefing() {
 
   const briefing = computed<BriefingFile | null>(() => briefingResult.value?.briefing ?? null);
   const briefingExists = computed(() => briefingResult.value?.exists ?? false);
-  const yesterdayReviewExists = computed(() => briefingResult.value?.yesterday_review_exists ?? false);
+  const yesterdayReviewExists = computed(
+    () => briefingResult.value?.yesterday_review_exists ?? false
+  );
   const yesterdayExempt = computed(() => briefingResult.value?.yesterday_exempt ?? false);
   const withinMakeupWindow = computed(() => briefingResult.value?.within_makeup_window ?? false);
 
   // 昨日复盘缺失且非豁免：需提示用户先去复盘
-  const needYesterdayReview = computed(() => !yesterdayReviewExists.value && !yesterdayExempt.value);
+  const needYesterdayReview = computed(
+    () => !yesterdayReviewExists.value && !yesterdayExempt.value
+  );
 
   // 昨日复盘摘要（侧栏数据）
   const gate = useYesterdayReviewGate(todayDateStr);

@@ -61,7 +61,8 @@ const GRANULARITY_OPTIONS = [
         />
         <p class="field-hint">
           当前目标学时 {{ form.daily_target_hours }}h ÷ 粒度 {{ form.standard_granularity }}h/条 ≈
-          {{ derivedTaskCount }} 个任务（每科至少一条；未开始的科目不安排。后端会按上周完成率自校准，实际条数可能略有出入）
+          {{ derivedTaskCount }}
+          个任务（每科至少一条；未开始的科目不安排。后端会按上周完成率自校准，实际条数可能略有出入）
         </p>
       </div>
       <div class="form-field">
@@ -96,7 +97,9 @@ const GRANULARITY_OPTIONS = [
             只推进新知识点
           </button>
         </div>
-        <p class="field-hint">关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。</p>
+        <p class="field-hint">
+          关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。
+        </p>
       </div>
       <div class="form-field form-field-full">
         <label class="form-label">记录学习时长</label>
@@ -118,7 +121,9 @@ const GRANULARITY_OPTIONS = [
             不开启（默认）
           </button>
         </div>
-        <p class="field-hint">开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。</p>
+        <p class="field-hint">
+          开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。
+        </p>
       </div>
       <div class="form-field form-field-full">
         <label class="form-label">
@@ -143,7 +148,9 @@ const GRANULARITY_OPTIONS = [
             <DatePicker v-model="form.subject_start_dates.professional" placeholder="立即开始" />
           </div>
         </div>
-        <p class="field-hint">例如政治计划 8 月中旬开始，可将政治开始日期设为 2026-08-15，此前不会安排政治任务。</p>
+        <p class="field-hint">
+          例如政治计划 8 月中旬开始，可将政治开始日期设为 2026-08-15，此前不会安排政治任务。
+        </p>
       </div>
     </div>
   </Card>

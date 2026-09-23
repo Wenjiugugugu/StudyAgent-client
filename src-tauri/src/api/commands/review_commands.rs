@@ -216,6 +216,7 @@ pub async fn submit_review(
                 crate::data::plan::DAILY_PLAN_FILE_SUFFIX
             ),
             generated_at: now,
+            default_marked: false,
         },
         data: crate::data::records::ReviewData {
             total_hours: total_actual_hours,

@@ -14,7 +14,9 @@ export function useYesterdayReviewGate(todayDateStr: string) {
   const yesterdayDateStr = computed(() => prevDateString(todayDateStr));
   const yesterdayReviewData = ref<ReviewFile | null>(null);
 
-  const yesterdayCompletionRate = computed(() => completionRateFromReview(yesterdayReviewData.value));
+  const yesterdayCompletionRate = computed(() =>
+    completionRateFromReview(yesterdayReviewData.value)
+  );
 
   const yesterdayFeeling = computed(() => {
     const f = yesterdayReviewData.value?.daily_review?.overall_feeling;

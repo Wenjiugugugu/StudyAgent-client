@@ -49,24 +49,14 @@ fn priority_value(p: &TaskPriority) -> i32 {
     }
 }
 
-/// 学科 → 滴答学科标签（固定词表，仅用于筛选与统计）
-fn subject_tag(s: &SubjectKey) -> String {
-    match s {
-        SubjectKey::Math => "数学".to_string(),
-        SubjectKey::English => "英语".to_string(),
-        SubjectKey::Politics => "政治".to_string(),
-        SubjectKey::Professional => "专业课".to_string(),
-    }
-}
-
 /// 为计划任务生成滴答标签集合（仅两类：科目前置、来源标记在后）
 fn make_tags(s: &SubjectKey) -> Vec<String> {
-    vec![subject_tag(s), SOURCE_TAG.to_string()]
+    vec![s.label().to_string(), SOURCE_TAG.to_string()]
 }
 
 /// 任务写入滴答的标题：`[科目] 原标题`（如 `[数学] 刷高数第3章习题`）
 fn task_title(subject: &SubjectKey, title: &str) -> String {
-    format!("[{}] {}", subject_tag(subject), title.trim())
+    format!("[{}] {}", subject.label(), title.trim())
 }
 
 /// 还原滴答标题为计划原标题：去掉学科前缀（`[数学] ` 等）与旧版优先级前缀（`[A] ` / `[B] ` / `[C] `）

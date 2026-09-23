@@ -14,7 +14,14 @@ import type { ThemeMode, VisualMode, SidebarStyle } from "@/types";
 
 export function useAppearanceSettings() {
   const settingsStore = useSettingsStore();
-  const { setTheme, setVisualMode, setAccentColor, setBackgroundImage, setBackgroundBlur, setBackgroundOpacity } = useTheme();
+  const {
+    setTheme,
+    setVisualMode,
+    setAccentColor,
+    setBackgroundImage,
+    setBackgroundBlur,
+    setBackgroundOpacity,
+  } = useTheme();
 
   // ── 主题 ──
   const themeOptions: { mode: ThemeMode; label: string; icon: Component }[] = [
@@ -38,7 +45,12 @@ export function useAppearanceSettings() {
   }
 
   // ── 侧边栏样式 ──
-  const sidebarStyleOptions: { style: SidebarStyle; label: string; desc: string; icon: Component }[] = [
+  const sidebarStyleOptions: {
+    style: SidebarStyle;
+    label: string;
+    desc: string;
+    icon: Component;
+  }[] = [
     { style: "full", label: "落地式", desc: "占满整列，经典形态", icon: PanelLeft },
     { style: "floating", label: "悬浮岛式", desc: "四边留白圆角面板", icon: Box },
   ];

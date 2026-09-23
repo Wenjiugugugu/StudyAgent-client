@@ -109,7 +109,9 @@ function onInput(e: Event) {
   border-radius: var(--radius-xs);
   background: var(--bg-elevated);
   color: var(--text-on-accent);
-  transition: border-color var(--transition-fast), background var(--transition-fast),
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast),
     box-shadow var(--transition-fast);
 }
 

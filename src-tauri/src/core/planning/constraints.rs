@@ -1,7 +1,8 @@
 //! Deterministic calendar and plan constraints.
 
+use crate::core::date_utils::{add_days, today_string, weekday_name};
 use crate::data::plan::{ExcludedDay, WeekDayPlan, WeekPlanFile};
-use crate::data::{add_days, today_string, weekday_name, DataResult};
+use crate::data::DataResult;
 
 pub(crate) fn enforce_rest_days(
     plan: &mut WeekPlanFile,

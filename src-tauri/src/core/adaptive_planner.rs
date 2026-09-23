@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::core::date_utils::get_week_end;
 use crate::data::plan::{self, WorkloadAdjustment};
 use crate::data::records::{self, ReviewFile, TaskReviewEntry};
 use crate::data::state::StudyState;
-use crate::data::{atomic_write, get_week_end, iso_week_string, read_file_content, DataResult};
+use crate::data::{atomic_write, iso_week_string, read_file_content, DataResult};
 use crate::AppSettings;
 
 const ADAPTIVE_DIR: &str = "adaptive";
@@ -239,8 +240,9 @@ struct SubjectAccumulator {
     blockers: HashMap<String, i32>,
 }
 
+/// 全部科目键（固定顺序）——真源为 `SubjectKey::ALL`
 fn subject_names() -> [&'static str; 4] {
-    ["math", "english", "politics", "professional"]
+    crate::data::state::SubjectKey::ALL.map(|key| key.key())
 }
 
 fn subject_cn(subject: &str) -> &'static str {

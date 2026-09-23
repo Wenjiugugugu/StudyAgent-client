@@ -10,7 +10,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,32 @@ pub fn parse_node_status(s: &str) -> NodeStatus {
     }
 }
 
+/// 返回某科当前生效的进度表。
+///
+/// 选择顺序统一为：`active_id` 精确命中 → `active_variant` 下第一张表 → 第一张表。
+/// 这样历史数据里 `active_id` 缺失或失效时，简报、计划和阶段判定仍使用同一口径。
+pub fn active_progress_table<'a>(
+    index: &'a ProgressIndex,
+    subject: &str,
+) -> Option<&'a ProgressTable> {
+    let set = index.subjects.get(subject)?;
+    if !set.active_id.is_empty() {
+        if let Some(table) = set.tables.iter().find(|table| table.id == set.active_id) {
+            return Some(table);
+        }
+    }
+    if !set.active_variant.is_empty() {
+        if let Some(table) = set
+            .tables
+            .iter()
+            .find(|table| table.variant == set.active_variant)
+        {
+            return Some(table);
+        }
+    }
+    set.tables.first()
+}
+
 /// 该科启用进度表是否「基础已学完」——知识点全部达「基础」及以上（无待学节点）。
 ///
 /// 口径与 `planner::progress_estimate_prompt_block` 的「已学空」分支一致：
@@ -95,18 +121,7 @@ pub fn active_table_basics_done(
     index: &crate::data::progress_tables::ProgressIndex,
     subject: &str,
 ) -> bool {
-    let Some(set) = index.subjects.get(subject) else {
-        return false;
-    };
-    let active_id = if set.active_id.is_empty() {
-        match set.tables.first() {
-            Some(t) => t.id.clone(),
-            None => return false,
-        }
-    } else {
-        set.active_id.clone()
-    };
-    let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+    let Some(table) = active_progress_table(index, subject) else {
         return false;
     };
     let mut knowledge = 0usize;
@@ -120,6 +135,36 @@ pub fn active_table_basics_done(
         }
     }
     knowledge > 0
+}
+
+/// 当某科启用进度表的知识点全部达到「基础」及以上时，将 State 中该科阶段从
+/// `foundation` 自动提升为 `strengthen`。只做单向提升，不覆盖用户已设置的冲刺、
+/// 模考或完成阶段。
+fn promote_completed_subject_phases(data_dir: &Path, index: &ProgressIndex) -> DataResult<usize> {
+    use crate::data::state::{
+        read_state, save_state, StudyPhase, SubjectKey, STATE_DIR, STATE_FILE_NAME,
+    };
+
+    let state_path = data_dir.join(STATE_DIR).join(STATE_FILE_NAME);
+    if !state_path.exists() {
+        return Ok(0);
+    }
+
+    let mut state = read_state(data_dir)?;
+    let mut changed = 0usize;
+    for subject in SubjectKey::ALL {
+        if subject.state(&state).phase == StudyPhase::Foundation
+            && active_table_basics_done(index, subject.key())
+        {
+            subject.state_mut(&mut state).phase = StudyPhase::Strengthen;
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        state.meta.last_updated = crate::core::date_utils::now_string();
+        save_state(data_dir, &state)?;
+    }
+    Ok(changed)
 }
 
 /// 节点级别：章节 / 知识点（默认知识点，兼容旧数据）
@@ -279,6 +324,9 @@ fn repair_progress_index(index: &mut ProgressIndex) -> bool {
             if repair_table_ids(table) {
                 repaired = true;
             }
+            if repair_table_parent_ids(table) {
+                repaired = true;
+            }
         }
     }
     repaired
@@ -341,12 +389,81 @@ fn repair_table_ids(table: &mut ProgressTable) -> bool {
     true
 }
 
+/// 修复知识点缺失或失效的章节归属。
+///
+/// 旧版进度表可能只保存了知识点的 `phase`，没有正确写入 `parent_id`；
+/// 也可能在章节 id 重建后仍保留旧的 parent id。复盘页和进度页都依赖
+/// `parent_id` 展开章节，因此这里按「知识点 phase = 章节标题」补齐归属。
+/// 无法唯一匹配时保留孤儿节点，避免把知识点错误挂到相似章节下。
+fn repair_table_parent_ids(table: &mut ProgressTable) -> bool {
+    let chapter_ids: HashSet<String> = table
+        .nodes
+        .iter()
+        .filter(|node| node.level == NodeLevel::Chapter)
+        .map(|node| node.id.clone())
+        .collect();
+
+    let mut chapter_by_title: HashMap<String, Option<String>> = HashMap::new();
+    for chapter in table
+        .nodes
+        .iter()
+        .filter(|node| node.level == NodeLevel::Chapter)
+    {
+        let title = chapter.title.trim();
+        if title.is_empty() {
+            continue;
+        }
+        match chapter_by_title.entry(title.to_string()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(Some(chapter.id.clone()));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                // 重复章节标题无法安全判断归属，标记为歧义并保留孤儿节点。
+                entry.insert(None);
+            }
+        }
+    }
+
+    let mut repaired = false;
+    for node in &mut table.nodes {
+        if node.level == NodeLevel::Chapter {
+            if node.parent_id.take().is_some() {
+                repaired = true;
+            }
+            continue;
+        }
+
+        if node
+            .parent_id
+            .as_ref()
+            .is_some_and(|parent_id| chapter_ids.contains(parent_id))
+        {
+            continue;
+        }
+
+        let phase = node.phase.trim();
+        let Some(Some(chapter_id)) = chapter_by_title.get(phase) else {
+            continue;
+        };
+        if node.parent_id.as_deref() != Some(chapter_id.as_str()) {
+            node.parent_id = Some(chapter_id.clone());
+            repaired = true;
+        }
+    }
+    repaired
+}
+
 /// 保存索引
 pub fn save_progress_index(data_dir: &Path, index: &ProgressIndex) -> DataResult<()> {
     let path = progress_index_path(data_dir);
     let json =
         serde_json::to_string_pretty(index).map_err(|e| format!("序列化进度表索引失败: {}", e))?;
-    atomic_write(&path, &json)
+    atomic_write(&path, &json)?;
+    if let Err(e) = promote_completed_subject_phases(data_dir, index) {
+        // 进度表已成功保存，State 联动失败不应让调用方误以为进度写入失败；保留日志供诊断。
+        log::warn!("进度表已保存，但自动推进学习阶段失败: {}", e);
+    }
+    Ok(())
 }
 
 /// 进程内全局递增计数器：保证同一毫秒内生成的 id 也互不冲突
@@ -519,6 +636,132 @@ mod tests {
         assert_eq!(table.nodes[1].id, "n1");
     }
 
+    #[test]
+    fn repair_parent_ids_from_phase_when_missing_or_stale() {
+        let mut table = ProgressTable {
+            id: "t3".to_string(),
+            subject: "math".to_string(),
+            variant: "数二".to_string(),
+            name: "旧数据表".to_string(),
+            origin: TableOrigin::Builtin,
+            created_at: String::new(),
+            updated_at: String::new(),
+            nodes: vec![
+                ProgressNode {
+                    id: "c1".to_string(),
+                    title: "高数".to_string(),
+                    level: NodeLevel::Chapter,
+                    parent_id: None,
+                    phase: "高数".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+                ProgressNode {
+                    id: "c2".to_string(),
+                    title: "线代".to_string(),
+                    level: NodeLevel::Chapter,
+                    parent_id: None,
+                    phase: "线代".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+                ProgressNode {
+                    id: "n1".to_string(),
+                    title: "极限".to_string(),
+                    level: NodeLevel::Knowledge,
+                    parent_id: None,
+                    phase: "高数".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+                ProgressNode {
+                    id: "n2".to_string(),
+                    title: "矩阵".to_string(),
+                    level: NodeLevel::Knowledge,
+                    parent_id: Some("deleted-chapter".to_string()),
+                    phase: "线代".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+            ],
+        };
+
+        assert!(repair_table_parent_ids(&mut table));
+        assert_eq!(table.nodes[2].parent_id.as_deref(), Some("c1"));
+        assert_eq!(table.nodes[3].parent_id.as_deref(), Some("c2"));
+    }
+
+    #[test]
+    fn repair_parent_ids_keeps_valid_parent_and_rejects_ambiguous_phase() {
+        let mut table = ProgressTable {
+            id: "t4".to_string(),
+            subject: "math".to_string(),
+            variant: "数二".to_string(),
+            name: "边界数据表".to_string(),
+            origin: TableOrigin::Custom,
+            created_at: String::new(),
+            updated_at: String::new(),
+            nodes: vec![
+                ProgressNode {
+                    id: "c1".to_string(),
+                    title: "重复章节".to_string(),
+                    level: NodeLevel::Chapter,
+                    parent_id: None,
+                    phase: "重复章节".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+                ProgressNode {
+                    id: "c2".to_string(),
+                    title: "重复章节".to_string(),
+                    level: NodeLevel::Chapter,
+                    parent_id: None,
+                    phase: "重复章节".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+                ProgressNode {
+                    id: "n1".to_string(),
+                    title: "已有归属".to_string(),
+                    level: NodeLevel::Knowledge,
+                    parent_id: Some("c2".to_string()),
+                    phase: "重复章节".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+                ProgressNode {
+                    id: "n2".to_string(),
+                    title: "无法归属".to_string(),
+                    level: NodeLevel::Knowledge,
+                    parent_id: None,
+                    phase: "不存在章节".to_string(),
+                    status: NodeStatus::Pending,
+                    planned_date: None,
+                    note: String::new(),
+                    estimated_hours: None,
+                },
+            ],
+        };
+
+        assert!(!repair_table_parent_ids(&mut table));
+        assert_eq!(table.nodes[2].parent_id.as_deref(), Some("c2"));
+        assert!(table.nodes[3].parent_id.is_none());
+    }
+
     fn knowledge(id: &str, status: NodeStatus) -> ProgressNode {
         ProgressNode {
             id: id.to_string(),
@@ -607,5 +850,52 @@ mod tests {
         let mut index = index_with(vec![chapter]);
         index.subjects.get_mut("math").unwrap().active_id = "missing".to_string();
         assert!(!active_table_basics_done(&index, "math"));
+    }
+
+    #[test]
+    fn active_table_falls_back_to_active_variant_when_id_is_stale() {
+        let mut index = index_with(vec![knowledge("n1", NodeStatus::Basic)]);
+        let set = index.subjects.get_mut("math").unwrap();
+        set.active_id = "missing".to_string();
+        assert_eq!(
+            active_progress_table(&index, "math").map(|table| table.id.as_str()),
+            Some("t1")
+        );
+        assert!(active_table_basics_done(&index, "math"));
+    }
+
+    #[test]
+    fn saving_completed_active_table_promotes_foundation_phase() {
+        use crate::data::state::{read_state, save_state, StudyPhase, StudyState};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent_progress_phase_test_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(dir.join("state")).unwrap();
+        std::fs::create_dir_all(dir.join("progress_tables")).unwrap();
+
+        let mut state = StudyState::default();
+        state.subjects.math.active = true;
+        state.subjects.math.phase = StudyPhase::Foundation;
+        state.subjects.english.phase = StudyPhase::Sprint;
+        save_state(&dir, &state).unwrap();
+
+        let index = index_with(vec![
+            knowledge("n1", NodeStatus::Basic),
+            knowledge("n2", NodeStatus::Reinforcing),
+        ]);
+        save_progress_index(&dir, &index).unwrap();
+
+        let updated = read_state(&dir).unwrap();
+        assert_eq!(updated.subjects.math.phase, StudyPhase::Strengthen);
+        assert_eq!(updated.subjects.english.phase, StudyPhase::Sprint);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

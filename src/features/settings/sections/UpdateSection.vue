@@ -5,7 +5,14 @@ import Button from "@/components/ui/Button.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import { useUpdateStore } from "@/stores/update";
 import { useAppVersion } from "@/version";
-import { RefreshCw, AlertCircle, CheckCircle, Download, Package, HardDriveDownload } from "lucide-vue-next";
+import {
+  RefreshCw,
+  AlertCircle,
+  CheckCircle,
+  Download,
+  Package,
+  HardDriveDownload,
+} from "lucide-vue-next";
 
 const updateStore = useUpdateStore();
 const { version } = useAppVersion();
@@ -19,7 +26,9 @@ const downloadProgress = computed(() => updateStore.downloadProgress);
 const downloadError = computed(() => updateStore.downloadError);
 const selectedAsset = computed({
   get: () => updateStore.selectedAsset,
-  set: (v) => { updateStore.selectedAsset = v; },
+  set: (v) => {
+    updateStore.selectedAsset = v;
+  },
 });
 const installing = computed(() => updateStore.installing);
 
@@ -48,18 +57,11 @@ const resetUpdate = () => updateStore.resetUpdate();
 
     <!-- 初始状态：检查按钮 -->
     <div v-if="!updateResult && !checking && !updateError" class="update-idle">
-      <Button
-        variant="primary"
-        size="md"
-        :loading="checking"
-        @click="handleCheckUpdate"
-      >
+      <Button variant="primary" size="md" :loading="checking" @click="handleCheckUpdate">
         <RefreshCw :size="14" />
         <span>检查更新</span>
       </Button>
-      <p class="field-hint">
-        点击检查是否有新版本，发现新版本后可在应用内下载并安装
-      </p>
+      <p class="field-hint">点击检查是否有新版本，发现新版本后可在应用内下载并安装</p>
     </div>
 
     <!-- 检查中 -->
@@ -105,7 +107,7 @@ const resetUpdate = () => updateStore.resetUpdate();
         <div v-if="updateResult.published_at" class="update-info-row">
           <span class="info-label">发布时间</span>
           <span class="info-value text-mono">
-            {{ updateResult.published_at.replace('T', ' ').replace('Z', ' UTC') }}
+            {{ updateResult.published_at.replace("T", " ").replace("Z", " UTC") }}
           </span>
         </div>
       </div>
@@ -113,7 +115,9 @@ const resetUpdate = () => updateStore.resetUpdate();
       <!-- Release notes -->
       <div v-if="updateResult.release_notes" class="release-notes-block">
         <div class="release-notes-head">更新说明</div>
-        <div class="release-notes-content"><MarkdownText :content="updateResult.release_notes" /></div>
+        <div class="release-notes-content">
+          <MarkdownText :content="updateResult.release_notes" />
+        </div>
       </div>
 
       <!-- 安装包选择 -->
@@ -135,16 +139,18 @@ const resetUpdate = () => updateStore.resetUpdate();
       </div>
 
       <!-- 下载进度 -->
-      <div v-if="downloadState === 'downloading' && downloadProgress" class="download-progress-block">
+      <div
+        v-if="downloadState === 'downloading' && downloadProgress"
+        class="download-progress-block"
+      >
         <div class="progress-head">
-          <span class="progress-label">正在下载{{ selectedAsset ? assetLabel(selectedAsset.kind) : '安装包' }}</span>
+          <span class="progress-label"
+            >正在下载{{ selectedAsset ? assetLabel(selectedAsset.kind) : "安装包" }}</span
+          >
           <span class="progress-percent">{{ downloadProgress.percent.toFixed(1) }}%</span>
         </div>
         <div class="progress-bar-track">
-          <div
-            class="progress-bar-fill"
-            :style="{ width: `${downloadProgress.percent}%` }"
-          ></div>
+          <div class="progress-bar-fill" :style="{ width: `${downloadProgress.percent}%` }"></div>
         </div>
         <div class="progress-detail">
           <span>{{ formatSize(downloadProgress.downloaded) }}</span>
@@ -192,12 +198,7 @@ const resetUpdate = () => updateStore.resetUpdate();
           <HardDriveDownload :size="14" />
           <span>立即安装</span>
         </Button>
-        <Button
-          v-if="downloadState === 'downloading'"
-          variant="secondary"
-          size="md"
-          disabled
-        >
+        <Button v-if="downloadState === 'downloading'" variant="secondary" size="md" disabled>
           <span>下载中...</span>
         </Button>
         <Button variant="ghost" size="md" @click="resetUpdate">

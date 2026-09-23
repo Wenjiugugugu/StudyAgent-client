@@ -112,9 +112,11 @@ watch(
     if (typeof document === "undefined") return;
     document.body.style.overflow = v ? "hidden" : "";
     if (v) {
-      previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      previouslyFocused =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
       nextTick(() => {
-        const target = dialogRef.value?.querySelector<HTMLElement>(focusableSelector) ?? dialogRef.value;
+        const target =
+          dialogRef.value?.querySelector<HTMLElement>(focusableSelector) ?? dialogRef.value;
         target?.focus();
       });
     } else {
@@ -140,7 +142,13 @@ watch(
       >
         <header v-if="title || showClose" class="modal-header">
           <h3 :id="titleId" class="modal-title">{{ title }}</h3>
-          <button v-if="showClose" class="modal-close" type="button" @click="close" aria-label="关闭">
+          <button
+            v-if="showClose"
+            class="modal-close"
+            type="button"
+            @click="close"
+            aria-label="关闭"
+          >
             <X :size="16" />
           </button>
         </header>
@@ -209,7 +217,9 @@ watch(
   color: var(--text-tertiary);
   cursor: pointer;
   border-radius: var(--radius-sm);
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .modal-close:hover {
@@ -240,7 +250,9 @@ watch(
 
 .modal-fade-enter-active .modal-dialog,
 .modal-fade-leave-active .modal-dialog {
-  transition: transform var(--transition-fast), opacity var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 .modal-fade-enter-from,

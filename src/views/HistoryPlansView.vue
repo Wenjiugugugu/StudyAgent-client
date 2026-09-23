@@ -170,7 +170,11 @@ function excludedDescription(item: PlanSummary): string {
  *  - 已复盘：显示完成率
  *  - 未复盘且日期在今天及之前：显示「未复盘」（danger 样式）
  *  - 未复盘且日期在今天之后：显示「未开始」（neutral 样式） */
-function reviewStatus(dateStr: string, hasReview: boolean, rate: number): { text: string; cls: string } {
+function reviewStatus(
+  dateStr: string,
+  hasReview: boolean,
+  rate: number
+): { text: string; cls: string } {
   if (hasReview) {
     return { text: `${Math.round(rate)}%`, cls: completionVariant(rate) };
   }
@@ -211,12 +215,14 @@ onMounted(() => {
           <p class="page-subtitle">浏览并查看以往生成的学习计划</p>
         </div>
       </div>
-      <Button variant="ghost" size="sm" :loading="loading" @click="load">
-        刷新
-      </Button>
+      <Button variant="ghost" size="sm" :loading="loading" @click="load"> 刷新 </Button>
     </div>
 
-    <LoadingSpinner v-if="loading && groupedSummaries.length === 0" :size="32" label="加载历史计划…" />
+    <LoadingSpinner
+      v-if="loading && groupedSummaries.length === 0"
+      :size="32"
+      label="加载历史计划…"
+    />
 
     <EmptyState
       v-else-if="groupedSummaries.length === 0"
@@ -224,9 +230,7 @@ onMounted(() => {
       :description="error || '生成计划后将在这里集中展示'"
     >
       <template #actions>
-        <Button variant="primary" @click="router.push({ name: 'plan' })">
-          去生成计划
-        </Button>
+        <Button variant="primary" @click="router.push({ name: 'plan' })"> 去生成计划 </Button>
       </template>
     </EmptyState>
 
@@ -242,11 +246,7 @@ onMounted(() => {
         </div>
 
         <div class="month-weeks">
-          <div
-            v-for="week in group.weeks"
-            :key="week.weekStart"
-            class="week-row"
-          >
+          <div v-for="week in group.weeks" :key="week.weekStart" class="week-row">
             <div class="date-grid">
               <template v-for="day in week.days" :key="day.date">
                 <button
@@ -257,8 +257,16 @@ onMounted(() => {
                     today: day.date === today,
                     rest: day.item.is_rest_day,
                     excluded: day.item.is_excluded && !day.item.is_rest_day,
-                    done: !day.item.is_rest_day && !day.item.is_excluded && day.item.has_review && day.item.completion_rate >= 100,
-                    pending: !day.item.is_rest_day && !day.item.is_excluded && day.item.has_review && day.item.completion_rate < 100,
+                    done:
+                      !day.item.is_rest_day &&
+                      !day.item.is_excluded &&
+                      day.item.has_review &&
+                      day.item.completion_rate >= 100,
+                    pending:
+                      !day.item.is_rest_day &&
+                      !day.item.is_excluded &&
+                      day.item.has_review &&
+                      day.item.completion_rate < 100,
                     padding: day.isPadding,
                   }"
                   :title="day.item.is_excluded ? excludedDescription(day.item) : undefined"
@@ -266,7 +274,12 @@ onMounted(() => {
                 >
                   <!-- 完成角标 -->
                   <span
-                    v-if="!day.item.is_rest_day && !day.item.is_excluded && day.item.has_review && day.item.completion_rate >= 100"
+                    v-if="
+                      !day.item.is_rest_day &&
+                      !day.item.is_excluded &&
+                      day.item.has_review &&
+                      day.item.completion_rate >= 100
+                    "
                     class="done-badge"
                   >
                     <CheckCircle2 :size="14" />
@@ -280,21 +293,36 @@ onMounted(() => {
                   <div class="date-stats">
                     <span v-if="day.item.is_rest_day" class="rest-badge">休息日</span>
                     <template v-else-if="day.item.is_excluded">
-                      <span class="excluded-badge">{{ excludedTypeLabel(day.item.excluded_type) }}</span>
-                      <span v-if="day.item.excluded_note?.trim()" class="excluded-note">{{ day.item.excluded_note }}</span>
+                      <span class="excluded-badge">{{
+                        excludedTypeLabel(day.item.excluded_type)
+                      }}</span>
+                      <span v-if="day.item.excluded_note?.trim()" class="excluded-note">{{
+                        day.item.excluded_note
+                      }}</span>
                     </template>
                     <template v-else>
                       <div class="stat-row">
                         <span
                           class="stat-value rate-text"
-                          :class="reviewStatus(day.date, day.item.has_review, day.item.completion_rate).cls"
+                          :class="
+                            reviewStatus(day.date, day.item.has_review, day.item.completion_rate)
+                              .cls
+                          "
                         >
-                          {{ reviewStatus(day.date, day.item.has_review, day.item.completion_rate).text }}
+                          {{
+                            reviewStatus(day.date, day.item.has_review, day.item.completion_rate)
+                              .text
+                          }}
                         </span>
+                        <span v-if="day.item.is_default_review" class="default-review-badge"
+                          >系统默认</span
+                        >
                       </div>
                       <div class="stat-row">
                         <Circle :size="11" class="stat-icon" />
-                        <span class="stat-value">{{ day.item.completed_tasks }}/{{ day.item.planned_tasks }}</span>
+                        <span class="stat-value"
+                          >{{ day.item.completed_tasks }}/{{ day.item.planned_tasks }}</span
+                        >
                       </div>
                       <div v-if="timeTrackingEnabled" class="stat-row">
                         <Clock :size="11" class="stat-icon" />
@@ -433,6 +461,18 @@ onMounted(() => {
 .date-cell-empty.today {
   border-color: var(--accent);
   background: var(--accent-subtle);
+}
+
+.default-review-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--color-warning);
+  background: var(--color-warning-subtle);
+  white-space: nowrap;
 }
 
 .empty-day {

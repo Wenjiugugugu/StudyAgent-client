@@ -23,7 +23,9 @@ export function statusLabel(status: TestStatus): string {
 }
 
 /** AI 调用状态 → Badge variant */
-export function aiCallStatusBadge(status: "pending" | "success" | "error"): "info" | "success" | "danger" {
+export function aiCallStatusBadge(
+  status: "pending" | "success" | "error"
+): "info" | "success" | "danger" {
   if (status === "success") return "success";
   if (status === "error") return "danger";
   return "info";

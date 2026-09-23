@@ -27,7 +27,7 @@ watch(
         contentBodyRef.value.scrollTop = 0;
       }
     });
-  },
+  }
 );
 
 /**
@@ -49,8 +49,10 @@ function generateLiquidGlassDisplacementMap() {
   const imgData = ctx.createImageData(W, H);
   const data = imgData.data;
   // 圆角矩形参数（归一化坐标 0~1）
-  const cx = 0.5, cy = 0.5;
-  const halfW = 0.44, halfH = 0.44;
+  const cx = 0.5,
+    cy = 0.5;
+  const halfW = 0.44,
+    halfH = 0.44;
   const cornerR = 0.14;
   const edgeBand = 0.1; // 只在轮廓附近折射，避免内容被拉伸
   const dispStrength = 18; // 轻微膨胀感，保持 iOS 风格的清晰度
@@ -79,14 +81,18 @@ function generateLiquidGlassDisplacementMap() {
       }
       // 法线方向（指向边缘外）：SDF 梯度近似
       const eps = 0.01;
-      const gx = (sdfAt(ix + eps, iy, halfW, halfH, cornerR) - sdfAt(ix - eps, iy, halfW, halfH, cornerR)) / (2 * eps);
-      const gy = (sdfAt(ix, iy + eps, halfW, halfH, cornerR) - sdfAt(ix, iy - eps, halfW, halfH, cornerR)) / (2 * eps);
+      const gx =
+        (sdfAt(ix + eps, iy, halfW, halfH, cornerR) - sdfAt(ix - eps, iy, halfW, halfH, cornerR)) /
+        (2 * eps);
+      const gy =
+        (sdfAt(ix, iy + eps, halfW, halfH, cornerR) - sdfAt(ix, iy - eps, halfW, halfH, cornerR)) /
+        (2 * eps);
       const len = Math.sqrt(gx * gx + gy * gy) || 1;
       // 位移沿法线方向（向内收缩 = 边缘透镜放大 = 膨胀感）
       const dx = (-gx / len) * disp * dispStrength;
       const dy = (-gy / len) * disp * dispStrength;
       const idx = (y * W + x) * 4;
-      data[idx] = Math.round(128 + dx);     // R → X 位移
+      data[idx] = Math.round(128 + dx); // R → X 位移
       data[idx + 1] = Math.round(128 + dy); // G → Y 位移
       data[idx + 2] = 0;
       data[idx + 3] = 255;
@@ -121,46 +127,104 @@ onMounted(() => {
     <!-- 液态玻璃 SVG 边缘折射 filter — 仅折射边缘，中间无变形 -->
     <svg class="liquid-glass-svg" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="lg-refract" x="-25%" y="-25%" width="150%" height="150%" filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-      <feImage id="lg-refract-map" x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="MAP" />
+        <filter
+          id="lg-refract"
+          x="-25%"
+          y="-25%"
+          width="150%"
+          height="150%"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          color-interpolation-filters="sRGB"
+        >
+          <feImage
+            id="lg-refract-map"
+            x="0"
+            y="0"
+            width="100%"
+            height="100%"
+            preserveAspectRatio="none"
+            result="MAP"
+          />
 
-      <!-- 边缘 mask：从位移图提取，只让边缘区域产生折射/色差 -->
-      <feColorMatrix in="MAP" type="matrix" values="0.3 0.3 0.3 0 0  0.3 0.3 0.3 0 0  0.3 0.3 0.3 0 0  0 0 0 1 0" result="EDGE_INTENSITY" />
-      <feComponentTransfer in="EDGE_INTENSITY" result="EDGE_MASK">
-        <feFuncA type="discrete" tableValues="0 0.35 1" />
-      </feComponentTransfer>
+          <!-- 边缘 mask：从位移图提取，只让边缘区域产生折射/色差 -->
+          <feColorMatrix
+            in="MAP"
+            type="matrix"
+            values="0.3 0.3 0.3 0 0  0.3 0.3 0.3 0 0  0.3 0.3 0.3 0 0  0 0 0 1 0"
+            result="EDGE_INTENSITY"
+          />
+          <feComponentTransfer in="EDGE_INTENSITY" result="EDGE_MASK">
+            <feFuncA type="discrete" tableValues="0 0.35 1" />
+          </feComponentTransfer>
 
-      <!-- Red 通道：位移最强 -->
-      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="18" xChannelSelector="R" yChannelSelector="G" result="RED_DISP" />
-      <feColorMatrix in="RED_DISP" type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="RED_CH" />
+          <!-- Red 通道：位移最强 -->
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="MAP"
+            scale="18"
+            xChannelSelector="R"
+            yChannelSelector="G"
+            result="RED_DISP"
+          />
+          <feColorMatrix
+            in="RED_DISP"
+            type="matrix"
+            values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+            result="RED_CH"
+          />
 
-      <!-- Green 通道：位移中等 -->
-      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="15" xChannelSelector="R" yChannelSelector="G" result="GREEN_DISP" />
-      <feColorMatrix in="GREEN_DISP" type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0" result="GREEN_CH" />
+          <!-- Green 通道：位移中等 -->
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="MAP"
+            scale="15"
+            xChannelSelector="R"
+            yChannelSelector="G"
+            result="GREEN_DISP"
+          />
+          <feColorMatrix
+            in="GREEN_DISP"
+            type="matrix"
+            values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0"
+            result="GREEN_CH"
+          />
 
-      <!-- Blue 通道：位移最弱 -->
-      <feDisplacementMap in="SourceGraphic" in2="MAP" scale="12" xChannelSelector="R" yChannelSelector="G" result="BLUE_DISP" />
-      <feColorMatrix in="BLUE_DISP" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="BLUE_CH" />
+          <!-- Blue 通道：位移最弱 -->
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="MAP"
+            scale="12"
+            xChannelSelector="R"
+            yChannelSelector="G"
+            result="BLUE_DISP"
+          />
+          <feColorMatrix
+            in="BLUE_DISP"
+            type="matrix"
+            values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0"
+            result="BLUE_CH"
+          />
 
-      <!-- RGB 通道以 screen 模式合并，产生边缘色差 -->
-      <feBlend in="GREEN_CH" in2="BLUE_CH" mode="screen" result="GB" />
-      <feBlend in="RED_CH" in2="GB" mode="screen" result="RGB_COMBINED" />
+          <!-- RGB 通道以 screen 模式合并，产生边缘色差 -->
+          <feBlend in="GREEN_CH" in2="BLUE_CH" mode="screen" result="GB" />
+          <feBlend in="RED_CH" in2="GB" mode="screen" result="RGB_COMBINED" />
 
-      <!-- 轻微柔化色差，避免生硬 -->
-      <feGaussianBlur in="RGB_COMBINED" stdDeviation="0.4" result="RGB_SOFT" />
+          <!-- 轻微柔化色差，避免生硬 -->
+          <feGaussianBlur in="RGB_COMBINED" stdDeviation="0.4" result="RGB_SOFT" />
 
-      <!-- 只保留边缘区域的色差 -->
-      <feComposite in="RGB_SOFT" in2="EDGE_MASK" operator="in" result="EDGE_COLOR" />
+          <!-- 只保留边缘区域的色差 -->
+          <feComposite in="RGB_SOFT" in2="EDGE_MASK" operator="in" result="EDGE_COLOR" />
 
-      <!-- 中间区域保持原始清晰 -->
-      <feComponentTransfer in="EDGE_MASK" result="INVERTED_MASK">
-        <feFuncA type="table" tableValues="1 0" />
-      </feComponentTransfer>
-      <feComposite in="SourceGraphic" in2="INVERTED_MASK" operator="in" result="CENTER_CLEAN" />
+          <!-- 中间区域保持原始清晰 -->
+          <feComponentTransfer in="EDGE_MASK" result="INVERTED_MASK">
+            <feFuncA type="table" tableValues="1 0" />
+          </feComponentTransfer>
+          <feComposite in="SourceGraphic" in2="INVERTED_MASK" operator="in" result="CENTER_CLEAN" />
 
-      <!-- 边缘色差 + 清晰中心 -->
-      <feComposite in="EDGE_COLOR" in2="CENTER_CLEAN" operator="over" />
-    </filter>
+          <!-- 边缘色差 + 清晰中心 -->
+          <feComposite in="EDGE_COLOR" in2="CENTER_CLEAN" operator="over" />
+        </filter>
       </defs>
     </svg>
     <div class="app-body">
@@ -179,10 +243,7 @@ onMounted(() => {
             <span v-if="isReserved" class="reserved-badge">预留</span>
           </div>
           <div class="header-right">
-            <TitleBar
-              ref="titleBarRef"
-              @update:is-maximized="isMaximized = $event"
-            />
+            <TitleBar ref="titleBarRef" @update:is-maximized="isMaximized = $event" />
           </div>
         </header>
 
@@ -229,7 +290,9 @@ onMounted(() => {
   opacity: var(--app-background-opacity, 1);
   /* 模糊时向外扩展避免边缘出现透明 */
   transform: scale(1.05);
-  transition: opacity 0.3s ease, filter 0.3s ease;
+  transition:
+    opacity 0.3s ease,
+    filter 0.3s ease;
 }
 
 /* 所有实际内容必须堆叠在背景层之上 */
@@ -341,8 +404,8 @@ onMounted(() => {
   height: var(--header-height);
 }
 /* 液态玻璃模式下，悬浮岛的顶部标题不再使用玻璃背景，保持干净 */
-[data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header,
-[data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header::before {
+[data-visual-mode="liquid-glass"] .app-layout.sidebar-floating .content-header,
+[data-visual-mode="liquid-glass"] .app-layout.sidebar-floating .content-header::before {
   background: transparent;
   border-bottom-color: transparent;
   box-shadow: none;
@@ -351,14 +414,15 @@ onMounted(() => {
 }
 /* 悬浮岛的窗口控件绝对定位上移到顶部时会溢出 content-header；液态玻璃的
    overflow:hidden 会裁掉其顶部区域，导致可操控范围变小。此处解除裁切。 */
-[data-visual-mode='liquid-glass'] .app-layout.sidebar-floating .content-header {
+[data-visual-mode="liquid-glass"] .app-layout.sidebar-floating .content-header {
   overflow: visible;
 }
 
 /* 页面切换过渡 — Apple motion curve */
 .view-fade-enter-active,
 .view-fade-leave-active {
-  transition: opacity 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+  transition:
+    opacity 0.25s cubic-bezier(0.32, 0.72, 0, 1),
     transform 0.25s cubic-bezier(0.32, 0.72, 0, 1);
 }
 

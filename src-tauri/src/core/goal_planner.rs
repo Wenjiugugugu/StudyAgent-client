@@ -16,30 +16,11 @@ use std::path::Path;
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::core::chapter_seq;
+use crate::core::date_utils::{add_days, day_diff, deadline_active_on};
 use crate::data::goal::{read_goals, save_goals, Goal};
 use crate::data::plan::PlanTask;
 use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
-use crate::data::{add_days, clean_ai_json, DataResult};
-
-/// 把 subject 转为设置/顺序表键
-pub fn subject_key_str(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "math",
-        SubjectKey::English => "english",
-        SubjectKey::Politics => "politics",
-        SubjectKey::Professional => "professional",
-    }
-}
-
-/// 科目显示名
-pub fn subject_display_name(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "数学",
-        SubjectKey::English => "英语",
-        SubjectKey::Politics => "政治",
-        SubjectKey::Professional => "专业课",
-    }
-}
+use crate::data::{clean_ai_json, DataResult};
 
 /// 去掉任务标题中的「（科目）」前缀，取回纯知识点名。
 ///
@@ -164,7 +145,7 @@ pub fn plan_goal_tasks_sync(
     let knowledge: Vec<String> = pos_slice
         .iter()
         .filter_map(|&p| {
-            chapter_seq::syllabus_points(subject_key_str(subject), version)
+            chapter_seq::syllabus_points(subject.key(), version)
                 .and_then(|seq| seq.get(p))
                 .map(|s| s.to_string())
         })
@@ -179,7 +160,7 @@ pub fn plan_goal_tasks_sync(
         .map(|(i, kp)| PlanTask {
             id: format!("{}-{:02}", date, i + 1),
             subject: subject.clone(),
-            title: format!("（{}）{}", subject_display_name(subject), kp),
+            title: format!("（{}）{}", subject.label(), kp),
             priority: TaskPriority::A,
             estimated_hours: granularity,
             goal: format!("推进至「{}」", kp),
@@ -216,7 +197,7 @@ pub async fn plan_goal_tasks(
     let mut tasks = plan_goal_tasks_sync(data_dir, goal, date, version)?;
     let subject = &goal.subject;
     // AI 估时（按知识点标题匹配叠加）
-    let prefix = format!("（{}）", subject_display_name(subject));
+    let prefix = format!("（{}）", subject.label());
     let knowledge: Vec<String> = tasks
         .iter()
         .map(|t| strip_subject_prefix(&t.title, &prefix).to_string())
@@ -259,7 +240,7 @@ async fn estimate_tasks_hours(
          每个知识点拆成一条任务。用户设置的任务粒度为 {:.2} 小时/条，单条估时请尽量贴近该粒度。\
          知识点：{}\n\
          只返回 JSON 数组，每项 {json_example},不要输出其他内容。",
-        subject_display_name(subject),
+        subject.label(),
         gran,
         points,
         json_example = r#"{"knowledge":"知识点原文","hours":数字}"#,
@@ -344,7 +325,7 @@ fn goal_extension_cap_date(extend_base: &str, cap_days: i64) -> Result<String, S
 ///
 /// 流水线（**顺序不可颠倒**）：
 /// 1. 终态短路：`completed`（`!active` 且 status != "expired"）→ 不动，返回 false。
-/// 2. **先顺延**：未达标（`deadline < today`，含已过期、deadline 为空）→ deadline 推进一步，
+/// 2. **先顺延**：未达标（`!deadline_active_on`，含已过期、deadline 为空）→ deadline 推进一步，
 ///    并把 `active`/`status` 拉回 "active"。
 ///    步长以**基准日** `extend_base` 为原点累计：deadline 落在 base+N 天，本次取 base+N+1。
 ///    因此「同一天多次复盘」最多推进到 base+1（再次进入时 deadline 已 == today，自然停下），
@@ -372,7 +353,7 @@ fn extend_goal_deadline_on_miss(
     // 步长以**基准日** `extend_base` 为原点累计：deadline 落在 base+N 天，本次即取 base+N+1。
     // 于是「同一天多次复盘」最多推进到 base+1，第二次进来 deadline 已 == today 便停下；
     // 「长期未复盘」也只推进一天，不会一次性补齐到 today。
-    if goal.deadline.is_empty() || goal.deadline.as_str() < today {
+    if !deadline_active_on(&goal.deadline, today) {
         let base = if extend_base.is_empty() {
             goal.deadline.as_str()
         } else {
@@ -418,17 +399,6 @@ fn extend_goal_deadline_on_miss(
     Ok(changed)
 }
 
-/// `to - from` 的天数差（from 晚于 to 时返回负数）；任一日期非法时返回 0。
-fn day_diff(from: &str, to: &str) -> i64 {
-    let (Ok(a), Ok(b)) = (
-        chrono::NaiveDate::parse_from_str(from, "%Y-%m-%d"),
-        chrono::NaiveDate::parse_from_str(to, "%Y-%m-%d"),
-    ) else {
-        return 0;
-    };
-    (b - a).num_days()
-}
-
 /// 复盘后双轨重排：根据复盘实际进度更新各截止日科目。
 ///
 /// - 汇总各科实际推进到的位置（overcompletion + task_reviews 中已完成任务标题定位取最大）。
@@ -461,7 +431,7 @@ pub fn replan_goals_after_review(
     let mut updated: HashMap<String, usize> = HashMap::new();
 
     for goal in file.data.goals.iter_mut() {
-        let key = subject_key_str(&goal.subject);
+        let key = goal.subject.key();
         let version = subject_version(state, key);
 
         // 已达标（completed）的条目终态，不再推进也不再顺延
@@ -506,7 +476,7 @@ pub fn replan_goals_after_review(
                     &format!(
                         "目标 {}（{}）截止日顺延失败: {}",
                         goal.id,
-                        subject_display_name(&goal.subject),
+                        goal.subject.label(),
                         e
                     ),
                 );
@@ -527,7 +497,7 @@ fn actual_progress_position(
     overcompletion: &[crate::data::records::OvercompletionEntry],
     task_reviews: &[crate::data::records::TaskReviewEntry],
 ) -> Option<usize> {
-    let key = subject_key_str(subject);
+    let key = subject.key();
     let mut max_pos: Option<usize> = None;
 
     // 计划外进度：明确的章节位置

@@ -1,7 +1,8 @@
 //! AI 计划响应解析。
 
+use crate::core::date_utils::now_string;
 use crate::data::plan::{BasedOn, WeekPlanFile};
-use crate::data::{clean_ai_json, now_string, DataResult};
+use crate::data::{clean_ai_json, DataResult};
 
 pub(crate) fn parse_week_plan_json(
     content: &str,

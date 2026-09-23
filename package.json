@@ -1,7 +1,7 @@
 {
   "name": "studyagent-desktop",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "StudyAgent Learning Workspace - 考研 AI 学习工作台",
   "scripts": {
@@ -12,8 +12,15 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "type-check": "vue-tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.{ts,vue,css}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,vue,css}\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "version:check": "node scripts/verify-version.mjs",
+    "ui:check": "node scripts/check-ui-components.mjs",
+    "check": "pnpm type-check && pnpm lint && pnpm format:check && pnpm test && pnpm version:check && pnpm ui:check && pnpm build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
@@ -35,12 +42,18 @@
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.2.0",
     "@tauri-apps/cli-win32-x64-msvc": "^2.11.4",
     "@vitejs/plugin-vue": "^5.2.1",
     "autoprefixer": "^10.4.20",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.11.0",
     "postcss": "^8.5.26",
+    "prettier": "^3.9.8",
     "typescript": "~5.7.3",
+    "typescript-eslint": "^8.70.0",
     "vite": "^6.1.0",
     "vitest": "^3.2.4",
     "vue-tsc": "^2.2.0"

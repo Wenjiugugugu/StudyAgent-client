@@ -67,8 +67,12 @@ const {
 // ── 左侧导航与区块滚动 ──
 const { navSections, activeSection, scrollToSection, initSectionObserver } = useSectionNavigation();
 
-onMounted(async () => {
-  await settingsStore.load();
+async function loadPage() {
+  try {
+    await settingsStore.load();
+  } catch {
+    return;
+  }
   syncFormFromStore();
   await loadStudyState();
   syncSavedSnapshot();
@@ -81,7 +85,9 @@ onMounted(async () => {
       void updateStore.checkUpdate();
     }, 200);
   }
-});
+}
+
+onMounted(loadPage);
 
 // 监听 hash 变化（已在设置页内时再次点击侧边栏版本号）
 watch(
@@ -102,6 +108,14 @@ watch(
       :size="28"
       label="加载设置..."
     />
+
+    <div v-else-if="settingsStore.error && !settingsStore.settings" class="settings-load-error">
+      <AlertCircle :size="28" />
+      <h2>无法读取设置</h2>
+      <p>{{ settingsStore.error }}</p>
+      <p>应用没有改用示例数据，也不会覆盖现有配置。请检查数据目录权限或恢复备份后重试。</p>
+      <Button variant="primary" @click="loadPage">重试</Button>
+    </div>
 
     <div v-else-if="settingsStore.settings && form" class="settings-container">
       <!-- 左侧快速导航栏 -->
@@ -140,7 +154,9 @@ watch(
           :study-state="studyState"
           :subject-active="subjectActive"
           :professional-name="professionalName"
-          :saved-allocation="settingsStore.settings?.study_schedule?.subject_time_allocation ?? null"
+          :saved-allocation="
+            settingsStore.settings?.study_schedule?.subject_time_allocation ?? null
+          "
         />
         <TextbooksSection
           :state-loading="stateLoading"
@@ -177,7 +193,7 @@ watch(
             :loading="saving"
             :disabled="!isStudyDaysValid || saving || savedFlash"
             class="save-btn"
-            :class="{ 'saved': savedFlash }"
+            :class="{ saved: savedFlash }"
             @click="handleSave"
           >
             <span class="save-btn-content">
@@ -204,12 +220,8 @@ watch(
         当前页面还有未保存的设置修改，离开后将丢失这些改动。确定要离开吗？
       </p>
       <template #footer>
-        <Button variant="ghost" size="md" @click="cancelLeave">
-          留在本页
-        </Button>
-        <Button variant="primary" size="md" @click="discardAndLeave">
-          放弃修改并离开
-        </Button>
+        <Button variant="ghost" size="md" @click="cancelLeave"> 留在本页 </Button>
+        <Button variant="primary" size="md" @click="discardAndLeave"> 放弃修改并离开 </Button>
       </template>
     </Modal>
   </div>

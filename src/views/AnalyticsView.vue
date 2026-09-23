@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, type Component } from "vue";
 import { useAnalyticsStore } from "@/stores/analytics";
 import { useSettingsStore } from "@/stores/settings";
 import Card from "@/components/ui/Card.vue";
@@ -214,7 +214,11 @@ const blockersOption = computed(() => {
         radius: ["40%", "70%"],
         center: ["50%", "45%"],
         avoidLabelOverlap: false,
-        itemStyle: { borderRadius: 6, borderColor: isDark.value ? "#1e293b" : "#fff", borderWidth: 2 },
+        itemStyle: {
+          borderRadius: 6,
+          borderColor: isDark.value ? "#1e293b" : "#fff",
+          borderWidth: 2,
+        },
         label: { show: false, position: "center" },
         emphasis: { label: { show: true, fontSize: 14, fontWeight: "bold" } },
         data: blockers.map((b) => ({ value: b.count, name: b.label })),
@@ -229,7 +233,7 @@ const feelingOption = computed(() => {
   return {
     tooltip: {
       trigger: "axis",
-      formatter: (params: any) => {
+      formatter: (params: { dataIndex: number }[]) => {
         const p = params[0];
         const point = feelings[p.dataIndex];
         return `${point.date}<br/>感受: ${point.label}`;
@@ -301,7 +305,11 @@ const difficultyOption = computed(() => {
           value: d.count,
           name: d.label,
         })),
-        itemStyle: { borderRadius: 4, borderColor: isDark.value ? "#1e293b" : "#fff", borderWidth: 2 },
+        itemStyle: {
+          borderRadius: 4,
+          borderColor: isDark.value ? "#1e293b" : "#fff",
+          borderWidth: 2,
+        },
         label: { color: textColor.value },
       },
     ],
@@ -322,11 +330,7 @@ function buildComparisonOption(cmp: PeriodComparison | undefined) {
         cmp.current.total_tasks,
         cmp.current.study_days,
       ]
-    : [
-        cmp.current.avg_completion_rate.toFixed(1),
-        cmp.current.total_tasks,
-        cmp.current.study_days,
-      ];
+    : [cmp.current.avg_completion_rate.toFixed(1), cmp.current.total_tasks, cmp.current.study_days];
   const previousData = timeTrackingEnabled.value
     ? [
         cmp.previous.avg_completion_rate.toFixed(1),
@@ -376,9 +380,7 @@ function buildComparisonOption(cmp: PeriodComparison | undefined) {
   };
 }
 
-const weekCompareOption = computed(() =>
-  buildComparisonOption(store.comparison?.week_comparison)
-);
+const weekCompareOption = computed(() => buildComparisonOption(store.comparison?.week_comparison));
 const monthCompareOption = computed(() =>
   buildComparisonOption(store.comparison?.month_comparison)
 );
@@ -388,14 +390,29 @@ const trendStats = computed(() => {
   const t = store.learningTrend;
   if (!t) return null;
   const stats = [
-    { label: "平均完成率", value: `${t.avg_completion_rate.toFixed(1)}%`, icon: Target, color: palette.primary },
+    {
+      label: "平均完成率",
+      value: `${t.avg_completion_rate.toFixed(1)}%`,
+      icon: Target,
+      color: palette.primary,
+    },
   ];
   if (timeTrackingEnabled.value) {
-    stats.push({ label: "累计学习时长", value: `${t.total_actual_hours.toFixed(1)}h`, icon: Clock, color: palette.success });
+    stats.push({
+      label: "累计学习时长",
+      value: `${t.total_actual_hours.toFixed(1)}h`,
+      icon: Clock,
+      color: palette.success,
+    });
   }
   stats.push(
-    { label: "累计完成任务", value: `${t.total_completed_tasks}/${t.total_planned_tasks}`, icon: CheckCircle2, color: palette.info },
-    { label: "学习天数", value: `${t.study_days}`, icon: Award, color: palette.warning },
+    {
+      label: "累计完成任务",
+      value: `${t.total_completed_tasks}/${t.total_planned_tasks}`,
+      icon: CheckCircle2,
+      color: palette.info,
+    },
+    { label: "学习天数", value: `${t.study_days}`, icon: Award, color: palette.warning }
   );
   return stats;
 });
@@ -404,7 +421,7 @@ const trendStats = computed(() => {
 const predictionStatus = computed(() => {
   const p = store.comparison?.prediction;
   if (!p) return null;
-  const map: Record<string, { icon: any; color: string; label: string }> = {
+  const map: Record<string, { icon: Component; color: string; label: string }> = {
     on_track: { icon: CheckCircle2, color: palette.success, label: "进度健康" },
     at_risk: { icon: AlertTriangle, color: palette.warning, label: "存在风险" },
     off_track: { icon: AlertTriangle, color: palette.danger, label: "明显偏离" },
@@ -430,19 +447,13 @@ function deltaText(delta: number, suffix = "", decimals = 1) {
 }
 
 // ── 数据加载 ──
-const showEmpty = computed(
-  () => !store.loading && !store.error && !store.summary
-);
+const showEmpty = computed(() => !store.loading && !store.error && !store.summary);
 const hasNoData = computed(() => {
   const t = store.learningTrend;
   if (!t || t.points.length === 0) return true;
   // 范围内存在计划/完成任务即视为有学习数据；
   // study_days 统计有复盘或实际时长>0 的天，未记录时长时也可能为 0，故仍需兜底判断
-  return (
-    t.study_days === 0 &&
-    t.total_completed_tasks === 0 &&
-    t.total_planned_tasks === 0
-  );
+  return t.study_days === 0 && t.total_completed_tasks === 0 && t.total_planned_tasks === 0;
 });
 
 // 全库是否存在任何学习记录（用于所选范围无数据时的引导）
@@ -510,11 +521,7 @@ onMounted(() => {
     <LoadingSpinner v-if="store.loading && !store.summary" :size="32" label="加载分析数据…" />
 
     <!-- Error -->
-    <EmptyState
-      v-else-if="store.error"
-      title="加载失败"
-      :description="store.error"
-    >
+    <EmptyState v-else-if="store.error" title="加载失败" :description="store.error">
       <template #actions>
         <Button variant="primary" @click="refresh">重试</Button>
       </template>
@@ -530,15 +537,9 @@ onMounted(() => {
     <!-- Content -->
     <template v-else>
       <!-- 无数据但已加载 -->
-      <EmptyState
-        v-if="hasNoData"
-        title="所选范围内暂无学习数据"
-        :description="emptyDescription"
-      >
+      <EmptyState v-if="hasNoData" title="所选范围内暂无学习数据" :description="emptyDescription">
         <template v-if="store.currentRange !== 'all' && hasAnyData" #actions>
-          <Button variant="primary" @click="store.setRange('all')">
-            查看全部历史数据
-          </Button>
+          <Button variant="primary" @click="store.setRange('all')"> 查看全部历史数据 </Button>
         </template>
       </EmptyState>
 
@@ -604,7 +605,11 @@ onMounted(() => {
             </Card>
 
             <!-- 困难类型分布 -->
-            <Card v-if="store.reviewQuality.difficulties.length > 0" padding="md" class="chart-card">
+            <Card
+              v-if="store.reviewQuality.difficulties.length > 0"
+              padding="md"
+              class="chart-card"
+            >
               <div class="chart-title">主要困难类型分布</div>
               <v-chart :option="difficultyOption" autoresize class="chart" />
             </Card>
@@ -625,7 +630,12 @@ onMounted(() => {
           </div>
 
           <!-- 预测卡片 -->
-          <Card v-if="predictionStatus" padding="md" class="prediction-card" :class="predictionStatus.status">
+          <Card
+            v-if="predictionStatus"
+            padding="md"
+            class="prediction-card"
+            :class="predictionStatus.status"
+          >
             <div class="pred-row">
               <div class="pred-icon" :style="{ color: predictionStatus.color }">
                 <component :is="predictionStatus.icon" :size="22" />
@@ -634,8 +644,13 @@ onMounted(() => {
                 <div class="pred-title">{{ predictionStatus.label }}</div>
                 <div class="pred-desc">{{ predictionStatus.description }}</div>
                 <div class="pred-stats">
-                  <span>近7天平均完成率: {{ predictionStatus.recent_avg_completion_rate.toFixed(1) }}%</span>
-                  <span v-if="timeTrackingEnabled">近7天日均学习: {{ predictionStatus.recent_avg_daily_hours.toFixed(1) }}h</span>
+                  <span
+                    >近7天平均完成率:
+                    {{ predictionStatus.recent_avg_completion_rate.toFixed(1) }}%</span
+                  >
+                  <span v-if="timeTrackingEnabled"
+                    >近7天日均学习: {{ predictionStatus.recent_avg_daily_hours.toFixed(1) }}h</span
+                  >
                 </div>
               </div>
             </div>
@@ -650,10 +665,16 @@ onMounted(() => {
                 <component
                   :is="deltaIcon(store.comparison.week_comparison.completion_rate_delta)"
                   :size="13"
-                  :style="{ color: deltaColor(store.comparison.week_comparison.completion_rate_delta) }"
+                  :style="{
+                    color: deltaColor(store.comparison.week_comparison.completion_rate_delta),
+                  }"
                 />
-                <span :style="{ color: deltaColor(store.comparison.week_comparison.completion_rate_delta) }">
-                  {{ deltaText(store.comparison.week_comparison.completion_rate_delta, '%') }}
+                <span
+                  :style="{
+                    color: deltaColor(store.comparison.week_comparison.completion_rate_delta),
+                  }"
+                >
+                  {{ deltaText(store.comparison.week_comparison.completion_rate_delta, "%") }}
                 </span>
               </span>
             </div>
@@ -669,10 +690,16 @@ onMounted(() => {
                 <component
                   :is="deltaIcon(store.comparison.month_comparison.completion_rate_delta)"
                   :size="13"
-                  :style="{ color: deltaColor(store.comparison.month_comparison.completion_rate_delta) }"
+                  :style="{
+                    color: deltaColor(store.comparison.month_comparison.completion_rate_delta),
+                  }"
                 />
-                <span :style="{ color: deltaColor(store.comparison.month_comparison.completion_rate_delta) }">
-                  {{ deltaText(store.comparison.month_comparison.completion_rate_delta, '%') }}
+                <span
+                  :style="{
+                    color: deltaColor(store.comparison.month_comparison.completion_rate_delta),
+                  }"
+                >
+                  {{ deltaText(store.comparison.month_comparison.completion_rate_delta, "%") }}
                 </span>
               </span>
             </div>
@@ -761,7 +788,9 @@ onMounted(() => {
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
 .exclude-toggle:hover {
   background: var(--bg-tertiary);

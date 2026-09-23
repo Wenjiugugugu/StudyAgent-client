@@ -27,7 +27,7 @@ export function useBackupActions(deps: BackupActionsDeps) {
     dirChangeMsg.value = null;
     dirChangeError.value = false;
 
-    let selected: string | null = null;
+    let selected: string | null;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const result = await open({ directory: true, multiple: false });
@@ -66,7 +66,7 @@ export function useBackupActions(deps: BackupActionsDeps) {
     backupMsg.value = null;
     backupError.value = false;
 
-    let dest: string | null = null;
+    let dest: string | null;
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const result = await save({
@@ -98,7 +98,7 @@ export function useBackupActions(deps: BackupActionsDeps) {
     backupMsg.value = null;
     backupError.value = false;
 
-    let selected: string | null = null;
+    let selected: string | null;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const result = await open({
@@ -114,7 +114,11 @@ export function useBackupActions(deps: BackupActionsDeps) {
     if (!selected) return;
 
     // M13：覆盖式导入前二次确认（原数据会自动备份到 bak 目录，但需明确提醒）
-    if (!window.confirm("导入备份将覆盖当前全部数据（原数据会自动备份到 bak 目录，可恢复）。确定继续？")) {
+    if (
+      !window.confirm(
+        "导入备份将覆盖当前全部数据（原数据会自动备份到 bak 目录，可恢复）。确定继续？"
+      )
+    ) {
       return;
     }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from "vue";
+import { ref, computed, watch, nextTick, onMounted, type Component } from "vue";
 import { useRoute } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settings";
@@ -28,6 +28,7 @@ const { theme, toggleTheme } = useTheme();
 const settingsStore = useSettingsStore();
 const route = useRoute();
 const isDev = import.meta.env.DEV;
+const { version } = useAppVersion();
 
 // ── 侧边栏收展（收起后仅显示图标）──
 // M7：持久化改走「后端 ui_flags 文件」（localStorage 部分环境随重启丢失）；
@@ -67,8 +68,9 @@ function updateIndicator() {
     // 该 ref 处于外层 v-for 模板作用域内，会被 Vue 收集成数组而非元素，
     // 导致读取 offsetTop/offsetHeight 失效、指示条无法跟随。
     const planItem = navRef.value.querySelector<HTMLElement>(".nav-group > button.nav-item");
-    const active = (!collapsed.value && isPlanActive() ? planItem : null)
-      ?? navRef.value.querySelector(".nav-item.active") as HTMLElement | null;
+    const active =
+      (!collapsed.value && isPlanActive() ? planItem : null) ??
+      (navRef.value.querySelector(".nav-item.active") as HTMLElement | null);
     if (!active) {
       indicatorStyle.value.opacity = 0;
       return;
@@ -89,7 +91,8 @@ function onPlanMorphDone() {
 interface NavItem {
   name: string;
   label: string;
-  icon: any;
+  /** lucide 图标组件（模板中用 `<component :is>` 渲染） */
+  icon: Component;
   path: string;
   reserved?: boolean;
 }
@@ -110,14 +113,31 @@ type MenuEntry = { kind: "item"; item: NavItem } | { kind: "plan" };
 
 /** 侧边栏菜单顺序：工作台 → 计划 → 专注 → 复盘 → 分析 → 进度 → 时间线 */
 const menuEntries: MenuEntry[] = [
-  { kind: "item", item: { name: "dashboard", label: "工作台", icon: LayoutDashboard, path: "/dashboard" } },
+  {
+    kind: "item",
+    item: { name: "dashboard", label: "工作台", icon: LayoutDashboard, path: "/dashboard" },
+  },
   { kind: "plan" },
   { kind: "item", item: { name: "focus", label: "专注", icon: Timer, path: "/focus" } },
   { kind: "item", item: { name: "review", label: "复盘", icon: ClipboardCheck, path: "/review" } },
   { kind: "item", item: { name: "analytics", label: "分析", icon: BarChart3, path: "/analytics" } },
-  { kind: "item", item: { name: "progress", label: "进度", icon: ClipboardList, path: "/progress" } },
+  {
+    kind: "item",
+    item: { name: "progress", label: "进度", icon: ClipboardList, path: "/progress" },
+  },
   ...(isDev
-    ? [{ kind: "item", item: { name: "timeline", label: "时间线", icon: GitBranch, path: "/timeline", reserved: true } } as MenuEntry]
+    ? [
+        {
+          kind: "item",
+          item: {
+            name: "timeline",
+            label: "时间线",
+            icon: GitBranch,
+            path: "/timeline",
+            reserved: true,
+          },
+        } as MenuEntry,
+      ]
     : []),
 ];
 
@@ -130,13 +150,13 @@ watch(
   (p) => {
     planOpen.value = planGroup.children.some((c) => c.path === p) || p === planGroup.path;
   },
-  { immediate: true },
+  { immediate: true }
 );
 
 watch(
   [() => route.path, () => collapsed.value, () => planOpen.value],
   () => nextTick(updateIndicator),
-  { immediate: true },
+  { immediate: true }
 );
 
 /** 是否为「计划」相关路由（用于一级项高亮与 indicator） */
@@ -144,13 +164,8 @@ function isPlanActive(): boolean {
   return planGroup.children.some((c) => c.path === route.path) || route.path === planGroup.path;
 }
 
-// 当前版本号（统一经 useAppVersion 读取，勿在此写死）
-const { version } = useAppVersion();
-
-// 调试入口可见性：开发模式，或版本号含 indev（如 0.5.7-indev）时对用户可见
-const isDebugAvailable = computed(
-  () => isDev || version.value.toLowerCase().includes("indev"),
-);
+// 正式构建默认不暴露诊断数据；支持包可显式设置 VITE_ENABLE_DEBUG=true。
+const isDebugAvailable = isDev || import.meta.env.VITE_ENABLE_DEBUG === "true";
 
 /** 「计划」一级项点击：切换二级菜单展开/收起（保持原版行为） */
 function onPlanClick() {
@@ -174,7 +189,10 @@ function onPlanClick() {
     <!-- Navigation -->
     <nav ref="navRef" class="nav">
       <div class="nav-indicator" :style="indicatorStyle" aria-hidden="true" />
-      <template v-for="entry in menuEntries" :key="entry.kind === 'item' ? entry.item.name : 'plan'">
+      <template
+        v-for="entry in menuEntries"
+        :key="entry.kind === 'item' ? entry.item.name : 'plan'"
+      >
         <!-- 普通导航项 -->
         <router-link
           v-if="entry.kind === 'item'"
@@ -191,7 +209,11 @@ function onPlanClick() {
         <!-- 「计划」二级菜单 -->
         <div v-else class="nav-group">
           <!-- 收起态：一级「计划」图标分裂为 3 个二级菜单图标 -->
-          <transition name="plan-cols" @after-enter="onPlanMorphDone" @after-leave="onPlanMorphDone">
+          <transition
+            name="plan-cols"
+            @after-enter="onPlanMorphDone"
+            @after-leave="onPlanMorphDone"
+          >
             <div v-if="collapsed" class="plan-cols">
               <router-link
                 v-for="c in planGroup.children"
@@ -219,11 +241,7 @@ function onPlanClick() {
             >
               <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
               <span class="nav-label">{{ planGroup.label }}</span>
-              <span
-                class="nav-chevron"
-                :class="{ open: planOpen }"
-                aria-hidden="true"
-              ></span>
+              <span class="nav-chevron" :class="{ open: planOpen }" aria-hidden="true"></span>
             </button>
             <div id="plan-subnav" v-show="planOpen" class="nav-children">
               <router-link
@@ -233,7 +251,12 @@ function onPlanClick() {
                 class="nav-item nav-child"
                 active-class="active"
               >
-                <component :is="c.icon" :size="17" :stroke-width="1.5" class="nav-icon child-icon" />
+                <component
+                  :is="c.icon"
+                  :size="17"
+                  :stroke-width="1.5"
+                  class="nav-icon child-icon"
+                />
                 <span class="nav-label">{{ c.label }}</span>
               </router-link>
             </div>
@@ -265,21 +288,39 @@ function onPlanClick() {
         <span class="nav-label">设置</span>
       </router-link>
 
-      <button type="button" class="nav-item theme-toggle" @click="toggleTheme" :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''">
-        <component :is="theme === 'dark' ? SunMedium : Moon" :size="19" :stroke-width="1.5" class="nav-icon" />
+      <button
+        type="button"
+        class="nav-item theme-toggle"
+        @click="toggleTheme"
+        :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
+        :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''"
+      >
+        <component
+          :is="theme === 'dark' ? SunMedium : Moon"
+          :size="19"
+          :stroke-width="1.5"
+          class="nav-icon"
+        />
         <span class="nav-label">{{ theme === "dark" ? "浅色" : "深色" }}</span>
       </button>
 
-      <router-link
-        to="/settings#settings-update"
-        class="version-label"
-        title="前往设置页检查更新"
-      >
+      <router-link to="/settings#settings-update" class="version-label" title="前往设置页检查更新">
         <span>Beta {{ version }}</span>
       </router-link>
 
-      <button type="button" class="nav-item collapse-toggle" @click="toggleCollapse" :aria-label="collapsed ? '展开侧边栏' : '收起侧边栏'" :title="collapsed ? '展开侧边栏' : '收起侧边栏'">
-        <component :is="collapsed ? ChevronsRight : ChevronsLeft" :size="19" :stroke-width="1.5" class="nav-icon" />
+      <button
+        type="button"
+        class="nav-item collapse-toggle"
+        @click="toggleCollapse"
+        :aria-label="collapsed ? '展开侧边栏' : '收起侧边栏'"
+        :title="collapsed ? '展开侧边栏' : '收起侧边栏'"
+      >
+        <component
+          :is="collapsed ? ChevronsRight : ChevronsLeft"
+          :size="19"
+          :stroke-width="1.5"
+          class="nav-icon"
+        />
         <span class="nav-label">{{ collapsed ? "" : "收起侧边栏" }}</span>
       </button>
     </div>
@@ -311,7 +352,8 @@ function onPlanClick() {
   overflow: hidden;
   /* 宽度过渡（Apple motion curve）：flex 布局会逐帧重算，
      右侧内容随之平滑让位，无需对内容区单独加动画 */
-  transition: flex-basis var(--transition-slow),
+  transition:
+    flex-basis var(--transition-slow),
     width var(--transition-slow),
     min-width var(--transition-slow);
 }
@@ -336,7 +378,8 @@ function onPlanClick() {
 .nav-badge {
   opacity: 1;
   transform: translateX(0);
-  transition: opacity 0.2s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
+  transition:
+    opacity 0.2s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
     transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s;
 }
 .sidebar.collapsed .brand-text,
@@ -344,7 +387,9 @@ function onPlanClick() {
 .sidebar.collapsed .nav-badge {
   opacity: 0;
   transform: translateX(12px);
-  transition: opacity 0.1s ease, transform 0.1s ease;
+  transition:
+    opacity 0.1s ease,
+    transform 0.1s ease;
 }
 /* 版本行收起时同步收起自身高度，避免底部留空 */
 .sidebar.collapsed .version-label {
@@ -353,8 +398,11 @@ function onPlanClick() {
   max-height: 0;
   padding-top: 0;
   padding-bottom: 0;
-  transition: opacity 0.1s ease, transform 0.1s ease,
-    max-height var(--transition-slow), padding var(--transition-slow);
+  transition:
+    opacity 0.1s ease,
+    transform 0.1s ease,
+    max-height var(--transition-slow),
+    padding var(--transition-slow);
 }
 /* 折叠箭头仅淡出（保留其自身的旋转过渡） */
 .sidebar.collapsed .nav-chevron {
@@ -372,7 +420,9 @@ function onPlanClick() {
   border: 1px solid var(--border-color);
   border-right-color: var(--border-color);
   overflow: hidden;
-  box-shadow: var(--shadow-xl), inset -1px 0 0 rgba(255, 255, 255, 0.4);
+  box-shadow:
+    var(--shadow-xl),
+    inset -1px 0 0 rgba(255, 255, 255, 0.4);
 }
 /* 收起态仍是悬浮岛：保留四边留白、圆角与阴影。
    content 宽度保持标准收起宽度（图标+内边距约需 59px），
@@ -452,7 +502,9 @@ function onPlanClick() {
   border-radius: var(--radius-md);
   background: var(--accent-subtle);
   z-index: 0;
-  transition: transform 0.25s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.2s ease;
+  transition:
+    transform 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0.2s ease;
   pointer-events: none;
 }
 
@@ -554,10 +606,14 @@ function onPlanClick() {
   gap: 2px;
 }
 .plan-cols-enter-active {
-  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
 .plan-cols-leave-active {
-  transition: opacity 0.16s ease, transform 0.16s ease;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
 }
 .plan-cols-enter-from {
   opacity: 0;
@@ -574,7 +630,9 @@ function onPlanClick() {
   border-right: 1.5px solid var(--text-tertiary);
   border-bottom: 1.5px solid var(--text-tertiary);
   transform: rotate(45deg);
-  transition: transform var(--transition-fast), opacity 0.1s ease;
+  transition:
+    transform var(--transition-fast),
+    opacity 0.1s ease;
   opacity: 1;
   flex-shrink: 0;
 }
@@ -590,8 +648,14 @@ function onPlanClick() {
   animation: child-in var(--transition-normal);
 }
 @keyframes child-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .nav-child {
   min-height: var(--sidebar-child-control-height);
@@ -644,10 +708,13 @@ function onPlanClick() {
   max-height: 48px;
   overflow: hidden;
   opacity: 1;
-  transition: background var(--transition-fast), color var(--transition-fast),
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
     opacity 0.2s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
     transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
-    max-height var(--transition-slow), padding var(--transition-slow);
+    max-height var(--transition-slow),
+    padding var(--transition-slow);
 }
 
 .version-label:hover:not(:disabled) {

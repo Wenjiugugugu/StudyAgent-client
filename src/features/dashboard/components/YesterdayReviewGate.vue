@@ -39,10 +39,7 @@ defineEmits<{ goReview: [] }>();
 </script>
 
 <template>
-  <aside
-    class="review-sidebar"
-    :class="{ 'sidebar-enter': view.sidebarAnimated }"
-  >
+  <aside class="review-sidebar" :class="{ 'sidebar-enter': view.sidebarAnimated }">
     <Card padding="md" class="card review-card" surface="1" hoverable>
       <div class="review-sidebar-header">
         <Award :size="16" class="review-sidebar-icon" />
@@ -90,9 +87,14 @@ defineEmits<{ goReview: [] }>();
         <Flag :size="20" class="review-missing-icon" />
         <span class="review-missing-title">昨日未复盘</span>
         <span class="review-missing-desc">
-          {{ view.withinMakeupWindow ? '点击下方按钮补复盘' : '已错过补复盘窗口' }}
+          {{ view.withinMakeupWindow ? "点击下方按钮补复盘" : "已错过补复盘窗口" }}
         </span>
-        <Button v-if="view.withinMakeupWindow" variant="primary" size="sm" @click="$emit('goReview')">
+        <Button
+          v-if="view.withinMakeupWindow"
+          variant="primary"
+          size="sm"
+          @click="$emit('goReview')"
+        >
           去补复盘
           <ChevronRight :size="14" />
         </Button>

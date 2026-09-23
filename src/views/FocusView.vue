@@ -42,8 +42,8 @@ const focus = useFocusStore();
 const todayTasks = computed<PlanTask[]>(() =>
   todayStore.allTasks.filter((t) => t.status !== "done")
 );
-const linkedTask = computed(() =>
-  todayTasks.value.find((t) => t.id === focus.linkedTaskId) ?? null
+const linkedTask = computed(
+  () => todayTasks.value.find((t) => t.id === focus.linkedTaskId) ?? null
 );
 
 /** 关联任务勾选完成：同步任务状态为 done */
@@ -128,7 +128,7 @@ onMounted(async () => {
             cy="130"
             r="116"
             :stroke-dasharray="2 * Math.PI * 116"
-            :stroke-dashoffset="(2 * Math.PI * 116) * (1 - focus.progress)"
+            :stroke-dashoffset="2 * Math.PI * 116 * (1 - focus.progress)"
             transform="rotate(-90 130 130)"
           />
         </svg>
@@ -139,7 +139,15 @@ onMounted(async () => {
           </Badge>
           <span class="ring-time">{{ focus.displayText }}</span>
           <span class="ring-status">
-            {{ focus.sub === 'idle' ? "准备开始" : focus.isPaused ? "已暂停" : focus.isRunning ? "进行中" : "" }}
+            {{
+              focus.sub === "idle"
+                ? "准备开始"
+                : focus.isPaused
+                  ? "已暂停"
+                  : focus.isRunning
+                    ? "进行中"
+                    : ""
+            }}
           </span>
         </div>
       </div>
@@ -156,19 +164,22 @@ onMounted(async () => {
           >
             <Play :size="18" /> 开始专注
           </Button>
-          <Button
-            v-else
-            variant="primary"
-            size="lg"
-            @click="focus.startStopwatch"
-          >
+          <Button v-else variant="primary" size="lg" @click="focus.startStopwatch">
             <Play :size="18" /> 开始计时
           </Button>
           <div class="mode-switch">
-            <Button :variant="focus.mode === 'countdown' ? 'primary' : 'ghost'" size="sm" @click="focus.mode = 'countdown'">
+            <Button
+              :variant="focus.mode === 'countdown' ? 'primary' : 'ghost'"
+              size="sm"
+              @click="focus.mode = 'countdown'"
+            >
               <Timer :size="15" /> 倒计时
             </Button>
-            <Button :variant="focus.mode === 'stopwatch' ? 'primary' : 'ghost'" size="sm" @click="focus.mode = 'stopwatch'">
+            <Button
+              :variant="focus.mode === 'stopwatch' ? 'primary' : 'ghost'"
+              size="sm"
+              @click="focus.mode = 'stopwatch'"
+            >
               <Hourglass :size="15" /> 正计时
             </Button>
           </div>
@@ -176,7 +187,11 @@ onMounted(async () => {
 
         <!-- 运行/暂停中 -->
         <template v-if="focus.isRunning || focus.isPaused">
-          <Button :variant="focus.isRunning ? 'secondary' : 'primary'" size="lg" @click="focus.togglePause">
+          <Button
+            :variant="focus.isRunning ? 'secondary' : 'primary'"
+            size="lg"
+            @click="focus.togglePause"
+          >
             <Pause v-if="focus.isRunning" :size="18" /> <Play v-else :size="18" />
             {{ focus.isRunning ? "暂停" : "继续" }}
           </Button>
@@ -194,7 +209,12 @@ onMounted(async () => {
           </Button>
           <!-- 手动模式：学习结束转正计时后（非倒计时运行中）可点击「开始休息」（M4） -->
           <Button
-            v-if="focus.phase === 'focus' && !focus.config.autoBreak && focus.mode === 'stopwatch' && focus.sub === 'running'"
+            v-if="
+              focus.phase === 'focus' &&
+              !focus.config.autoBreak &&
+              focus.mode === 'stopwatch' &&
+              focus.sub === 'running'
+            "
             variant="secondary"
             size="lg"
             @click="focus.skipToBreak"
@@ -242,12 +262,7 @@ onMounted(async () => {
               {{ t.title }}
             </option>
           </Select>
-          <Button
-            v-if="linkedTask"
-            variant="secondary"
-            size="sm"
-            @click="completeLinkedTask"
-          >
+          <Button v-if="linkedTask" variant="secondary" size="sm" @click="completeLinkedTask">
             <Check :size="15" /> 完成该任务
           </Button>
         </div>
@@ -329,7 +344,8 @@ onMounted(async () => {
         </label>
       </div>
       <p class="config-hint">
-        关闭自动休息时，学习倒计时结束后将进入正计时，直到你点击「开始休息」。开启长休息后，每完成 N 个番茄会自动进入长休息。
+        关闭自动休息时，学习倒计时结束后将进入正计时，直到你点击「开始休息」。开启长休息后，每完成 N
+        个番茄会自动进入长休息。
       </p>
     </Card>
 
@@ -352,10 +368,15 @@ onMounted(async () => {
       </div>
       <ul v-else class="session-list">
         <li v-for="s in todayRecordList" :key="s.id" class="session-item">
-          <span class="session-type" :class="(s.type === 'focus' || s.type === 'stopwatch') ? 'is-focus' : 'is-break'">
+          <span
+            class="session-type"
+            :class="s.type === 'focus' || s.type === 'stopwatch' ? 'is-focus' : 'is-break'"
+          >
             {{ sessionLabel(s.type) }}
           </span>
-          <span class="session-time">{{ formatTime(s.started_at) }} - {{ formatTime(s.ended_at) }}</span>
+          <span class="session-time"
+            >{{ formatTime(s.started_at) }} - {{ formatTime(s.ended_at) }}</span
+          >
           <span class="session-duration">{{ s.duration_minutes }} 分钟</span>
           <span class="session-status" :class="{ interrupted: s.status !== 'completed' }">
             {{ sessionStatusLabel(s.status) }}
@@ -568,7 +589,9 @@ onMounted(async () => {
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
 }
 .toggle-switch.on {
   background: var(--accent);

@@ -17,10 +17,7 @@ const appLogError = ref<string | null>(null);
 /** 日志展示内容：倒序（最新一行在最上面，向下越来越旧） */
 const displayAppLog = computed(() => {
   if (!appLog.value) return "";
-  return appLog.value
-    .split(/\r?\n/)
-    .reverse()
-    .join("\n");
+  return appLog.value.split(/\r?\n/).reverse().join("\n");
 });
 
 async function loadAppLog() {
@@ -70,7 +67,8 @@ onMounted(loadAppLog);
     </div>
 
     <p class="section-desc">
-      展示 AI 调试日志（logs/ai-debug.log）的内容，最新在最上面、向下越旧，包含 AI 请求/响应记录、后端 warn/error 等。结构化调用详情见上方「AI 调用记录」与「AI 用量」模块。
+      展示 AI 调试日志（logs/ai-debug.log）的内容，最新在最上面、向下越旧，包含 AI
+      请求/响应记录、后端 warn/error 等。结构化调用详情见上方「AI 调用记录」与「AI 用量」模块。
     </p>
 
     <div v-if="appLogError" class="error-text">{{ appLogError }}</div>

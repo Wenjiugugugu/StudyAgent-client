@@ -75,7 +75,9 @@ export function useSettingsForm() {
     };
   });
 
-  const professionalName = computed(() => studyState.value?.subjects?.professional?.name || "专业课");
+  const professionalName = computed(
+    () => studyState.value?.subjects?.professional?.name || "专业课"
+  );
 
   // ── rest_days 切换 ──
   function toggleRestDay(day: string) {
@@ -115,7 +117,9 @@ export function useSettingsForm() {
   /** 是否有未保存的修改 */
   const hasUnsavedChanges = computed(() => {
     if (!form.value) return false;
-    return JSON.stringify({ form: form.value, textbook: textbookForm.value }) !== savedSnapshot.value;
+    return (
+      JSON.stringify({ form: form.value, textbook: textbookForm.value }) !== savedSnapshot.value
+    );
   });
 
   /** 确认离开设置页（有未保存修改时返回弹窗 Promise 拦截） */
@@ -271,9 +275,9 @@ export function useSettingsForm() {
             8,
             Math.round(
               Math.max(0, form.value.daily_target_hours || 0) /
-                Math.max(0.5, form.value.standard_granularity || 1.5),
-            ),
-          ),
+                Math.max(0.5, form.value.standard_granularity || 1.5)
+            )
+          )
         ),
         standard_granularity: form.value.standard_granularity,
         enable_review_tasks: form.value.enable_review_tasks,

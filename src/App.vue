@@ -6,17 +6,19 @@ import { useUpdateStore } from "@/stores/update";
 import { useTheme } from "@/composables/useTheme";
 import * as api from "@/api";
 import { isTauri } from "@/api/tauri";
-import { currentMinutesShanghai, timeStringToMinutes, todayString, weekdayName, getWeekStart } from "@/utils/date";
+import {
+  currentMinutesShanghai,
+  timeStringToMinutes,
+  todayString,
+  weekdayName,
+  getWeekStart,
+} from "@/utils/date";
 import AppLayout from "@/layouts/AppLayout.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
-import {
-  Sparkles,
-  Power,
-  Minimize2,
-} from "lucide-vue-next";
+import { Sparkles, Power, Minimize2 } from "lucide-vue-next";
 
 const route = useRoute();
 const router = useRouter();
@@ -252,10 +254,7 @@ function startReminderChecker() {
       }
 
       if (changed) {
-        localStorage.setItem(
-          firedKey,
-          JSON.stringify({ date: today, times: firedToday }),
-        );
+        localStorage.setItem(firedKey, JSON.stringify({ date: today, times: firedToday }));
       }
 
       // 跨天重置已触发记录
@@ -269,7 +268,8 @@ function startReminderChecker() {
 
 async function showNotification(title: string, body: string) {
   try {
-    const { sendNotification, isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
+    const { sendNotification, isPermissionGranted, requestPermission } =
+      await import("@tauri-apps/plugin-notification");
     let granted = await isPermissionGranted();
     if (!granted) {
       const permission = await requestPermission();
@@ -506,5 +506,4 @@ onBeforeUnmount(() => {
   color: var(--accent);
   margin: 0 auto var(--space-1);
 }
-
 </style>

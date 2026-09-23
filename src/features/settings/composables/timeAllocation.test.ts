@@ -26,7 +26,12 @@ const allActive: Record<SubjectKey, boolean> = {
   professional: true,
 };
 
-const zeroWeekly: Record<SubjectKey, number> = { math: 0, english: 0, politics: 0, professional: 0 };
+const zeroWeekly: Record<SubjectKey, number> = {
+  math: 0,
+  english: 0,
+  politics: 0,
+  professional: 0,
+};
 
 function total(alloc: SubjectTimeAllocation): number {
   return ALLOCATION_KEYS.reduce((s, k) => s + (alloc[k] ?? 0), 0);
@@ -60,7 +65,7 @@ describe("deriveFromWeeklyHours", () => {
   it("按周学时占比推导", () => {
     const out = deriveFromWeeklyHours(
       { math: 6, english: 3, politics: 0, professional: 3 },
-      allActive,
+      allActive
     );
     expect(out.math).toBe(50);
     expect(out.english).toBe(25);
@@ -74,19 +79,24 @@ describe("deriveFromWeeklyHours", () => {
   });
 
   it("非活跃科目为 0；无活跃科目返回全 0", () => {
-    const out = deriveFromWeeklyHours({ math: 10, english: 0, politics: 0, professional: 0 }, {
-      math: true,
-      english: false,
-      politics: false,
-      professional: false,
-    });
+    const out = deriveFromWeeklyHours(
+      { math: 10, english: 0, politics: 0, professional: 0 },
+      {
+        math: true,
+        english: false,
+        politics: false,
+        professional: false,
+      }
+    );
     expect(out).toEqual({ math: 100, english: 0, politics: 0, professional: 0 });
-    expect(deriveFromWeeklyHours(zeroWeekly, {
-      math: false,
-      english: false,
-      politics: false,
-      professional: false,
-    })).toEqual(emptyAllocation());
+    expect(
+      deriveFromWeeklyHours(zeroWeekly, {
+        math: false,
+        english: false,
+        politics: false,
+        professional: false,
+      })
+    ).toEqual(emptyAllocation());
   });
 });
 
@@ -95,7 +105,7 @@ describe("normalizeAllocation", () => {
     const out = normalizeAllocation(
       { math: 60, english: 40 },
       { math: 10, english: 5, politics: 5, professional: 0 },
-      allActive,
+      allActive
     );
     // 补入 politics=5 后 60:40:5 缩放到 100 → 57:38:5（largest-remainder 补余给 politics）
     expect(total(out)).toBe(100);
@@ -110,7 +120,7 @@ describe("normalizeAllocation", () => {
     const out = normalizeAllocation(
       { math: 0, english: 40, politics: 30 },
       { math: 14, english: 7, politics: 5, professional: 10 },
-      allActive,
+      allActive
     );
     expect(out.math).toBe(0);
     expect(total(out)).toBe(100);
@@ -121,44 +131,56 @@ describe("normalizeAllocation", () => {
     const out = normalizeAllocation(
       { math: 50, english: 30, politics: 20, professional: 0 },
       zeroWeekly,
-      { math: true, english: true, politics: false, professional: true },
+      { math: true, english: true, politics: false, professional: true }
     );
     expect(out.politics).toBe(0);
     expect(out.math + out.english + out.professional).toBe(100);
   });
 
   it("活跃科目全 0 时回退周学时推导", () => {
-    const out = normalizeAllocation({ math: 0, english: 0, politics: 0, professional: 0 }, {
-      math: 6,
-      english: 3,
-      politics: 0,
-      professional: 3,
-    }, allActive);
+    const out = normalizeAllocation(
+      { math: 0, english: 0, politics: 0, professional: 0 },
+      {
+        math: 6,
+        english: 3,
+        politics: 0,
+        professional: 3,
+      },
+      allActive
+    );
     expect(out.math).toBe(50);
   });
 
   it("浮点占比缩放到 100 且无漂移", () => {
-    const out = normalizeAllocation(
-      { math: 33.3, english: 33.3, politics: 33.3 },
-      zeroWeekly,
-      { math: true, english: true, politics: true, professional: false },
-    );
+    const out = normalizeAllocation({ math: 33.3, english: 33.3, politics: 33.3 }, zeroWeekly, {
+      math: true,
+      english: true,
+      politics: true,
+      professional: false,
+    });
     expect(total(out)).toBe(100);
   });
 
   it("无活跃科目返回全 0", () => {
-    expect(normalizeAllocation({}, zeroWeekly, {
-      math: false,
-      english: false,
-      politics: false,
-      professional: false,
-    })).toEqual(emptyAllocation());
+    expect(
+      normalizeAllocation({}, zeroWeekly, {
+        math: false,
+        english: false,
+        politics: false,
+        professional: false,
+      })
+    ).toEqual(emptyAllocation());
   });
 });
 
 describe("adjustAllocation", () => {
   it("把某科调整到新值，其余科目等比联动且合计恒为 100", () => {
-    const current: SubjectTimeAllocation = { math: 40, english: 30, politics: 20, professional: 10 };
+    const current: SubjectTimeAllocation = {
+      math: 40,
+      english: 30,
+      politics: 20,
+      professional: 10,
+    };
     const out = adjustAllocation(current, "math", 50, allActive);
     expect(out.math).toBe(50);
     expect(total(out)).toBe(100);
@@ -169,7 +191,12 @@ describe("adjustAllocation", () => {
   });
 
   it("超过 100 时 clamp 到 100，其余科目清零", () => {
-    const current: SubjectTimeAllocation = { math: 40, english: 30, politics: 20, professional: 10 };
+    const current: SubjectTimeAllocation = {
+      math: 40,
+      english: 30,
+      politics: 20,
+      professional: 10,
+    };
     const out = adjustAllocation(current, "math", 150, allActive);
     expect(out.math).toBe(100);
     expect(total(out)).toBe(100);
@@ -177,7 +204,12 @@ describe("adjustAllocation", () => {
   });
 
   it("负数 clamp 到 0，其余科目等比放大", () => {
-    const current: SubjectTimeAllocation = { math: 40, english: 30, politics: 20, professional: 10 };
+    const current: SubjectTimeAllocation = {
+      math: 40,
+      english: 30,
+      politics: 20,
+      professional: 10,
+    };
     const out = adjustAllocation(current, "math", -10, allActive);
     expect(out.math).toBe(0);
     expect(total(out)).toBe(100);
@@ -190,7 +222,12 @@ describe("adjustAllocation", () => {
       politics: false,
       professional: false,
     };
-    const out = adjustAllocation({ math: 50, english: 50, politics: 0, professional: 0 }, "math", 30, active);
+    const out = adjustAllocation(
+      { math: 50, english: 50, politics: 0, professional: 0 },
+      "math",
+      30,
+      active
+    );
     expect(out).toEqual({ math: 100, english: 0, politics: 0, professional: 0 });
   });
 
@@ -206,7 +243,12 @@ describe("adjustAllocation", () => {
   });
 
   it("无活跃科目时原样返回", () => {
-    const current: SubjectTimeAllocation = { math: 40, english: 30, politics: 20, professional: 10 };
+    const current: SubjectTimeAllocation = {
+      math: 40,
+      english: 30,
+      politics: 20,
+      professional: 10,
+    };
     const active: Record<SubjectKey, boolean> = {
       math: false,
       english: false,
@@ -217,7 +259,12 @@ describe("adjustAllocation", () => {
   });
 
   it("任意随机调整后总和恒为 100", () => {
-    const current: SubjectTimeAllocation = { math: 40, english: 30, politics: 20, professional: 10 };
+    const current: SubjectTimeAllocation = {
+      math: 40,
+      english: 30,
+      politics: 20,
+      professional: 10,
+    };
     for (const key of ALLOCATION_KEYS) {
       for (const v of [0, 1, 33, 67, 99, 100]) {
         const out = adjustAllocation(current, key, v, allActive);

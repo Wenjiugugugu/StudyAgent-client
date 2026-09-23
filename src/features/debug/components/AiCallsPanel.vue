@@ -32,7 +32,7 @@ const expandedAiCallId = ref<number | null>(null);
 /** AI 调用记录分页：当前页码 */
 const recordsPage = ref(1);
 const recordsPageCount = computed(() =>
-  Math.max(1, Math.ceil(aiDebugStore.records.length / RECORDS_PAGE_SIZE)),
+  Math.max(1, Math.ceil(aiDebugStore.records.length / RECORDS_PAGE_SIZE))
 );
 /** 当前页展示的记录（最新在前） */
 const pagedAICalls = computed(() => {
@@ -46,7 +46,7 @@ watch(
     if (recordsPage.value > recordsPageCount.value) {
       recordsPage.value = recordsPageCount.value;
     }
-  },
+  }
 );
 
 function toggleAiCall(id: number) {
@@ -73,8 +73,9 @@ function toggleAiCall(id: number) {
     </div>
 
     <p class="section-desc">
-      实时记录所有 AI 调用：请求参数、响应数据、AI 的思考过程（推理模型）、耗时与错误，每 10 条为一页；
-      后端原始响应（HTTP body / SSE 行）可在终端日志中查看，前缀为 <code class="text-mono">[AI-DEBUG]</code>。
+      实时记录所有 AI 调用：请求参数、响应数据、AI 的思考过程（推理模型）、耗时与错误，每 10
+      条为一页； 后端原始响应（HTTP body / SSE 行）可在终端日志中查看，前缀为
+      <code class="text-mono">[AI-DEBUG]</code>。
     </p>
 
     <div class="info-row">
@@ -94,7 +95,11 @@ function toggleAiCall(id: number) {
         :class="{ expanded: expandedAiCallId === rec.id }"
       >
         <button class="ai-call-header" @click="toggleAiCall(rec.id)">
-          <ChevronRight :size="14" class="ai-call-chevron" :class="{ open: expandedAiCallId === rec.id }" />
+          <ChevronRight
+            :size="14"
+            class="ai-call-chevron"
+            :class="{ open: expandedAiCallId === rec.id }"
+          />
           <span class="ai-call-time text-mono">{{ formatTimestamp(rec.timestamp) }}</span>
           <Badge :variant="aiCallStatusBadge(rec.status)" size="sm">
             {{ aiCallStatusLabel(rec.status) }}

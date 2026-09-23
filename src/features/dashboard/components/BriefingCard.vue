@@ -125,7 +125,9 @@ defineEmits<{
     <div v-if="special.beforeStart" class="briefing-center-prompt">
       <div class="briefing-empty-icon"><Clock :size="28" /></div>
       <span class="briefing-empty-title">今天的学习时间还没开始</span>
-      <span class="briefing-empty-desc">每日开始时间为 {{ special.dailyStartTimeLabel }}，到点后这里会展示今日简报。</span>
+      <span class="briefing-empty-desc"
+        >每日开始时间为 {{ special.dailyStartTimeLabel }}，到点后这里会展示今日简报。</span
+      >
     </div>
 
     <div v-else-if="special.isRestDay" class="briefing-center-prompt">
@@ -140,14 +142,21 @@ defineEmits<{
       <span class="briefing-empty-desc">{{ special.excludedReasonLabel }}</span>
     </div>
 
-    <div v-else-if="today.allCompleted" class="briefing-center-prompt clickable" @click="$emit('goToday')">
+    <div
+      v-else-if="today.allCompleted"
+      class="briefing-center-prompt clickable"
+      @click="$emit('goToday')"
+    >
       <div class="briefing-empty-icon briefing-done-icon"><CheckCircle2 :size="28" /></div>
       <span class="briefing-empty-title">今日计划已全部完成</span>
       <span class="briefing-empty-desc">辛苦了！可前往复盘记录今日学习情况。</span>
     </div>
 
     <!-- 简报加载中 -->
-    <div v-else-if="briefing.loading && !briefing.exists && today.tasks.length === 0" class="briefing-loading">
+    <div
+      v-else-if="briefing.loading && !briefing.exists && today.tasks.length === 0"
+      class="briefing-loading"
+    >
       <LoadingSpinner :size="24" label="正在生成今日简报…" />
     </div>
 
@@ -161,12 +170,19 @@ defineEmits<{
         <div class="briefing-empty-text">
           <span class="briefing-empty-title">昨日复盘缺失</span>
           <span class="briefing-empty-desc">
-            {{ briefing.withinMakeupWindow
-              ? '完成昨日复盘后即可生成今日 AI 简报与建议'
-              : '已错过补复盘窗口，今日不提供 AI 建议' }}
+            {{
+              briefing.withinMakeupWindow
+                ? "完成昨日复盘后即可生成今日 AI 简报与建议"
+                : "已错过补复盘窗口，今日不提供 AI 建议"
+            }}
           </span>
         </div>
-        <Button v-if="briefing.withinMakeupWindow" variant="primary" size="sm" @click="$emit('goReview')">
+        <Button
+          v-if="briefing.withinMakeupWindow"
+          variant="primary"
+          size="sm"
+          @click="$emit('goReview')"
+        >
           去补复盘
           <ChevronRight :size="14" />
         </Button>
@@ -237,7 +253,10 @@ defineEmits<{
         </div>
         <div class="mini-week-stats">
           <span class="mini-week-percent">{{ week.progress }}%</span>
-          <span class="mini-week-detail">{{ week.studiedDays }}/{{ week.plannedDays }} 天 · 剩余 {{ week.remainingHours }} 小时 · {{ week.onTrackLabel }}</span>
+          <span class="mini-week-detail"
+            >{{ week.studiedDays }}/{{ week.plannedDays }} 天 · 剩余 {{ week.remainingHours }} 小时
+            · {{ week.onTrackLabel }}</span
+          >
         </div>
         <ProgressBar
           :value="week.progress"
@@ -269,7 +288,14 @@ defineEmits<{
 
     <!-- 无简报且无任务：空状态 -->
     <div
-      v-if="!special.active && !today.allCompleted && !briefing.exists && today.tasks.length === 0 && !briefing.needYesterdayReview && !briefing.loading"
+      v-if="
+        !special.active &&
+        !today.allCompleted &&
+        !briefing.exists &&
+        today.tasks.length === 0 &&
+        !briefing.needYesterdayReview &&
+        !briefing.loading
+      "
       class="briefing-center-prompt"
     >
       <div class="briefing-empty-icon"><Sparkles :size="28" /></div>

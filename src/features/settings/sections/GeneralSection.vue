@@ -96,9 +96,7 @@ onMounted(() => {
           <Check v-if="closeAction === 'quit'" :size="14" class="close-action-check" />
         </button>
       </div>
-      <p v-if="!isTauriEnv" class="field-hint">
-        当前环境不支持系统设置（仅在桌面应用中可用）
-      </p>
+      <p v-if="!isTauriEnv" class="field-hint">当前环境不支持系统设置（仅在桌面应用中可用）</p>
     </div>
   </Card>
 </template>

@@ -1,4 +1,4 @@
-﻿//! State 数据层 — 读取/解析 `state/current.state` (TOML)
+//! State 数据层 — 读取/解析 `state/current.state` (TOML)
 //!
 //! 对应前端 TypeScript 类型: `types/state.ts`
 
@@ -73,6 +73,62 @@ pub enum SubjectKey {
     English,
     Politics,
     Professional,
+}
+
+impl SubjectKey {
+    /// 全部科目（固定顺序：数学 → 英语 → 政治 → 专业课）
+    ///
+    /// 遍历全部科目的唯一真源：需要「所有科目」时用 `SubjectKey::ALL`，
+    /// 不要在各处重复硬编码 `["math", "english", "politics", "professional"]`。
+    pub const ALL: [SubjectKey; 4] = [
+        SubjectKey::Math,
+        SubjectKey::English,
+        SubjectKey::Politics,
+        SubjectKey::Professional,
+    ];
+
+    /// 设置 / Plan / State 中的科目键（snake_case，与 serde 表示一致）
+    ///
+    /// 这是各处字符串科目键的唯一真源；`key_str` / `subject_tag` 一类的
+    /// 平行映射都应改为调用本方法。
+    pub fn key(&self) -> &'static str {
+        match self {
+            SubjectKey::Math => "math",
+            SubjectKey::English => "english",
+            SubjectKey::Politics => "politics",
+            SubjectKey::Professional => "professional",
+        }
+    }
+
+    /// 科目中文显示名（用于 prompt、日志与前端展示文案）
+    pub fn label(&self) -> &'static str {
+        match self {
+            SubjectKey::Math => "数学",
+            SubjectKey::English => "英语",
+            SubjectKey::Politics => "政治",
+            SubjectKey::Professional => "专业课",
+        }
+    }
+
+    /// State 中对应科目的只读状态
+    pub fn state<'a>(&self, state: &'a StudyState) -> &'a SubjectState {
+        match self {
+            SubjectKey::Math => &state.subjects.math,
+            SubjectKey::English => &state.subjects.english,
+            SubjectKey::Politics => &state.subjects.politics,
+            SubjectKey::Professional => &state.subjects.professional,
+        }
+    }
+
+    /// State 中对应科目的可变状态
+    pub fn state_mut<'a>(&self, state: &'a mut StudyState) -> &'a mut SubjectState {
+        match self {
+            SubjectKey::Math => &mut state.subjects.math,
+            SubjectKey::English => &mut state.subjects.english,
+            SubjectKey::Politics => &mut state.subjects.politics,
+            SubjectKey::Professional => &mut state.subjects.professional,
+        }
+    }
 }
 
 /// 学习阶段
@@ -663,5 +719,40 @@ mod tests {
         let end = "2026-07-30T14:30:00+08:00";
         let diff = minutes_between_iso(start, end).expect("应可解析并求差");
         assert_eq!(diff, 0);
+    }
+
+    /// SubjectKey::{key,label,state,state_mut} 是科目映射的唯一真源：
+    /// 新增科目时只需改这一处，其余调用点由编译期穷尽检查兜住。
+    #[test]
+    fn subject_key_mappings_are_single_source_of_truth() {
+        for key in SubjectKey::ALL {
+            // key() 必须与 serde 序列化一致（各处用字符串键读写设置/Plan/State）
+            let serialized = serde_json::to_value(&key).expect("应可序列化");
+            assert_eq!(
+                serialized,
+                serde_json::Value::String(key.key().to_string()),
+                "key() 必须与 serde 表示一致"
+            );
+            assert!(!key.label().is_empty(), "显示名不应为空");
+
+            // state()/state_mut() 必须指向同一科目：写一个再读一个应能对上
+            let mut state = StudyState::default();
+            key.state_mut(&mut state).active = true;
+            assert!(
+                key.state(&state).active,
+                "state()/state_mut() 应指向同一科目"
+            );
+        }
+
+        // 键与显示名都不允许重复（重复即映射写错）
+        let mut keys: Vec<&str> = SubjectKey::ALL.iter().map(|k| k.key()).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), SubjectKey::ALL.len(), "科目键不应重复");
+
+        let mut labels: Vec<&str> = SubjectKey::ALL.iter().map(|k| k.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), SubjectKey::ALL.len(), "科目显示名不应重复");
     }
 }

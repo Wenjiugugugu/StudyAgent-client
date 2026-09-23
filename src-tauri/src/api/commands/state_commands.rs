@@ -113,6 +113,18 @@ pub async fn update_task_status(
         new_status.clone(),
     )?;
 
+    // 同步回日计划文件。current.state 只保存当前日任务，跨日会被替换；若不持久化，
+    // 系统在缺失复盘时无法可靠还原用户当天已经勾选的完成状态。
+    match crate::data::plan::read_daily_plan(&data_dir, &date) {
+        Ok(mut plan) => {
+            if let Some(task) = plan.data.tasks.iter_mut().find(|task| task.id == task_id) {
+                task.status = new_status.clone();
+                crate::data::plan::save_daily_plan(&data_dir, &plan)?;
+            }
+        }
+        Err(error) => log::warn!("同步任务状态到日计划失败 {}: {}", task_id, error),
+    }
+
     // 标记为 done 时，自动更新科目进度
     if new_status == crate::data::state::TaskStatus::Done {
         if let Some(ref subject_key) = task_subject {

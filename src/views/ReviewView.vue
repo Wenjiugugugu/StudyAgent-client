@@ -3,13 +3,15 @@ import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
-import { todayString, yesterdayString, prevDateString, weekdayName, getWeekStart } from "@/utils/date";
+import {
+  todayString,
+  yesterdayString,
+  prevDateString,
+  weekdayName,
+  getWeekStart,
+} from "@/utils/date";
 import * as api from "@/api";
-import Card from "@/components/ui/Card.vue";
-import Badge from "@/components/ui/Badge.vue";
-import Button from "@/components/ui/Button.vue";
-import EmptyState from "@/components/ui/EmptyState.vue";
-import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
+import { Badge, Button, Card, EmptyState, LoadingSpinner } from "@/components/ui";
 import {
   CheckCircle2,
   Circle,
@@ -89,8 +91,8 @@ function goToday() {
 const isToday = computed(() => selectedDate.value === todayDate);
 const isYesterday = computed(() => selectedDate.value === yesterdayDate.value);
 const isFuture = computed(() => selectedDate.value > todayDate);
-const isOlderThanYesterday = computed(() =>
-  selectedDate.value < yesterdayDate.value && selectedDate.value < todayDate
+const isOlderThanYesterday = computed(
+  () => selectedDate.value < yesterdayDate.value && selectedDate.value < todayDate
 );
 
 // ── 休息日 / 排除日判断 ──
@@ -109,7 +111,9 @@ async function checkSelectedDateExcluded() {
     const ex = wp.data?.excluded_days?.find((d) => d.date === selectedDate.value);
     if (ex) {
       selectedDateExcluded.value = true;
-      const label = { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[ex.reason_type] ?? "特殊情况";
+      const label =
+        { travel: "外出旅行", sick: "生病", exam: "考试", other: "其他" }[ex.reason_type] ??
+        "特殊情况";
       selectedDateExcludedReason.value = ex.note ? `${label}（${ex.note}）` : label;
     }
   } catch {
@@ -128,7 +132,10 @@ const loading = ref(true);
 // 数组顺序即展示顺序。每条步骤都必须对应后端的真实工作：
 // 旧版「正在应用修改」在 submit_review 返回后由前端瞬时切步（耗时恒为 0ms），
 // 用户看不到，改由「正在保存复盘」一并覆盖（保存复盘文件 + 更新 State 状态）。
-interface SubmitStep { key: string; label: string; }
+interface SubmitStep {
+  key: string;
+  label: string;
+}
 const SUBMIT_STEPS: SubmitStep[] = [
   { key: "analyzing", label: "正在保存复盘" },
   { key: "adjusting", label: "正在调整" },
@@ -139,7 +146,7 @@ const DEFAULT_SUBMIT_STEP_KEYS = ["analyzing", "syncing"];
 /** 按 key 构造步骤列表：避免用数组下标硬编码步骤（下标会随步骤增删而失效） */
 function buildSubmitSteps(keys: string[]): SubmitStep[] {
   return keys
-    .map(key => SUBMIT_STEPS.find(s => s.key === key))
+    .map((key) => SUBMIT_STEPS.find((s) => s.key === key))
     .filter((s): s is SubmitStep => !!s);
 }
 /** 当前展示的步骤列表（无需 AI 调整时动态省略「正在调整」步骤） */
@@ -157,22 +164,22 @@ function setSubmitStep(i: number) {
 async function advanceSubmitStep(i: number) {
   const shownFor = Date.now() - submitStepShownAt;
   if (submitStepIndex.value >= 0 && i !== submitStepIndex.value && shownFor < SUBMIT_STEP_MIN_MS) {
-    await new Promise(resolve => setTimeout(resolve, SUBMIT_STEP_MIN_MS - shownFor));
+    await new Promise((resolve) => setTimeout(resolve, SUBMIT_STEP_MIN_MS - shownFor));
   }
   setSubmitStep(i);
 }
 /** 确保某步骤存在于当前列表（重试/恢复时补充），返回其在列表中的索引 */
 function ensureSubmitStep(key: string): number {
-  let idx = submitSteps.value.findIndex(s => s.key === key);
+  let idx = submitSteps.value.findIndex((s) => s.key === key);
   if (idx === -1) {
-    const step = SUBMIT_STEPS.find(s => s.key === key);
+    const step = SUBMIT_STEPS.find((s) => s.key === key);
     if (step) {
       submitSteps.value.push(step);
       // 按 SUBMIT_STEPS 的规范顺序重排：动态插入的步骤不能排到「同步滴答」之后
       const order = new Map(SUBMIT_STEPS.map((s, i) => [s.key, i]));
       submitSteps.value.sort((a, b) => (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0));
     }
-    idx = submitSteps.value.findIndex(s => s.key === key);
+    idx = submitSteps.value.findIndex((s) => s.key === key);
   }
   return idx;
 }
@@ -248,10 +255,8 @@ const beforeStartTimeToday = computed(() => {
 
 // ── 补复盘条件 ──
 // 仅允许对「昨天」补复盘，且昨天没有复盘 + 当前时间在今天的学习开始时间之前
-const canBackfill = computed(() =>
-  isYesterday.value &&
-  !existingReview.value &&
-  beforeStartTimeToday.value
+const canBackfill = computed(
+  () => isYesterday.value && !existingReview.value && beforeStartTimeToday.value
 );
 
 // 是否允许填写复盘表单
@@ -319,7 +324,7 @@ function formatHours(hours: number): string {
 /** 读取某任务在复盘记录中的估时（优先 task_reviews，回退当日计划） */
 function taskEstimatedHours(taskId: string, tr?: TaskReviewEntry): number {
   if (tr?.estimated_hours != null && tr.estimated_hours > 0) return tr.estimated_hours;
-  return allTasks.value.find(t => t.id === taskId)?.estimated_hours ?? 0;
+  return allTasks.value.find((t) => t.id === taskId)?.estimated_hours ?? 0;
 }
 
 /** 读取某任务在复盘记录中的实际用时（分钟） */
@@ -329,11 +334,11 @@ function taskActualFromReview(_taskId: string, tr?: TaskReviewEntry): number {
 
 // ── Computed ──
 const incompleteTasks = computed(() => {
-  return allTasks.value.filter(t => !taskCompleted.value[t.id]);
+  return allTasks.value.filter((t) => !taskCompleted.value[t.id]);
 });
 
 const doneTasks = computed(() => {
-  return allTasks.value.filter(t => taskCompleted.value[t.id]);
+  return allTasks.value.filter((t) => taskCompleted.value[t.id]);
 });
 
 // ── Labels ──
@@ -382,19 +387,24 @@ const difficultyOptions = [
 ];
 
 function subjectLabel(s: string): string {
-  const m: Record<string, string> = { math: "数学", english: "英语", politics: "政治", professional: "专业课" };
+  const m: Record<string, string> = {
+    math: "数学",
+    english: "英语",
+    politics: "政治",
+    professional: "专业课",
+  };
   return m[s] ?? s;
 }
 
 // 反查任务标题（用于复盘记录展示，优先用 task_reviews 自带的 title，再回退到当日计划）
 function findTaskTitle(taskId: string, tr?: TaskReviewEntry): string {
   if (tr?.title) return tr.title;
-  return allTasks.value.find(t => t.id === taskId)?.title ?? "(任务已删除)";
+  return allTasks.value.find((t) => t.id === taskId)?.title ?? "(任务已删除)";
 }
 
 function findTaskSubject(taskId: string, tr?: TaskReviewEntry): string {
   if (tr?.subject) return tr.subject;
-  return allTasks.value.find(t => t.id === taskId)?.subject ?? "";
+  return allTasks.value.find((t) => t.id === taskId)?.subject ?? "";
 }
 
 // ── 计划外学习：基于进度表章节的选择器 ──
@@ -503,21 +513,46 @@ const knowledgeNodes = computed<ProgressNode[]>(() =>
 );
 const hasChapters = computed(() => chapterNodes.value.length > 0);
 
+/** 章节标题 → id；重复标题标记为歧义，避免错误挂靠知识点 */
+const chapterIdByTitle = computed(() => {
+  const result = new Map<string, string | null>();
+  for (const chapter of chapterNodes.value) {
+    const title = chapter.title.trim();
+    if (!title) continue;
+    if (result.has(title)) result.set(title, null);
+    else result.set(title, chapter.id);
+  }
+  return result;
+});
+
+/**
+ * 读取知识点的章节归属。
+ *
+ * 新数据优先使用 parent_id；历史数据若 parent_id 缺失/失效，则用 phase
+ * 与章节标题兜底。后端加载时也会持久化修复，这里保证旧数据在本次打开复盘
+ * 时无需重启或手动编辑进度表就能展开。
+ */
+function parentChapterId(node: ProgressNode): string | null {
+  if (node.parent_id && chapterNodes.value.some((chapter) => chapter.id === node.parent_id)) {
+    return node.parent_id;
+  }
+  return chapterIdByTitle.value.get(node.phase.trim()) ?? null;
+}
+
 /** 章节 id → 其直属知识点 */
 const knowledgeByChapter = computed(() => {
   const m = new Map<string, ProgressNode[]>();
   for (const k of knowledgeNodes.value) {
-    if (!k.parent_id) continue;
-    const arr = m.get(k.parent_id);
+    const chapterId = parentChapterId(k);
+    if (!chapterId) continue;
+    const arr = m.get(chapterId);
     if (arr) arr.push(k);
-    else m.set(k.parent_id, [k]);
+    else m.set(chapterId, [k]);
   }
   return m;
 });
 /** 未挂到任何章节下的知识点（孤儿节点，单独区段展示） */
-const orphanKnowledge = computed(() =>
-  knowledgeNodes.value.filter((k) => !k.parent_id)
-);
+const orphanKnowledge = computed(() => knowledgeNodes.value.filter((k) => !parentChapterId(k)));
 function childrenOfChapter(chapterId: string): ProgressNode[] {
   return knowledgeByChapter.value.get(chapterId) ?? [];
 }
@@ -541,9 +576,7 @@ const unmatchedEntries = computed(() =>
     if (!tables.length) return true;
     // 只要能在该科任意一张表里匹配到就不算“未匹配”，避免切换查看表时历史记录被误判
     return !tables.some((t) =>
-      t.nodes.some(
-        (n) => n.id === oc.node_id || (!oc.node_id && n.title === oc.chapter_reached)
-      )
+      t.nodes.some((n) => n.id === oc.node_id || (!oc.node_id && n.title === oc.chapter_reached))
     );
   })
 );
@@ -632,7 +665,7 @@ const ocTailIdx = computed<number>(() => {
 /** 完成区最后一个已学章节（目前进度锚点） */
 const ocTailUnit = computed<ProgressNode | null>(() => {
   const i = ocTailIdx.value;
-  return i >= 0 ? ocUnits.value[i] ?? null : null;
+  return i >= 0 ? (ocUnits.value[i] ?? null) : null;
 });
 /** 首个待学章节（自动定位目标） */
 const ocNextUnit = computed<ProgressNode | null>(() => {
@@ -643,7 +676,11 @@ const ocNextUnit = computed<ProgressNode | null>(() => {
 
 function ocSnapshotStatus(subject: string, tableId: string, nodeId: string): ProgressNodeStatus {
   const s = ocOrig.value[`${subject}|${tableId}|${nodeId}`];
-  return s === "pending" || s === "learning" || s === "basic" || s === "reinforcing" || s === "mastered"
+  return s === "pending" ||
+    s === "learning" ||
+    s === "basic" ||
+    s === "reinforcing" ||
+    s === "mastered"
     ? (s as ProgressNodeStatus)
     : "pending";
 }
@@ -903,13 +940,20 @@ async function createChapter(subject: string) {
   newChapterTitle.value = "";
 }
 
-function subjectBadgeVariant(s: string): "math" | "english" | "politics" | "professional" | "default" {
+function subjectBadgeVariant(
+  s: string
+): "math" | "english" | "politics" | "professional" | "default" {
   const set = new Set(["math", "english", "politics", "professional"]);
-  return set.has(s) ? (s as any) : "default";
+  return set.has(s) ? (s as "math" | "english" | "politics" | "professional") : "default";
 }
 
 function statusLabel(s: string): string {
-  const m: Record<string, string> = { completed: "已完成", partial: "部分完成", incomplete: "未完成", abandoned: "放弃" };
+  const m: Record<string, string> = {
+    completed: "已完成",
+    partial: "部分完成",
+    incomplete: "未完成",
+    abandoned: "放弃",
+  };
   return m[s] ?? s;
 }
 
@@ -934,7 +978,7 @@ function difficultyLabel(s: string): string {
 function toggleBlocker(taskId: string, value: string) {
   const current = taskBlockers.value[taskId] ?? [];
   if (current.includes(value)) {
-    taskBlockers.value[taskId] = current.filter(v => v !== value);
+    taskBlockers.value[taskId] = current.filter((v) => v !== value);
   } else {
     taskBlockers.value[taskId] = [...current, value];
   }
@@ -995,12 +1039,12 @@ function initFromReview(review: ReviewRecord) {
   // 计划外学习记录（用于勾选回显 + 只读展示）
   if (review.overcompletion?.length) {
     hasOvercompletion.value = true;
-    overcompletions.value = review.overcompletion.map(oc => ({ ...oc }));
+    overcompletions.value = review.overcompletion.map((oc) => ({ ...oc }));
     // 默认定位到有进度表的科目（优先已记录科目的科目），便于直接回显勾选态
     activeSubject.value =
-      review.overcompletion.find(oc => hasTable(oc.subject))?.subject
-      ?? OC_SUBJECTS.find(hasTable)
-      ?? "math";
+      review.overcompletion.find((oc) => hasTable(oc.subject))?.subject ??
+      OC_SUBJECTS.find(hasTable) ??
+      "math";
   }
 }
 
@@ -1029,9 +1073,12 @@ function resetForm() {
 // 步骤顺序：0 完成情况 → 1 未完成原因（可跳过）→ 2 整体感受 → 3 最大困难 → 4 计划外学习
 function canNext(): boolean {
   switch (step.value) {
-    case 0: return allTasks.value.length > 0;
-    case 2: return !!overallFeeling.value;
-    default: return true;
+    case 0:
+      return allTasks.value.length > 0;
+    case 2:
+      return !!overallFeeling.value;
+    default:
+      return true;
   }
 }
 
@@ -1075,7 +1122,7 @@ async function doSubmit() {
   submitSteps.value = buildSubmitSteps(DEFAULT_SUBMIT_STEP_KEYS);
   setSubmitStep(0); // 正在保存复盘
   try {
-    const taskReviews: TaskReviewEntry[] = allTasks.value.map(t => ({
+    const taskReviews: TaskReviewEntry[] = allTasks.value.map((t) => ({
       task_id: t.id,
       status: taskCompleted.value[t.id] ? "completed" : "incomplete",
       completion: taskCompleted.value[t.id] ? 1.0 : 0.0,
@@ -1087,7 +1134,8 @@ async function doSubmit() {
       subject: t.subject,
       priority: t.priority,
       // 仅在启用「记录学习时长」时持久化估时与实际用时
-      estimated_hours: timeTrackingEnabled.value && t.estimated_hours > 0 ? t.estimated_hours : undefined,
+      estimated_hours:
+        timeTrackingEnabled.value && t.estimated_hours > 0 ? t.estimated_hours : undefined,
       actual_minutes: timeTrackingEnabled.value ? (taskActualMinutes.value[t.id] ?? 0) : undefined,
     }));
 
@@ -1100,7 +1148,7 @@ async function doSubmit() {
 
     // 仅在用户开启计划外学习且填写了有效章节时提交
     const validOvercompletions = hasOvercompletion.value
-      ? overcompletions.value.filter(oc => oc.subject && oc.chapter_reached.trim())
+      ? overcompletions.value.filter((oc) => oc.subject && oc.chapter_reached.trim())
       : [];
 
     const result = await api.submitReview({
@@ -1143,9 +1191,7 @@ async function doSubmit() {
 async function cancelRegeneration() {
   try {
     const found = await api.cancelAiRequest(api.AI_CANCEL_KEYS.planner);
-    regenMessage.value = found
-      ? "正在取消 AI 调整，请稍候…"
-      : "未找到进行中的 AI 调整请求";
+    regenMessage.value = found ? "正在取消 AI 调整，请稍候…" : "未找到进行中的 AI 调整请求";
   } catch {
     regenMessage.value = "取消失败，请稍后再试";
   }
@@ -1390,38 +1436,30 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           <span v-else-if="isFuture" class="date-tag future-tag">未来</span>
           <span v-else class="date-tag past-tag">历史</span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          :disabled="isToday"
-          @click="goNextDay"
-        >
+        <Button variant="ghost" size="sm" :disabled="isToday" @click="goNextDay">
           <ChevronRight :size="16" />
         </Button>
       </div>
       <div class="date-actions">
         <!-- 历史复盘下拉 -->
         <div class="history-dropdown-wrapper">
-          <Button
-            variant="ghost"
-            size="sm"
-            @click="showHistoryDropdown = !showHistoryDropdown"
-          >
+          <Button variant="ghost" size="sm" @click="showHistoryDropdown = !showHistoryDropdown">
             <History :size="14" />
             历史复盘
           </Button>
           <div v-if="showHistoryDropdown" class="history-dropdown" @click.stop>
             <div class="dropdown-header">选择日期查看复盘</div>
-            <div v-if="sortedReviewDates.length === 0" class="dropdown-empty">
-              暂无复盘记录
-            </div>
+            <div v-if="sortedReviewDates.length === 0" class="dropdown-empty">暂无复盘记录</div>
             <button
               v-for="date in sortedReviewDates"
               :key="date"
               type="button"
               class="dropdown-item"
               :class="{ active: date === selectedDate }"
-              @click="jumpToReviewDate(date); showHistoryDropdown = false"
+              @click="
+                jumpToReviewDate(date);
+                showHistoryDropdown = false;
+              "
             >
               {{ date }}
               <span v-if="date === todayDate" class="item-tag">今天</span>
@@ -1429,698 +1467,935 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             </button>
           </div>
         </div>
-        <Button v-if="!isToday" variant="ghost" size="sm" @click="goToday">
-          回到今天
-        </Button>
+        <Button v-if="!isToday" variant="ghost" size="sm" @click="goToday"> 回到今天 </Button>
       </div>
     </div>
 
     <!-- Loading -->
     <transition :name="dateTransitionName" mode="out-in">
-    <div :key="selectedDate" class="review-content">
-    <div v-if="loading" class="loading-msg">加载中…</div>
+      <div :key="selectedDate" class="review-content">
+        <div v-if="loading" class="loading-msg">加载中…</div>
 
-    <!-- Future date -->
-    <Card v-else-if="isFuture" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><Calendar :size="40" /></div>
-        <h1 class="gate-title">未来日期</h1>
-        <p class="gate-desc">无法为未来日期创建复盘。</p>
-        <Button variant="primary" size="sm" @click="goToday">回到今天</Button>
-      </div>
-    </Card>
-
-    <!-- Today: before end time -->
-    <Card v-else-if="isToday && beforeEndTime" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><Clock :size="40" /></div>
-        <h1 class="gate-title">今日尚未结束</h1>
-        <p class="gate-desc">每日复盘需在 {{ endTime }} 之后进行。</p>
-        <p class="gate-hint">请在学习结束后再来复盘。</p>
-      </div>
-    </Card>
-
-    <!-- 休息日：无需复盘 -->
-    <Card v-else-if="isCurrentDateRestDay && !existingReview" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><Coffee :size="40" /></div>
-        <h1 class="gate-title">{{ selectedDate }} 是休息日</h1>
-        <p class="gate-desc">休息日无需复盘，好好放松一下吧。</p>
-        <Button v-if="!isToday" variant="secondary" size="sm" @click="goToday">回到今天</Button>
-      </div>
-    </Card>
-
-    <!-- 排除日：无需复盘 -->
-    <Card v-else-if="selectedDateExcluded && !existingReview" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><Ban :size="40" /></div>
-        <h1 class="gate-title">{{ selectedDate }} 是排除日</h1>
-        <p class="gate-desc">{{ selectedDateExcludedReason || '特殊情况排除日，无需复盘。' }}</p>
-        <Button v-if="!isToday" variant="secondary" size="sm" @click="goToday">回到今天</Button>
-      </div>
-    </Card>
-
-    <!-- No plan -->
-    <EmptyState
-      v-else-if="!plan"
-      :title="`${selectedDate} 没有学习计划`"
-      :description="isToday ? '今天还没有学习计划：周计划已内置，可在「今日计划」页一键生成，日计划会自动拆分' : '该日无学习计划，无法复盘'"
-    >
-      <template #actions>
-        <Button v-if="isToday" variant="primary" @click="router.push({ name: 'plan' })">
-          去今日计划生成
-        </Button>
-        <Button v-if="!isToday" variant="secondary" @click="goToday">回到今天</Button>
-      </template>
-    </EmptyState>
-
-    <!-- Yesterday without review and past start_time (cannot backfill) -->
-    <Card v-else-if="isYesterday && !existingReview && !beforeStartTimeToday" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><AlertTriangle :size="40" /></div>
-        <h1 class="gate-title">无法补复盘</h1>
-        <p class="gate-desc">昨天未进行复盘，但今日学习已开始。</p>
-        <p class="gate-hint">补复盘仅可在今日学习开始时间（{{ startTime }}）之前进行。</p>
-      </div>
-    </Card>
-
-    <!-- Older than yesterday without review -->
-    <Card v-else-if="isOlderThanYesterday && !existingReview" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><Calendar :size="40" /></div>
-        <h1 class="gate-title">无复盘记录</h1>
-        <p class="gate-desc">{{ selectedDate }} 没有复盘记录。</p>
-        <p class="gate-hint">仅可对昨天补复盘，更早的日期无法补录。</p>
-      </div>
-    </Card>
-
-    <!-- Submitting / AI regenerating -->
-    <!-- 置于「已提交」分支之前：复盘已保存但 AI 仍在调整时，切页回来也优先显示调整中页面 -->
-    <Card v-if="submitStepIndex >= 0 || regenerating" padding="lg" class="gate-card">
-      <div class="gate-hero">
-        <div class="gate-icon"><LoadingSpinner :size="40" /></div>
-        <h1 class="gate-title">{{ regenerating ? '正在调整后续计划…' : '正在提交复盘…' }}</h1>
-        <p class="gate-desc">请稍候，正在处理你的学习数据。</p>
-        <div class="submit-steps">
-          <div
-            v-for="(s, i) in submitSteps"
-            :key="s.key"
-            class="submit-step"
-            :class="{ done: i < submitStepIndex, active: i === submitStepIndex, pending: i > submitStepIndex }"
-          >
-            <span class="submit-step-icon">
-              <CheckCircle2 v-if="i < submitStepIndex" :size="16" />
-              <LoadingSpinner v-else-if="i === submitStepIndex" :size="16" />
-              <span v-else class="submit-step-dot"></span>
-            </span>
-            <span class="submit-step-label">{{ s.label }}</span>
+        <!-- Future date -->
+        <Card v-else-if="isFuture" padding="lg" class="gate-card">
+          <div class="gate-hero">
+            <div class="gate-icon"><Calendar :size="40" /></div>
+            <h1 class="gate-title">未来日期</h1>
+            <p class="gate-desc">无法为未来日期创建复盘。</p>
+            <Button variant="primary" size="sm" @click="goToday">回到今天</Button>
           </div>
-        </div>
-        <Button v-if="regenerating" variant="ghost" size="sm" class="gate-cancel-btn" @click="cancelRegeneration">
-          取消本次调整
-        </Button>
-      </div>
-    </Card>
+        </Card>
 
-    <!-- Already submitted / read-only review -->
-    <template v-else-if="submitted && existingReview">
-      <Card padding="lg" class="done-card">
-        <div class="done-hero">
-          <div class="done-badge"><Check :size="32" /></div>
-          <h1 class="done-title">
-            {{ isToday ? '今日复盘已完成' : `${selectedDate} 复盘记录` }}
-          </h1>
-          <p class="done-desc">{{ isToday ? '今天的结构化复盘已保存。' : '查看历史复盘记录。' }}</p>
+        <!-- Today: before end time -->
+        <Card v-else-if="isToday && beforeEndTime" padding="lg" class="gate-card">
+          <div class="gate-hero">
+            <div class="gate-icon"><Clock :size="40" /></div>
+            <h1 class="gate-title">今日尚未结束</h1>
+            <p class="gate-desc">每日复盘需在 {{ endTime }} 之后进行。</p>
+            <p class="gate-hint">请在学习结束后再来复盘。</p>
+          </div>
+        </Card>
 
-          <!-- 重排提示 -->
-          <div v-if="regenMessage" class="regen-banner" :class="{ 'regen-loading': regenerating, 'regen-error': regenFailed }">
-            <AlertTriangle :size="18" v-if="regenerating" />
-            <CheckCircle2 :size="18" v-else-if="!regenFailed" />
-            <AlertTriangle :size="18" v-else />
-            <span>{{ regenMessage }}</span>
-            <!-- 变更明细：常态化展示调整提示，鼠标悬停查看具体修改了哪些内容 -->
-            <div
-              v-if="regenChanges.length && !regenerating"
-              class="regen-details-trigger"
+        <!-- 休息日：无需复盘 -->
+        <Card v-else-if="isCurrentDateRestDay && !existingReview" padding="lg" class="gate-card">
+          <div class="gate-hero">
+            <div class="gate-icon"><Coffee :size="40" /></div>
+            <h1 class="gate-title">{{ selectedDate }} 是休息日</h1>
+            <p class="gate-desc">休息日无需复盘，好好放松一下吧。</p>
+            <Button v-if="!isToday" variant="secondary" size="sm" @click="goToday">回到今天</Button>
+          </div>
+        </Card>
+
+        <!-- 排除日：无需复盘 -->
+        <Card v-else-if="selectedDateExcluded && !existingReview" padding="lg" class="gate-card">
+          <div class="gate-hero">
+            <div class="gate-icon"><Ban :size="40" /></div>
+            <h1 class="gate-title">{{ selectedDate }} 是排除日</h1>
+            <p class="gate-desc">
+              {{ selectedDateExcludedReason || "特殊情况排除日，无需复盘。" }}
+            </p>
+            <Button v-if="!isToday" variant="secondary" size="sm" @click="goToday">回到今天</Button>
+          </div>
+        </Card>
+
+        <!-- No plan -->
+        <EmptyState
+          v-else-if="!plan"
+          :title="`${selectedDate} 没有学习计划`"
+          :description="
+            isToday
+              ? '今天还没有学习计划：周计划已内置，可在「今日计划」页一键生成，日计划会自动拆分'
+              : '该日无学习计划，无法复盘'
+          "
+        >
+          <template #actions>
+            <Button v-if="isToday" variant="primary" @click="router.push({ name: 'plan' })">
+              去今日计划生成
+            </Button>
+            <Button v-if="!isToday" variant="secondary" @click="goToday">回到今天</Button>
+          </template>
+        </EmptyState>
+
+        <!-- Yesterday without review and past start_time (cannot backfill) -->
+        <Card
+          v-else-if="isYesterday && !existingReview && !beforeStartTimeToday"
+          padding="lg"
+          class="gate-card"
+        >
+          <div class="gate-hero">
+            <div class="gate-icon"><AlertTriangle :size="40" /></div>
+            <h1 class="gate-title">无法补复盘</h1>
+            <p class="gate-desc">昨天未进行复盘，但今日学习已开始。</p>
+            <p class="gate-hint">补复盘仅可在今日学习开始时间（{{ startTime }}）之前进行。</p>
+          </div>
+        </Card>
+
+        <!-- Older than yesterday without review -->
+        <Card v-else-if="isOlderThanYesterday && !existingReview" padding="lg" class="gate-card">
+          <div class="gate-hero">
+            <div class="gate-icon"><Calendar :size="40" /></div>
+            <h1 class="gate-title">无复盘记录</h1>
+            <p class="gate-desc">{{ selectedDate }} 没有复盘记录。</p>
+            <p class="gate-hint">仅可对昨天补复盘，更早的日期无法补录。</p>
+          </div>
+        </Card>
+
+        <!-- Submitting / AI regenerating -->
+        <!-- 置于「已提交」分支之前：复盘已保存但 AI 仍在调整时，切页回来也优先显示调整中页面 -->
+        <Card v-if="submitStepIndex >= 0 || regenerating" padding="lg" class="gate-card">
+          <div class="gate-hero">
+            <div class="gate-icon"><LoadingSpinner :size="40" /></div>
+            <h1 class="gate-title">{{ regenerating ? "正在调整后续计划…" : "正在提交复盘…" }}</h1>
+            <p class="gate-desc">请稍候，正在处理你的学习数据。</p>
+            <div class="submit-steps">
+              <div
+                v-for="(s, i) in submitSteps"
+                :key="s.key"
+                class="submit-step"
+                :class="{
+                  done: i < submitStepIndex,
+                  active: i === submitStepIndex,
+                  pending: i > submitStepIndex,
+                }"
+              >
+                <span class="submit-step-icon">
+                  <CheckCircle2 v-if="i < submitStepIndex" :size="16" />
+                  <LoadingSpinner v-else-if="i === submitStepIndex" :size="16" />
+                  <span v-else class="submit-step-dot"></span>
+                </span>
+                <span class="submit-step-label">{{ s.label }}</span>
+              </div>
+            </div>
+            <Button
+              v-if="regenerating"
+              variant="ghost"
+              size="sm"
+              class="gate-cancel-btn"
+              @click="cancelRegeneration"
             >
-              <Info :size="13" />
-              <span>悬停查看变更</span>
-              <div class="regen-details-popover">
-                <div class="regen-details-inner">
-                  <div v-if="regenFailed" class="regen-detail-fallback">
-                    本次为兜底安排（按未完成任务程序化分配），各日任务如下：
+              取消本次调整
+            </Button>
+          </div>
+        </Card>
+
+        <!-- Already submitted / read-only review -->
+        <template v-else-if="submitted && existingReview">
+          <Card padding="lg" class="done-card">
+            <div class="done-hero">
+              <div class="done-badge"><Check :size="32" /></div>
+              <h1 class="done-title">
+                {{
+                  existingReview.meta.default_marked
+                    ? `${selectedDate} 系统默认复盘`
+                    : isToday
+                      ? "今日复盘已完成"
+                      : `${selectedDate} 复盘记录`
+                }}
+              </h1>
+              <p class="done-desc">
+                {{
+                  existingReview.meta.default_marked
+                    ? "该日未在补录窗口内提交复盘，系统已按任务最终状态自动标记；这不是用户主动复盘。"
+                    : isToday
+                      ? "今天的结构化复盘已保存。"
+                      : "查看历史复盘记录。"
+                }}
+              </p>
+
+              <!-- 重排提示 -->
+              <div
+                v-if="regenMessage"
+                class="regen-banner"
+                :class="{ 'regen-loading': regenerating, 'regen-error': regenFailed }"
+              >
+                <AlertTriangle :size="18" v-if="regenerating" />
+                <CheckCircle2 :size="18" v-else-if="!regenFailed" />
+                <AlertTriangle :size="18" v-else />
+                <span>{{ regenMessage }}</span>
+                <!-- 变更明细：常态化展示调整提示，鼠标悬停查看具体修改了哪些内容 -->
+                <div v-if="regenChanges.length && !regenerating" class="regen-details-trigger">
+                  <Info :size="13" />
+                  <span>悬停查看变更</span>
+                  <div class="regen-details-popover">
+                    <div class="regen-details-inner">
+                      <div v-if="regenFailed" class="regen-detail-fallback">
+                        本次为兜底安排（按未完成任务程序化分配），各日任务如下：
+                      </div>
+                      <div v-for="c in regenChanges" :key="c.date" class="regen-detail-day">
+                        <div class="regen-detail-date">{{ c.date }}</div>
+                        <div v-for="t in c.added" :key="'a' + t" class="regen-detail-item add">
+                          ＋{{ t }}
+                        </div>
+                        <div v-for="r in c.removed" :key="'r' + r" class="regen-detail-item remove">
+                          －{{ r }}
+                        </div>
+                        <div
+                          v-for="(adj, i) in c.adjusted"
+                          :key="'m' + i"
+                          class="regen-detail-item modify"
+                        >
+                          ✎ {{ adj[0] }} → {{ adj[1] }}
+                        </div>
+                        <div
+                          v-if="!c.added.length && !c.removed.length && !c.adjusted.length"
+                          class="regen-detail-item none"
+                        >
+                          任务量分配微调，无标题变动
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div v-for="c in regenChanges" :key="c.date" class="regen-detail-day">
-                    <div class="regen-detail-date">{{ c.date }}</div>
-                    <div v-for="t in c.added" :key="'a' + t" class="regen-detail-item add">
-                      ＋{{ t }}
+                </div>
+                <Button
+                  v-if="regenFailed"
+                  variant="primary"
+                  size="sm"
+                  @click="retryRegeneration"
+                  :loading="regenerating"
+                  class="regen-retry-btn"
+                >
+                  重新生成
+                </Button>
+              </div>
+
+              <!-- Review summary -->
+              <div
+                v-if="
+                  existingReview.task_reviews?.length ||
+                  existingReview.data?.completed_tasks?.length
+                "
+                class="review-summary"
+              >
+                <div class="summary-row">
+                  <span class="summary-label">完成率</span>
+                  <span class="summary-value">
+                    <template v-if="existingReview.task_reviews?.length">
+                      {{
+                        existingReview.task_reviews.filter((t) => t.status === "completed").length
+                      }}
+                      / {{ existingReview.task_reviews.length }}
+                    </template>
+                    <template v-else>
+                      {{ existingReview.data.completed_tasks.filter((t) => t.completed).length }} /
+                      {{ existingReview.data.completed_tasks.length }}
+                    </template>
+                  </span>
+                </div>
+                <div v-if="existingReview.data?.total_hours" class="summary-row">
+                  <span class="summary-label">学习时长</span>
+                  <span class="summary-value"
+                    >{{ existingReview.data.total_hours.toFixed(1) }} 小时</span
+                  >
+                </div>
+                <div v-if="existingReview.daily_review?.overall_feeling" class="summary-row">
+                  <span class="summary-label">整体感受</span>
+                  <span class="summary-value">{{
+                    feelingLabel(existingReview.daily_review.overall_feeling)
+                  }}</span>
+                </div>
+                <div v-if="existingReview.daily_review?.main_difficulty" class="summary-row">
+                  <span class="summary-label">最大困难</span>
+                  <span class="summary-value">{{
+                    difficultyLabel(existingReview.daily_review.main_difficulty)
+                  }}</span>
+                </div>
+              </div>
+
+              <!-- Task-level review details (new version) -->
+              <div v-if="existingReview.task_reviews?.length" class="task-reviews-list">
+                <div class="task-reviews-title">任务复盘详情</div>
+                <div
+                  v-for="tr in existingReview.task_reviews"
+                  :key="tr.task_id"
+                  class="task-review-row"
+                  :class="tr.status"
+                >
+                  <div class="trr-left">
+                    <div class="trr-status-icon">
+                      <CheckCircle2 v-if="tr.status === 'completed'" :size="16" />
+                      <Circle v-else :size="16" />
                     </div>
-                    <div v-for="r in c.removed" :key="'r' + r" class="regen-detail-item remove">
-                      －{{ r }}
+                    <div class="trr-title-wrap">
+                      <span class="trr-title">{{ findTaskTitle(tr.task_id, tr) }}</span>
+                      <div class="trr-meta">
+                        <span v-if="findTaskSubject(tr.task_id, tr)" class="trr-subject">{{
+                          subjectLabel(findTaskSubject(tr.task_id, tr))
+                        }}</span>
+                        <span class="trr-status">{{ statusLabel(tr.status) }}</span>
+                      </div>
                     </div>
-                    <div v-for="(adj, i) in c.adjusted" :key="'m' + i" class="regen-detail-item modify">
-                      ✎ {{ adj[0] }} → {{ adj[1] }}
-                    </div>
-                    <div
-                      v-if="!c.added.length && !c.removed.length && !c.adjusted.length"
-                      class="regen-detail-item none"
+                  </div>
+                  <div class="trr-right">
+                    <span
+                      v-if="timeTrackingEnabled && taskEstimatedHours(tr.task_id, tr) > 0"
+                      class="trr-chip estimate"
                     >
-                      任务量分配微调，无标题变动
+                      <Clock :size="11" />
+                      估时 {{ formatHours(taskEstimatedHours(tr.task_id, tr)) }}
+                    </span>
+                    <span
+                      v-if="timeTrackingEnabled && taskActualFromReview(tr.task_id, tr) > 0"
+                      class="trr-chip actual"
+                    >
+                      <Clock :size="11" />
+                      实际 {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
+                    </span>
+                    <span v-if="tr.mastery" class="trr-chip mastery">
+                      {{
+                        tr.mastery === "mastered"
+                          ? "已掌握"
+                          : tr.mastery === "basic"
+                            ? "基本掌握"
+                            : "需巩固"
+                      }}
+                    </span>
+                    <span v-for="b in tr.blockers" :key="b" class="trr-chip blocker">
+                      {{ blockerOptions.find((o) => o.value === b)?.label ?? b }}
+                    </span>
+                    <span v-if="tr.blocker_note" class="trr-note">{{ tr.blocker_note }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Old version: completed_tasks fallback -->
+              <div
+                v-else-if="existingReview.data?.completed_tasks?.length"
+                class="task-reviews-list"
+              >
+                <div class="task-reviews-title">任务完成情况（旧版记录）</div>
+                <div
+                  v-for="ct in existingReview.data.completed_tasks"
+                  :key="ct.task_id ?? ct.title"
+                  class="task-review-row"
+                  :class="ct.completed ? 'completed' : 'incomplete'"
+                >
+                  <div class="trr-left">
+                    <div class="trr-status-icon">
+                      <CheckCircle2 v-if="ct.completed" :size="16" />
+                      <Circle v-else :size="16" />
+                    </div>
+                    <div class="trr-title-wrap">
+                      <span class="trr-title">{{ ct.title }}</span>
+                      <div class="trr-meta">
+                        <span class="trr-subject">{{ subjectLabel(ct.subject) }}</span>
+                        <span class="trr-status">{{ ct.completed ? "已完成" : "未完成" }}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
+
+              <!-- Overcompletion records -->
+              <div v-if="existingReview.overcompletion?.length" class="task-reviews-list">
+                <div class="task-reviews-title">计划外学习内容</div>
+                <div
+                  v-for="(oc, idx) in existingReview.overcompletion"
+                  :key="idx"
+                  class="task-review-row overcompletion"
+                >
+                  <div class="trr-left">
+                    <div class="trr-status-icon"><Sparkles :size="16" /></div>
+                    <div class="trr-title-wrap">
+                      <span class="trr-title"
+                        >{{ subjectLabel(oc.subject) }}：{{ oc.chapter_reached }}</span
+                      >
+                      <div class="trr-meta">
+                        <span class="trr-subject">{{ subjectLabel(oc.subject) }}</span>
+                        <span class="trr-status">实际进度</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="trr-right">
+                    <span v-if="oc.note" class="trr-note">{{ oc.note }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <p class="done-hint">复盘数据将在下一次 Planner 中自动生效。</p>
             </div>
-            <Button v-if="regenFailed" variant="primary" size="sm" @click="retryRegeneration" :loading="regenerating" class="regen-retry-btn">
-              重新生成
+          </Card>
+        </template>
+
+        <!-- Steps (fill review) -->
+        <template v-else-if="canFillReview">
+          <div class="backfill-banner" v-if="isYesterday">
+            <AlertTriangle :size="14" />
+            <span>补复盘模式：为昨天（{{ selectedDate }}）补录复盘</span>
+          </div>
+
+          <div class="step-bar">
+            <div class="step-dots">
+              <span
+                v-for="i in totalSteps"
+                :key="i"
+                class="step-dot"
+                :class="{ active: i - 1 === step, done: i - 1 < step }"
+              />
+            </div>
+            <span class="step-label">{{ step + 1 }} / {{ totalSteps }}</span>
+            <Button
+              v-if="step === 0"
+              variant="ghost"
+              size="sm"
+              :disabled="doneTasks.length === 0"
+              title="请先勾选已完成的任务（滴答清单同步的勾选同样生效）后再使用快速复盘"
+              @click="startQuickReview"
+            >
+              <Clock :size="14" /> 快速复盘（约 30 秒）
             </Button>
           </div>
 
-          <!-- Review summary -->
-          <div v-if="existingReview.task_reviews?.length || existingReview.data?.completed_tasks?.length" class="review-summary">
-            <div class="summary-row">
-              <span class="summary-label">完成率</span>
-              <span class="summary-value">
-                <template v-if="existingReview.task_reviews?.length">
-                  {{ existingReview.task_reviews.filter(t => t.status === 'completed').length }} / {{ existingReview.task_reviews.length }}
-                </template>
-                <template v-else>
-                  {{ existingReview.data.completed_tasks.filter(t => t.completed).length }} / {{ existingReview.data.completed_tasks.length }}
-                </template>
-              </span>
-            </div>
-            <div v-if="existingReview.data?.total_hours" class="summary-row">
-              <span class="summary-label">学习时长</span>
-              <span class="summary-value">{{ existingReview.data.total_hours.toFixed(1) }} 小时</span>
-            </div>
-            <div v-if="existingReview.daily_review?.overall_feeling" class="summary-row">
-              <span class="summary-label">整体感受</span>
-              <span class="summary-value">{{ feelingLabel(existingReview.daily_review.overall_feeling) }}</span>
-            </div>
-            <div v-if="existingReview.daily_review?.main_difficulty" class="summary-row">
-              <span class="summary-label">最大困难</span>
-              <span class="summary-value">{{ difficultyLabel(existingReview.daily_review.main_difficulty) }}</span>
-            </div>
-          </div>
-
-          <!-- Task-level review details (new version) -->
-          <div v-if="existingReview.task_reviews?.length" class="task-reviews-list">
-            <div class="task-reviews-title">任务复盘详情</div>
-            <div
-              v-for="tr in existingReview.task_reviews"
-              :key="tr.task_id"
-              class="task-review-row"
-              :class="tr.status"
-            >
-              <div class="trr-left">
-                <div class="trr-status-icon">
-                  <CheckCircle2 v-if="tr.status === 'completed'" :size="16" />
-                  <Circle v-else :size="16" />
-                </div>
-                <div class="trr-title-wrap">
-                  <span class="trr-title">{{ findTaskTitle(tr.task_id, tr) }}</span>
-                  <div class="trr-meta">
-                    <span v-if="findTaskSubject(tr.task_id, tr)" class="trr-subject">{{ subjectLabel(findTaskSubject(tr.task_id, tr)) }}</span>
-                    <span class="trr-status">{{ statusLabel(tr.status) }}</span>
-                  </div>
-                </div>
-              </div>
-              <div class="trr-right">
-                <span v-if="timeTrackingEnabled && taskEstimatedHours(tr.task_id, tr) > 0" class="trr-chip estimate">
-                  <Clock :size="11" />
-                  估时 {{ formatHours(taskEstimatedHours(tr.task_id, tr)) }}
-                </span>
-                <span v-if="timeTrackingEnabled && taskActualFromReview(tr.task_id, tr) > 0" class="trr-chip actual">
-                  <Clock :size="11" />
-                  实际 {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
-                </span>
-                <span v-if="tr.mastery" class="trr-chip mastery">
-                  {{ tr.mastery === 'mastered' ? '已掌握' : tr.mastery === 'basic' ? '基本掌握' : '需巩固' }}
-                </span>
-                <span v-for="b in tr.blockers" :key="b" class="trr-chip blocker">
-                  {{ blockerOptions.find(o => o.value === b)?.label ?? b }}
-                </span>
-                <span v-if="tr.blocker_note" class="trr-note">{{ tr.blocker_note }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Old version: completed_tasks fallback -->
-          <div v-else-if="existingReview.data?.completed_tasks?.length" class="task-reviews-list">
-            <div class="task-reviews-title">任务完成情况（旧版记录）</div>
-            <div
-              v-for="ct in existingReview.data.completed_tasks"
-              :key="ct.task_id ?? ct.title"
-              class="task-review-row"
-              :class="ct.completed ? 'completed' : 'incomplete'"
-            >
-              <div class="trr-left">
-                <div class="trr-status-icon">
-                  <CheckCircle2 v-if="ct.completed" :size="16" />
-                  <Circle v-else :size="16" />
-                </div>
-                <div class="trr-title-wrap">
-                  <span class="trr-title">{{ ct.title }}</span>
-                  <div class="trr-meta">
-                    <span class="trr-subject">{{ subjectLabel(ct.subject) }}</span>
-                    <span class="trr-status">{{ ct.completed ? '已完成' : '未完成' }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Overcompletion records -->
-          <div v-if="existingReview.overcompletion?.length" class="task-reviews-list">
-            <div class="task-reviews-title">计划外学习内容</div>
-            <div
-              v-for="(oc, idx) in existingReview.overcompletion"
-              :key="idx"
-              class="task-review-row overcompletion"
-            >
-              <div class="trr-left">
-                <div class="trr-status-icon"><Sparkles :size="16" /></div>
-                <div class="trr-title-wrap">
-                  <span class="trr-title">{{ subjectLabel(oc.subject) }}：{{ oc.chapter_reached }}</span>
-                  <div class="trr-meta">
-                    <span class="trr-subject">{{ subjectLabel(oc.subject) }}</span>
-                    <span class="trr-status">实际进度</span>
-                  </div>
-                </div>
-              </div>
-              <div class="trr-right">
-                <span v-if="oc.note" class="trr-note">{{ oc.note }}</span>
-              </div>
-            </div>
-          </div>
-
-          <p class="done-hint">复盘数据将在下一次 Planner 中自动生效。</p>
-        </div>
-      </Card>
-    </template>
-
-    <!-- Steps (fill review) -->
-    <template v-else-if="canFillReview">
-      <div class="backfill-banner" v-if="isYesterday">
-        <AlertTriangle :size="14" />
-        <span>补复盘模式：为昨天（{{ selectedDate }}）补录复盘</span>
-      </div>
-
-      <div class="step-bar">
-        <div class="step-dots">
-          <span v-for="i in totalSteps" :key="i" class="step-dot"
-            :class="{ active: i - 1 === step, done: i - 1 < step }" />
-        </div>
-        <span class="step-label">{{ step + 1 }} / {{ totalSteps }}</span>
-        <Button v-if="step === 0" variant="ghost" size="sm"
-          :disabled="doneTasks.length === 0"
-          title="请先勾选已完成的任务（滴答清单同步的勾选同样生效）后再使用快速复盘"
-          @click="startQuickReview">
-          <Clock :size="14" /> 快速复盘（约 30 秒）
-        </Button>
-      </div>
-
-      <!-- Step 1: Task Completion -->
-      <Card v-if="step === 0" padding="lg" class="step-card">
-        <h2 class="step-title">任务完成情况</h2>
-        <p class="step-desc">勾选{{ isYesterday ? '昨天' : '今天' }}已完成的任务（自动读取 State 中的完成状态）</p>
-        <div v-if="didaMatchedCount > 0" class="dida-sync-note">
-          <Smartphone :size="13" />
-          <span>已在滴答清单完成 {{ didaMatchedCount }} 项任务，已为你自动勾选；如需调整可直接点击。</span>
-        </div>
-        <div class="task-review-list">
-          <div v-for="task in allTasks" :key="task.id" class="task-review-item"
-            :class="{ done: taskCompleted[task.id] }">
-            <div class="tri-left">
-              <div class="tri-badges">
-                <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">{{ subjectLabel(task.subject) }}</Badge>
-                <Badge v-if="timeTrackingEnabled && task.estimated_hours > 0" variant="default" size="sm">
-                  <Clock :size="12" />
-                  ≈{{ formatHours(task.estimated_hours) }}
-                </Badge>
-                <Badge v-if="timeTrackingEnabled && (taskActualMinutes[task.id] ?? 0) > 0" variant="info" size="sm">
-                  <Clock :size="12" />
-                  {{ formatMinutes(taskActualMinutes[task.id] ?? 0) }}
-                </Badge>
-              </div>
-              <span class="tri-title">{{ task.title }}</span>
-            </div>
-            <button type="button" class="check-btn" :class="{ checked: taskCompleted[task.id] }"
-              :aria-pressed="taskCompleted[task.id]"
-              @click="taskCompleted[task.id] = !taskCompleted[task.id]">
-              <CheckCircle2 v-if="taskCompleted[task.id]" :size="18" />
-              <Circle v-else :size="18" />
-              {{ taskCompleted[task.id] ? '已完成' : '未完成' }}
-            </button>
-          </div>
-        </div>
-      </Card>
-
-      <!-- Step 2: Blockers -->
-      <Card v-if="step === 1 && incompleteTasks.length > 0" padding="lg" class="step-card">
-        <h2 class="step-title">未完成原因</h2>
-        <p class="step-desc">以下{{ isYesterday ? '昨天' : '今天' }}的任务未能完成，请选择原因</p>
-        <div v-for="task in incompleteTasks" :key="task.id" class="blocker-item">
-          <div class="blocker-task">
-            <span class="blocker-title">{{ task.title }}</span>
-          </div>
-          <div class="blocker-chips">
-            <button v-for="opt in blockerOptions" :key="opt.value" type="button" class="blocker-chip"
-              :class="{ active: (taskBlockers[task.id] ?? []).includes(opt.value) }"
-              @click="toggleBlocker(task.id, opt.value)">{{ opt.label }}</button>
-          </div>
-          <input v-if="(taskBlockers[task.id] ?? []).includes('other')"
-            v-model="blockerNotes[task.id]" type="text" class="field-input" placeholder="请说明具体原因..." />
-        </div>
-      </Card>
-
-      <!-- Step 3: Overall Feeling -->
-      <Card v-if="step === 2" padding="lg" class="step-card">
-        <h2 class="step-title">整体学习感受</h2>
-        <p class="step-desc">{{ isYesterday ? '昨天' : '今天' }}整体学习感觉如何？</p>
-        <div class="feeling-grid">
-            <button v-for="opt in feelingOptions" :key="opt.value" type="button" class="feeling-chip"
-            :aria-pressed="overallFeeling === opt.value"
-            :class="{ active: overallFeeling === opt.value }" @click="overallFeeling = opt.value">
-            <span class="feeling-emoji">{{ opt.icon }}</span>
-            <span>{{ opt.label }}</span>
-          </button>
-        </div>
-
-        <div class="review-subsection">
-          <h3 class="subsection-title">今天的任务安排量是否合理？</h3>
-          <p class="step-desc">这个反馈会参与下周计划量校准，不会因为一次反馈大幅改变计划。</p>
-          <div class="difficulty-grid">
-            <button v-for="opt in workloadOptions" :key="opt.value" type="button" class="difficulty-chip"
-              :aria-pressed="workloadFeedback === opt.value"
-              :class="{ active: workloadFeedback === opt.value }"
-              @click="workloadFeedback = opt.value">{{ opt.label }}</button>
-          </div>
-        </div>
-
-        <div class="review-subsection">
-          <h3 class="subsection-title">今天是否有临时外部影响？</h3>
-          <p class="step-desc">外部异常不会被当成你的长期学习能力。</p>
-          <div class="difficulty-grid">
-            <button v-for="opt in externalOptions" :key="opt.value" type="button" class="difficulty-chip"
-              :aria-pressed="externalInterference === opt.value"
-              :class="{ active: externalInterference === opt.value }"
-              @click="externalInterference = opt.value">{{ opt.label }}</button>
-          </div>
-        </div>
-      </Card>
-
-      <!-- Step 4: Main Difficulty -->
-      <Card v-if="step === 3" padding="lg" class="step-card">
-        <h2 class="step-title">最大困难（可选）</h2>
-        <p class="step-desc">{{ isYesterday ? '昨天' : '今天' }}最大的困难是什么？用于 Analytics 分析。</p>
-        <div class="difficulty-grid">
-          <button v-for="opt in difficultyOptions" :key="opt.value" type="button" class="difficulty-chip"
-            :aria-pressed="mainDifficulty === opt.value"
-            :class="{ active: mainDifficulty === opt.value }"
-            @click="mainDifficulty = mainDifficulty === opt.value ? '' : opt.value">{{ opt.label }}</button>
-        </div>
-      </Card>
-
-      <!-- Step 5: 计划外学习 (extra, optional) -->
-      <Card v-if="step === 4" padding="lg" class="step-card">
-        <h2 class="step-title">计划外学习（可选）</h2>
-        <p class="step-desc">如果{{ isYesterday ? '昨天' : '今天' }}学了计划之外的内容（例如提前学到了后面的章节），点选你实际到达的最新章节即可：从目前进度到所选章节之间会整段记为本次计划外（状态推进到「基础」；是否需要「强化中/掌握」由你在进度表内自行推进），AI 会以这份实际进度为基准修正后续计划。只学到某章内的部分知识点时，展开该章逐条勾选即可。若点选了已学区域内的章节，说明系统记录快于实际进度，可确认后将进度回退到该章。</p>
-        <div class="overcompletion-toggle">
-          <button type="button" class="oc-switch" :class="{ active: hasOvercompletion }"
-            @click="hasOvercompletion = !hasOvercompletion">
-            <CheckCircle2 v-if="hasOvercompletion" :size="18" />
-            <Circle v-else :size="18" />
-            {{ hasOvercompletion ? '已开启计划外学习记录' : '我今天有计划外的学习' }}
-          </button>
-        </div>
-        <div v-if="hasOvercompletion" class="overcompletion-list">
-          <!-- 科目切换 -->
-          <div class="oc-subjects">
-            <button
-              v-for="s in OC_SUBJECTS"
-              :key="s"
-              type="button"
-              class="oc-subject-chip"
-              :class="{ active: activeSubject === s, disabled: !hasTable(s) }"
-              :disabled="!hasTable(s)"
-              :title="hasTable(s) ? subjectLabel(s) : `${subjectLabel(s)}（该科目还没有进度表）`"
-              @click="activeSubject = s"
-            >
-              <FolderOpen v-if="hasTable(s)" :size="13" />
-              <AlertTriangle v-else :size="13" />
-              {{ subjectLabel(s) }}
-            </button>
-          </div>
-
-          <!-- 主体：加载中 / 无表 / 章节清单 -->
-          <LoadingSpinner v-if="progressLoading" :size="24" label="加载进度表..." class="oc-loading" />
-          <EmptyState
-            v-else-if="!activeTable"
-            :title="`${subjectLabel(activeSubject)}还没有进度表`"
-            description="请先到「进度」页创建或启用一份进度表，再回来记录计划外进度。"
-          >
-            <template #actions>
-              <Button variant="primary" size="sm" @click="router.push({ path: '/progress', query: { subject: activeSubject } })">
-                <FolderOpen :size="14" /> 前往进度页创建
-              </Button>
-            </template>
-          </EmptyState>
-
-          <template v-else>
-            <!-- 科目内多张进度表切换（专业课通常 = 总进度表 + 各指定教材表） -->
-            <div v-if="tablesOfSubject(activeSubject).length > 1" class="oc-tables">
-              <span class="oc-tables-label">选择进度表</span>
-              <button
-                v-for="t in tablesOfSubject(activeSubject)"
-                :key="t.id"
-                type="button"
-                class="oc-table-chip"
-                :class="{ active: activeTable?.id === t.id }"
-                :title="`${t.name}（${t.variant}）· 已勾选 ${ocCountOfTable(activeSubject, t)} 项`"
-                @click="setViewTable(activeSubject, t.id)"
+          <!-- Step 1: Task Completion -->
+          <Card v-if="step === 0" padding="lg" class="step-card">
+            <h2 class="step-title">任务完成情况</h2>
+            <p class="step-desc">
+              勾选{{ isYesterday ? "昨天" : "今天" }}已完成的任务（自动读取 State 中的完成状态）
+            </p>
+            <div v-if="didaMatchedCount > 0" class="dida-sync-note">
+              <Smartphone :size="13" />
+              <span
+                >已在滴答清单完成
+                {{ didaMatchedCount }} 项任务，已为你自动勾选；如需调整可直接点击。</span
               >
-                <FolderOpen :size="12" />
-                <span class="oc-table-chip-name">{{ t.name }}</span>
-                <span v-if="ocCountOfTable(activeSubject, t) > 0" class="oc-table-chip-count">
-                  {{ ocCountOfTable(activeSubject, t) }}
-                </span>
+            </div>
+            <div class="task-review-list">
+              <div
+                v-for="task in allTasks"
+                :key="task.id"
+                class="task-review-item"
+                :class="{ done: taskCompleted[task.id] }"
+              >
+                <div class="tri-left">
+                  <div class="tri-badges">
+                    <Badge :variant="subjectBadgeVariant(task.subject)" size="sm">{{
+                      subjectLabel(task.subject)
+                    }}</Badge>
+                    <Badge
+                      v-if="timeTrackingEnabled && task.estimated_hours > 0"
+                      variant="default"
+                      size="sm"
+                    >
+                      <Clock :size="12" />
+                      ≈{{ formatHours(task.estimated_hours) }}
+                    </Badge>
+                    <Badge
+                      v-if="timeTrackingEnabled && (taskActualMinutes[task.id] ?? 0) > 0"
+                      variant="info"
+                      size="sm"
+                    >
+                      <Clock :size="12" />
+                      {{ formatMinutes(taskActualMinutes[task.id] ?? 0) }}
+                    </Badge>
+                  </div>
+                  <span class="tri-title">{{ task.title }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="check-btn"
+                  :class="{ checked: taskCompleted[task.id] }"
+                  :aria-pressed="taskCompleted[task.id]"
+                  @click="taskCompleted[task.id] = !taskCompleted[task.id]"
+                >
+                  <CheckCircle2 v-if="taskCompleted[task.id]" :size="18" />
+                  <Circle v-else :size="18" />
+                  {{ taskCompleted[task.id] ? "已完成" : "未完成" }}
+                </button>
+              </div>
+            </div>
+          </Card>
+
+          <!-- Step 2: Blockers -->
+          <Card v-if="step === 1 && incompleteTasks.length > 0" padding="lg" class="step-card">
+            <h2 class="step-title">未完成原因</h2>
+            <p class="step-desc">
+              以下{{ isYesterday ? "昨天" : "今天" }}的任务未能完成，请选择原因
+            </p>
+            <div v-for="task in incompleteTasks" :key="task.id" class="blocker-item">
+              <div class="blocker-task">
+                <span class="blocker-title">{{ task.title }}</span>
+              </div>
+              <div class="blocker-chips">
+                <button
+                  v-for="opt in blockerOptions"
+                  :key="opt.value"
+                  type="button"
+                  class="blocker-chip"
+                  :class="{ active: (taskBlockers[task.id] ?? []).includes(opt.value) }"
+                  @click="toggleBlocker(task.id, opt.value)"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
+              <input
+                v-if="(taskBlockers[task.id] ?? []).includes('other')"
+                v-model="blockerNotes[task.id]"
+                type="text"
+                class="field-input"
+                placeholder="请说明具体原因..."
+              />
+            </div>
+          </Card>
+
+          <!-- Step 3: Overall Feeling -->
+          <Card v-if="step === 2" padding="lg" class="step-card">
+            <h2 class="step-title">整体学习感受</h2>
+            <p class="step-desc">{{ isYesterday ? "昨天" : "今天" }}整体学习感觉如何？</p>
+            <div class="feeling-grid">
+              <button
+                v-for="opt in feelingOptions"
+                :key="opt.value"
+                type="button"
+                class="feeling-chip"
+                :aria-pressed="overallFeeling === opt.value"
+                :class="{ active: overallFeeling === opt.value }"
+                @click="overallFeeling = opt.value"
+              >
+                <span class="feeling-emoji">{{ opt.icon }}</span>
+                <span>{{ opt.label }}</span>
               </button>
             </div>
 
-            <div class="oc-table-caption">
-              <Badge variant="default">{{ subjectLabel(activeSubject) }}</Badge>
-              <Badge variant="info">{{ activeTable.variant }}</Badge>
-              <span class="oc-table-name">{{ activeTable.name }}（{{ activeTable.nodes.length }} 节点）</span>
-            </div>
-
-            <p v-if="!chapterNodes.length && !knowledgeNodes.length" class="oc-empty-hint">
-              该进度表还没有可点选的{{ hasChapters ? '章节' : '节点' }}，可在下方新建一个。
-            </p>
-
-            <!-- 进度指针：点击你实际到达的最新章节，其前未记录内容自动整段补记 -->
-            <div v-if="ocUnits.length" class="oc-progress-bar">
-              <div class="oc-progress-item">
-                <span class="oc-progress-label">目前进度</span>
-                <span v-if="ocTailUnit" class="oc-progress-name">{{ ocTailUnit.title }}</span>
-                <span v-else class="oc-progress-name">尚未开始</span>
-              </div>
-              <span class="oc-progress-legend">
-                <span class="oc-legend-dot oc-legend-now"></span>本次
-                <span class="oc-legend-dot oc-legend-learned"></span>已学
-                <span class="oc-legend-dot oc-legend-wait"></span>待学
-              </span>
-            </div>
-
-            <div v-if="ocUnits.length" class="oc-section-desc">
-              <Info :size="13" />
-              <span>在下方点选你本次<strong>实际到达的最新{{ hasChapters ? '章节' : '内容' }}</strong>即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。只学到某章中间的<strong>部分知识点</strong>时，展开该章逐条勾选即可，不会把整章记完。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span>
-            </div>
-
-            <div v-if="ocUnits.length" ref="ocListRef" class="oc-node-list oc-pointer-list">
-              <div v-for="(u, ui) in ocUnits" :key="u.id" class="oc-unit-block">
-                <div
-                  class="oc-node-row oc-pointer-row"
-                  :class="{
-                    checked: isChecked(activeSubject, u),
-                    learned: !isChecked(activeSubject, u) && ocIsLearned(u),
-                    cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
-                  }"
-                  :data-uid="u.id"
+            <div class="review-subsection">
+              <h3 class="subsection-title">今天的任务安排量是否合理？</h3>
+              <p class="step-desc">这个反馈会参与下周计划量校准，不会因为一次反馈大幅改变计划。</p>
+              <div class="difficulty-grid">
+                <button
+                  v-for="opt in workloadOptions"
+                  :key="opt.value"
+                  type="button"
+                  class="difficulty-chip"
+                  :aria-pressed="workloadFeedback === opt.value"
+                  :class="{ active: workloadFeedback === opt.value }"
+                  @click="workloadFeedback = opt.value"
                 >
-                  <button
-                    v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
-                    type="button"
-                    class="oc-expand"
-                    :class="{ open: isOcExpanded(u.id) }"
-                    :title="isOcExpanded(u.id) ? '收起本章知识点' : '展开本章知识点，可逐条勾选本次学到的具体知识点'"
-                    @click="toggleOcExpand(u.id)"
+                  {{ opt.label }}
+                </button>
+              </div>
+            </div>
+
+            <div class="review-subsection">
+              <h3 class="subsection-title">今天是否有临时外部影响？</h3>
+              <p class="step-desc">外部异常不会被当成你的长期学习能力。</p>
+              <div class="difficulty-grid">
+                <button
+                  v-for="opt in externalOptions"
+                  :key="opt.value"
+                  type="button"
+                  class="difficulty-chip"
+                  :aria-pressed="externalInterference === opt.value"
+                  :class="{ active: externalInterference === opt.value }"
+                  @click="externalInterference = opt.value"
+                >
+                  {{ opt.label }}
+                </button>
+              </div>
+            </div>
+          </Card>
+
+          <!-- Step 4: Main Difficulty -->
+          <Card v-if="step === 3" padding="lg" class="step-card">
+            <h2 class="step-title">最大困难（可选）</h2>
+            <p class="step-desc">
+              {{ isYesterday ? "昨天" : "今天" }}最大的困难是什么？用于 Analytics 分析。
+            </p>
+            <div class="difficulty-grid">
+              <button
+                v-for="opt in difficultyOptions"
+                :key="opt.value"
+                type="button"
+                class="difficulty-chip"
+                :aria-pressed="mainDifficulty === opt.value"
+                :class="{ active: mainDifficulty === opt.value }"
+                @click="mainDifficulty = mainDifficulty === opt.value ? '' : opt.value"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+          </Card>
+
+          <!-- Step 5: 计划外学习 (extra, optional) -->
+          <Card v-if="step === 4" padding="lg" class="step-card">
+            <h2 class="step-title">计划外学习（可选）</h2>
+            <p class="step-desc">
+              如果{{
+                isYesterday ? "昨天" : "今天"
+              }}学了计划之外的内容（例如提前学到了后面的章节），点选你实际到达的最新章节即可：从目前进度到所选章节之间会整段记为本次计划外（状态推进到「基础」；是否需要「强化中/掌握」由你在进度表内自行推进），AI
+              会以这份实际进度为基准修正后续计划。只学到某章内的部分知识点时，展开该章逐条勾选即可。若点选了已学区域内的章节，说明系统记录快于实际进度，可确认后将进度回退到该章。
+            </p>
+            <div class="overcompletion-toggle">
+              <button
+                type="button"
+                class="oc-switch"
+                :class="{ active: hasOvercompletion }"
+                @click="hasOvercompletion = !hasOvercompletion"
+              >
+                <CheckCircle2 v-if="hasOvercompletion" :size="18" />
+                <Circle v-else :size="18" />
+                {{ hasOvercompletion ? "已开启计划外学习记录" : "我今天有计划外的学习" }}
+              </button>
+            </div>
+            <div v-if="hasOvercompletion" class="overcompletion-list">
+              <!-- 科目切换 -->
+              <div class="oc-subjects">
+                <button
+                  v-for="s in OC_SUBJECTS"
+                  :key="s"
+                  type="button"
+                  class="oc-subject-chip"
+                  :class="{ active: activeSubject === s, disabled: !hasTable(s) }"
+                  :disabled="!hasTable(s)"
+                  :title="
+                    hasTable(s) ? subjectLabel(s) : `${subjectLabel(s)}（该科目还没有进度表）`
+                  "
+                  @click="activeSubject = s"
+                >
+                  <FolderOpen v-if="hasTable(s)" :size="13" />
+                  <AlertTriangle v-else :size="13" />
+                  {{ subjectLabel(s) }}
+                </button>
+              </div>
+
+              <!-- 主体：加载中 / 无表 / 章节清单 -->
+              <LoadingSpinner
+                v-if="progressLoading"
+                :size="24"
+                label="加载进度表..."
+                class="oc-loading"
+              />
+              <EmptyState
+                v-else-if="!activeTable"
+                :title="`${subjectLabel(activeSubject)}还没有进度表`"
+                description="请先到「进度」页创建或启用一份进度表，再回来记录计划外进度。"
+              >
+                <template #actions>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    @click="router.push({ path: '/progress', query: { subject: activeSubject } })"
                   >
-                    <ChevronRight :size="14" />
-                  </button>
-                  <span v-else class="oc-expand-spacer"></span>
-                  <button type="button" class="oc-pointer-main" :title="pointerRowHint(ui)" @click="onUnitClick(u)">
-                    <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
-                      <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
-                      <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
-                      <Circle v-else :size="17" />
-                    </span>
-                    <span class="oc-node-icon">
-                      <FolderOpen v-if="u.level === 'chapter'" :size="13" />
-                      <CircleDot v-else :size="13" />
-                    </span>
-                    <span class="oc-node-title">{{ u.title }}</span>
-                    <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now">本次</span>
-                    <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned">已学</span>
-                    <span
-                      v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
-                      class="oc-kid-count"
-                      :class="{
-                        'oc-partial':
-                          !isChecked(activeSubject, u) &&
-                          !ocIsLearned(u) &&
-                          chapterKidStats(u.id).learned > 0,
-                      }"
-                    >
-                      {{ chapterKidStats(u.id).learned }}/{{ chapterKidStats(u.id).total }} 知识点
+                    <FolderOpen :size="14" /> 前往进度页创建
+                  </Button>
+                </template>
+              </EmptyState>
+
+              <template v-else>
+                <!-- 科目内多张进度表切换（专业课通常 = 总进度表 + 各指定教材表） -->
+                <div v-if="tablesOfSubject(activeSubject).length > 1" class="oc-tables">
+                  <span class="oc-tables-label">选择进度表</span>
+                  <button
+                    v-for="t in tablesOfSubject(activeSubject)"
+                    :key="t.id"
+                    type="button"
+                    class="oc-table-chip"
+                    :class="{ active: activeTable?.id === t.id }"
+                    :title="`${t.name}（${t.variant}）· 已勾选 ${ocCountOfTable(activeSubject, t)} 项`"
+                    @click="setViewTable(activeSubject, t.id)"
+                  >
+                    <FolderOpen :size="12" />
+                    <span class="oc-table-chip-name">{{ t.name }}</span>
+                    <span v-if="ocCountOfTable(activeSubject, t) > 0" class="oc-table-chip-count">
+                      {{ ocCountOfTable(activeSubject, t) }}
                     </span>
                   </button>
                 </div>
 
-                <!-- 展开章节：逐个勾选本章内本次学到的具体知识点（不改变章节顺序进度指针） -->
-                <div
-                  v-if="u.level === 'chapter' && isOcExpanded(u.id) && childrenOfChapter(u.id).length"
-                  class="oc-node-children"
-                >
-                  <div
-                    v-for="k in childrenOfChapter(u.id)"
-                    :key="k.id"
-                    class="oc-node-row oc-knowledge-row"
-                    :class="{ checked: isChecked(activeSubject, k) }"
+                <div class="oc-table-caption">
+                  <Badge variant="default">{{ subjectLabel(activeSubject) }}</Badge>
+                  <Badge variant="info">{{ activeTable.variant }}</Badge>
+                  <span class="oc-table-name"
+                    >{{ activeTable.name }}（{{ activeTable.nodes.length }} 节点）</span
                   >
-                    <button
-                      type="button"
-                      class="oc-check"
-                      :class="{ active: isChecked(activeSubject, k) }"
-                      :title="
-                        isChecked(activeSubject, k)
-                          ? '撤销本次对该知识点的记录'
-                          : '记为本次学到的知识点（状态推进到「基础」）'
-                      "
-                      @click="toggleKnowledgePoint(activeSubject, k)"
+                </div>
+
+                <p v-if="!chapterNodes.length && !knowledgeNodes.length" class="oc-empty-hint">
+                  该进度表还没有可点选的{{ hasChapters ? "章节" : "节点" }}，可在下方新建一个。
+                </p>
+
+                <!-- 进度指针：点击你实际到达的最新章节，其前未记录内容自动整段补记 -->
+                <div v-if="ocUnits.length" class="oc-progress-bar">
+                  <div class="oc-progress-item">
+                    <span class="oc-progress-label">目前进度</span>
+                    <span v-if="ocTailUnit" class="oc-progress-name">{{ ocTailUnit.title }}</span>
+                    <span v-else class="oc-progress-name">尚未开始</span>
+                  </div>
+                  <span class="oc-progress-legend">
+                    <span class="oc-legend-dot oc-legend-now"></span>本次
+                    <span class="oc-legend-dot oc-legend-learned"></span>已学
+                    <span class="oc-legend-dot oc-legend-wait"></span>待学
+                  </span>
+                </div>
+
+                <div v-if="ocUnits.length" class="oc-section-desc">
+                  <Info :size="13" />
+                  <span
+                    >在下方点选你本次<strong
+                      >实际到达的最新{{ hasChapters ? "章节" : "内容" }}</strong
+                    >即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。只学到某章中间的<strong>部分知识点</strong>时，展开该章逐条勾选即可，不会把整章记完。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span
+                  >
+                </div>
+
+                <div v-if="ocUnits.length" ref="ocListRef" class="oc-node-list oc-pointer-list">
+                  <div v-for="(u, ui) in ocUnits" :key="u.id" class="oc-unit-block">
+                    <div
+                      class="oc-node-row oc-pointer-row"
+                      :class="{
+                        checked: isChecked(activeSubject, u),
+                        learned: !isChecked(activeSubject, u) && ocIsLearned(u),
+                        cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
+                      }"
+                      :data-uid="u.id"
                     >
-                      <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
-                      <CheckCircle2 v-else-if="ocIsLearned(k)" :size="16" />
-                      <Circle v-else :size="16" />
-                    </button>
-                    <span class="oc-node-icon"><CircleDot :size="13" /></span>
-                    <span class="oc-node-title">{{ k.title }}</span>
-                    <span v-if="isChecked(activeSubject, k)" class="oc-kid-count oc-tag-now">本次</span>
-                    <span v-else-if="ocIsLearned(k)" class="oc-kid-count oc-tag-learned">已学</span>
+                      <button
+                        v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
+                        type="button"
+                        class="oc-expand"
+                        :class="{ open: isOcExpanded(u.id) }"
+                        :title="
+                          isOcExpanded(u.id)
+                            ? '收起本章知识点'
+                            : '展开本章知识点，可逐条勾选本次学到的具体知识点'
+                        "
+                        @click="toggleOcExpand(u.id)"
+                      >
+                        <ChevronRight :size="14" />
+                      </button>
+                      <span v-else class="oc-expand-spacer"></span>
+                      <button
+                        type="button"
+                        class="oc-pointer-main"
+                        :title="pointerRowHint(ui)"
+                        @click="onUnitClick(u)"
+                      >
+                        <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
+                          <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
+                          <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
+                          <Circle v-else :size="17" />
+                        </span>
+                        <span class="oc-node-icon">
+                          <FolderOpen v-if="u.level === 'chapter'" :size="13" />
+                          <CircleDot v-else :size="13" />
+                        </span>
+                        <span class="oc-node-title">{{ u.title }}</span>
+                        <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now"
+                          >本次</span
+                        >
+                        <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned"
+                          >已学</span
+                        >
+                        <span
+                          v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
+                          class="oc-kid-count"
+                          :class="{
+                            'oc-partial':
+                              !isChecked(activeSubject, u) &&
+                              !ocIsLearned(u) &&
+                              chapterKidStats(u.id).learned > 0,
+                          }"
+                        >
+                          {{ chapterKidStats(u.id).learned }}/{{ chapterKidStats(u.id).total }}
+                          知识点
+                        </span>
+                      </button>
+                    </div>
+
+                    <!-- 展开章节：逐个勾选本章内本次学到的具体知识点（不改变章节顺序进度指针） -->
+                    <div
+                      v-if="
+                        u.level === 'chapter' &&
+                        isOcExpanded(u.id) &&
+                        childrenOfChapter(u.id).length
+                      "
+                      class="oc-node-children"
+                    >
+                      <div
+                        v-for="k in childrenOfChapter(u.id)"
+                        :key="k.id"
+                        class="oc-node-row oc-knowledge-row"
+                        :class="{ checked: isChecked(activeSubject, k) }"
+                      >
+                        <button
+                          type="button"
+                          class="oc-check"
+                          :class="{ active: isChecked(activeSubject, k) }"
+                          :title="
+                            isChecked(activeSubject, k)
+                              ? '撤销本次对该知识点的记录'
+                              : '记为本次学到的知识点（状态推进到「基础」）'
+                          "
+                          @click="toggleKnowledgePoint(activeSubject, k)"
+                        >
+                          <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
+                          <CheckCircle2 v-else-if="ocIsLearned(k)" :size="16" />
+                          <Circle v-else :size="16" />
+                        </button>
+                        <span class="oc-node-icon"><CircleDot :size="13" /></span>
+                        <span class="oc-node-title">{{ k.title }}</span>
+                        <span v-if="isChecked(activeSubject, k)" class="oc-kid-count oc-tag-now"
+                          >本次</span
+                        >
+                        <span v-else-if="ocIsLearned(k)" class="oc-kid-count oc-tag-learned"
+                          >已学</span
+                        >
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <!-- 未挂靠章节的知识点：保留逐个勾选兜底（不参与章节顺序进度） -->
-            <template v-if="hasChapters && orphanKnowledge.length">
-              <div class="oc-group-title">未分组知识点（单独勾选，不影响章节顺序进度）</div>
-              <div class="oc-node-list">
-                <div
-                  v-for="k in orphanKnowledge"
-                  :key="k.id"
-                  class="oc-node-row oc-knowledge-row"
-                  :class="{ checked: isChecked(activeSubject, k) }"
-                >
-                  <button
-                    type="button"
-                    class="oc-check"
-                    :class="{ active: isChecked(activeSubject, k) }"
-                    @click="toggleKnowledgePoint(activeSubject, k)"
-                  >
-                    <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
-                    <Circle v-else :size="16" />
-                  </button>
-                  <span class="oc-node-icon"><CircleDot :size="13" /></span>
-                  <span class="oc-node-title">{{ k.title }}</span>
+                <!-- 未挂靠章节的知识点：保留逐个勾选兜底（不参与章节顺序进度） -->
+                <template v-if="hasChapters && orphanKnowledge.length">
+                  <div class="oc-group-title">未分组知识点（单独勾选，不影响章节顺序进度）</div>
+                  <div class="oc-node-list">
+                    <div
+                      v-for="k in orphanKnowledge"
+                      :key="k.id"
+                      class="oc-node-row oc-knowledge-row"
+                      :class="{ checked: isChecked(activeSubject, k) }"
+                    >
+                      <button
+                        type="button"
+                        class="oc-check"
+                        :class="{ active: isChecked(activeSubject, k) }"
+                        @click="toggleKnowledgePoint(activeSubject, k)"
+                      >
+                        <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
+                        <Circle v-else :size="16" />
+                      </button>
+                      <span class="oc-node-icon"><CircleDot :size="13" /></span>
+                      <span class="oc-node-title">{{ k.title }}</span>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- 点选已学区域：系统记录进度快于实际进度 → 确认回退 -->
+                <div v-if="correctionTarget" class="oc-correction">
+                  <AlertTriangle :size="17" class="oc-correction-icon" />
+                  <div class="oc-correction-body">
+                    <p class="oc-correction-title">
+                      你点选了已学区域内的章节：系统记录进度快于实际进度
+                    </p>
+                    <p class="oc-correction-text">
+                      系统记录的进度为已学至「{{ ocTailUnit?.title ?? "—" }}」，而你选择的「{{
+                        correctionTarget.title
+                      }}」位于其内，
+                      说明目前的记录<strong>快于</strong>你的实际学习进度（此前记录超前）。
+                      确认后会把{{
+                        subjectLabel(activeSubject)
+                      }}的进度基准回退到该章：其后的章节/知识点恢复为未学、本轮相应记录一并撤销，后续计划以复盘重排结果为准。
+                    </p>
+                    <div class="oc-correction-actions">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        :loading="savingProgress"
+                        @click="confirmCorrection"
+                      >
+                        确认回退进度
+                      </Button>
+                      <Button variant="ghost" size="sm" @click="cancelCorrection">取消</Button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </template>
 
-            <!-- 点选已学区域：系统记录进度快于实际进度 → 确认回退 -->
-            <div v-if="correctionTarget" class="oc-correction">
-              <AlertTriangle :size="17" class="oc-correction-icon" />
-              <div class="oc-correction-body">
-                <p class="oc-correction-title">你点选了已学区域内的章节：系统记录进度快于实际进度</p>
-                <p class="oc-correction-text">
-                  系统记录的进度为已学至「{{ ocTailUnit?.title ?? '—' }}」，而你选择的「{{ correctionTarget.title }}」位于其内，
-                  说明目前的记录<strong>快于</strong>你的实际学习进度（此前记录超前）。
-                  确认后会把{{ subjectLabel(activeSubject) }}的进度基准回退到该章：其后的章节/知识点恢复为未学、本轮相应记录一并撤销，后续计划以复盘重排结果为准。
-                </p>
-                <div class="oc-correction-actions">
-                  <Button variant="danger" size="sm" :loading="savingProgress" @click="confirmCorrection">
-                    确认回退进度
+                <p v-if="ocHint" class="oc-hint"><Info :size="13" /> {{ ocHint }}</p>
+
+                <!-- 新建节点 -->
+                <div class="oc-create">
+                  <input
+                    v-model="newChapterTitle"
+                    type="text"
+                    class="field-input oc-create-input"
+                    :placeholder="
+                      hasChapters
+                        ? '新建章节，如：第三章 微分中值定理'
+                        : '新建节点，如：函数的概念及表示法'
+                    "
+                    @keydown.enter="createChapter(activeSubject)"
+                  />
+                  <Button variant="secondary" size="sm" @click="createChapter(activeSubject)">
+                    <Plus :size="14" /> 新建{{ hasChapters ? "章节" : "节点" }}
                   </Button>
-                  <Button variant="ghost" size="sm" @click="cancelCorrection">取消</Button>
                 </div>
-              </div>
+                <p v-if="newChapterError" class="oc-error">{{ newChapterError }}</p>
+
+                <!-- 历史未匹配条目兜底：可编辑，重新提交不丢数据 -->
+                <div v-if="unmatchedEntries.length" class="oc-unmatched">
+                  <div class="oc-unmatched-title">
+                    以下记录未能匹配到进度表节点（可在下方修改后保留）
+                  </div>
+                  <div
+                    v-for="oc in unmatchedEntries"
+                    :key="oc.chapter_reached + oc.subject"
+                    class="oc-item"
+                  >
+                    <div class="oc-row">
+                      <span class="oc-unmatched-subject">{{ subjectLabel(oc.subject) }}</span>
+                      <input
+                        v-model="oc.chapter_reached"
+                        type="text"
+                        class="field-input oc-input"
+                        placeholder="实际学到的内容/章节"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        @click="overcompletions = overcompletions.filter((x) => x !== oc)"
+                      >
+                        <AlertTriangle :size="14" />
+                      </Button>
+                    </div>
+                    <input
+                      v-model="oc.note"
+                      type="text"
+                      class="field-input"
+                      placeholder="备注（可选）"
+                    />
+                  </div>
+                </div>
+              </template>
             </div>
+          </Card>
 
-            <p v-if="ocHint" class="oc-hint"><Info :size="13" /> {{ ocHint }}</p>
-
-            <!-- 新建节点 -->
-            <div class="oc-create">
-              <input
-                v-model="newChapterTitle"
-                type="text"
-                class="field-input oc-create-input"
-                :placeholder="hasChapters ? '新建章节，如：第三章 微分中值定理' : '新建节点，如：函数的概念及表示法'"
-                @keydown.enter="createChapter(activeSubject)"
-              />
-              <Button variant="secondary" size="sm" @click="createChapter(activeSubject)">
-                <Plus :size="14" /> 新建{{ hasChapters ? '章节' : '节点' }}
+          <!-- Navigation -->
+          <div class="step-nav">
+            <Button v-if="step > 0" variant="ghost" @click="goPrev"
+              ><ArrowLeft :size="16" /> 上一步</Button
+            >
+            <div class="nav-right">
+              <Button
+                v-if="step < totalSteps - 1"
+                variant="primary"
+                :disabled="!canNext()"
+                @click="goNext"
+              >
+                下一步 <ArrowRight :size="16" />
+              </Button>
+              <Button v-else variant="primary" @click="doSubmit" :loading="submitting">
+                <Sparkles :size="16" /> 提交复盘
               </Button>
             </div>
-            <p v-if="newChapterError" class="oc-error">{{ newChapterError }}</p>
-
-            <!-- 历史未匹配条目兜底：可编辑，重新提交不丢数据 -->
-            <div v-if="unmatchedEntries.length" class="oc-unmatched">
-              <div class="oc-unmatched-title">以下记录未能匹配到进度表节点（可在下方修改后保留）</div>
-              <div v-for="oc in unmatchedEntries" :key="oc.chapter_reached + oc.subject" class="oc-item">
-                <div class="oc-row">
-                  <span class="oc-unmatched-subject">{{ subjectLabel(oc.subject) }}</span>
-                  <input v-model="oc.chapter_reached" type="text" class="field-input oc-input"
-                    placeholder="实际学到的内容/章节" />
-                  <Button variant="ghost" size="sm" @click="overcompletions = overcompletions.filter(x => x !== oc)">
-                    <AlertTriangle :size="14" />
-                  </Button>
-                </div>
-                <input v-model="oc.note" type="text" class="field-input" placeholder="备注（可选）" />
-              </div>
-            </div>
-          </template>
-        </div>
-      </Card>
-
-      <!-- Navigation -->
-      <div class="step-nav">
-        <Button v-if="step > 0" variant="ghost" @click="goPrev"><ArrowLeft :size="16" /> 上一步</Button>
-        <div class="nav-right">
-          <Button
-            v-if="step < totalSteps - 1"
-            variant="primary"
-            :disabled="!canNext()"
-            @click="goNext"
-          >
-            下一步 <ArrowRight :size="16" />
-          </Button>
-          <Button v-else variant="primary" @click="doSubmit" :loading="submitting">
-            <Sparkles :size="16" /> 提交复盘
-          </Button>
-        </div>
+          </div>
+        </template>
       </div>
-    </template>
-    </div>
     </transition>
   </div>
 </template>
@@ -2176,10 +2451,22 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   font-weight: var(--font-medium);
 }
 
-.today-tag { background: var(--accent-subtle); color: var(--accent); }
-.yesterday-tag { background: var(--color-warning-subtle); color: var(--color-warning); }
-.past-tag { background: var(--bg-tertiary); color: var(--text-tertiary); }
-.future-tag { background: var(--bg-overlay); color: var(--text-quaternary); }
+.today-tag {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.yesterday-tag {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+.past-tag {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}
+.future-tag {
+  background: var(--bg-overlay);
+  color: var(--text-quaternary);
+}
 
 .date-actions {
   display: inline-flex;
@@ -2239,8 +2526,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   transition: background var(--transition-fast);
 }
 
-.dropdown-item:hover { background: var(--bg-overlay); }
-.dropdown-item.active { background: var(--accent-subtle); color: var(--accent); font-weight: var(--font-semibold); }
+.dropdown-item:hover {
+  background: var(--bg-overlay);
+}
+.dropdown-item.active {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
 
 .item-tag {
   font-size: 10px;
@@ -2270,191 +2563,425 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 
 /* Gate */
-.gate-card { text-align: center; }
-.gate-hero {
-  display: flex; flex-direction: column; align-items: center;
-  gap: var(--space-4); padding: var(--space-8) var(--space-4);
+.gate-card {
+  text-align: center;
 }
-.gate-icon { color: var(--text-tertiary); }
-.gate-title { font-size: var(--text-xl); font-weight: var(--font-bold); color: var(--text-primary); }
-.gate-desc { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
-.gate-hint { font-size: var(--text-sm); color: var(--text-tertiary); margin: 0; }
-.gate-cancel-btn { margin-top: var(--space-2); }
+.gate-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-4);
+}
+.gate-icon {
+  color: var(--text-tertiary);
+}
+.gate-title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+}
+.gate-desc {
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  margin: 0;
+}
+.gate-hint {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  margin: 0;
+}
+.gate-cancel-btn {
+  margin-top: var(--space-2);
+}
 
 /* 提交复盘分步进度 */
 .submit-steps {
-  display: flex; flex-direction: column; align-items: flex-start;
-  gap: var(--space-3); margin-top: var(--space-2);
-  width: 100%; max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  width: 100%;
+  max-width: 320px;
 }
 .submit-step {
-  display: flex; align-items: center; gap: var(--space-2);
-  font-size: var(--text-base); color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  color: var(--text-tertiary);
   transition: color var(--transition-fast);
 }
-.submit-step.done { color: var(--text-secondary); }
-.submit-step.active { color: var(--text-primary); font-weight: var(--font-medium); }
+.submit-step.done {
+  color: var(--text-secondary);
+}
+.submit-step.active {
+  color: var(--text-primary);
+  font-weight: var(--font-medium);
+}
 .submit-step-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 .submit-step.done .submit-step-icon,
-.submit-step.active .submit-step-icon { color: var(--accent); }
+.submit-step.active .submit-step-icon {
+  color: var(--accent);
+}
 .submit-step-dot {
-  width: 8px; height: 8px; border-radius: var(--radius-full);
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
   background: var(--bg-tertiary);
 }
 
 .step-bar {
-  display: flex; align-items: center; gap: var(--space-3); padding-bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-2);
 }
-.step-dots { display: flex; gap: var(--space-2); flex: 1; }
+.step-dots {
+  display: flex;
+  gap: var(--space-2);
+  flex: 1;
+}
 .step-dot {
-  width: 100%; height: 4px; background: var(--bg-tertiary);
-  border-radius: var(--radius-full); transition: background var(--transition-fast);
+  width: 100%;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-full);
+  transition: background var(--transition-fast);
 }
-.step-dot.active { background: var(--accent); }
-.step-dot.done { background: var(--color-success); }
+.step-dot.active {
+  background: var(--accent);
+}
+.step-dot.done {
+  background: var(--color-success);
+}
 .step-label {
-  font-size: var(--text-xs); color: var(--text-tertiary);
-  font-weight: var(--font-medium); flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-medium);
+  flex-shrink: 0;
 }
 
-.step-card { display: flex; flex-direction: column; gap: var(--space-5); }
+.step-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
 .review-subsection {
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding-top: var(--space-3); border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-color);
 }
 .subsection-title {
-  font-size: var(--text-base); font-weight: var(--font-semibold);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
   color: var(--text-primary);
 }
 .step-title {
-  font-size: var(--text-xl); font-weight: var(--font-bold);
-  color: var(--text-primary); letter-spacing: -0.01em;
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
 }
-.step-desc { font-size: var(--text-sm); color: var(--text-secondary); margin: 0; margin-top: -12px; }
+.step-desc {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  margin-top: -12px;
+}
 
 /* 滴答回读提示 */
 .dida-sync-note {
-  display: flex; align-items: center; gap: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background: var(--accent-subtle, color-mix(in srgb, var(--accent) 10%, transparent));
   border-radius: var(--radius-md);
-  font-size: var(--text-xs); color: var(--accent, var(--text-secondary));
+  font-size: var(--text-xs);
+  color: var(--accent, var(--text-secondary));
   margin-top: var(--space-3);
   line-height: var(--leading-normal);
 }
-.dida-sync-note svg { flex-shrink: 0; }
+.dida-sync-note svg {
+  flex-shrink: 0;
+}
 
 /* Task list */
-.task-review-list { display: flex; flex-direction: column; gap: var(--space-3); }
-.task-review-item {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
-  padding: var(--space-3) var(--space-4); background: var(--bg-tertiary);
-  border-radius: var(--radius-md); flex-wrap: wrap;
+.task-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
-.task-review-item.done { opacity: 0.65; background: var(--bg-overlay); }
-.tri-left { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; flex: 1; }
-.tri-badges { display: flex; gap: var(--space-1); }
+.task-review-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+.task-review-item.done {
+  opacity: 0.65;
+  background: var(--bg-overlay);
+}
+.tri-left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.tri-badges {
+  display: flex;
+  gap: var(--space-1);
+}
 .tri-title {
-  font-size: var(--text-sm); font-weight: var(--font-medium);
-  color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .check-btn {
-  display: flex; align-items: center; gap: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border: 1.5px solid var(--border-color); border-radius: var(--radius-md);
-  background: var(--bg-elevated); color: var(--text-secondary);
-  font-size: var(--text-sm); font-weight: var(--font-medium);
-  cursor: pointer; transition: all var(--transition-fast);
-  font-family: inherit; white-space: nowrap; flex-shrink: 0;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.check-btn:hover { border-color: var(--accent); color: var(--accent); }
-.check-btn.checked { border-color: var(--color-success); background: var(--color-success-subtle); color: var(--color-success); font-weight: var(--font-semibold); }
+.check-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.check-btn.checked {
+  border-color: var(--color-success);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+  font-weight: var(--font-semibold);
+}
 
 /* Blockers */
 .blocker-item {
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-4); background: var(--bg-tertiary); border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
 }
-.blocker-task { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-.blocker-title { font-size: var(--text-base); font-weight: var(--font-semibold); color: var(--text-primary); }
-.blocker-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.blocker-task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.blocker-title {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.blocker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
 .blocker-chip {
-  padding: var(--space-1) var(--space-3); border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-full); background: var(--bg-elevated);
-  color: var(--text-secondary); font-size: var(--text-xs); font-weight: var(--font-medium);
-  cursor: pointer; transition: all var(--transition-fast); font-family: inherit;
+  padding: var(--space-1) var(--space-3);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
 }
-.blocker-chip:hover { border-color: var(--accent); }
-.blocker-chip.active { border-color: var(--color-danger); background: var(--color-danger-subtle); color: var(--color-danger); font-weight: var(--font-semibold); }
+.blocker-chip:hover {
+  border-color: var(--accent);
+}
+.blocker-chip.active {
+  border-color: var(--color-danger);
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+  font-weight: var(--font-semibold);
+}
 
 .field-input {
-  background: var(--bg-elevated); border: 1px solid var(--border-color);
-  border-radius: var(--radius-md); padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm); font-family: inherit; color: var(--text-primary);
-  width: 100%; outline: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  width: 100%;
+  outline: none;
 }
-.field-input:focus { border-color: var(--accent); }
+.field-input:focus {
+  border-color: var(--accent);
+}
 
 /* Empty step */
 .empty-step {
-  display: flex; flex-direction: column; align-items: center; gap: var(--space-3);
-  padding: var(--space-8) var(--space-4); color: var(--text-secondary);
-  font-size: var(--text-sm); text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-8) var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-align: center;
 }
-.empty-icon { color: var(--color-success); }
-.empty-icon.warn { color: var(--color-warning); }
+.empty-icon {
+  color: var(--color-success);
+}
+.empty-icon.warn {
+  color: var(--color-warning);
+}
 
 /* Feeling */
-.feeling-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); }
-.feeling-chip {
-  display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
-  padding: var(--space-5) var(--space-3); border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-lg); background: var(--bg-elevated);
-  cursor: pointer; transition: all var(--transition-fast);
-  font-family: inherit; font-size: var(--text-sm); color: var(--text-secondary);
+.feeling-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
 }
-.feeling-chip:hover { border-color: var(--accent); color: var(--accent); }
-.feeling-chip.active { border-color: var(--accent); background: var(--accent-subtle); color: var(--accent); font-weight: var(--font-semibold); }
-.feeling-emoji { font-size: 24px; }
+.feeling-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-3);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.feeling-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.feeling-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+.feeling-emoji {
+  font-size: 24px;
+}
 
 /* Difficulty */
-.difficulty-grid { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.difficulty-chip {
-  padding: var(--space-2) var(--space-4); border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-full); background: var(--bg-elevated);
-  color: var(--text-secondary); font-size: var(--text-sm); font-weight: var(--font-medium);
-  cursor: pointer; transition: all var(--transition-fast); font-family: inherit;
+.difficulty-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
-.difficulty-chip:hover { border-color: var(--accent); }
-.difficulty-chip.active { border-color: var(--accent); background: var(--accent-subtle); color: var(--accent); }
+.difficulty-chip {
+  padding: var(--space-2) var(--space-4);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
+}
+.difficulty-chip:hover {
+  border-color: var(--accent);
+}
+.difficulty-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
 
 /* Nav */
 .step-nav {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-3); padding-top: var(--space-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
 }
-.nav-right { margin-left: auto; }
+.nav-right {
+  margin-left: auto;
+}
 
 /* Done / existing review */
-.done-card { text-align: center; }
+.done-card {
+  text-align: center;
+}
 .done-hero {
-  display: flex; flex-direction: column; align-items: center; gap: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
   padding: var(--space-8) var(--space-4);
 }
 .done-badge {
-  width: 72px; height: 72px; display: flex; align-items: center; justify-content: center;
-  background: var(--color-success-subtle); color: var(--color-success); border-radius: var(--radius-lg);
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+  border-radius: var(--radius-lg);
 }
-.done-title { font-size: var(--text-2xl); font-weight: var(--font-bold); color: var(--text-primary); letter-spacing: -0.02em; }
-.done-desc { font-size: var(--text-base); color: var(--text-secondary); margin: 0; }
-.done-hint { font-size: var(--text-sm); color: var(--text-tertiary); margin: 0; }
+.done-title {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.done-desc {
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  margin: 0;
+}
+.done-hint {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  margin: 0;
+}
 
 .regen-banner {
-  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
@@ -2465,13 +2992,18 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
 /* ── 重排变更明细：悬停查看 ── */
 .regen-details-trigger {
-  display: inline-flex; align-items: center; gap: var(--space-1);
-  font-size: var(--text-xs); cursor: help;
-  color: inherit; opacity: 0.9;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  cursor: help;
+  color: inherit;
+  opacity: 0.9;
   position: relative;
 }
 .regen-details-trigger:hover {
-  text-decoration: underline; opacity: 1;
+  text-decoration: underline;
+  opacity: 1;
 }
 .regen-details-popover {
   display: none;
@@ -2512,27 +3044,45 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   display: block;
 }
 .regen-detail-fallback {
-  font-size: var(--text-xs); color: var(--text-tertiary);
-  margin-bottom: var(--space-2); line-height: var(--leading-normal);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+  line-height: var(--leading-normal);
 }
 .regen-detail-day {
   padding: var(--space-2) 0;
   border-top: 1px solid var(--border-color);
-  display: flex; flex-direction: column; gap: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
-.regen-detail-day:first-child { border-top: none; padding-top: 0; }
+.regen-detail-day:first-child {
+  border-top: none;
+  padding-top: 0;
+}
 .regen-detail-date {
-  font-size: var(--text-xs); font-weight: var(--font-medium);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
   color: var(--text-secondary);
 }
 .regen-detail-item {
-  font-size: var(--text-xs); line-height: var(--leading-normal);
-  margin-left: var(--space-2); word-break: break-all;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  margin-left: var(--space-2);
+  word-break: break-all;
 }
-.regen-detail-item.add { color: var(--color-success); }
-.regen-detail-item.remove { color: var(--color-danger); }
-.regen-detail-item.modify { color: var(--color-warning); }
-.regen-detail-item.none { color: var(--text-tertiary); }
+.regen-detail-item.add {
+  color: var(--color-success);
+}
+.regen-detail-item.remove {
+  color: var(--color-danger);
+}
+.regen-detail-item.modify {
+  color: var(--color-warning);
+}
+.regen-detail-item.none {
+  color: var(--text-tertiary);
+}
 .regen-banner.regen-loading {
   background: var(--color-warning-subtle, var(--bg-tertiary));
   color: var(--color-warning, var(--text-primary));
@@ -2547,56 +3097,113 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 }
 
 .review-summary {
-  display: flex; flex-direction: column; gap: var(--space-2);
-  padding: var(--space-4); background: var(--bg-tertiary);
-  border-radius: var(--radius-md); width: 100%; max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  width: 100%;
+  max-width: 320px;
 }
 .summary-row {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: var(--text-sm);
 }
-.summary-label { color: var(--text-tertiary); }
-.summary-value { color: var(--text-primary); font-weight: var(--font-semibold); }
+.summary-label {
+  color: var(--text-tertiary);
+}
+.summary-value {
+  color: var(--text-primary);
+  font-weight: var(--font-semibold);
+}
 
 /* Task review details (read-only) */
 .task-reviews-list {
   width: 100%;
   max-width: 560px;
-  display: flex; flex-direction: column; gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
   text-align: left;
 }
 .task-reviews-title {
-  font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--text-secondary);
-  text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .task-review-row {
-  display: flex; align-items: center; gap: var(--space-3);
-  padding: var(--space-3); background: var(--bg-tertiary);
-  border-radius: var(--radius-md); flex-wrap: wrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
 }
-.task-review-row.incomplete { opacity: 0.7; }
-.task-review-row.abandoned { opacity: 0.5; }
+.task-review-row.incomplete {
+  opacity: 0.7;
+}
+.task-review-row.abandoned {
+  opacity: 0.5;
+}
 .trr-left {
-  display: flex; align-items: center; gap: var(--space-2);
-  flex-shrink: 0; min-width: 120px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  min-width: 120px;
 }
-.trr-status-icon { color: var(--text-tertiary); }
-.task-review-row.completed .trr-status-icon { color: var(--color-success); }
-.task-review-row.overcompletion .trr-status-icon { color: var(--accent); }
-.trr-title-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.trr-status-icon {
+  color: var(--text-tertiary);
+}
+.task-review-row.completed .trr-status-icon {
+  color: var(--color-success);
+}
+.task-review-row.overcompletion .trr-status-icon {
+  color: var(--accent);
+}
+.trr-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .trr-title {
-  font-size: var(--text-sm); font-weight: var(--font-semibold);
-  color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   max-width: 320px;
 }
-.trr-meta { display: flex; align-items: center; gap: var(--space-2); }
-.trr-subject {
-  font-size: var(--text-xs); color: var(--text-tertiary);
-  background: var(--bg-overlay); padding: 1px 6px; border-radius: var(--radius-full);
+.trr-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
-.trr-status { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-secondary); }
+.trr-subject {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-overlay);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+}
+.trr-status {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
 .trr-right {
-  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   flex: 1;
 }
 .trr-chip {
@@ -2605,203 +3212,551 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   border-radius: var(--radius-full);
   font-weight: var(--font-medium);
 }
-.trr-chip.mastery { background: var(--accent-subtle); color: var(--accent); }
-.trr-chip.blocker { background: var(--color-danger-subtle); color: var(--color-danger); }
-.trr-chip.estimate { background: var(--bg-overlay); color: var(--text-tertiary); }
-.trr-chip.actual { background: var(--color-info-subtle, var(--bg-tertiary)); color: var(--color-info, var(--text-secondary)); }
-.trr-chip.estimate svg, .trr-chip.actual svg { vertical-align: -1px; margin-right: 2px; }
-.trr-note { font-size: var(--text-xs); color: var(--text-tertiary); font-style: italic; }
+.trr-chip.mastery {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.trr-chip.blocker {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.trr-chip.estimate {
+  background: var(--bg-overlay);
+  color: var(--text-tertiary);
+}
+.trr-chip.actual {
+  background: var(--color-info-subtle, var(--bg-tertiary));
+  color: var(--color-info, var(--text-secondary));
+}
+.trr-chip.estimate svg,
+.trr-chip.actual svg {
+  vertical-align: -1px;
+  margin-right: 2px;
+}
+.trr-note {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
 
 /* Overcompletion */
-.overcompletion-toggle { margin-bottom: var(--space-3); }
+.overcompletion-toggle {
+  margin-bottom: var(--space-3);
+}
 .oc-switch {
-  display: flex; align-items: center; gap: var(--space-2);
-  padding: var(--space-3) var(--space-4); border: 1.5px solid var(--border-color);
-  border-radius: var(--radius-md); background: var(--bg-elevated);
-  color: var(--text-secondary); font-size: var(--text-sm); font-weight: var(--font-medium);
-  cursor: pointer; transition: all var(--transition-fast); font-family: inherit; width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: inherit;
+  width: 100%;
 }
-.oc-switch:hover { border-color: var(--accent); }
-.oc-switch.active { border-color: var(--accent); background: var(--accent-subtle); color: var(--accent); font-weight: var(--font-semibold); }
-.overcompletion-list { display: flex; flex-direction: column; gap: var(--space-3); }
+.oc-switch:hover {
+  border-color: var(--accent);
+}
+.oc-switch.active {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: var(--font-semibold);
+}
+.overcompletion-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
 .oc-item {
-  display: flex; flex-direction: column; gap: var(--space-2);
-  padding: var(--space-3); background: var(--bg-tertiary); border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
 }
-.oc-row { display: flex; align-items: center; gap: var(--space-2); }
+.oc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 .oc-select {
-  background: var(--bg-elevated); border: 1px solid var(--border-color);
-  border-radius: var(--radius-md); padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm); font-family: inherit; color: var(--text-primary);
-  outline: none; min-width: 110px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  outline: none;
+  min-width: 110px;
 }
-.oc-input { flex: 1; }
+.oc-input {
+  flex: 1;
+}
 
 /* 计划外学习：科目 chip + 章节清单 */
-.oc-subjects { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-.oc-subject-chip {
-  display: inline-flex; align-items: center; gap: var(--space-1);
-  padding: 5px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-full);
-  background: var(--bg-primary); color: var(--text-secondary);
-  font-family: inherit; font-size: var(--text-xs); font-weight: var(--font-medium);
-  cursor: pointer; transition: all var(--transition-fast);
+.oc-subjects {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
-.oc-subject-chip:hover:not(:disabled) { border-color: var(--border-color-strong); color: var(--text-primary); }
-.oc-subject-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
-.oc-subject-chip.disabled { opacity: 0.45; cursor: not-allowed; }
+.oc-subject-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 5px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.oc-subject-chip:hover:not(:disabled) {
+  border-color: var(--border-color-strong);
+  color: var(--text-primary);
+}
+.oc-subject-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.oc-subject-chip.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* 科目内多张进度表切换（专业课多教材 / 多考纲方案） */
 .oc-tables {
-  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   padding: var(--space-2) var(--space-3);
-  background: var(--bg-tertiary); border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
 }
-.oc-tables-label { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; }
+.oc-tables-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
 .oc-table-chip {
-  display: inline-flex; align-items: center; gap: 5px; max-width: 220px;
-  padding: 3px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-full);
-  background: var(--bg-primary); color: var(--text-secondary);
-  font-family: inherit; font-size: var(--text-xs); font-weight: var(--font-medium);
-  cursor: pointer; transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
 }
-.oc-table-chip:hover { border-color: var(--border-color-strong); color: var(--text-primary); }
-.oc-table-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
-.oc-table-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-table-chip:hover {
+  border-color: var(--border-color-strong);
+  color: var(--text-primary);
+}
+.oc-table-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.oc-table-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .oc-table-chip-count {
-  display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px;
-  padding: 0 4px; border-radius: var(--radius-full);
-  background: var(--accent); color: #fff; font-size: 10px; font-weight: var(--font-semibold);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
 }
-.oc-table-chip:not(.active) .oc-table-chip-count { background: var(--text-quaternary); }
+.oc-table-chip:not(.active) .oc-table-chip-count {
+  background: var(--text-quaternary);
+}
 
-.oc-loading { margin: var(--space-4) auto; }
-.oc-table-caption {
-  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
-  font-size: var(--text-xs); color: var(--text-tertiary);
+.oc-loading {
+  margin: var(--space-4) auto;
 }
-.oc-table-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-empty-hint { margin: 0; font-size: var(--text-xs); color: var(--text-tertiary); }
+.oc-table-caption {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.oc-table-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-empty-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
 
 /* 章节 → 知识点 两级选择树 */
-.oc-unit-block { display: flex; flex-direction: column; gap: 2px; }
-.oc-expand {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; flex-shrink: 0; padding: 0;
-  border: none; background: transparent; color: var(--text-tertiary);
-  cursor: pointer; border-radius: var(--radius-sm);
-  transition: transform var(--transition-fast), background var(--transition-fast);
+.oc-unit-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
-.oc-expand:hover { color: var(--text-primary); background: var(--bg-tertiary); }
-.oc-expand.open { transform: rotate(90deg); }
-.oc-expand-spacer { width: 18px; flex-shrink: 0; }
+.oc-expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast);
+}
+.oc-expand:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+.oc-expand.open {
+  transform: rotate(90deg);
+}
+.oc-expand-spacer {
+  width: 18px;
+  flex-shrink: 0;
+}
 .oc-node-children {
-  display: flex; flex-direction: column; gap: 2px;
-  margin: 0 0 2px 27px; padding-left: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 2px 27px;
+  padding-left: 11px;
   border-left: 1.5px dashed var(--border-color);
 }
-.oc-knowledge-row { padding-top: 5px; padding-bottom: 5px; background: var(--bg-tertiary); }
-.oc-knowledge-row .oc-node-title { font-weight: var(--font-normal); }
+.oc-knowledge-row {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  background: var(--bg-tertiary);
+}
+.oc-knowledge-row .oc-node-title {
+  font-weight: var(--font-normal);
+}
 .oc-group-title {
   margin: var(--space-2) var(--space-3) 0;
-  font-size: var(--text-xs); color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
-.oc-kid-count, .oc-partial {
-  flex-shrink: 0; font-size: var(--text-xs);
-  padding: 1px 8px; border-radius: var(--radius-full);
+.oc-kid-count,
+.oc-partial {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
 }
-.oc-kid-count { color: var(--text-tertiary); background: var(--bg-overlay); }
-.oc-partial { color: var(--accent); background: var(--accent-subtle); }
-.oc-knowledge-row .oc-node-title { font-weight: var(--font-normal); }
-.oc-node-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.oc-kid-count {
+  color: var(--text-tertiary);
+  background: var(--bg-overlay);
+}
+.oc-partial {
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.oc-knowledge-row .oc-node-title {
+  font-weight: var(--font-normal);
+}
+.oc-node-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
 .oc-node-row {
-  display: flex; align-items: center; gap: var(--space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color); border-radius: var(--radius-md);
-  background: var(--bg-elevated); transition: border-color var(--transition-fast), opacity var(--transition-fast);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  transition:
+    border-color var(--transition-fast),
+    opacity var(--transition-fast);
 }
-.oc-node-row:hover { border-color: var(--border-color-strong); }
-.oc-node-row.drag-over { border-color: var(--accent); background: var(--accent-subtle); }
-.oc-node-row.dragging { opacity: 0.4; }
-.oc-node-row.checked { border-color: var(--accent); background: var(--accent-subtle); }
+.oc-node-row:hover {
+  border-color: var(--border-color-strong);
+}
+.oc-node-row.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.oc-node-row.dragging {
+  opacity: 0.4;
+}
+.oc-node-row.checked {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
 .oc-check {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 0; border: none; background: transparent; color: var(--text-quaternary);
-  cursor: pointer; flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-quaternary);
+  cursor: pointer;
+  flex-shrink: 0;
 }
-.oc-check.active { color: var(--color-success, #16a34a); }
-.oc-node-icon { color: var(--text-quaternary); display: inline-flex; flex-shrink: 0; }
-.oc-node-title { flex: 1; min-width: 0; font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-primary); word-break: break-word; }
-.oc-create { display: flex; align-items: center; gap: var(--space-2); }
-.oc-create-input { flex: 1; }
-.oc-error { margin: 0; font-size: var(--text-xs); color: var(--color-danger); }
-.oc-unmatched { display: flex; flex-direction: column; gap: var(--space-2); }
-.oc-unmatched-title { font-size: var(--text-xs); color: var(--text-tertiary); }
-.oc-unmatched-subject { flex-shrink: 0; font-size: var(--text-xs); color: var(--text-tertiary); background: var(--bg-tertiary); padding: 2px 8px; border-radius: var(--radius-full); }
+.oc-check.active {
+  color: var(--color-success, #16a34a);
+}
+.oc-node-icon {
+  color: var(--text-quaternary);
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.oc-node-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.oc-create {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.oc-create-input {
+  flex: 1;
+}
+.oc-error {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
+}
+.oc-unmatched {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.oc-unmatched-title {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.oc-unmatched-subject {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
 
 /* ── 计划外学习 v2：进度指针 ── */
 .oc-progress-bar {
-  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
-  padding: var(--space-2) var(--space-3); background: var(--bg-tertiary);
-  border-radius: var(--radius-md); flex-wrap: wrap;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
 }
-.oc-progress-item { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.oc-progress-label { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; }
+.oc-progress-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.oc-progress-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
 .oc-progress-name {
-  font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--accent);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
 }
-.oc-progress-legend { display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-xs); color: var(--text-tertiary); }
-.oc-legend-dot { width: 8px; height: 8px; border-radius: var(--radius-full); display: inline-block; }
-.oc-legend-now { background: var(--accent); }
-.oc-legend-learned { background: var(--text-quaternary); }
-.oc-legend-wait { border: 1.5px solid var(--border-color-strong); background: transparent; }
+.oc-progress-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.oc-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  display: inline-block;
+}
+.oc-legend-now {
+  background: var(--accent);
+}
+.oc-legend-learned {
+  background: var(--text-quaternary);
+}
+.oc-legend-wait {
+  border: 1.5px solid var(--border-color-strong);
+  background: transparent;
+}
 .oc-section-desc {
-  display: flex; align-items: flex-start; gap: var(--space-2);
-  padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
   background: var(--accent-subtle, color-mix(in srgb, var(--accent) 8%, transparent));
-  color: var(--text-secondary); font-size: var(--text-xs); line-height: var(--leading-normal);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
 }
-.oc-section-desc svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
-.oc-pointer-list { gap: var(--space-1); }
+.oc-section-desc svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.oc-pointer-list {
+  gap: var(--space-1);
+}
 .oc-pointer-row {
-  padding: 2px 4px; gap: 2px;
+  padding: 2px 4px;
+  gap: 2px;
 }
 .oc-pointer-main {
-  display: flex; align-items: center; gap: var(--space-2);
-  flex: 1; min-width: 0;
-  padding: 4px 6px; border-radius: var(--radius-sm);
-  border: none; background: transparent; color: inherit;
-  font-family: inherit; text-align: left; cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
   transition: background var(--transition-fast);
 }
-.oc-pointer-main:hover { background: var(--bg-tertiary); }
-.oc-pointer-row.learned { opacity: 0.72; }
-.oc-pointer-row.learned .oc-check { color: var(--text-quaternary); }
+.oc-pointer-main:hover {
+  background: var(--bg-tertiary);
+}
+.oc-pointer-row.learned {
+  opacity: 0.72;
+}
+.oc-pointer-row.learned .oc-check {
+  color: var(--text-quaternary);
+}
 .oc-pointer-row.cur {
-  border-color: var(--accent); background: var(--bg-tertiary);
+  border-color: var(--accent);
+  background: var(--bg-tertiary);
   box-shadow: inset 3px 0 0 var(--accent);
 }
-.oc-tag-now { color: var(--accent); background: var(--accent-subtle); font-weight: var(--font-semibold); }
-.oc-tag-learned { color: var(--text-tertiary); background: var(--bg-overlay); }
+.oc-tag-now {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  font-weight: var(--font-semibold);
+}
+.oc-tag-learned {
+  color: var(--text-tertiary);
+  background: var(--bg-overlay);
+}
 .oc-correction {
-  display: flex; gap: var(--space-2); padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-danger, #dc2626); border-radius: var(--radius-md);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-danger, #dc2626);
+  border-radius: var(--radius-md);
   background: var(--color-danger-subtle, color-mix(in srgb, var(--color-danger) 8%, transparent));
 }
-.oc-correction-icon { color: var(--color-danger); flex-shrink: 0; margin-top: 1px; }
-.oc-correction-body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
-.oc-correction-title { margin: 0; font-size: var(--text-sm); font-weight: var(--font-semibold); color: var(--text-primary); }
-.oc-correction-text { margin: 0; font-size: var(--text-xs); color: var(--text-secondary); line-height: var(--leading-normal); }
-.oc-correction-actions { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
-.oc-hint { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; font-size: var(--text-xs); color: var(--text-secondary); line-height: var(--leading-normal); }
-.oc-hint svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
+.oc-correction-icon {
+  color: var(--color-danger);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.oc-correction-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.oc-correction-title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.oc-correction-text {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+.oc-correction-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.oc-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: var(--leading-normal);
+}
+.oc-hint svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent);
+}
 
 /* ── 日期切换过渡动画 ── */
 .date-slide-left-enter-active,
 .date-slide-left-leave-active,
 .date-slide-right-enter-active,
 .date-slide-right-leave-active {
-  transition: transform 0.22s ease, opacity 0.22s ease;
+  transition:
+    transform 0.22s ease,
+    opacity 0.22s ease;
 }
 
 .date-slide-left-enter-from {

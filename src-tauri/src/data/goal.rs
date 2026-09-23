@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use super::state::SubjectKey;
-use super::{atomic_write, read_file_content, DataResult};
+use super::{atomic_write, deadline_active_on, read_file_content, DataResult};
 
 // ============================================================================
 // 结构
@@ -147,9 +147,9 @@ pub fn save_goals(data_dir: &Path, file: &GoalPlanFile) -> DataResult<()> {
 /// - 截止日已过（严格早于今天）→ expired（不再生效）
 /// - 其余 → active（恢复生效）
 ///
-/// **截止日当天仍算生效**（`deadline >= today`），与 `active_goals_for_subject`
-/// 的过滤口径一致：用户在截止日当天复盘时，当天任务还能把目标带达标，
-/// 不应在复盘那一刻就被判过期。
+/// 截止日判定统一走 [`deadline_active_on`]（**截止日当天仍算生效**），与
+/// `active_goals_for_subject`、`goal_planner::extend_goal_deadline_on_miss` 同口径：
+/// 用户在截止日当天复盘时，当天任务还能把目标带达标，不应在复盘那一刻就被判过期。
 pub fn refresh_goal_lifecycle(goal: &mut Goal, today: &str) {
     let reached = matches!(
         (goal.current_position, goal.target_position),
@@ -158,7 +158,7 @@ pub fn refresh_goal_lifecycle(goal: &mut Goal, today: &str) {
     if reached {
         goal.active = false;
         goal.status = "completed".to_string();
-    } else if !goal.deadline.is_empty() && goal.deadline.as_str() < today {
+    } else if !deadline_active_on(&goal.deadline, today) {
         goal.active = false;
         goal.status = "expired".to_string();
     } else {
@@ -209,12 +209,7 @@ pub fn active_goals_for_subject(data_dir: &Path, subject: &SubjectKey, today: &s
     file.data
         .goals
         .iter()
-        .filter(|g| {
-            g.subject == *subject
-                && g.active
-                && !g.deadline.is_empty()
-                && g.deadline.as_str() >= today
-        })
+        .filter(|g| g.subject == *subject && g.active && deadline_active_on(&g.deadline, today))
         .cloned()
         .collect()
 }
@@ -230,7 +225,7 @@ pub fn active_goals_for_subject(data_dir: &Path, subject: &SubjectKey, today: &s
 pub fn active_goal_for(data_dir: &Path, subject: &SubjectKey, today: &str) -> Option<Goal> {
     let file = read_goals(data_dir).ok()?;
     let goal = goal_of_subject(&file, subject)?;
-    if goal.active && !goal.deadline.is_empty() && goal.deadline.as_str() >= today {
+    if goal.active && deadline_active_on(&goal.deadline, today) {
         Some(goal.clone())
     } else {
         None
@@ -421,8 +416,9 @@ mod tests {
 
     /// 截止日边界：**当天仍生效**，只有严格早于今天才算过期。
     ///
-    /// 这条口径必须与 `active_goals_for_subject`（`deadline >= today`）以及
-    /// `goal_planner::extend_goal_deadline_on_miss`（`deadline < today` 才顺延）一致；
+    /// 这条口径必须与 `active_goals_for_subject` 以及
+    /// `goal_planner::extend_goal_deadline_on_miss` 一致（三处共用
+    /// `date_utils::deadline_active_on`）；
     /// 曾经三处不一致，导致用户在截止日当天复盘时目标被当场判过期、
     /// 当天任务再没机会把它带达标。
     #[test]

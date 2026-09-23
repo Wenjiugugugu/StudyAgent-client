@@ -50,11 +50,7 @@ const {
     </div>
 
     <div class="item-list">
-      <div
-        v-for="server in settingsStore.mcpServers"
-        :key="server.id"
-        class="item-row"
-      >
+      <div v-for="server in settingsStore.mcpServers" :key="server.id" class="item-row">
         <div class="item-info">
           <div class="item-name-row">
             <span class="item-name">{{ server.name }}</span>
@@ -117,11 +113,21 @@ const {
         </div>
         <div class="form-field form-field-full">
           <label class="form-label">参数（逗号分隔）</label>
-          <input v-model="serverArgsText" type="text" class="form-input" placeholder="-y, @modelcontextprotocol/server-filesystem, ." />
+          <input
+            v-model="serverArgsText"
+            type="text"
+            class="form-input"
+            placeholder="-y, @modelcontextprotocol/server-filesystem, ."
+          />
         </div>
         <div class="form-field form-field-full">
           <label class="form-label">URL (SSE / WebSocket)</label>
-          <input v-model="serverForm.url" type="text" class="form-input" placeholder="http://localhost:3000/sse" />
+          <input
+            v-model="serverForm.url"
+            type="text"
+            class="form-input"
+            placeholder="http://localhost:3000/sse"
+          />
         </div>
       </div>
 
@@ -147,11 +153,7 @@ const {
       </button>
       <transition name="mcp-tips-fade">
         <div v-if="showMcpTips" class="mcp-tips-list">
-          <div
-            v-for="(tip, idx) in MCP_TIPS"
-            :key="idx"
-            class="mcp-tip-card"
-          >
+          <div v-for="(tip, idx) in MCP_TIPS" :key="idx" class="mcp-tip-card">
             <div class="mcp-tip-info">
               <div class="mcp-tip-name">{{ tip.name }}</div>
               <div class="mcp-tip-desc">{{ tip.desc }}</div>

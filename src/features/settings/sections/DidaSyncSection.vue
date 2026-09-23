@@ -105,7 +105,7 @@ async function toggleEnabled() {
     toggleSavedFlash.value = true;
     setTimeout(() => (toggleSavedFlash.value = false), 1800);
     if (enabled.value) void loadProjects();
-  } catch (e) {
+  } catch {
     // 保存失败时回滚开关
     if (settingsStore.settings) {
       settingsStore.settings.ticktick = {
@@ -162,9 +162,7 @@ async function runSync() {
       </Badge>
     </div>
 
-    <p class="section-desc">
-      同步每日任务到滴答清单，手机端查看并勾选；只读写本系统创建的任务。
-    </p>
+    <p class="section-desc">同步每日任务到滴答清单，手机端查看并勾选；只读写本系统创建的任务。</p>
 
     <!-- 启用开关（独立保存，瞬时生效） -->
     <div class="toggle-row">
@@ -172,12 +170,7 @@ async function runSync() {
         <span class="toggle-title">启用同步</span>
         <span class="toggle-desc">生成/重排日计划时自动对账到滴答</span>
       </div>
-      <Button
-        variant="secondary"
-        size="sm"
-        :loading="toggleSaving"
-        @click="toggleEnabled"
-      >
+      <Button variant="secondary" size="sm" :loading="toggleSaving" @click="toggleEnabled">
         <Check v-if="toggleSavedFlash" :size="14" />
         <span>{{ toggleSavedFlash ? "已保存" : enabled ? "禁用" : "启用" }}</span>
       </Button>
@@ -202,13 +195,20 @@ async function runSync() {
             :placeholder="hasToken ? '已保存（输入可替换）' : '粘贴 API 口令'"
             autocomplete="off"
           />
-          <Button variant="primary" size="sm" :loading="tokenSaving" :disabled="!token.trim()" @click="saveToken">
+          <Button
+            variant="primary"
+            size="sm"
+            :loading="tokenSaving"
+            :disabled="!token.trim()"
+            @click="saveToken"
+          >
             <Check :size="14" />
             <span>{{ tokenSavedFlash ? "已保存" : "保存" }}</span>
           </Button>
         </div>
         <span class="item-sub field-hint token-hint">
-          获取方式：登录滴答清单网页版（dida365.com）→ 右上角头像 → 设置 → 账户与安全 → API 口令 → 生成并复制。该口令用于读写你账户下的任务。
+          获取方式：登录滴答清单网页版（dida365.com）→ 右上角头像 → 设置 → 账户与安全 → API 口令 →
+          生成并复制。该口令用于读写你账户下的任务。
         </span>
         <span v-if="tokenError" class="item-sub field-hint token-error">{{ tokenError }}</span>
       </div>
@@ -219,7 +219,11 @@ async function runSync() {
       <div class="item-info">
         <span class="item-name">归属清单</span>
         <span class="item-sub">
-          {{ projectsLoading ? "加载清单中…" : "任务写入的滴答清单；留空则自动选「学习」或首个未关闭清单" }}
+          {{
+            projectsLoading
+              ? "加载清单中…"
+              : "任务写入的滴答清单；留空则自动选「学习」或首个未关闭清单"
+          }}
         </span>
       </div>
       <select

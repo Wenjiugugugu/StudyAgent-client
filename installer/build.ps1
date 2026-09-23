@@ -15,14 +15,12 @@
       - 本机 `desktop\src-tauri\target` 会被安全软件随机拦截写入（cargo 报 os error 5），
         直接写它会构建失败并废掉缓存。因此脚本把 cargo 编译目录（CARGO_TARGET_DIR）
         固定到一个持久的缓存目录，绕开被拦截路径。
-      - 缓存目录**自动探测**（见下方 $knownCaches）：按顺序找含
-        `release\studyagent-desktop.exe` 的目录并复用，因此直接跑脚本即可增量编译，
-        无需每次手工传 -TargetDir。全都不是可用缓存时，回溯到 `%LOCALAPPDATA%\StudyAgent\tauri-target`
-        （首次使用会全量编译，约 15-22 分钟）。
+      - 缓存目录由 -TargetDir、STUDYAGENT_TARGET_DIR 或
+        `%LOCALAPPDATA%\StudyAgent\tauri-target` 决定，不依赖开发者机器专属路径。
       - 只改了前端（Vue）时：先确保 dist 已更新（或保留默认前端构建步骤），
         再跑本脚本，约 1-3 分钟即可出包。
       - 已存在的缓存目录可直接复用，例如：
-        .\installer\build.ps1 -TargetDir 'D:\c\Users\Administrator\AppData\Local\Temp\tauri-target-070'
+        .\installer\build.ps1 -TargetDir 'C:\build-cache\studyagent'
       - 目录可通过环境变量 STUDYAGENT_TARGET_DIR 统一指定（优先级低于 -TargetDir）。
 
 .PARAMETER SkipBuild
@@ -30,12 +28,17 @@
     （适合只重打安装程序）。
 
 .PARAMETER TargetDir
-    cargo 编译缓存目录（CARGO_TARGET_DIR）。留空时自动探测已知缓存目录
-    （优先级：-TargetDir > STUDYAGENT_TARGET_DIR > 自动探测 > %LOCALAPPDATA%\StudyAgent\tauri-target）。
+    cargo 编译缓存目录（CARGO_TARGET_DIR）。优先级：-TargetDir >
+    STUDYAGENT_TARGET_DIR > %LOCALAPPDATA%\StudyAgent\tauri-target。
 
 .PARAMETER SkipFrontend
     跳过 tauri 的 beforeBuildCommand（前端 vue-tsc + vite build）。当 dist 已是最新、
     只想快速重编嵌入时使用；否则默认会先重建前端（需要 npm 可用）。
+
+.PARAMETER RequireSignature
+    要求对主程序和安装包执行 Authenticode 签名。缺少 signtool 或证书指纹时立即失败，
+    适合正式发布流水线。也可通过 STUDYAGENT_SIGNTOOL 与
+    STUDYAGENT_CERT_THUMBPRINT 环境变量提供配置。
 
 .EXAMPLE
     # 完整打包（含前端重建；首次会全量编译 Rust）
@@ -45,7 +48,7 @@
     .\installer\build.ps1 -SkipFrontend
 
     # 复用已有缓存目录（避免全量），其余同默认
-    .\installer\build.ps1 -TargetDir 'D:\c\Users\Administrator\AppData\Local\Temp\tauri-target-070'
+    .\installer\build.ps1 -TargetDir 'C:\build-cache\studyagent'
 
     # 仅用已有 exe 重打安装程序
     .\installer\build.ps1 -SkipBuild
@@ -54,10 +57,17 @@
 param(
     [switch]$SkipBuild,
     [string]$TargetDir = '',
-    [switch]$SkipFrontend
+    [switch]$SkipFrontend,
+    [switch]$RequireSignature,
+    [string]$SignToolPath = $env:STUDYAGENT_SIGNTOOL,
+    [string]$CertificateThumbprint = $env:STUDYAGENT_CERT_THUMBPRINT
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($RequireSignature -and $SkipBuild) {
+    throw '正式签名发布不能使用 -SkipBuild：必须重新编译主程序以嵌入发布证书指纹。'
+}
 
 $InstallerDir = $PSScriptRoot
 $DesktopDir = Split-Path -Parent $InstallerDir
@@ -69,35 +79,9 @@ $IssFile = Join-Path $InstallerDir 'StudyAgent.iss'
 $ExeName = 'studyagent-desktop.exe'
 
 # ── 编译缓存目录（CARGO_TARGET_DIR）──────────────────────────────────────
-# 优先级：-TargetDir > 环境变量 STUDYAGENT_TARGET_DIR > 自动探测已知缓存 > LOCALAPPDATA 默认
+# 优先级：-TargetDir > 环境变量 STUDYAGENT_TARGET_DIR > LOCALAPPDATA 默认
 if ([string]::IsNullOrWhiteSpace($TargetDir)) {
     $TargetDir = $env:STUDYAGENT_TARGET_DIR
-}
-if ([string]::IsNullOrWhiteSpace($TargetDir)) {
-    # 自动复用既有缓存目录，避免每次打包都触发 15-22 分钟全量编译。
-    # 候选目录按「含 release\studyagent-desktop.exe 则视为可用缓存」判定。
-    $knownCaches = @(
-        'D:\c\Users\Administrator\AppData\Local\Temp\tauri-target-070'  # 0.7.x 打包缓存（含 release 产物，保留）
-        'D:\StudyAgent\.target-package'                        # 备用打包缓存
-        (Join-Path $env:LOCALAPPDATA 'StudyAgent\tauri-target')
-    )
-    foreach ($c in $knownCaches) {
-        if ($c -and (Test-Path (Join-Path $c 'release\studyagent-desktop.exe'))) {
-            $TargetDir = $c
-            Write-Host "==> 自动复用已有编译缓存：$TargetDir" -ForegroundColor Green
-            break
-        }
-    }
-    # 没有可用缓存：若历史缓存目录「存在但未编译完」，仍复用它以便增量续编
-    if ([string]::IsNullOrWhiteSpace($TargetDir)) {
-        foreach ($c in $knownCaches) {
-            if ($c -and (Test-Path $c)) {
-                $TargetDir = $c
-                Write-Host "==> 复用未完成的编译缓存（首次将全量编译）：$TargetDir" -ForegroundColor Yellow
-                break
-            }
-        }
-    }
 }
 if ([string]::IsNullOrWhiteSpace($TargetDir)) {
     $TargetDir = Join-Path $env:LOCALAPPDATA 'StudyAgent\tauri-target'
@@ -137,10 +121,40 @@ function Get-AppVersion {
     (Get-Content $confPath -Raw | ConvertFrom-Json).version
 }
 
+function Invoke-CodeSign([string]$FilePath) {
+    $configured = -not [string]::IsNullOrWhiteSpace($SignToolPath) -and
+                  -not [string]::IsNullOrWhiteSpace($CertificateThumbprint)
+    if (-not $configured) {
+        if ($RequireSignature) {
+            throw '正式发布要求代码签名，但未配置 STUDYAGENT_SIGNTOOL / STUDYAGENT_CERT_THUMBPRINT。'
+        }
+        Write-Host "==> 未配置代码签名，跳过：$FilePath" -ForegroundColor Yellow
+        return
+    }
+    if (-not (Test-Path -LiteralPath $SignToolPath -PathType Leaf)) {
+        throw "未找到 signtool：$SignToolPath"
+    }
+    & $SignToolPath sign /sha1 $CertificateThumbprint /fd SHA256 /tr 'http://timestamp.digicert.com' /td SHA256 $FilePath
+    if ($LASTEXITCODE -ne 0) { throw "Authenticode 签名失败（exit=$LASTEXITCODE）：$FilePath" }
+    $signature = Get-AuthenticodeSignature -LiteralPath $FilePath
+    if ($signature.Status -ne 'Valid') {
+        throw "签名验证失败（$($signature.Status)）：$FilePath"
+    }
+    $actualThumbprint = ($signature.SignerCertificate.Thumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+    $expectedThumbprint = ($CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+    if ($actualThumbprint -ne $expectedThumbprint) {
+        throw "签名证书指纹不匹配：期望 $expectedThumbprint，实际 $actualThumbprint"
+    }
+}
+
 # ── 1. 构建 Tauri 应用（release，写持久缓存目录）───────────────────────
 if (-not $SkipBuild) {
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
     $env:CARGO_TARGET_DIR = $TargetDir
+    if (-not [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
+        # 编译进主程序，更新安装前必须与该发布证书完全匹配。
+        $env:STUDYAGENT_UPDATE_CERT_THUMBPRINT = ($CertificateThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+    }
     Write-Host "==> CARGO_TARGET_DIR = $TargetDir" -ForegroundColor Cyan
 
     # 优先使用仓库自带的 tauri CLI（node_modules），避免依赖全局 pnpm/npm
@@ -185,6 +199,8 @@ Write-Host "==> 准备打包文件 -> $StagingDir" -ForegroundColor Cyan
 if (Test-Path $StagingDir) { Remove-Item $StagingDir -Recurse -Force }
 New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
 Copy-Item $MainExe -Destination $StagingDir
+$StagedExe = Join-Path $StagingDir $ExeName
+Invoke-CodeSign $StagedExe
 
 # 若将来在 tauri.conf.json 里配置了 resources / externalBin，把目录一起带上
 $resourcesDir = Join-Path $TauriDir 'resources'
@@ -203,6 +219,7 @@ if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（exit=$LASTEXITCODE）" }
 
 $setupExe = Join-Path $OutputDir "StudyAgent_${version}_x64-setup.exe"
 if (-not (Test-Path $setupExe)) { throw "未生成预期的安装程序：$setupExe" }
+Invoke-CodeSign $setupExe
 
 $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
 $sizeMb = [math]::Round((Get-Item $setupExe).Length / 1MB, 2)

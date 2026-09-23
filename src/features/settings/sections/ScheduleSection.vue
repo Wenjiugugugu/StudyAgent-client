@@ -36,7 +36,13 @@ defineProps<{
           每日目标学时
           <span class="field-hint">调整学时会自动影响每日任务数（学时 ÷ 标准任务粒度）</span>
         </label>
-        <input v-model.number="form.daily_target_hours" type="number" step="0.5" min="0" class="form-input" />
+        <input
+          v-model.number="form.daily_target_hours"
+          type="number"
+          step="0.5"
+          min="0"
+          class="form-input"
+        />
       </div>
       <div class="form-field">
         <label class="form-label">复盘提醒时间</label>

@@ -1,0 +1,26 @@
+# 编辑器统一约定（对应重构路线图 Q5 / Q15）
+#
+# 与 .gitattributes 配套：仓库内文本文件一律 LF，编辑器写入时保持一致。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.rs]
+indent_size = 4
+
+[*.{ps1,bat,cmd}]
+# Windows 脚本保持 CRLF（传统工具链兼容；与 .gitattributes 一致）
+end_of_line = crlf
+
+[*.md]
+# Markdown 行尾两个空格代表换行，不能裁剪
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab

@@ -19,15 +19,22 @@ const DEFAULT_DIRS: Array<Omit<DirCheck, "exists" | "loading" | "error" | "entri
 ];
 
 export function useDataDirectoryCheck(dataDir: () => string) {
-  const dataDirs = ref<DirCheck[]>(DEFAULT_DIRS.map((d) => ({
-    ...d,
-    exists: null,
-    loading: false,
-    error: null,
-    entries: [],
-  })));
+  const dataDirs = ref<DirCheck[]>(
+    DEFAULT_DIRS.map((d) => ({
+      ...d,
+      exists: null,
+      loading: false,
+      error: null,
+      entries: [],
+    }))
+  );
   const expandedDir = ref<string | null>(null);
-  const fileContent = ref<{ dir: string; name: string; content: string; error: string | null } | null>(null);
+  const fileContent = ref<{
+    dir: string;
+    name: string;
+    content: string;
+    error: string | null;
+  } | null>(null);
   const loadingFile = ref(false);
 
   async function checkDataDirs() {

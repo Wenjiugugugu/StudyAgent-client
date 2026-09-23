@@ -431,6 +431,9 @@ pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<
         return Err("安装前完整性复核失败，安装包已删除".to_string());
     }
 
+    #[cfg(target_os = "windows")]
+    verify_authenticode_signature(&canonical)?;
+
     log::info!("[Update] 启动安装程序: {}", file_path);
 
     // Windows 上用 DETACHED_PROCESS 让子进程独立
@@ -477,4 +480,56 @@ pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<
     log::info!("[Update] 安装程序已启动，应用退出");
     app.exit(0);
     Ok(())
+}
+
+/// SHA-256 只证明下载内容与发布源声明一致；Authenticode 再验证发布者证书链与
+/// 构建时固定的证书指纹，防止发布附件和同源校验值被一起替换。1.00 起拒绝安装
+/// 未签名、签名无效或发布者不匹配的更新包。
+#[cfg(target_os = "windows")]
+fn verify_authenticode_signature(path: &std::path::Path) -> Result<(), String> {
+    let expected_thumbprint = option_env!("STUDYAGENT_UPDATE_CERT_THUMBPRINT")
+        .map(normalize_certificate_thumbprint)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "当前构建未固定更新发布证书，出于安全原因已拒绝自动安装；请从官方渠道手动更新"
+                .to_string()
+        })?;
+    let script = concat!(
+        "$signature = Get-AuthenticodeSignature -LiteralPath $args[0]; ",
+        "if ($signature.Status -ne 'Valid') { ",
+        "Write-Error ('invalid Authenticode signature: ' + $signature.Status); exit 1 }; ",
+        "Write-Output $signature.SignerCertificate.Thumbprint"
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("无法执行安装包签名验证: {e}"))?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "更新包未通过 Windows 发布者签名验证，已拒绝安装：{}",
+            detail.trim()
+        ));
+    }
+    let thumbprint = normalize_certificate_thumbprint(&String::from_utf8_lossy(&output.stdout));
+    if thumbprint.is_empty() {
+        return Err("更新包签名缺少发布者证书，已拒绝安装".to_string());
+    }
+    if thumbprint != expected_thumbprint {
+        return Err(format!(
+            "更新包发布者与当前应用不一致，已拒绝安装（实际证书指纹：{thumbprint}）"
+        ));
+    }
+    log::info!("[Update] Authenticode 签名验证通过: {}", thumbprint);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_certificate_thumbprint(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_hexdigit())
+        .flat_map(char::to_uppercase)
+        .collect()
 }

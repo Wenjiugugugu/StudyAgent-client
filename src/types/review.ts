@@ -12,9 +12,11 @@ import type { SubjectKey, TaskPriority } from "./state";
 /** 复盘元信息 */
 export interface ReviewMeta {
   date: string;
-  type: "review";
+  type: "review" | "structured_review" | "default_review";
   plan_ref: string;
   generated_at: string;
+  /** 未按时复盘后由系统依据任务状态自动生成 */
+  default_marked?: boolean;
 }
 
 /** 完成任务记录 */

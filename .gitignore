@@ -1,5 +1,9 @@
 # Dependencies
 node_modules/
+.pnpm-store/
+
+# Project documentation (maintained outside the source repository)
+docs/
 .pnp
 .pnp.js
 
@@ -104,4 +108,3 @@ src-tauri/.tmp/
 .codex/
 .agents/
 .design_library/
-

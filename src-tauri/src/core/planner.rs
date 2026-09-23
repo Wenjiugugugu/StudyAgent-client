@@ -10,13 +10,13 @@ use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::api::commands::legacy::RegenDayChange;
 use crate::core::adaptive_planner::AdaptivePlanParameters;
+use crate::core::date_utils::{
+    add_days, days_between, get_week_end, get_week_start, today_string, weekday_name,
+};
 use crate::core::scheduler::DailyScheduler;
 use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment};
 use crate::data::state::StudyState;
-use crate::data::{
-    add_days, clean_ai_json, days_between, get_week_end, get_week_start, iso_week_string,
-    today_string, weekday_name, DataResult,
-};
+use crate::data::{clean_ai_json, iso_week_string, DataResult};
 
 /// Planner — 计划生成器
 pub struct Planner<'a> {
@@ -222,7 +222,7 @@ impl<'a> Planner<'a> {
             &state_snapshot,
             &review.overcompletion,
             &review.task_reviews,
-            &crate::data::today_string(),
+            &today_string(),
         );
 
         // 2. 判断是否需要重排：
@@ -1296,21 +1296,11 @@ impl<'a> Planner<'a> {
         const MAX_PER_SUBJECT: usize = 15;
 
         let index = crate::data::load_progress_index(data_dir);
-        let subjects = ["math", "english", "politics", "professional"];
+        let subjects = crate::data::state::SubjectKey::ALL.map(|key| key.key());
         let mut lines: Vec<String> = Vec::new();
         for subject in subjects {
-            let Some(set) = index.subjects.get(subject) else {
-                continue;
-            };
-            let active_id = if set.active_id.is_empty() {
-                match set.tables.first() {
-                    Some(t) => t.id.clone(),
-                    None => continue,
-                }
-            } else {
-                set.active_id.clone()
-            };
-            let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+            let Some(table) = crate::data::progress_tables::active_progress_table(&index, subject)
+            else {
                 continue;
             };
             // 复合调整参数：效率系数 + 反馈信号 + 该科完成率 + 置信度
@@ -1631,7 +1621,7 @@ impl<'a> Planner<'a> {
             let nonzero: Vec<String> = per_subject_budget
                 .iter()
                 .filter(|(_, n)| *n > 0)
-                .map(|(k, n)| format!("{} {} 条", planner_subject_cn(k), n))
+                .map(|(k, n)| format!("{} {} 条", k.label(), n))
                 .collect();
             if !nonzero.is_empty() {
                 let distribution_note = if subject_time_allocation.is_some() {
@@ -1658,15 +1648,11 @@ impl<'a> Planner<'a> {
                     if cur.is_some() {
                         prompt.push('\n');
                     }
-                    let _cn = crate::data::weekday_name(&it.due_date).unwrap_or_default();
+                    let _cn = weekday_name(&it.due_date).unwrap_or_default();
                     prompt.push_str(&format!("- {}（{}）:\n", it.due_date, _cn));
                     cur = Some(it.due_date.clone());
                 }
-                prompt.push_str(&format!(
-                    "  - {}：{}\n",
-                    planner_subject_cn(&it.subject),
-                    it.title
-                ));
+                prompt.push_str(&format!("  - {}：{}\n", it.subject.label(), it.title));
             }
             prompt.push('\n');
         }
@@ -1724,8 +1710,7 @@ impl<'a> Planner<'a> {
                 }
             };
             for ex in excluded_days {
-                let weekday =
-                    crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -1999,8 +1984,7 @@ impl<'a> Planner<'a> {
             let mut uncompleted_tasks: Vec<(String, String, String, String)> = Vec::new();
             for plan in prev_week_daily_plans.iter() {
                 let date = &plan.meta.date;
-                let weekday =
-                    crate::data::weekday_name(date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(date).unwrap_or_else(|_| "未知".to_string());
                 let is_rest = plan.data.tasks.is_empty();
                 prompt.push_str(&format!(
                     "\n**{}（{}）**{}",
@@ -2018,12 +2002,7 @@ impl<'a> Planner<'a> {
                     use std::collections::BTreeMap;
                     let mut by_subject: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
                     for task in &plan.data.tasks {
-                        let subj = match task.subject {
-                            crate::data::state::SubjectKey::Math => "数学",
-                            crate::data::state::SubjectKey::English => "英语",
-                            crate::data::state::SubjectKey::Politics => "政治",
-                            crate::data::state::SubjectKey::Professional => "专业课",
-                        };
+                        let subj = task.subject.label();
                         by_subject
                             .entry(subj)
                             .or_default()
@@ -2590,8 +2569,7 @@ END_PREVIOUS_OUTPUT>>>
                 }
             };
             for ex in excluded_days {
-                let weekday =
-                    crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -2639,8 +2617,7 @@ END_PREVIOUS_OUTPUT>>>
         // 原安排参考
         prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
         for day in regen_days {
-            let weekday =
-                crate::data::weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
+            let weekday = weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
             prompt.push_str(&format!(
                 "\n**{}（{}）**{}\n",
                 day.date,
@@ -2653,12 +2630,7 @@ END_PREVIOUS_OUTPUT>>>
             ));
             if !day.is_rest_day && !day.subject_allocations.is_empty() {
                 for alloc in &day.subject_allocations {
-                    let subj_label = match alloc.subject {
-                        crate::data::state::SubjectKey::Math => "数学",
-                        crate::data::state::SubjectKey::English => "英语",
-                        crate::data::state::SubjectKey::Politics => "政治",
-                        crate::data::state::SubjectKey::Professional => "专业课",
-                    };
+                    let subj_label = alloc.subject.label();
                     prompt.push_str(&format!(
                         "- {}（{}h）: {}",
                         subj_label, alloc.hours, alloc.focus
@@ -2832,12 +2804,7 @@ END_PREVIOUS_OUTPUT>>>
                 excluded_day.date
             ));
             for alloc in excluded_original_allocations {
-                let subj_label = match alloc.subject {
-                    crate::data::state::SubjectKey::Math => "数学",
-                    crate::data::state::SubjectKey::English => "英语",
-                    crate::data::state::SubjectKey::Politics => "政治",
-                    crate::data::state::SubjectKey::Professional => "专业课",
-                };
+                let subj_label = alloc.subject.label();
                 prompt.push_str(&format!(
                     "- {}（{}h）: {}",
                     subj_label, alloc.hours, alloc.focus
@@ -2957,8 +2924,7 @@ END_PREVIOUS_OUTPUT>>>
                 }
             };
             for ex in all_excluded_days {
-                let weekday =
-                    crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -3006,8 +2972,7 @@ END_PREVIOUS_OUTPUT>>>
         // 原安排参考
         prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
         for day in regen_days {
-            let weekday =
-                crate::data::weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
+            let weekday = weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
             prompt.push_str(&format!(
                 "\n**{}（{}）**{}\n",
                 day.date,
@@ -3020,12 +2985,7 @@ END_PREVIOUS_OUTPUT>>>
             ));
             if !day.is_rest_day && !day.subject_allocations.is_empty() {
                 for alloc in &day.subject_allocations {
-                    let subj_label = match alloc.subject {
-                        crate::data::state::SubjectKey::Math => "数学",
-                        crate::data::state::SubjectKey::English => "英语",
-                        crate::data::state::SubjectKey::Politics => "政治",
-                        crate::data::state::SubjectKey::Professional => "专业课",
-                    };
+                    let subj_label = alloc.subject.label();
                     prompt.push_str(&format!(
                         "- {}（{}h）: {}",
                         subj_label, alloc.hours, alloc.focus
@@ -3153,12 +3113,6 @@ fn prev_week_calibration_stats(
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
     crate::core::planning::pure::today_intensity_label(reviews)
 }
-fn planner_subject_key_str(subject: &crate::data::state::SubjectKey) -> &'static str {
-    crate::core::planning::pure::subject_key_str(subject)
-}
-fn planner_subject_cn(subject: &crate::data::state::SubjectKey) -> &'static str {
-    crate::core::planning::pure::subject_cn(subject)
-}
 fn planner_subject_cn_from_str(subject: &str) -> &'static str {
     match subject {
         "math" => "数学",
@@ -3184,7 +3138,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
             continue;
         }
         for allocation in &mut day.subject_allocations {
-            let subject = planner_subject_key_str(&allocation.subject).to_string();
+            let subject = allocation.subject.key().to_string();
             let estimation_factor = parameters
                 .estimation_factors
                 .get(&subject)
@@ -3221,7 +3175,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
             continue;
         }
         for allocation in &mut day.subject_allocations {
-            let subject = planner_subject_key_str(&allocation.subject).to_string();
+            let subject = allocation.subject.key().to_string();
             for template in &mut allocation.task_templates {
                 template.estimated_hours = (template.estimated_hours * global_scale).max(0.0);
             }
@@ -3254,7 +3208,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
                 continue;
             }
             for allocation in &mut day.subject_allocations {
-                let subject = planner_subject_key_str(&allocation.subject).to_string();
+                let subject = allocation.subject.key().to_string();
                 let scale = subject_scales.get(&subject).copied().unwrap_or(1.0);
                 for template in &mut allocation.task_templates {
                     template.estimated_hours = (template.estimated_hours * scale).max(0.0);
@@ -3270,7 +3224,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
     }
 
     for subject_plan in &mut plan.data.subjects {
-        let subject = planner_subject_key_str(&subject_plan.subject);
+        let subject = subject_plan.subject.key();
         if let Some(final_total) = final_subject_totals.get(subject) {
             subject_plan.weekly_hours = *final_total;
         } else if let Some(target) = parameters.subject_hours.get(subject) {
@@ -3467,12 +3421,7 @@ fn subject_completed_list<'a>(
     state: &'a StudyState,
     subject: &crate::data::state::SubjectKey,
 ) -> &'a [String] {
-    match subject {
-        crate::data::state::SubjectKey::Math => &state.subjects.math.completed,
-        crate::data::state::SubjectKey::English => &state.subjects.english.completed,
-        crate::data::state::SubjectKey::Politics => &state.subjects.politics.completed,
-        crate::data::state::SubjectKey::Professional => &state.subjects.professional.completed,
-    }
+    subject.state(state).completed.as_slice()
 }
 
 /// 判断任务标题是否命中已完成章节（边界匹配，与 scheduler 一致，避免误杀子主题）
@@ -3533,7 +3482,7 @@ fn consistency_check_and_correct(
             .iter()
             .find(|d| d.date == day.date);
         for alloc in &day.subject_allocations {
-            let key = planner_subject_key_str(&alloc.subject);
+            let key = alloc.subject.key();
             if !declared_subjects.contains(key) || warned.contains(key) {
                 continue;
             }
@@ -3549,7 +3498,7 @@ fn consistency_check_and_correct(
             if unchanged {
                 warnings.push(format!(
                     "{} 的计划外进度（当前重点）未反映到后续计划：重排后该科目剩余安排与重排前一致，请到周计划中手动调整。",
-                    planner_subject_cn(&alloc.subject)
+                    alloc.subject.label()
                 ));
                 warned.insert(key.to_string());
             }
@@ -3830,7 +3779,7 @@ fn find_declared_subjects_unchanged(
             .iter()
             .find(|d| d.date == day.date);
         for alloc in &day.subject_allocations {
-            let key = planner_subject_key_str(&alloc.subject);
+            let key = alloc.subject.key();
             if !declared_subjects.contains(key) || seen.contains(key) {
                 continue;
             }
@@ -3867,8 +3816,9 @@ fn subject_version(state: &StudyState, key: &str) -> String {
 /// 改为必须安排巩固类任务；同时也参与复习任务开关的提示文案。
 fn basics_done_subjects(data_dir: &Path) -> Vec<String> {
     let index = crate::data::load_progress_index(data_dir);
-    ["math", "english", "politics", "professional"]
-        .into_iter()
+    crate::data::state::SubjectKey::ALL
+        .iter()
+        .map(|subject| subject.key())
         .filter(|key| crate::data::progress_tables::active_table_basics_done(&index, key))
         .map(|key| key.to_string())
         .collect()
@@ -3889,13 +3839,7 @@ fn basics_done_labels(data_dir: &Path) -> Vec<String> {
 /// 每书一条独立目标，但「该科目整体是否走倒排」仍以科目为粒度判断。
 fn goal_active_subjects(data_dir: &Path, today: &str, week_start: &str) -> Vec<String> {
     use crate::data::state::SubjectKey;
-    let order = [
-        SubjectKey::Math,
-        SubjectKey::English,
-        SubjectKey::Politics,
-        SubjectKey::Professional,
-    ];
-    order
+    SubjectKey::ALL
         .into_iter()
         .filter(|subject| {
             let goals = crate::data::goal::active_goals_for_subject(data_dir, subject, today);
@@ -3906,7 +3850,7 @@ fn goal_active_subjects(data_dir: &Path, today: &str, week_start: &str) -> Vec<S
                 .iter()
                 .any(|g| !g.deadline.is_empty() && g.deadline.as_str() >= week_start)
         })
-        .map(|subject| planner_subject_key_str(&subject).to_string())
+        .map(|subject| subject.key().to_string())
         .collect()
 }
 
@@ -3983,7 +3927,7 @@ fn filter_ahead_of_progress(
                 continue;
             }
             for alloc in day.subject_allocations.iter_mut() {
-                if planner_subject_key_str(&alloc.subject) != oc.subject {
+                if alloc.subject.key() != oc.subject {
                     continue;
                 }
                 let before = alloc.task_templates.len();
@@ -4247,12 +4191,7 @@ fn planner_subject_not_started(
     date: &str,
     subject_start_dates: &[(&'static str, String)],
 ) -> bool {
-    let key = match subject {
-        crate::data::state::SubjectKey::Math => "math",
-        crate::data::state::SubjectKey::English => "english",
-        crate::data::state::SubjectKey::Politics => "politics",
-        crate::data::state::SubjectKey::Professional => "professional",
-    };
+    let key = subject.key();
     for (k, start_date) in subject_start_dates {
         if *k == key && !start_date.is_empty() {
             return start_date.as_str() > date;

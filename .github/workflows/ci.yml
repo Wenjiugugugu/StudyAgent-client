@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -21,9 +21,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm type-check
-      - run: pnpm test
-      - run: pnpm build
+      - run: pnpm check
 
   rust:
     runs-on: windows-latest
@@ -42,3 +40,25 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
+
+  desktop-smoke:
+    runs-on: windows-latest
+    needs: [frontend, rust]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Build the real desktop executable
+        run: pnpm tauri build --no-bundle
+      - name: Verify executable was produced
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/release/studyagent-desktop.exe"
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Desktop executable missing: $exe" }

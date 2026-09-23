@@ -4,12 +4,7 @@
  */
 
 /** MCP Server 类型 */
-export type MCPServerType =
-  | "ticktick"
-  | "filesystem"
-  | "browser"
-  | "obsidian"
-  | "custom";
+export type MCPServerType = "ticktick" | "filesystem" | "browser" | "obsidian" | "custom";
 
 /** MCP Server 配置 */
 export interface MCPServerConfig {
