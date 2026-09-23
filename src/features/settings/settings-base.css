@@ -676,7 +676,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    border-color var(--transition-fast);
   padding: 0;
 }
 
@@ -706,7 +708,9 @@
   color: var(--text-tertiary);
   position: relative;
   overflow: hidden;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast);
 }
 
 .settings-view .accent-custom:hover {
@@ -891,7 +895,9 @@
   border: 1px solid var(--border-primary);
   cursor: pointer;
   padding: 0;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
   flex-shrink: 0;
 }
 
@@ -1479,7 +1485,9 @@
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── 通用：关闭动作选择 ── */
@@ -1643,7 +1651,9 @@
 
 .settings-view .mcp-tips-fade-enter-active,
 .settings-view .mcp-tips-fade-leave-active {
-  transition: opacity var(--transition-fast), max-height var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    max-height var(--transition-fast);
   overflow: hidden;
 }
 
@@ -1749,3 +1759,17 @@
   margin-top: 2px;
 }
 
+.settings-load-error {
+  width: min(560px, calc(100% - 48px));
+  margin: 80px auto;
+  padding: 28px;
+  border: 1px solid var(--color-danger, #d84a4a);
+  border-radius: 16px;
+  background: var(--color-surface, #fff);
+  text-align: center;
+}
+
+.settings-load-error p {
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}

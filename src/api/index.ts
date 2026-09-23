@@ -27,7 +27,18 @@ import type {
 export const PROGRESS_VARIANTS: Record<string, string[]> = {
   math: ["数一", "数二", "数三"],
   english: ["英一", "英二"],
-  professional: ["408 计算机", "307 中医", "311 教育学", "312 心理学", "313 历史学", "333 教育综合", "396 经济类", "199 管理类", "306 西医", "法律硕士"],
+  professional: [
+    "408 计算机",
+    "307 中医",
+    "311 教育学",
+    "312 心理学",
+    "313 历史学",
+    "333 教育综合",
+    "396 经济类",
+    "199 管理类",
+    "306 西医",
+    "法律硕士",
+  ],
   politics: ["政治"],
 };
 
@@ -108,9 +119,7 @@ export async function aiInvoke<T = unknown>(opts: AiInvokeOptions<T>): Promise<T
     });
 
     const result = await Promise.race([
-      fallback
-        ? invokeWithFallback<T>(command, args, fallback)
-        : invokeDirect<T>(command, args),
+      fallback ? invokeWithFallback<T>(command, args, fallback) : invokeDirect<T>(command, args),
       timeoutPromise,
     ]);
 
@@ -124,8 +133,7 @@ export async function aiInvoke<T = unknown>(opts: AiInvokeOptions<T>): Promise<T
       "success" in (result as object) &&
       (result as { success?: unknown }).success === false
     ) {
-      const msg =
-        (result as { message?: string }).message || "AI 调用失败（未提供错误详情）";
+      const msg = (result as { message?: string }).message || "AI 调用失败（未提供错误详情）";
       finish("error", null, msg);
       throw new Error(msg);
     }
@@ -174,7 +182,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
  */
 export async function getAnalytics(
   range: import("@/types").AnalyticsRange = "last_30_days",
-  excludeExemptDates: boolean = true,
+  excludeExemptDates: boolean = true
 ): Promise<import("@/types").AnalyticsSummary> {
   return invokeDirect("get_analytics", {
     range,
@@ -228,11 +236,12 @@ export async function listPlanSummaries(): Promise<PlanSummary[]> {
         date,
         has_plan: !isRest,
         has_review: i > 0 && !isRest,
+        is_default_review: false,
         planned_tasks: isRest ? 0 : 3,
         planned_hours: isRest ? 0 : 4.5,
-        completed_tasks: isRest ? 0 : (i > 0 ? 2 : 0),
-        completion_rate: isRest ? 0 : (i > 0 ? 67 : 0),
-        actual_hours: isRest ? 0 : (i > 0 ? 3.5 : 0),
+        completed_tasks: isRest ? 0 : i > 0 ? 2 : 0,
+        completion_rate: isRest ? 0 : i > 0 ? 67 : 0,
+        actual_hours: isRest ? 0 : i > 0 ? 3.5 : 0,
         is_rest_day: isRest,
         is_excluded: false,
       });
@@ -254,6 +263,7 @@ export async function getWeekSummaries(weekStart: string): Promise<PlanSummary[]
         date,
         has_plan: !isRest,
         has_review: false,
+        is_default_review: false,
         planned_tasks: isRest ? 0 : 3,
         planned_hours: isRest ? 0 : 4.5,
         completed_tasks: 0,
@@ -269,7 +279,7 @@ export async function getWeekSummaries(weekStart: string): Promise<PlanSummary[]
 
 /** 获取确定性周计划自适应分析 */
 export async function getWeekPlanningAnalysis(
-  weekStart: string,
+  weekStart: string
 ): Promise<import("@/types").WeekPlanningAnalysis> {
   return invokeDirect("get_week_planning_analysis", { weekStart });
 }
@@ -297,7 +307,7 @@ export async function generateDailyPlan(date: string): Promise<DailyPlan> {
 export async function generateWeekPlan(
   weekStart: string,
   excludedDays: import("@/types").ExcludedDay[] = [],
-  workloadAdjustment?: import("@/types").WorkloadAdjustment,
+  workloadAdjustment?: import("@/types").WorkloadAdjustment
 ): Promise<WeekPlan> {
   return aiInvoke<WeekPlan>({
     command: "generate_week_plan",
@@ -313,7 +323,11 @@ export async function generateWeekPlan(
 
 /** 列出全部目标区间 */
 export async function listGoals(): Promise<import("@/types").GoalPlanFile> {
-  return invokeWithFallback("list_goals", undefined, async () => ({ version: "1.0.0", meta: { generated_at: new Date().toISOString() }, data: { goals: [] } }));
+  return invokeWithFallback("list_goals", undefined, async () => ({
+    version: "1.0.0",
+    meta: { generated_at: new Date().toISOString() },
+    data: { goals: [] },
+  }));
 }
 
 /** 创建一条目标区间（subject/title/deadline/targetChapter/book 必填，startChapter 可选） */
@@ -323,7 +337,7 @@ export async function createGoal(
   deadline: string,
   targetChapter: string,
   startChapter: string | undefined,
-  book: string,
+  book: string
 ): Promise<import("@/types").Goal> {
   return invokeDirect<import("@/types").Goal>("create_goal", {
     subject,
@@ -345,23 +359,6 @@ export async function deleteGoal(goalId: string): Promise<void> {
   return invokeDirect<void>("delete_goal", { goalId });
 }
 
-/**
- * 为目标区间内某科目生成当天任务。
- * 传 `goalId` 时仅生成该条目标的任务；不传则聚合该科目当天所有生效目标
- * （支持同科多书/板块并行推进）。
- */
-export async function generateGoalPlan(
-  subject: import("@/types").SubjectKey,
-  date: string,
-  goalId?: string,
-): Promise<import("@/types").PlanTask[]> {
-  return invokeDirect<import("@/types").PlanTask[]>("generate_goal_plan", {
-    subject,
-    date,
-    goalId: goalId ?? null,
-  });
-}
-
 export async function updateTaskStatus(taskId: string, status: string): Promise<void> {
   return invokeWithFallback("update_task_status", { taskId, status }, async () => {
     console.log(`[Mock] Task ${taskId} status updated to ${status}`);
@@ -371,7 +368,7 @@ export async function updateTaskStatus(taskId: string, status: string): Promise<
 /** 更新指定科目的教材信息（传空字符串或 null 清除） */
 export async function updateSubjectTextbook(
   subject: "math" | "english" | "politics" | "professional",
-  textbook: string | null,
+  textbook: string | null
 ): Promise<void> {
   return invokeWithFallback("update_subject_textbook", { subject, textbook }, async () => {
     console.log(`[Mock] Updated ${subject} textbook to ${textbook}`);
@@ -495,12 +492,16 @@ export async function generateReview(date: string): Promise<ReviewRecord> {
 }
 
 /** 提交结构化复盘（新版，无需 AI） */
-export async function submitReview(payload: import("@/types").SubmitReviewPayload): Promise<import("@/types").SubmitReviewResult> {
+export async function submitReview(
+  payload: import("@/types").SubmitReviewPayload
+): Promise<import("@/types").SubmitReviewResult> {
   return invokeDirect("submit_review", { payload });
 }
 
 /** 复盘后重新生成本周剩余天数计划（AI 驱动） */
-export async function regenerateRemainingDays(reviewDate: string): Promise<import("@/types").RegenerateResult> {
+export async function regenerateRemainingDays(
+  reviewDate: string
+): Promise<import("@/types").RegenerateResult> {
   return aiInvoke<import("@/types").RegenerateResult>({
     command: "regenerate_remaining_days",
     label: `复盘后重排剩余计划 ${reviewDate}`,
@@ -514,7 +515,7 @@ export async function regenerateRemainingDays(reviewDate: string): Promise<impor
 /** 周中新增排除日并重排剩余天数（AI 驱动） */
 export async function addExcludedDayAndRegenerate(
   weekStart: string,
-  excludedDay: import("@/types").ExcludedDay,
+  excludedDay: import("@/types").ExcludedDay
 ): Promise<import("@/types").RegenerateResult> {
   return aiInvoke<import("@/types").RegenerateResult>({
     command: "add_excluded_day_and_regenerate",
@@ -574,7 +575,9 @@ export async function cancelAiRequest(key: AiCancelKey): Promise<boolean> {
   return invokeDirect<boolean>("cancel_ai_request", { key });
 }
 
-export async function testAIProvider(config: AIProviderConfig): Promise<{ success: boolean; message: string }> {
+export async function testAIProvider(
+  config: AIProviderConfig
+): Promise<{ success: boolean; message: string }> {
   return aiInvoke<{ success: boolean; message: string }>({
     command: "test_ai_provider",
     label: `测试 Provider ${config.name}`,
@@ -604,7 +607,9 @@ export async function listAIModels(config?: AIProviderConfig): Promise<ModelInfo
  * DeepSeek / Moonshot），未识别时依次尝试通用端点。始终返回结果对象（失败时
  * success: false），不抛异常，便于界面区分「网络失败」与「端点不支持」。
  */
-export async function queryProviderBalance(config: AIProviderConfig): Promise<ProviderBalanceResult> {
+export async function queryProviderBalance(
+  config: AIProviderConfig
+): Promise<ProviderBalanceResult> {
   return invokeDirect<ProviderBalanceResult>("query_provider_balance", { config });
 }
 
@@ -658,7 +663,10 @@ export async function listMCPServers(): Promise<MCPServerStatus[]> {
   return invokeWithFallback("list_mcp_servers", undefined, async () => mockMCPServerStatus);
 }
 
-export async function callTool(toolName: string, args: Record<string, unknown>): Promise<ToolCallResult> {
+export async function callTool(
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<ToolCallResult> {
   return invokeWithFallback("call_tool", { toolName, args }, async () => ({
     success: true,
     data: { message: `Tool "${toolName}" called successfully (Mock)` },
@@ -683,7 +691,10 @@ export async function changeDataDirectory(newPath: string): Promise<string> {
 }
 
 /** 导出数据备份（zip）到指定路径，返回导出的文件数 */
-export async function exportBackup(destPath: string, includeLogs: boolean = false): Promise<number> {
+export async function exportBackup(
+  destPath: string,
+  includeLogs: boolean = false
+): Promise<number> {
   return invokeDirect<number>("export_backup", { destPath, includeLogs });
 }
 
@@ -855,9 +866,7 @@ export function buildChangesFromReachedChapter(
   reachedChapterId: string
 ): ProgressStatusChange[] {
   const changes: ProgressStatusChange[] = [];
-  const chIdx = table.nodes.findIndex(
-    (n) => n.id === reachedChapterId && n.level === "chapter"
-  );
+  const chIdx = table.nodes.findIndex((n) => n.id === reachedChapterId && n.level === "chapter");
   if (chIdx < 0) return changes;
   for (let i = 0; i < chIdx; i++) {
     const n = table.nodes[i];
@@ -901,9 +910,7 @@ export interface BatchUpdateResult {
  * 专业课内置场景下，总专业课进度表再按教材覆盖度自动联动。
  * 前端调用: `invoke('batch_update_progress', { updates })`
  */
-export function batchUpdateProgress(
-  updates: BatchSubjectUpdate[]
-): Promise<BatchUpdateResult> {
+export function batchUpdateProgress(updates: BatchSubjectUpdate[]): Promise<BatchUpdateResult> {
   return invokeDirect<BatchUpdateResult>("batch_update_progress", { updates });
 }
 
@@ -933,6 +940,11 @@ export function serializeProgressTableExport(
   return JSON.stringify(payload, null, 2);
 }
 
+/** 取任意 JSON 值的文本表示（null/undefined → 空串），用于导入解析层 */
+function jsonText(value: unknown): string {
+  return value == null ? "" : String(value);
+}
+
 /** 校验并解析导入的进度表 JSON 文本 */
 export function parseProgressTableExport(raw: string): {
   subject: string;
@@ -940,26 +952,32 @@ export function parseProgressTableExport(raw: string): {
   name: string;
   nodes: ProgressNode[];
 } {
-  const data = JSON.parse(raw);
-  if (!data || (data as any).type !== "studyagent.progress_table") {
+  const data = JSON.parse(raw) as {
+    type?: unknown;
+    subject?: unknown;
+    variant?: unknown;
+    name?: unknown;
+    nodes?: unknown;
+  } | null;
+  if (!data || data.type !== "studyagent.progress_table") {
     throw new Error("不是有效的进度表文件");
   }
   if (!Array.isArray(data.nodes)) {
     throw new Error("进度表文件缺少节点数据");
   }
-  const normSubject = (data.subject as string) || "";
-  const normVariant = (data.variant as string) || "";
-  const nodes: ProgressNode[] = (data.nodes as any[]).map((n) => ({
+  const normSubject = typeof data.subject === "string" ? data.subject : "";
+  const normVariant = typeof data.variant === "string" ? data.variant : "";
+  const nodes: ProgressNode[] = (data.nodes as Record<string, unknown>[]).map((n) => ({
     id: "",
-    title: (n.title ?? "").toString(),
+    title: jsonText(n.title),
     level: (n.level === "chapter" ? "chapter" : "knowledge") as ProgressNodeLevel,
-    parent_id: n.parent_id ?? null,
-    phase: (n.phase ?? "").toString(),
-    status: ["pending", "learning", "mastered"].includes(n.status)
-      ? n.status
+    parent_id: typeof n.parent_id === "string" ? n.parent_id : null,
+    phase: jsonText(n.phase),
+    status: ["pending", "learning", "mastered"].includes(String(n.status))
+      ? (n.status as ProgressNode["status"])
       : "pending",
-    planned_date: n.planned_date ?? null,
-    note: (n.note ?? "").toString(),
+    planned_date: typeof n.planned_date === "string" ? n.planned_date : null,
+    note: jsonText(n.note),
     estimated_hours:
       typeof n.estimated_hours === "number" && Number.isFinite(n.estimated_hours)
         ? n.estimated_hours
@@ -968,7 +986,7 @@ export function parseProgressTableExport(raw: string): {
   return {
     subject: normSubject,
     variant: normVariant,
-    name: (data.name ?? `${normSubject || "科目"}进度表`).toString(),
+    name: data.name == null ? `${normSubject || "科目"}进度表` : String(data.name),
     nodes,
   };
 }
@@ -1028,7 +1046,7 @@ export async function checkForUpdates(): Promise<UpdateCheckResult> {
 export async function downloadUpdate(
   url: string,
   filename: string,
-  expectedSha256: string | null,
+  expectedSha256: string | null
 ): Promise<string> {
   return invokeDirect<string>("download_update", {
     url,
@@ -1056,7 +1074,7 @@ export async function installUpdate(filePath: string): Promise<void> {
  * @returns 取消订阅函数（在非 Tauri 环境下为空函数）
  */
 export async function onDownloadProgress(
-  callback: (progress: DownloadProgress) => void,
+  callback: (progress: DownloadProgress) => void
 ): Promise<() => void> {
   if (!isTauri()) {
     return () => {};

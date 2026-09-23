@@ -6,12 +6,7 @@
  */
 
 /** 节点学习状态（5 级：待学 → 学习中 → 基础 → 强化中 → 掌握） */
-export type ProgressNodeStatus =
-  | "pending"
-  | "learning"
-  | "basic"
-  | "reinforcing"
-  | "mastered";
+export type ProgressNodeStatus = "pending" | "learning" | "basic" | "reinforcing" | "mastered";
 
 /** 节点级别：章节 / 知识点 */
 export type ProgressNodeLevel = "knowledge" | "chapter";

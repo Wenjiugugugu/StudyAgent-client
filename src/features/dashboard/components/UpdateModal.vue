@@ -39,9 +39,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
       <!-- 强制更新警告横幅 -->
       <div v-if="forceUpdate" class="update-modal-force-banner">
         <AlertTriangle :size="16" />
-        <span>{{
-          forceReason || "当前版本存在已知问题，必须更新到最新版本后才能继续使用。"
-        }}</span>
+        <span>{{ forceReason || "当前版本存在已知问题，必须更新到最新版本后才能继续使用。" }}</span>
       </div>
 
       <p class="update-modal-version">
@@ -51,7 +49,9 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
         </span>
       </p>
 
-      <p v-if="!forceUpdate" class="update-modal-tip">建议保持应用更新到最新版本，以便第一时间体验新功能与各类修复。</p>
+      <p v-if="!forceUpdate" class="update-modal-tip">
+        建议保持应用更新到最新版本，以便第一时间体验新功能与各类修复。
+      </p>
 
       <!-- Release notes -->
       <div v-if="updateStore.updateResult.release_notes" class="update-modal-notes">
@@ -79,10 +79,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
           v-if="updateStore.downloadState === 'downloading' && updateStore.downloadProgress"
           class="update-download-progress"
         >
-          <ProgressBar
-            :value="updateStore.downloadProgress.percent || 0"
-            :max="100"
-          />
+          <ProgressBar :value="updateStore.downloadProgress.percent || 0" :max="100" />
           <span class="update-progress-text">
             {{ updateStore.downloadProgress.percent?.toFixed(0) ?? 0 }}%
           </span>
@@ -96,12 +93,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
 
     <template #footer>
       <!-- 非强制：3 天后再提醒（写入静默标记） -->
-      <Button
-        v-if="!forceUpdate"
-        variant="ghost"
-        size="sm"
-        @click="updateStore.dismissUpdate()"
-      >
+      <Button v-if="!forceUpdate" variant="ghost" size="sm" @click="updateStore.dismissUpdate()">
         3 天后再提醒
       </Button>
 
@@ -116,12 +108,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
       </Button>
 
       <!-- 强制：退出应用（唯一不更新的出口） -->
-      <Button
-        v-if="forceUpdate"
-        variant="ghost"
-        size="sm"
-        @click="api.quitApp()"
-      >
+      <Button v-if="forceUpdate" variant="ghost" size="sm" @click="api.quitApp()">
         <LogOut :size="13" />
         退出应用
       </Button>

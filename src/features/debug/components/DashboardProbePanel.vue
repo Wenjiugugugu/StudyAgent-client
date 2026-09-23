@@ -14,7 +14,11 @@ import { statusBadge, statusLabel } from "../utils/status";
 import type { TestResult } from "../types";
 import type { DashboardSummary } from "@/types";
 
-const dashboardTest = ref<TestResult<DashboardSummary>>({ status: "idle", data: null, error: null });
+const dashboardTest = ref<TestResult<DashboardSummary>>({
+  status: "idle",
+  data: null,
+  error: null,
+});
 
 async function runDashboardTest() {
   dashboardTest.value = { status: "loading", data: null, error: null };
@@ -69,8 +73,14 @@ defineExpose({ refresh: runDashboardTest });
         {{ issue }}
       </Badge>
     </div>
-    <LoadingSpinner v-if="dashboardTest.status === 'loading'" :size="20" label="调用 api.getDashboardSummary()..." />
+    <LoadingSpinner
+      v-if="dashboardTest.status === 'loading'"
+      :size="20"
+      label="调用 api.getDashboardSummary()..."
+    />
     <pre v-if="dashboardTest.data" class="code-block">{{ formatJson(dashboardTest.data) }}</pre>
-    <div v-if="dashboardTest.status === 'idle'" class="empty-inline">点击「测试」调用 api.getDashboardSummary()。</div>
+    <div v-if="dashboardTest.status === 'idle'" class="empty-inline">
+      点击「测试」调用 api.getDashboardSummary()。
+    </div>
   </Card>
 </template>

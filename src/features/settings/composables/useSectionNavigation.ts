@@ -7,7 +7,20 @@
 import { ref } from "vue";
 import { onBeforeUnmount } from "vue";
 import type { Component } from "vue";
-import { User, PowerOff, Palette, Target, Clock, Gauge, PieChart, BookOpen, Bot, Cloud, FolderOpen, RefreshCw } from "lucide-vue-next";
+import {
+  User,
+  PowerOff,
+  Palette,
+  Target,
+  Clock,
+  Gauge,
+  PieChart,
+  BookOpen,
+  Bot,
+  Cloud,
+  FolderOpen,
+  RefreshCw,
+} from "lucide-vue-next";
 
 export interface NavSection {
   id: string;
@@ -42,7 +55,9 @@ export function useSectionNavigation() {
   function scrollToSection(id: string) {
     const el = document.getElementById(`settings-${id}`);
     if (!el) return;
-    const scroller = el.closest<HTMLElement>(".content-body") ?? document.querySelector<HTMLElement>(".content-body");
+    const scroller =
+      el.closest<HTMLElement>(".content-body") ??
+      document.querySelector<HTMLElement>(".content-body");
     if (!scroller) {
       // 兜底（极少见）：退化到原 scrollIntoView
       el.scrollIntoView({ behavior: "smooth", block: "start" });

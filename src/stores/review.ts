@@ -36,10 +36,13 @@ export const useReviewStore = defineStore("review", () => {
 
       // 统一 AI 调用：api.generateReview 内部已含 300s 超时 + 自动取消（aiInvoke）
       await ai.run(
-        () => api.generateReview(date).then((r) => { current.value = r; }),
+        () =>
+          api.generateReview(date).then((r) => {
+            current.value = r;
+          }),
         "生成复盘失败"
       );
-    } catch (e) {
+    } catch {
       // useAiRequest 已记录 error，此处不再重复赋值
     }
   }

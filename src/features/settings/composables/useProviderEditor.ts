@@ -96,7 +96,7 @@ export function useProviderEditor() {
         providerForm.value.name = defaultName;
         nameAutoFilled.value = true;
       }
-    },
+    }
   );
 
   // ── 模型列表加载（基于当前 base_url + api_key 动态获取）──
@@ -118,7 +118,14 @@ export function useProviderEditor() {
     const extra = m.extra as Record<string, unknown>;
     // 常见字段名：context_length / context_window / max_context_length / max_input_tokens；
     // _studyagent_ctx_len 为后端在服务商未返回字段时按模型名查表注入的兜底值
-    const candidates = ["context_length", "context_window", "max_context_length", "max_input_tokens", "context", "_studyagent_ctx_len"];
+    const candidates = [
+      "context_length",
+      "context_window",
+      "max_context_length",
+      "max_input_tokens",
+      "context",
+      "_studyagent_ctx_len",
+    ];
     for (const key of candidates) {
       const v = extra[key];
       if (typeof v === "number" && v > 0) return v;
@@ -347,7 +354,10 @@ export function useProviderEditor() {
     testing.value = true;
     testResult.value = null;
     try {
-      const result = await settingsApi.testAIProvider({ ...providerForm.value, api_key: effectiveApiKey() });
+      const result = await settingsApi.testAIProvider({
+        ...providerForm.value,
+        api_key: effectiveApiKey(),
+      });
       // aiInvoke 已把 success:false 转为抛错；能走到这说明连接成功
       if (!result.success) {
         testResult.value = `测试失败：${result.message}`;
@@ -388,7 +398,9 @@ export function useProviderEditor() {
   async function removeProvider(id: string) {
     const provider = settingsStore.aiProviders.find((item) => item.id === id);
     if (!provider) return;
-    const defaultWarning = provider.is_default ? " 这是当前默认 Provider，删除后将自动切换到列表中的下一项。" : "";
+    const defaultWarning = provider.is_default
+      ? " 这是当前默认 Provider，删除后将自动切换到列表中的下一项。"
+      : "";
     if (!window.confirm(`确定删除 AI Provider「${provider.name}」吗？${defaultWarning}`)) return;
     settingsStore.removeProvider(id);
     clearBalance(id);
@@ -411,8 +423,13 @@ export function useProviderEditor() {
     testing.value = true;
     testResult.value = null;
     try {
-      const result = await settingsApi.testAIProvider({ ...providerForm.value, api_key: effectiveApiKey() });
-      testResult.value = result.success ? (result.message || "连接成功") : `测试失败：${result.message}`;
+      const result = await settingsApi.testAIProvider({
+        ...providerForm.value,
+        api_key: effectiveApiKey(),
+      });
+      testResult.value = result.success
+        ? result.message || "连接成功"
+        : `测试失败：${result.message}`;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       testResult.value = msg;

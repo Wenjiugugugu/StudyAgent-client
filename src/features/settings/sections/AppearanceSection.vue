@@ -65,7 +65,11 @@ const {
           <div class="visual-mode-header">
             <component :is="opt.icon" :size="20" class="visual-mode-icon" />
             <span class="visual-mode-label">{{ opt.label }}</span>
-            <Check v-if="settingsStore.visualMode === opt.mode" :size="14" class="visual-mode-check" />
+            <Check
+              v-if="settingsStore.visualMode === opt.mode"
+              :size="14"
+              class="visual-mode-check"
+            />
           </div>
           <span class="visual-mode-desc">{{ opt.desc }}</span>
         </button>
@@ -86,7 +90,11 @@ const {
           <div class="visual-mode-header">
             <component :is="opt.icon" :size="20" class="visual-mode-icon" />
             <span class="visual-mode-label">{{ opt.label }}</span>
-            <Check v-if="settingsStore.sidebarStyle === opt.style" :size="14" class="visual-mode-check" />
+            <Check
+              v-if="settingsStore.sidebarStyle === opt.style"
+              :size="14"
+              class="visual-mode-check"
+            />
           </div>
           <span class="visual-mode-desc">{{ opt.desc }}</span>
         </button>
@@ -106,7 +114,11 @@ const {
           :title="preset.label"
           @click="handleSetAccentColor(preset.value)"
         >
-          <Check v-if="settingsStore.accentColor === preset.value" :size="14" class="accent-check" />
+          <Check
+            v-if="settingsStore.accentColor === preset.value"
+            :size="14"
+            class="accent-check"
+          />
         </button>
         <!-- 自定义颜色选择器 -->
         <label class="accent-custom" title="自定义颜色">
@@ -153,17 +165,13 @@ const {
     <!-- 自定义背景图 -->
     <div class="form-field">
       <label class="form-label">背景图</label>
-      <span class="toggle-desc" style="margin-bottom: 8px; display: block;">
+      <span class="toggle-desc" style="margin-bottom: 8px; display: block">
         上传图片作为应用背景，可调整模糊度与不透明度
       </span>
       <div class="background-picker">
-        <button
-          class="bg-upload-btn"
-          :disabled="bgUploading"
-          @click="handleUploadBackground"
-        >
+        <button class="bg-upload-btn" :disabled="bgUploading" @click="handleUploadBackground">
           <ImagePlus :size="16" />
-          <span>{{ bgUploading ? '上传中…' : '选择图片' }}</span>
+          <span>{{ bgUploading ? "上传中…" : "选择图片" }}</span>
         </button>
         <button
           v-if="settingsStore.backgroundImage"

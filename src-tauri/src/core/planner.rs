@@ -10,13 +10,13 @@ use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
 use crate::api::commands::legacy::RegenDayChange;
 use crate::core::adaptive_planner::AdaptivePlanParameters;
+use crate::core::date_utils::{
+    add_days, days_between, get_week_end, get_week_start, today_string, weekday_name,
+};
 use crate::core::scheduler::DailyScheduler;
 use crate::data::plan::{DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment};
 use crate::data::state::StudyState;
-use crate::data::{
-    add_days, clean_ai_json, days_between, get_week_end, get_week_start, iso_week_string,
-    today_string, weekday_name, DataResult,
-};
+use crate::data::{clean_ai_json, iso_week_string, DataResult};
 
 /// Planner — 计划生成器
 pub struct Planner<'a> {
@@ -222,7 +222,7 @@ impl<'a> Planner<'a> {
             &state_snapshot,
             &review.overcompletion,
             &review.task_reviews,
-            &crate::data::today_string(),
+            &today_string(),
         );
 
         // 2. 判断是否需要重排：
@@ -292,6 +292,9 @@ impl<'a> Planner<'a> {
         let standard_granularity =
             crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
+        // 基础已学完（启用进度表知识点全部达「基础」及以上）的科目视作已进入强化阶段：
+        // 重排时同样不受「总结/复习任务开关」约束，改为必须安排巩固类任务。
+        let basics_done_labels = basics_done_labels(data_dir);
         // 重排时同样扣除截止日规划区间的科目学时，避免 AI 为区间科目分配学习时长份额
         // （区间科目内容由 scheduler 确定性倒排接管）。
         let week_start = &week_plan.meta.week_start;
@@ -314,6 +317,7 @@ impl<'a> Planner<'a> {
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
+            &basics_done_labels,
             &week_plan.data.excluded_days,
         );
         crate::data::write_ai_debug_log(
@@ -639,6 +643,8 @@ impl<'a> Planner<'a> {
         let standard_granularity =
             crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
+        // 基础已学完的科目视作已进入强化阶段：不受「总结/复习任务开关」约束
+        let basics_done_labels = basics_done_labels(data_dir);
 
         // 8. 构建 prompt
         let prompt = self.build_exclusion_regenerate_prompt(
@@ -655,6 +661,7 @@ impl<'a> Planner<'a> {
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
+            &basics_done_labels,
             &week_plan.data.excluded_days,
         );
         crate::data::write_ai_debug_log(
@@ -910,6 +917,9 @@ impl<'a> Planner<'a> {
         let standard_granularity =
             crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
         let enable_review_tasks = settings.enable_review_tasks();
+        // 基础已学完（启用进度表知识点全部达「基础」及以上）的科目视作已进入强化阶段：
+        // 对该科不再受「总结/复习任务开关」约束，一律安排巩固类任务。
+        let basics_done_labels = basics_done_labels(data_dir);
         // 截止日规划区间学时扣减：区间生效科目不占「按学习时长」份额，
         // 从每日目标学时中扣除其占比，并把剩余科目比例重新归一化。
         let goal_subjects = goal_active_subjects(data_dir, &today, week_start);
@@ -960,6 +970,7 @@ impl<'a> Planner<'a> {
             daily_target_hours,
             standard_granularity,
             enable_review_tasks,
+            &basics_done_labels,
             &prev_week_daily_plans,
             &prev_week_reviews,
             excluded_days,
@@ -1285,21 +1296,11 @@ impl<'a> Planner<'a> {
         const MAX_PER_SUBJECT: usize = 15;
 
         let index = crate::data::load_progress_index(data_dir);
-        let subjects = ["math", "english", "politics", "professional"];
+        let subjects = crate::data::state::SubjectKey::ALL.map(|key| key.key());
         let mut lines: Vec<String> = Vec::new();
         for subject in subjects {
-            let Some(set) = index.subjects.get(subject) else {
-                continue;
-            };
-            let active_id = if set.active_id.is_empty() {
-                match set.tables.first() {
-                    Some(t) => t.id.clone(),
-                    None => continue,
-                }
-            } else {
-                set.active_id.clone()
-            };
-            let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+            let Some(table) = crate::data::progress_tables::active_progress_table(&index, subject)
+            else {
                 continue;
             };
             // 复合调整参数：效率系数 + 反馈信号 + 该科完成率 + 置信度
@@ -1419,6 +1420,7 @@ impl<'a> Planner<'a> {
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
+        basics_done_labels: &[String],
         prev_week_daily_plans: &[DailyPlanFile],
         prev_week_reviews: &[crate::data::records::ReviewFile],
         excluded_days: &[ExcludedDay],
@@ -1532,11 +1534,23 @@ impl<'a> Planner<'a> {
             "- 是否安排总结/复习任务：{}（{}）\n\n",
             if enable_review_tasks { "允许" } else { "禁止" },
             if enable_review_tasks {
-                "可在 task_templates 中安排'回顾'/'总结'/'复习'类任务以巩固知识"
+                "可在 task_templates 中安排'回顾'/'总结'/'复习'类任务以巩固知识".to_string()
+            } else if basics_done_labels.is_empty() {
+                "严禁安排任何形式的复习/巩固类任务，包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'/'巩固练习'等；每日任务必须推进新知识点、新章节或新习题".to_string()
             } else {
-                "严禁安排任何形式的复习/巩固类任务，包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'/'巩固练习'等；每日任务必须推进新知识点、新章节或新习题"
+                // 开关仅约束基础阶段：基础已学完的科目已进入强化阶段，不受该开关限制
+                format!(
+                    "此开关仅对处于基础阶段的科目生效。以下科目的启用进度表知识点已全部达到「基础」，已进入强化阶段，不受本开关限制——**必须为其安排巩固/复习/强化类任务**（真题二刷、错题重做、限时模考、背诵复习等），且**严禁为其虚构新的章节/知识点进度**：{}。其余科目仍严格禁止安排任何形式的复习/巩固类任务（包括但不限于'回顾'/'总结'/'复习'/'梳理'/'练习'/'巩固'/'强化'/'温习'/'复盘'等），每日任务必须推进新知识点、新章节或新习题",
+                    basics_done_labels.join("、")
+                )
             }
         ));
+        if enable_review_tasks && !basics_done_labels.is_empty() {
+            prompt.push_str(&format!(
+                "- 上述科目已进入强化阶段（知识点全部达「基础」），本周巩固类任务应占其任务大头：{}\n\n",
+                basics_done_labels.join("、")
+            ));
+        }
 
         // 任务粒度与学时约束（确定性硬约束，替代仅"大致等于"的软约束）
         prompt.push_str("## 任务粒度与学时约束（重要）\n");
@@ -1607,7 +1621,7 @@ impl<'a> Planner<'a> {
             let nonzero: Vec<String> = per_subject_budget
                 .iter()
                 .filter(|(_, n)| *n > 0)
-                .map(|(k, n)| format!("{} {} 条", planner_subject_cn(k), n))
+                .map(|(k, n)| format!("{} {} 条", k.label(), n))
                 .collect();
             if !nonzero.is_empty() {
                 let distribution_note = if subject_time_allocation.is_some() {
@@ -1634,15 +1648,11 @@ impl<'a> Planner<'a> {
                     if cur.is_some() {
                         prompt.push('\n');
                     }
-                    let _cn = crate::data::weekday_name(&it.due_date).unwrap_or_default();
+                    let _cn = weekday_name(&it.due_date).unwrap_or_default();
                     prompt.push_str(&format!("- {}（{}）:\n", it.due_date, _cn));
                     cur = Some(it.due_date.clone());
                 }
-                prompt.push_str(&format!(
-                    "  - {}：{}\n",
-                    planner_subject_cn(&it.subject),
-                    it.title
-                ));
+                prompt.push_str(&format!("  - {}：{}\n", it.subject.label(), it.title));
             }
             prompt.push('\n');
         }
@@ -1700,8 +1710,7 @@ impl<'a> Planner<'a> {
                 }
             };
             for ex in excluded_days {
-                let weekday =
-                    crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -1975,8 +1984,7 @@ impl<'a> Planner<'a> {
             let mut uncompleted_tasks: Vec<(String, String, String, String)> = Vec::new();
             for plan in prev_week_daily_plans.iter() {
                 let date = &plan.meta.date;
-                let weekday =
-                    crate::data::weekday_name(date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(date).unwrap_or_else(|_| "未知".to_string());
                 let is_rest = plan.data.tasks.is_empty();
                 prompt.push_str(&format!(
                     "\n**{}（{}）**{}",
@@ -1994,12 +2002,7 @@ impl<'a> Planner<'a> {
                     use std::collections::BTreeMap;
                     let mut by_subject: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
                     for task in &plan.data.tasks {
-                        let subj = match task.subject {
-                            crate::data::state::SubjectKey::Math => "数学",
-                            crate::data::state::SubjectKey::English => "英语",
-                            crate::data::state::SubjectKey::Politics => "政治",
-                            crate::data::state::SubjectKey::Professional => "专业课",
-                        };
+                        let subj = task.subject.label();
                         by_subject
                             .entry(subj)
                             .or_default()
@@ -2170,13 +2173,21 @@ impl<'a> Planner<'a> {
 9. 必须严格遵守「各科开始学习日期」节中的约束：若某科目开始日期晚于本周日（{}），该科目不得出现在 subjects、subject_allocations 中，本周完全不为其安排任务。
 10. 参考「上一周任务参考」节调整本周任务量，避免任务量与上周实际完成情况严重偏离。
 11. 每天的 task_templates 数量应大致等于「用户期望每日任务数量」（{} 个），每科约一条；未开始的科目不安排，相应减少当日任务数，不得为了凑数而强行安排。
-12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。
+12. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新的知识点、章节或新习题（新习题指未做过的题目，不含已做题目的重做）；若用户允许总结任务，可酌情安排 1 个总结/复习类任务以巩固知识。{}
 13. 若存在「上周未完成任务」节，必须在本周计划中重新安排这些任务（不得跳过），并优先放在周一至周三。未完成任务的状态由复盘时的勾决定定，不再自动标记为「已放弃」，因此「未完成」和「部分完成」的任务都需要在本周重新排程。
 14. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现在本周计划中，必须从已完成之后的下一个章节/知识点继续推进。同时以各科「当前重点」作为实际进度基准：不得在用户尚未到达的章节安排任务，计划的推进顺序必须以教材章节先后为准，不得跳过用户尚未学习的章节跳级到后面（若「当前重点」显示的进度落后于本周计划，以「当前重点」为准相应调整，而非沿用旧计划）。
 15. **按天推进切分（受排除日影响）**：本周计划必须将每个科目的学习内容切分到每一天，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外），避免一天内塞满整周内容或每天重复同一内容。**{}应作为本周的起始点**，从各科「已完成」之后的章节开始，逐天分配到剩余学习日（若为周中生成，起点为今天而非周一，已过去的日期不安排任务）。**注意排除日不分配任务**，排除日应占用的任务量必须分摊到本周其他学习日，因此实际可学习天数 = 7 - 休息日 - 排除日，每天的 task_templates 数量限制（约束11）仍须遵守。
 "#,
             week_start, week_end, week_end, effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if basics_done_labels.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "**例外（优先级高于本条禁令）**：{} 的启用进度表知识点已全部达「基础」，已进入强化阶段，不受本开关限制，必须为其安排巩固/复习/强化类任务（真题二刷、错题重做、限时模考、背诵复习等），并严禁为其虚构新的章节/知识点进度；上述禁令只对处于基础阶段的其余科目生效。",
+                    basics_done_labels.join("、")
+                )
+            },
             if today == week_start { "周一" } else { "今天" },
             math = Self::math_syllabus_constraint(state),
         ));
@@ -2185,7 +2196,7 @@ impl<'a> Planner<'a> {
         if state.subjects.english.active {
             prompt.push_str(&format!(
                 "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
-                if enable_review_tasks {
+                if enable_review_tasks || basics_done_labels.iter().any(|l| l == "英语") {
                     "背 N 个新词（可含单词复习巩固）"
                 } else {
                     "背 N 个新词（推进新词，不含复习字样）"
@@ -2315,6 +2326,7 @@ END_PREVIOUS_OUTPUT>>>
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
+        basics_done_labels: &[String],
         excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
@@ -2507,9 +2519,14 @@ END_PREVIOUS_OUTPUT>>>
         prompt.push_str(&format!(
             "- 总结/复习任务: {}\n",
             if enable_review_tasks {
-                "允许安排"
+                "允许安排".to_string()
+            } else if basics_done_labels.is_empty() {
+                "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）".to_string()
             } else {
-                "禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）"
+                format!(
+                    "此开关仅对基础阶段科目生效。以下科目已进入强化阶段（启用进度表知识点全部达「基础」），不受限制，必须安排巩固/复习/强化类任务且严禁虚构新进度：{}；其余科目禁止安排（严禁任何形式的复习/巩固类任务，包括「回顾」「总结」「复习」「梳理」「练习」「巩固」「强化」「温习」「复盘」等）",
+                    basics_done_labels.join("、")
+                )
             }
         ));
 
@@ -2552,8 +2569,7 @@ END_PREVIOUS_OUTPUT>>>
                 }
             };
             for ex in excluded_days {
-                let weekday =
-                    crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -2601,8 +2617,7 @@ END_PREVIOUS_OUTPUT>>>
         // 原安排参考
         prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
         for day in regen_days {
-            let weekday =
-                crate::data::weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
+            let weekday = weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
             prompt.push_str(&format!(
                 "\n**{}（{}）**{}\n",
                 day.date,
@@ -2615,12 +2630,7 @@ END_PREVIOUS_OUTPUT>>>
             ));
             if !day.is_rest_day && !day.subject_allocations.is_empty() {
                 for alloc in &day.subject_allocations {
-                    let subj_label = match alloc.subject {
-                        crate::data::state::SubjectKey::Math => "数学",
-                        crate::data::state::SubjectKey::English => "英语",
-                        crate::data::state::SubjectKey::Politics => "政治",
-                        crate::data::state::SubjectKey::Professional => "专业课",
-                    };
+                    let subj_label = alloc.subject.label();
                     prompt.push_str(&format!(
                         "- {}（{}h）: {}",
                         subj_label, alloc.hours, alloc.focus
@@ -2680,13 +2690,21 @@ END_PREVIOUS_OUTPUT>>>
 5. 未完成任务必须尽快安排在剩余天数的前几天（仅限位于用户实际进度之后的未完成任务；已被实际进度声明覆盖的按已学习处理，不再安排）。
 6. 用户声明的实际进度是各科的进度基准，重排允许双向调整（超前或修正）。所有科目的任务必须从用户实际进度**之后**继续推进，不得在用户尚未到达的章节安排任务；若原计划凌驾于用户实际进度之前，应删除或后置。
 7. 每天的 task_templates 数量约 {} 个，每科约一条。
-8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
+8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。{}
 9. 休息日的 subject_allocations 为空数组。
 10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
 11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。若存在排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束7）仍须遵守。
 "#,
             regen_start, week_end, effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if basics_done_labels.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "**例外（优先级高于本条禁令）**：{} 的启用进度表知识点已全部达「基础」，已进入强化阶段，不受本开关限制，必须为其安排巩固/复习/强化类任务（真题二刷、错题重做、限时模考、背诵复习等），并严禁为其虚构新的章节/知识点进度；上述禁令只对处于基础阶段的其余科目生效。",
+                    basics_done_labels.join("、")
+                )
+            },
             math = Self::math_syllabus_constraint(state),
         ));
 
@@ -2694,7 +2712,7 @@ END_PREVIOUS_OUTPUT>>>
         if state.subjects.english.active {
             prompt.push_str(&format!(
                 "\n补充约束（英语单词每天安排）：只要当天 subject_allocations 中安排了英语科目（english）的任务，则该英语科目 task_templates 中必须至少包含 1 条「背单词」任务（如：{}），并计入当天任务数；休息日/排除日以及当天未安排英语任务的日子不受此约束。\n",
-                if enable_review_tasks {
+                if enable_review_tasks || basics_done_labels.iter().any(|l| l == "英语") {
                     "背 N 个新词（可含单词复习巩固）"
                 } else {
                     "背 N 个新词（推进新词，不含复习字样）"
@@ -2722,6 +2740,7 @@ END_PREVIOUS_OUTPUT>>>
         daily_target_hours: f64,
         standard_granularity: f64,
         enable_review_tasks: bool,
+        basics_done_labels: &[String],
         all_excluded_days: &[ExcludedDay],
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
@@ -2785,12 +2804,7 @@ END_PREVIOUS_OUTPUT>>>
                 excluded_day.date
             ));
             for alloc in excluded_original_allocations {
-                let subj_label = match alloc.subject {
-                    crate::data::state::SubjectKey::Math => "数学",
-                    crate::data::state::SubjectKey::English => "英语",
-                    crate::data::state::SubjectKey::Politics => "政治",
-                    crate::data::state::SubjectKey::Professional => "专业课",
-                };
+                let subj_label = alloc.subject.label();
                 prompt.push_str(&format!(
                     "- {}（{}h）: {}",
                     subj_label, alloc.hours, alloc.focus
@@ -2910,8 +2924,7 @@ END_PREVIOUS_OUTPUT>>>
                 }
             };
             for ex in all_excluded_days {
-                let weekday =
-                    crate::data::weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
+                let weekday = weekday_name(&ex.date).unwrap_or_else(|_| "未知".to_string());
                 prompt.push_str(&format!(
                     "- {}（{}）: {}",
                     ex.date,
@@ -2959,8 +2972,7 @@ END_PREVIOUS_OUTPUT>>>
         // 原安排参考
         prompt.push_str("\n## 剩余天数原安排（仅供参考，可调整）\n");
         for day in regen_days {
-            let weekday =
-                crate::data::weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
+            let weekday = weekday_name(&day.date).unwrap_or_else(|_| "未知".to_string());
             prompt.push_str(&format!(
                 "\n**{}（{}）**{}\n",
                 day.date,
@@ -2973,12 +2985,7 @@ END_PREVIOUS_OUTPUT>>>
             ));
             if !day.is_rest_day && !day.subject_allocations.is_empty() {
                 for alloc in &day.subject_allocations {
-                    let subj_label = match alloc.subject {
-                        crate::data::state::SubjectKey::Math => "数学",
-                        crate::data::state::SubjectKey::English => "英语",
-                        crate::data::state::SubjectKey::Politics => "政治",
-                        crate::data::state::SubjectKey::Professional => "专业课",
-                    };
+                    let subj_label = alloc.subject.label();
                     prompt.push_str(&format!(
                         "- {}（{}h）: {}",
                         subj_label, alloc.hours, alloc.focus
@@ -3038,7 +3045,7 @@ END_PREVIOUS_OUTPUT>>>
 5. {math}
 6. 每天的 task_templates 数量约 {} 个，每科约一条。
 7. 排除日原本的任务量必须分摊到剩余学习日，可通过适当增加每日任务数或难度来实现。
-8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。
+8. {}若用户禁止总结任务，task_templates 的标题和 goal 不得出现"回顾"/"总结"/"复习"/"梳理"/"练习"/"巩固"/"强化"/"温习"/"复盘"等字样，每个任务必须推进新知识点、新章节或新习题。{}
 9. 休息日的 subject_allocations 为空数组。
 10. **不得重复已完成内容**：各科「已完成」列表中的章节/任务严禁再次出现，必须从已完成之后的下一个章节/知识点继续推进。
 11. **按天推进切分（受排除日影响）**：每个科目的学习内容必须切分到剩余的每个学习日，每天推进不同的章节/知识点/习题，逐日向前递进。同一科目相邻两天的 focus 不得完全相同（休息日/排除日除外）。实际可学习天数 = 7 - 休息日 - 排除日，排除日不分配任务，其任务量分摊到其他学习日，每天的 task_templates 数量限制（约束6）仍须遵守。
@@ -3047,6 +3054,14 @@ END_PREVIOUS_OUTPUT>>>
             all_excluded_days.iter().map(|d| d.date.as_str()).collect::<Vec<_>>().join("、"),
             effective_daily_task_count,
             if enable_review_tasks { "" } else { "严禁安排总结/复习类任务。" },
+            if basics_done_labels.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "**例外（优先级高于本条禁令）**：{} 的启用进度表知识点已全部达「基础」，已进入强化阶段，不受本开关限制，必须为其安排巩固/复习/强化类任务（真题二刷、错题重做、限时模考、背诵复习等），并严禁为其虚构新的章节/知识点进度；上述禁令只对处于基础阶段的其余科目生效。",
+                    basics_done_labels.join("、")
+                )
+            },
             math = Self::math_syllabus_constraint(state),
         ));
 
@@ -3098,12 +3113,6 @@ fn prev_week_calibration_stats(
 pub fn today_intensity_label(reviews: &[crate::data::records::ReviewFile]) -> String {
     crate::core::planning::pure::today_intensity_label(reviews)
 }
-fn planner_subject_key_str(subject: &crate::data::state::SubjectKey) -> &'static str {
-    crate::core::planning::pure::subject_key_str(subject)
-}
-fn planner_subject_cn(subject: &crate::data::state::SubjectKey) -> &'static str {
-    crate::core::planning::pure::subject_cn(subject)
-}
 fn planner_subject_cn_from_str(subject: &str) -> &'static str {
     match subject {
         "math" => "数学",
@@ -3129,7 +3138,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
             continue;
         }
         for allocation in &mut day.subject_allocations {
-            let subject = planner_subject_key_str(&allocation.subject).to_string();
+            let subject = allocation.subject.key().to_string();
             let estimation_factor = parameters
                 .estimation_factors
                 .get(&subject)
@@ -3166,7 +3175,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
             continue;
         }
         for allocation in &mut day.subject_allocations {
-            let subject = planner_subject_key_str(&allocation.subject).to_string();
+            let subject = allocation.subject.key().to_string();
             for template in &mut allocation.task_templates {
                 template.estimated_hours = (template.estimated_hours * global_scale).max(0.0);
             }
@@ -3199,7 +3208,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
                 continue;
             }
             for allocation in &mut day.subject_allocations {
-                let subject = planner_subject_key_str(&allocation.subject).to_string();
+                let subject = allocation.subject.key().to_string();
                 let scale = subject_scales.get(&subject).copied().unwrap_or(1.0);
                 for template in &mut allocation.task_templates {
                     template.estimated_hours = (template.estimated_hours * scale).max(0.0);
@@ -3215,7 +3224,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
     }
 
     for subject_plan in &mut plan.data.subjects {
-        let subject = planner_subject_key_str(&subject_plan.subject);
+        let subject = subject_plan.subject.key();
         if let Some(final_total) = final_subject_totals.get(subject) {
             subject_plan.weekly_hours = *final_total;
         } else if let Some(target) = parameters.subject_hours.get(subject) {
@@ -3412,12 +3421,7 @@ fn subject_completed_list<'a>(
     state: &'a StudyState,
     subject: &crate::data::state::SubjectKey,
 ) -> &'a [String] {
-    match subject {
-        crate::data::state::SubjectKey::Math => &state.subjects.math.completed,
-        crate::data::state::SubjectKey::English => &state.subjects.english.completed,
-        crate::data::state::SubjectKey::Politics => &state.subjects.politics.completed,
-        crate::data::state::SubjectKey::Professional => &state.subjects.professional.completed,
-    }
+    subject.state(state).completed.as_slice()
 }
 
 /// 判断任务标题是否命中已完成章节（边界匹配，与 scheduler 一致，避免误杀子主题）
@@ -3478,7 +3482,7 @@ fn consistency_check_and_correct(
             .iter()
             .find(|d| d.date == day.date);
         for alloc in &day.subject_allocations {
-            let key = planner_subject_key_str(&alloc.subject);
+            let key = alloc.subject.key();
             if !declared_subjects.contains(key) || warned.contains(key) {
                 continue;
             }
@@ -3494,7 +3498,7 @@ fn consistency_check_and_correct(
             if unchanged {
                 warnings.push(format!(
                     "{} 的计划外进度（当前重点）未反映到后续计划：重排后该科目剩余安排与重排前一致，请到周计划中手动调整。",
-                    planner_subject_cn(&alloc.subject)
+                    alloc.subject.label()
                 ));
                 warned.insert(key.to_string());
             }
@@ -3775,7 +3779,7 @@ fn find_declared_subjects_unchanged(
             .iter()
             .find(|d| d.date == day.date);
         for alloc in &day.subject_allocations {
-            let key = planner_subject_key_str(&alloc.subject);
+            let key = alloc.subject.key();
             if !declared_subjects.contains(key) || seen.contains(key) {
                 continue;
             }
@@ -3806,6 +3810,28 @@ fn subject_version(state: &StudyState, key: &str) -> String {
     }
 }
 
+/// 收集「基础已学完」的科目键集合（启用进度表知识点全部达「基础」及以上）。
+///
+/// 这类科目已进入强化阶段：周计划中总结/复习任务开关不再对其生效，
+/// 改为必须安排巩固类任务；同时也参与复习任务开关的提示文案。
+fn basics_done_subjects(data_dir: &Path) -> Vec<String> {
+    let index = crate::data::load_progress_index(data_dir);
+    crate::data::state::SubjectKey::ALL
+        .iter()
+        .map(|subject| subject.key())
+        .filter(|key| crate::data::progress_tables::active_table_basics_done(&index, key))
+        .map(|key| key.to_string())
+        .collect()
+}
+
+/// 「基础已学完」科目的中文名（按固定科目顺序，供 prompt 注入）
+fn basics_done_labels(data_dir: &Path) -> Vec<String> {
+    basics_done_subjects(data_dir)
+        .iter()
+        .map(|key| planner_subject_cn_from_str(key).to_string())
+        .collect()
+}
+
 /// 收集本周处于「截止日规划区间」的科目键集合。
 ///
 /// 区间生效判定：该科目存在任意一条 active 目标且其 deadline 不早于本周开始。
@@ -3813,13 +3839,7 @@ fn subject_version(state: &StudyState, key: &str) -> String {
 /// 每书一条独立目标，但「该科目整体是否走倒排」仍以科目为粒度判断。
 fn goal_active_subjects(data_dir: &Path, today: &str, week_start: &str) -> Vec<String> {
     use crate::data::state::SubjectKey;
-    let order = [
-        SubjectKey::Math,
-        SubjectKey::English,
-        SubjectKey::Politics,
-        SubjectKey::Professional,
-    ];
-    order
+    SubjectKey::ALL
         .into_iter()
         .filter(|subject| {
             let goals = crate::data::goal::active_goals_for_subject(data_dir, subject, today);
@@ -3830,7 +3850,7 @@ fn goal_active_subjects(data_dir: &Path, today: &str, week_start: &str) -> Vec<S
                 .iter()
                 .any(|g| !g.deadline.is_empty() && g.deadline.as_str() >= week_start)
         })
-        .map(|subject| planner_subject_key_str(&subject).to_string())
+        .map(|subject| subject.key().to_string())
         .collect()
 }
 
@@ -3907,7 +3927,7 @@ fn filter_ahead_of_progress(
                 continue;
             }
             for alloc in day.subject_allocations.iter_mut() {
-                if planner_subject_key_str(&alloc.subject) != oc.subject {
+                if alloc.subject.key() != oc.subject {
                     continue;
                 }
                 let before = alloc.task_templates.len();
@@ -4171,12 +4191,7 @@ fn planner_subject_not_started(
     date: &str,
     subject_start_dates: &[(&'static str, String)],
 ) -> bool {
-    let key = match subject {
-        crate::data::state::SubjectKey::Math => "math",
-        crate::data::state::SubjectKey::English => "english",
-        crate::data::state::SubjectKey::Politics => "politics",
-        crate::data::state::SubjectKey::Professional => "professional",
-    };
+    let key = subject.key();
     for (k, start_date) in subject_start_dates {
         if *k == key && !start_date.is_empty() {
             return start_date.as_str() > date;

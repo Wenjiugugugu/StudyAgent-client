@@ -1,17 +1,20 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  variant?: "primary" | "secondary" | "ghost" | "danger" | "soft";
-  size?: "sm" | "md" | "lg";
-  disabled?: boolean;
-  loading?: boolean;
-  icon?: boolean;
-}>(), {
-  variant: "primary",
-  size: "md",
-  disabled: false,
-  loading: false,
-  icon: false,
-});
+withDefaults(
+  defineProps<{
+    variant?: "primary" | "secondary" | "ghost" | "danger" | "soft";
+    size?: "sm" | "md" | "lg";
+    disabled?: boolean;
+    loading?: boolean;
+    icon?: boolean;
+  }>(),
+  {
+    variant: "primary",
+    size: "md",
+    disabled: false,
+    loading: false,
+    icon: false,
+  }
+);
 </script>
 
 <template>
@@ -37,7 +40,11 @@ withDefaults(defineProps<{
   font-family: inherit;
   font-weight: var(--font-label);
   cursor: pointer;
-  transition: background-color var(--transition-normal), box-shadow var(--transition-normal), transform var(--transition-fast), opacity var(--transition-normal);
+  transition:
+    background-color var(--transition-normal),
+    box-shadow var(--transition-normal),
+    transform var(--transition-fast),
+    opacity var(--transition-normal);
   white-space: nowrap;
   /* Fully pill-shaped per Apple design library */
   border-radius: var(--radius-full);
@@ -111,9 +118,21 @@ withDefaults(defineProps<{
 }
 
 /* Sizes — tactile capsule proportions */
-.sm { padding: var(--space-1) var(--space-3); font-size: var(--text-sm); min-height: 28px; }
-.md { padding: var(--space-2) var(--space-5); font-size: var(--text-sm); min-height: 36px; }
-.lg { padding: var(--space-3) var(--space-6); font-size: var(--text-base); min-height: 44px; }
+.sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  min-height: 28px;
+}
+.md {
+  padding: var(--space-2) var(--space-5);
+  font-size: var(--text-sm);
+  min-height: 36px;
+}
+.lg {
+  padding: var(--space-3) var(--space-6);
+  font-size: var(--text-base);
+  min-height: 44px;
+}
 
 .icon-only {
   padding: var(--space-2);
@@ -132,6 +151,8 @@ withDefaults(defineProps<{
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

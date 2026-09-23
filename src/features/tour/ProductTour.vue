@@ -33,24 +33,21 @@ const steps: TourStep[] = [
     route: "/dashboard",
     target: ".dashboard-view header.hero",
     title: "工作台",
-    description:
-      "每天打开应用后的第一站：考研倒计时、AI 每日简报和昨日复盘都在这里。",
+    description: "每天打开应用后的第一站：考研倒计时、AI 每日简报和昨日复盘都在这里。",
     placement: "bottom",
   },
   {
     route: "/today",
     target: ".today-view",
     title: "计划页",
-    description:
-      "今天具体学什么一目了然：任务按科目分组，点左侧圆圈即可标记完成。",
+    description: "今天具体学什么一目了然：任务按科目分组，点左侧圆圈即可标记完成。",
     placement: "bottom",
   },
   {
     route: "/review",
     target: ".review-view",
     title: "复盘页",
-    description:
-      "每天学完在这里做复盘：记录完成情况、专注时长与收获，让每一天都形成闭环。",
+    description: "每天学完在这里做复盘：记录完成情况、专注时长与收获，让每一天都形成闭环。",
     placement: "bottom",
   },
   {
@@ -201,10 +198,7 @@ async function markDone() {
   // 同步清空内存中的 pending，避免 watch 立即重启导览
   pending.value = false;
   try {
-    await Promise.all([
-      setUiFlag(TOUR_DONE_KEY, "1"),
-      setUiFlag(TOUR_PENDING_KEY, "0"),
-    ]);
+    await Promise.all([setUiFlag(TOUR_DONE_KEY, "1"), setUiFlag(TOUR_PENDING_KEY, "0")]);
   } catch {
     /* 标记写入失败不影响界面 */
   }
@@ -278,7 +272,7 @@ watch(
       startLoop();
     }
   },
-  { immediate: true },
+  { immediate: true }
 );
 
 onMounted(checkFlags);
@@ -288,13 +282,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    v-if="visible"
-    class="tour-overlay"
-    role="dialog"
-    aria-modal="true"
-    aria-label="产品导览"
-  >
+  <div v-if="visible" class="tour-overlay" role="dialog" aria-modal="true" aria-label="产品导览">
     <!-- 聚光灯开孔：通过超大 box-shadow 形成半透明遮罩 + 高亮孔洞 -->
     <div class="tour-spotlight" :style="spotlightStyle" aria-hidden="true"></div>
 
@@ -325,12 +313,7 @@ onBeforeUnmount(() => {
           ></span>
         </div>
         <div class="tour-actions">
-          <button
-            v-if="stepIndex > 0"
-            type="button"
-            class="tour-btn ghost"
-            @click="prev"
-          >
+          <button v-if="stepIndex > 0" type="button" class="tour-btn ghost" @click="prev">
             <ChevronLeft :size="15" />
             上一步
           </button>
@@ -355,7 +338,8 @@ onBeforeUnmount(() => {
 
 .tour-spotlight {
   position: fixed;
-  transition: left 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+  transition:
+    left 0.25s cubic-bezier(0.32, 0.72, 0, 1),
     top 0.25s cubic-bezier(0.32, 0.72, 0, 1),
     width 0.25s cubic-bezier(0.32, 0.72, 0, 1),
     height 0.25s cubic-bezier(0.32, 0.72, 0, 1);
@@ -374,7 +358,8 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   padding: var(--space-4);
-  transition: left 0.25s cubic-bezier(0.32, 0.72, 0, 1),
+  transition:
+    left 0.25s cubic-bezier(0.32, 0.72, 0, 1),
     top 0.25s cubic-bezier(0.32, 0.72, 0, 1),
     opacity 0.2s ease;
   color: var(--text-primary);
@@ -436,7 +421,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   border-radius: var(--radius-sm);
   padding: 4px 6px;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 .tour-close:hover {
   color: var(--text-secondary);
@@ -476,7 +463,9 @@ onBeforeUnmount(() => {
   height: 6px;
   border-radius: var(--radius-full);
   background: var(--border-color-strong);
-  transition: background var(--transition-fast), transform var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 .tour-dot.active {
   background: var(--accent);
@@ -500,7 +489,9 @@ onBeforeUnmount(() => {
   font-family: inherit;
   cursor: pointer;
   padding: 6px 12px;
-  transition: background var(--transition-fast), color var(--transition-fast),
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
     transform var(--transition-fast);
 }
 .tour-btn:active {

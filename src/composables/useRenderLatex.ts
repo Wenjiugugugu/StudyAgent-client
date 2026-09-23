@@ -83,10 +83,10 @@ export function renderMessage(content: string): string {
       latexParts.push(
         block !== undefined
           ? { type: "block", raw: `$$${block}$$` }
-          : { type: "inline", raw: `$${inline}$` },
+          : { type: "inline", raw: `$${inline}$` }
       );
       return `\u0001KTEX${latexParts.length - 1}\u0001`;
-    },
+    }
   );
 
   // 2. marked 解析 Markdown
@@ -98,21 +98,65 @@ export function renderMessage(content: string): string {
   const clean = DOMPurify.sanitize(mdHtml, {
     // KaTeX MathML 输出涉及的标签（displayMode + htmlAndMathml 默认输出）
     ADD_TAGS: [
-      "math", "semantics", "annotation", "annotation-xml",
-      "mrow", "mi", "mo", "mn", "ms", "mtext", "mspace", "mstyle",
-      "msup", "msub", "msubsup", "mfrac", "msqrt", "mroot",
-      "mtable", "mtr", "mtd", "maligngroup", "malignmark",
-      "menclose", "merror", "mpadded", "mfenced", "mlongdiv", "mscarries", "msline", "msgroup", "msrow", "mstack",
+      "math",
+      "semantics",
+      "annotation",
+      "annotation-xml",
+      "mrow",
+      "mi",
+      "mo",
+      "mn",
+      "ms",
+      "mtext",
+      "mspace",
+      "mstyle",
+      "msup",
+      "msub",
+      "msubsup",
+      "mfrac",
+      "msqrt",
+      "mroot",
+      "mtable",
+      "mtr",
+      "mtd",
+      "maligngroup",
+      "malignmark",
+      "menclose",
+      "merror",
+      "mpadded",
+      "mfenced",
+      "mlongdiv",
+      "mscarries",
+      "msline",
+      "msgroup",
+      "msrow",
+      "mstack",
     ],
     ADD_ATTR: [
       // 通用属性
-      "class", "style", "id", "title", "lang", "dir",
+      "class",
+      "style",
+      "id",
+      "title",
+      "lang",
+      "dir",
       // 链接/媒体
-      "href", "src", "alt", "target", "rel", "width", "height",
+      "href",
+      "src",
+      "alt",
+      "target",
+      "rel",
+      "width",
+      "height",
       // 表格
-      "colspan", "rowspan", "align", "valign", "span",
+      "colspan",
+      "rowspan",
+      "align",
+      "valign",
+      "span",
       // KaTeX / ARIA
-      "aria-hidden", "role",
+      "aria-hidden",
+      "role",
       // KaTeX MathML annotation 的 encoding 属性
       "encoding",
     ],
@@ -132,14 +176,17 @@ export function renderMessage(content: string): string {
       const part = latexParts[parseInt(idx, 10)];
       // 仅块级公式走这条路径；内联公式占位符若意外被 <p> 独占，也走内联渲染
       return part ? renderLatex(part.raw) : "";
-    },
+    }
   );
 
   //    4b. 其余占位符（内联，或块级公式落在列表项/表格单元里未被 <p> 独占）直接替换
-  const withKatex = withBlocksRestored.replace(/\u0001KTEX(\d+)\u0001/g, (_m: string, idx: string) => {
-    const part = latexParts[parseInt(idx, 10)];
-    return part ? renderLatex(part.raw) : "";
-  });
+  const withKatex = withBlocksRestored.replace(
+    /\u0001KTEX(\d+)\u0001/g,
+    (_m: string, idx: string) => {
+      const part = latexParts[parseInt(idx, 10)];
+      return part ? renderLatex(part.raw) : "";
+    }
+  );
 
   return withKatex;
 }

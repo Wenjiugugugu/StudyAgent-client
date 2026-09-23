@@ -1,5 +1,7 @@
 # 开发流程规范
 
+本地维护材料放在 `docs/` 目录（按约定不纳入 Git）；提交前以本文件和源码附近的规则说明为准。
+
 本仓库采用 **基于功能分支 + 受保护 main** 的协作模型。核心原则：
 
 - **main 永远保持可用**：main 上的任何提交都必须是可直接发布、可运行的稳定状态。
@@ -70,7 +72,9 @@ git rebase origin/main   # 或 git merge origin/main
 
 1. 推送分支：`git push origin feature/zhangsan-周计划调整`
 2. 在 GitHub 新建 PR → base 为 `main`，写好标题与描述（说明改动、测试情况、相关 issue）。
-3. PR 的 CI 检查（前端 type-check/test/build + Rust fmt/clippy/test）必须全部通过。
+3. PR 的 CI 检查（前端 lint/type-check/test/build + Rust fmt/clippy/test）必须全部通过。
+   本地前端统一入口是 `pnpm check`；Rust 对应命令为 `cargo fmt --check`、`cargo clippy --all-targets --all-features -- -D warnings` 和 `cargo test --all-features`；
+   `pnpm format:check` 已包含在统一门禁中；如失败，先运行 `pnpm format` 并单独检查格式化差异。
 4. 正式合并前建议让其他协作者 review；若团队约定或单人维护场景下，review 不作为强制门槛（以 CI 通过为准）。
 5. 合并后**删除分支**，再立即 `git pull origin main` 保持本地同步。
 
@@ -97,3 +101,13 @@ git rebase origin/main   # 或 git merge origin/main
 - **不要**在 main 上直接开发或提交任何临时改动；临时想法统一放分支。
 - 发现 main 被意外推送了不可用改动时，第一时间通知维护者回滚。
 - PR 保持范围单一：别把多个无关任务塞进一个 PR。
+
+## 6. UI 组件与样式复用
+
+新增页面或功能时，先查看 [`src/components/ui/README.md`](src/components/ui/README.md)，并从 `@/components/ui` 引入已有基础组件。按钮、卡片、标签、复选框、下拉框、日期/时间选择器、弹窗、进度条、加载态和空状态不应在页面中重新造一套外观。
+
+页面 scoped CSS 只负责页面布局和业务专属状态；颜色、间距、圆角、阴影、字体和动效统一使用 `src/styles/variables.css` 的设计令牌。跨页面重复出现的样式应提取为基础组件或领域组件，而不是复制 CSS。
+
+新增基础组件必须同时完成三件事：从 `@/components/ui` 导出、补充组件目录说明、通过 `pnpm ui:check`。如果现有组件的语义或交互确实不适用，应在 PR 中说明新增组件的边界、复用场景和可访问性状态。
+
+前端提交前运行 `pnpm check`；其中包含 UI 组件入口检查，防止新增组件未登记、入口残留失效导出。

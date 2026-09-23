@@ -24,9 +24,7 @@ import BriefingCard, {
   type TodayView,
   type WeekView,
 } from "./components/BriefingCard.vue";
-import YesterdayReviewGate, {
-  type ReviewSidebarView,
-} from "./components/YesterdayReviewGate.vue";
+import YesterdayReviewGate, { type ReviewSidebarView } from "./components/YesterdayReviewGate.vue";
 import "./dashboard-base.css";
 
 const router = useRouter();

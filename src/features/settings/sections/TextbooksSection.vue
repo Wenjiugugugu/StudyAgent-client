@@ -30,7 +30,8 @@ defineProps<{
       </div>
     </div>
     <p class="section-desc">
-      每科教材独立保存（点击对应"保存"立即生效）。生成周计划时，AI 会联网检索教材目录，确保任务引用的章节名与小节编号与教材实际目录一致。
+      每科教材独立保存（点击对应"保存"立即生效）。生成周计划时，AI
+      会联网检索教材目录，确保任务引用的章节名与小节编号与教材实际目录一致。
     </p>
     <LoadingSpinner v-if="stateLoading" :size="20" label="加载学习状态..." />
     <div v-else-if="studyState" class="textbook-list">
@@ -55,7 +56,7 @@ defineProps<{
           >
             <Check v-if="textbookSavedFlash.math" :size="14" />
             <Save v-else :size="14" />
-            <span>{{ textbookSavedFlash.math ? '已保存' : '保存' }}</span>
+            <span>{{ textbookSavedFlash.math ? "已保存" : "保存" }}</span>
           </Button>
         </div>
       </div>
@@ -80,7 +81,7 @@ defineProps<{
           >
             <Check v-if="textbookSavedFlash.english" :size="14" />
             <Save v-else :size="14" />
-            <span>{{ textbookSavedFlash.english ? '已保存' : '保存' }}</span>
+            <span>{{ textbookSavedFlash.english ? "已保存" : "保存" }}</span>
           </Button>
         </div>
       </div>
@@ -105,7 +106,7 @@ defineProps<{
           >
             <Check v-if="textbookSavedFlash.politics" :size="14" />
             <Save v-else :size="14" />
-            <span>{{ textbookSavedFlash.politics ? '已保存' : '保存' }}</span>
+            <span>{{ textbookSavedFlash.politics ? "已保存" : "保存" }}</span>
           </Button>
         </div>
       </div>
@@ -130,12 +131,17 @@ defineProps<{
           >
             <Check v-if="textbookSavedFlash.professional" :size="14" />
             <Save v-else :size="14" />
-            <span>{{ textbookSavedFlash.professional ? '已保存' : '保存' }}</span>
+            <span>{{ textbookSavedFlash.professional ? "已保存" : "保存" }}</span>
           </Button>
         </div>
       </div>
       <div
-        v-if="!subjectActive.math && !subjectActive.english && !subjectActive.politics && !subjectActive.professional"
+        v-if="
+          !subjectActive.math &&
+          !subjectActive.english &&
+          !subjectActive.politics &&
+          !subjectActive.professional
+        "
         class="empty-inline"
       >
         尚未启用任何科目。完成首次配置后会自动激活各科。

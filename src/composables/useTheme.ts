@@ -37,11 +37,7 @@ export function useTheme() {
    * - 否则通过后端命令读取图片为 base64 data URL，注入到 --app-background-image
    * - 同时应用模糊度（--app-background-blur）与不透明度（--app-background-opacity）
    */
-  async function applyBackgroundImage(
-    relativePath: string,
-    blur: number,
-    opacity: number
-  ) {
+  async function applyBackgroundImage(relativePath: string, blur: number, opacity: number) {
     const root = document.documentElement;
     if (!relativePath) {
       root.style.removeProperty("--app-background-image");
@@ -87,17 +83,27 @@ export function useTheme() {
 
   /** 将 rgb 转 hsl（h: 0-360, s/l: 0-1） */
   function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
-    const rr = r / 255, gg = g / 255, bb = b / 255;
-    const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
-    let h = 0, s = 0;
+    const rr = r / 255,
+      gg = g / 255,
+      bb = b / 255;
+    const max = Math.max(rr, gg, bb),
+      min = Math.min(rr, gg, bb);
+    let h = 0,
+      s = 0;
     const l = (max + min) / 2;
     if (max !== min) {
       const d = max - min;
       s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
       switch (max) {
-        case rr: h = (gg - bb) / d + (gg < bb ? 6 : 0); break;
-        case gg: h = (bb - rr) / d + 2; break;
-        case bb: h = (rr - gg) / d + 4; break;
+        case rr:
+          h = (gg - bb) / d + (gg < bb ? 6 : 0);
+          break;
+        case gg:
+          h = (bb - rr) / d + 2;
+          break;
+        case bb:
+          h = (rr - gg) / d + 4;
+          break;
       }
       h *= 60;
     }
@@ -132,8 +138,14 @@ export function useTheme() {
     const pressedL = Math.max(0, l - 0.16);
 
     root.style.setProperty("--accent", color);
-    root.style.setProperty("--accent-hover", `hsl(${h.toFixed(0)}, ${(s * 100).toFixed(0)}%, ${(hoverL * 100).toFixed(0)}%)`);
-    root.style.setProperty("--accent-pressed", `hsl(${h.toFixed(0)}, ${(s * 100).toFixed(0)}%, ${(pressedL * 100).toFixed(0)}%)`);
+    root.style.setProperty(
+      "--accent-hover",
+      `hsl(${h.toFixed(0)}, ${(s * 100).toFixed(0)}%, ${(hoverL * 100).toFixed(0)}%)`
+    );
+    root.style.setProperty(
+      "--accent-pressed",
+      `hsl(${h.toFixed(0)}, ${(s * 100).toFixed(0)}%, ${(pressedL * 100).toFixed(0)}%)`
+    );
     root.style.setProperty("--accent-subtle", `rgba(${r}, ${g}, ${b}, 0.1)`);
     // accent-soft：极浅的同色背景
     root.style.setProperty("--accent-soft", `hsl(${h.toFixed(0)}, ${(s * 100).toFixed(0)}%, 95%)`);

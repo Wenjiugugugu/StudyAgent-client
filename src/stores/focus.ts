@@ -100,7 +100,12 @@ export const useFocusStore = defineStore("focus", () => {
   let ticker: ReturnType<typeof setInterval> | undefined;
 
   // ── 统计与记录（后端持久化）──
-  const todayStats = ref<api.FocusDayStats>({ date: "", pomodoros: 0, focus_minutes: 0, breaks: 0 });
+  const todayStats = ref<api.FocusDayStats>({
+    date: "",
+    pomodoros: 0,
+    focus_minutes: 0,
+    breaks: 0,
+  });
   const todaySessions = ref<api.FocusSession[]>([]);
   const weekSessions = ref<api.FocusSession[]>([]);
 
@@ -170,13 +175,17 @@ export const useFocusStore = defineStore("focus", () => {
   });
 
   // ── 持久化配置 / 关联任务 ──
-  watch(config, (v) => {
-    try {
-      localStorage.setItem(CONFIG_KEY, JSON.stringify(clampConfig(v)));
-    } catch {
-      /* 忽略 */
-    }
-  }, { deep: true });
+  watch(
+    config,
+    (v) => {
+      try {
+        localStorage.setItem(CONFIG_KEY, JSON.stringify(clampConfig(v)));
+      } catch {
+        /* 忽略 */
+      }
+    },
+    { deep: true }
+  );
   watch(linkedTaskId, (v) => {
     try {
       if (v) localStorage.setItem(LINKED_TASK_KEY, v);
@@ -298,7 +307,11 @@ export const useFocusStore = defineStore("focus", () => {
       void recordSession("focus", elapsedMin, "interrupted");
     }
     // L5：正计时结束/重置时记录会话（此前 stopwatch 类型从无落盘）
-    if (recordInterrupt && mode.value === "stopwatch" && (sub.value === "running" || sub.value === "paused")) {
+    if (
+      recordInterrupt &&
+      mode.value === "stopwatch" &&
+      (sub.value === "running" || sub.value === "paused")
+    ) {
       const elapsedMin = Math.max(0, Math.round(stopwatchSec.value / 60));
       const startedAt = sessionStartedAt.value;
       void recordSession("stopwatch", elapsedMin, "interrupted", startedAt);
@@ -359,7 +372,10 @@ export const useFocusStore = defineStore("focus", () => {
 
       // 自动休息则直接进入休息（到长休轮次进长休）；手动则转正计时等待点击
       if (config.value.autoBreak) {
-        if (config.value.longBreakEnabled && roundCount.value % config.value.longBreakInterval === 0) {
+        if (
+          config.value.longBreakEnabled &&
+          roundCount.value % config.value.longBreakInterval === 0
+        ) {
           startLongBreak();
         } else {
           startBreak();
@@ -375,7 +391,11 @@ export const useFocusStore = defineStore("focus", () => {
       // 休息结束：长休结束后重置轮次
       const isLong = phase.value === "longBreak";
       if (isLong) roundCount.value = 0;
-      void recordSession(isLong ? "long_break" : "short_break", Math.max(1, Math.round(totalSec.value / 60)), "completed");
+      void recordSession(
+        isLong ? "long_break" : "short_break",
+        Math.max(1, Math.round(totalSec.value / 60)),
+        "completed"
+      );
       void notifyPhaseEnd("休息结束", "休息时间到，可以开始新一轮学习了。");
       sub.value = "breakEnded";
       stopTicker();
@@ -387,7 +407,7 @@ export const useFocusStore = defineStore("focus", () => {
     type: api.FocusSessionType,
     minutes: number,
     status: api.FocusSessionStatus,
-    startedAt: number | null = null,
+    startedAt: number | null = null
   ) {
     if (
       (type === "focus" || type === "stopwatch") &&
@@ -480,8 +500,19 @@ export const useFocusStore = defineStore("focus", () => {
   }
 
   watch(
-    [mode, phase, sub, endsAt, pausedRemainingSec, stopwatchBaseSec, stopwatchRunStartedAt, sessionStartedAt, roundCount, totalSec],
-    persistState,
+    [
+      mode,
+      phase,
+      sub,
+      endsAt,
+      pausedRemainingSec,
+      stopwatchBaseSec,
+      stopwatchRunStartedAt,
+      sessionStartedAt,
+      roundCount,
+      totalSec,
+    ],
+    persistState
   );
 
   function restoreState() {
@@ -565,9 +596,8 @@ export const useFocusStore = defineStore("focus", () => {
     try {
       const win = getCurrentWindow();
       if (await win.isFocused()) return;
-      const { sendNotification, isPermissionGranted, requestPermission } = await import(
-        "@tauri-apps/plugin-notification"
-      );
+      const { sendNotification, isPermissionGranted, requestPermission } =
+        await import("@tauri-apps/plugin-notification");
       let granted = await isPermissionGranted();
       if (!granted) {
         const permission = await requestPermission();

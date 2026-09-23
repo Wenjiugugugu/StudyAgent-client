@@ -67,12 +67,16 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/AnalyticsView.vue"),
     meta: { title: "分析", icon: "BarChart3" },
   },
-  {
-    path: "/debug",
-    name: "debug",
-    component: () => import("@/views/DebugView.vue"),
-    meta: { title: "调试", icon: "Bug" },
-  },
+  ...(import.meta.env.DEV || import.meta.env.VITE_ENABLE_DEBUG === "true"
+    ? [
+        {
+          path: "/debug",
+          name: "debug",
+          component: () => import("@/views/DebugView.vue"),
+          meta: { title: "调试", icon: "Bug" },
+        } satisfies RouteRecordRaw,
+      ]
+    : []),
   {
     path: "/settings",
     name: "settings",
@@ -104,8 +108,8 @@ router.beforeEach(async (to) => {
     try {
       await settingsStore.load();
     } catch {
-      // 加载失败时放行，避免阻塞应用
-      return true;
+      // 不使用默认/Mock 设置伪装成功；引导用户进入可重试的设置错误页。
+      return to.path === "/settings" ? true : { path: "/settings", query: { loadError: "1" } };
     }
   }
 

@@ -33,12 +33,14 @@ function renderInline(raw: string, highlightTerms: string[] = []): string {
   };
 
   let text = raw.replace(/`([^`]+)`/g, (_match, code: string) =>
-    reserve(`<code class="md-code">${escapeHtml(code)}</code>`),
+    reserve(`<code class="md-code">${escapeHtml(code)}</code>`)
   );
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, href: string) => {
     const safe = safeLink(href);
     return safe
-      ? reserve(`<a href="${safe}" target="_blank" rel="noopener noreferrer" class="md-link">${escapeHtml(label)}</a>`)
+      ? reserve(
+          `<a href="${safe}" target="_blank" rel="noopener noreferrer" class="md-link">${escapeHtml(label)}</a>`
+        )
       : label;
   });
 
@@ -48,7 +50,7 @@ function renderInline(raw: string, highlightTerms: string[] = []): string {
     const trimmed = term.trim();
     if (!trimmed) continue;
     text = text.replace(new RegExp(`(${escapeRegExp(trimmed)})`, "gi"), (_match, m: string) =>
-      reserve(`<mark class="md-hit">${escapeHtml(m)}</mark>`),
+      reserve(`<mark class="md-hit">${escapeHtml(m)}</mark>`)
     );
   }
 
@@ -56,7 +58,10 @@ function renderInline(raw: string, highlightTerms: string[] = []): string {
 
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-  return text.replace(/\u0001INLINE_(\d+)\u0001/g, (_match, index: string) => placeholders[Number(index)] ?? "");
+  return text.replace(
+    /\u0001INLINE_(\d+)\u0001/g,
+    (_match, index: string) => placeholders[Number(index)] ?? ""
+  );
 }
 
 export interface MarkdownRenderOptions {
@@ -67,7 +72,13 @@ export interface MarkdownRenderOptions {
 }
 
 export function slugifyHeading(text: string, prefix = "tb-"): string {
-  return prefix + text.toLowerCase().replace(/[^\w\u4e00-\u9fa5]+/g, "-").replace(/^-+|-+$/g, "");
+  return (
+    prefix +
+    text
+      .toLowerCase()
+      .replace(/[^\w\u4e00-\u9fa5]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+  );
 }
 
 export function renderMarkdown(source: string, options: MarkdownRenderOptions = {}): string {
@@ -78,8 +89,9 @@ export function renderMarkdown(source: string, options: MarkdownRenderOptions = 
   let codeStartLine = 1;
   let code: string[] = [];
   let list: "ul" | "ol" | null = null;
-  const lineAttribute = (line: number) => options.lineNumbers ? ` data-line="${line}"` : "";
-  const terms = (line: number) => options.activeLine === line ? options.highlightTerms ?? [] : [];
+  const lineAttribute = (line: number) => (options.lineNumbers ? ` data-line="${line}"` : "");
+  const terms = (line: number) =>
+    options.activeLine === line ? (options.highlightTerms ?? []) : [];
   const closeList = () => {
     if (list) output.push(`</${list}>`);
     list = null;
@@ -97,7 +109,9 @@ export function renderMarkdown(source: string, options: MarkdownRenderOptions = 
         code = [];
       } else {
         const languageClass = codeLanguage ? ` language-${escapeHtml(codeLanguage)}` : "";
-        output.push(`<pre${lineAttribute(codeStartLine)} class="md-pre"><code class="md-block-code${languageClass}">${escapeHtml(code.join("\n"))}</code></pre>`);
+        output.push(
+          `<pre${lineAttribute(codeStartLine)} class="md-pre"><code class="md-block-code${languageClass}">${escapeHtml(code.join("\n"))}</code></pre>`
+        );
         inCode = false;
       }
       return;
@@ -116,14 +130,21 @@ export function renderMarkdown(source: string, options: MarkdownRenderOptions = 
       closeList();
       const level = heading[1].length;
       const text = heading[2].trim();
-      const id = options.headingPrefix === undefined ? "" : ` id="${slugifyHeading(text, options.headingPrefix)}"`;
-      output.push(`<h${level}${lineAttribute(lineNumber)}${id} class="md-h md-h${level}">${renderInline(text, terms(lineNumber))}</h${level}>`);
+      const id =
+        options.headingPrefix === undefined
+          ? ""
+          : ` id="${slugifyHeading(text, options.headingPrefix)}"`;
+      output.push(
+        `<h${level}${lineAttribute(lineNumber)}${id} class="md-h md-h${level}">${renderInline(text, terms(lineNumber))}</h${level}>`
+      );
       return;
     }
     const quote = line.match(/^>\s?(.*)$/);
     if (quote) {
       closeList();
-      output.push(`<blockquote${lineAttribute(lineNumber)} class="md-quote">${renderInline(quote[1], terms(lineNumber))}</blockquote>`);
+      output.push(
+        `<blockquote${lineAttribute(lineNumber)} class="md-quote">${renderInline(quote[1], terms(lineNumber))}</blockquote>`
+      );
       return;
     }
     const unordered = line.match(/^[-*+]\s+(.+)$/);
@@ -135,7 +156,9 @@ export function renderMarkdown(source: string, options: MarkdownRenderOptions = 
         output.push(`<${target} class="md-${target}">`);
         list = target;
       }
-      output.push(`<li${lineAttribute(lineNumber)}>${renderInline((unordered ?? ordered)![1], terms(lineNumber))}</li>`);
+      output.push(
+        `<li${lineAttribute(lineNumber)}>${renderInline((unordered ?? ordered)![1], terms(lineNumber))}</li>`
+      );
       return;
     }
     if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
@@ -144,11 +167,16 @@ export function renderMarkdown(source: string, options: MarkdownRenderOptions = 
       return;
     }
     closeList();
-    output.push(`<p${lineAttribute(lineNumber)} class="md-p">${renderInline(line.trim(), terms(lineNumber))}</p>`);
+    output.push(
+      `<p${lineAttribute(lineNumber)} class="md-p">${renderInline(line.trim(), terms(lineNumber))}</p>`
+    );
   });
 
   closeList();
-  if (inCode) output.push(`<pre${lineAttribute(codeStartLine)} class="md-pre"><code class="md-block-code">${escapeHtml(code.join("\n"))}</code></pre>`);
+  if (inCode)
+    output.push(
+      `<pre${lineAttribute(codeStartLine)} class="md-pre"><code class="md-block-code">${escapeHtml(code.join("\n"))}</code></pre>`
+    );
   return output.join("\n");
 }
 
@@ -156,7 +184,11 @@ export function highlightSnippet(snippet: string, terms: string[]): string {
   let output = escapeHtml(snippet);
   for (const term of terms) {
     const escaped = escapeHtml(term);
-    if (escaped) output = output.replace(new RegExp(`(${escapeRegExp(escaped)})`, "gi"), '<mark class="hit-mark">$1</mark>');
+    if (escaped)
+      output = output.replace(
+        new RegExp(`(${escapeRegExp(escaped)})`, "gi"),
+        '<mark class="hit-mark">$1</mark>'
+      );
   }
   return output;
 }

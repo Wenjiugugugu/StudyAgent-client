@@ -75,15 +75,60 @@ interface OnboardingStep {
 }
 
 const steps: OnboardingStep[] = [
-  { key: "welcome", title: "欢迎使用 StudyAgent", description: "你的个人考研学习智能体，让每一步都更有方向。", skippable: false },
-  { key: "name", title: "该怎么称呼你", description: "我们会用这个名字称呼你，也会出现在工作台问候中。", skippable: false },
-  { key: "subjects", title: "考试科目", description: "选择你的考试科目和版本（如数二、英一）。", skippable: false },
-  { key: "progress", title: "当前进度", description: "告诉我们各科目的当前学习阶段，帮助 AI 更好地规划。", skippable: false },
-  { key: "date", title: "考研年份", description: "考试默认在每年 12 月 20 日，设置年份即可自动计算倒计时。", skippable: false },
-  { key: "schedule", title: "学习节奏", description: "设置每周学习天数和休息日，帮助我们安排可持续的学习计划。", skippable: true },
-  { key: "dida", title: "滴答清单同步", description: "同步每日任务到滴答清单，手机端查看并勾选。", skippable: true },
-  { key: "ai", title: "配置 AI 助手", description: "智能计划、进度表生成与复盘等核心功能依赖 AI。未配置可跳过，稍后在设置中补全。", skippable: true },
-  { key: "done", title: "配置完成", description: "一切就绪，开始你的考研之旅吧。", skippable: false },
+  {
+    key: "welcome",
+    title: "欢迎使用 StudyAgent",
+    description: "你的个人考研学习智能体，让每一步都更有方向。",
+    skippable: false,
+  },
+  {
+    key: "name",
+    title: "该怎么称呼你",
+    description: "我们会用这个名字称呼你，也会出现在工作台问候中。",
+    skippable: false,
+  },
+  {
+    key: "subjects",
+    title: "考试科目",
+    description: "选择你的考试科目和版本（如数二、英一）。",
+    skippable: false,
+  },
+  {
+    key: "progress",
+    title: "当前进度",
+    description: "告诉我们各科目的当前学习阶段，帮助 AI 更好地规划。",
+    skippable: false,
+  },
+  {
+    key: "date",
+    title: "考研年份",
+    description: "考试默认在每年 12 月 20 日，设置年份即可自动计算倒计时。",
+    skippable: false,
+  },
+  {
+    key: "schedule",
+    title: "学习节奏",
+    description: "设置每周学习天数和休息日，帮助我们安排可持续的学习计划。",
+    skippable: true,
+  },
+  {
+    key: "dida",
+    title: "滴答清单同步",
+    description: "同步每日任务到滴答清单，手机端查看并勾选。",
+    skippable: true,
+  },
+  {
+    key: "ai",
+    title: "配置 AI 助手",
+    description: "智能计划、进度表生成与复盘等核心功能依赖 AI。未配置可跳过，稍后在设置中补全。",
+    skippable: true,
+  },
+  {
+    key: "done",
+    title: "配置完成",
+    description: "一切就绪，开始你的考研之旅吧。",
+    skippable: false,
+  },
 ];
 
 const currentStep = ref(0);
@@ -97,13 +142,15 @@ const stepError = ref("");
 const quickMode = ref(false);
 const QUICK_SKIP_KEYS = new Set(["name", "date", "dida"]);
 const visibleSteps = computed(() =>
-  quickMode.value ? steps.filter(s => !QUICK_SKIP_KEYS.has(s.key)) : steps,
+  quickMode.value ? steps.filter((s) => !QUICK_SKIP_KEYS.has(s.key)) : steps
 );
 
 const step = computed(() => visibleSteps.value[currentStep.value]);
 const isFirstStep = computed(() => currentStep.value === 0);
 const isLastStep = computed(() => currentStep.value === visibleSteps.value.length - 1);
-const progress = computed(() => Math.round(((currentStep.value + 1) / visibleSteps.value.length) * 100));
+const progress = computed(() =>
+  Math.round(((currentStep.value + 1) / visibleSteps.value.length) * 100)
+);
 /** 快速配置默认考试日期：当年 12-20，已晚于则次年 */
 const quickExamDate = computed(() => {
   const now = new Date();
@@ -137,14 +184,10 @@ const GENERIC_PROFESSIONAL_NAMES = new Set([
 ]);
 const professionalName = ref("");
 const professionalCustomName = ref("");
-const professionalIsCustom = computed(
-  () => professionalName.value === PROFESSIONAL_OTHER
-);
+const professionalIsCustom = computed(() => professionalName.value === PROFESSIONAL_OTHER);
 /** 专业课显示名：统考科目名 或 自定义名 */
 const professionalDisplayName = computed(() =>
-  professionalIsCustom.value
-    ? professionalCustomName.value.trim()
-    : professionalName.value
+  professionalIsCustom.value ? professionalCustomName.value.trim() : professionalName.value
 );
 // Progress (per subject)
 const progressPhase = ref<Record<string, string>>({});
@@ -185,7 +228,10 @@ const dailyTargetHours = ref(5);
 const subjectTimeAllocation = ref<SubjectTimeAllocation | null>(null);
 /** 引导内各科默认周学时（与 finish() 写入 initState 的 weekly_hours 一致，用于推导默认占比） */
 const ALLOCATION_WEEKLY_DEFAULTS: Record<SubjectKey, number> = {
-  math: 14, english: 7, politics: 5, professional: 10,
+  math: 14,
+  english: 7,
+  politics: 5,
+  professional: 10,
 };
 /** 各科是否活跃（数英政必考，专业课为必考中的必选科目） */
 const allocationActive = computed<Record<SubjectKey, boolean>>(() => ({
@@ -195,7 +241,7 @@ const allocationActive = computed<Record<SubjectKey, boolean>>(() => ({
   professional: true,
 }));
 const activeAllocationKeys = computed<SubjectKey[]>(() =>
-  ALLOCATION_KEYS.filter((k) => allocationActive.value[k]),
+  ALLOCATION_KEYS.filter((k) => allocationActive.value[k])
 );
 /** 生效占比：已配置则归一化存储值；未配置则按默认周学时推导 */
 const effectiveAllocation = computed<SubjectTimeAllocation>(() => {
@@ -205,7 +251,7 @@ const effectiveAllocation = computed<SubjectTimeAllocation>(() => {
   return normalizeAllocation(
     subjectTimeAllocation.value,
     ALLOCATION_WEEKLY_DEFAULTS,
-    allocationActive.value,
+    allocationActive.value
   );
 });
 /** 每日学时 = 每日目标学时 × 占比 */
@@ -225,7 +271,7 @@ function onAllocationSlide(key: SubjectKey, rawValue: string) {
     effectiveAllocation.value,
     key,
     Number(rawValue),
-    allocationActive.value,
+    allocationActive.value
   );
 }
 /** 恢复默认占比：置 null，回退为按默认周学时推导 */
@@ -239,7 +285,10 @@ const ALLOC_SUBJECT_LABELS: Record<SubjectKey, () => string> = {
   professional: () => professionalDisplayName.value || "专业课",
 };
 const ALLOC_SUBJECT_COLORS: Record<SubjectKey, string> = {
-  math: "#5b8def", english: "#22c55e", politics: "#f59e0b", professional: "#a78bfa",
+  math: "#5b8def",
+  english: "#22c55e",
+  politics: "#f59e0b",
+  professional: "#a78bfa",
 };
 // 是否允许 AI 安排总结/复习任务（默认 true，关闭时只推进新知识点）
 const enableReviewTasks = ref(true);
@@ -250,8 +299,16 @@ const autostartEnabled = ref(false);
 const autostartLoading = ref(false);
 // AI
 const providerForm = ref<AIProviderConfig>({
-  id: "", name: "", type: "openai", base_url: "", api_key: "", model: "",
-  temperature: 0.7, max_tokens: 8192, enabled: true, is_default: true,
+  id: "",
+  name: "",
+  type: "openai",
+  base_url: "",
+  api_key: "",
+  model: "",
+  temperature: 0.7,
+  max_tokens: 8192,
+  enabled: true,
+  is_default: true,
 });
 // 滴答清单同步
 const didaSyncEnabled = ref(false);
@@ -260,12 +317,18 @@ const didaTokenSaving = ref(false);
 const hasDidaToken = ref(false);
 
 const providerTypeOptions: { value: ProviderType; label: string }[] = [
-  { value: "openai", label: "OpenAI" }, { value: "gemini", label: "Gemini" },
-  { value: "anthropic", label: "Anthropic" }, { value: "ollama", label: "Ollama (本地)" },
-  { value: "openrouter", label: "OpenRouter" }, { value: "siliconflow", label: "硅基流动" },
-  { value: "dashscope", label: "通义千问" }, { value: "volcengine", label: "火山引擎" },
-  { value: "zhipu", label: "智谱 GLM" }, { value: "kimi", label: "Kimi (月之暗面)" },
-  { value: "longcat", label: "LongCat (美团)" }, { value: "minimax", label: "MiniMax" },
+  { value: "openai", label: "OpenAI" },
+  { value: "gemini", label: "Gemini" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "ollama", label: "Ollama (本地)" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "siliconflow", label: "硅基流动" },
+  { value: "dashscope", label: "通义千问" },
+  { value: "volcengine", label: "火山引擎" },
+  { value: "zhipu", label: "智谱 GLM" },
+  { value: "kimi", label: "Kimi (月之暗面)" },
+  { value: "longcat", label: "LongCat (美团)" },
+  { value: "minimax", label: "MiniMax" },
   { value: "mimo", label: "MiMo (小米)" },
   { value: "custom", label: "自定义" },
 ];
@@ -321,7 +384,7 @@ watch(
       nameAutoFilled.value = true;
     }
   },
-  { immediate: true },
+  { immediate: true }
 );
 function markNameEdited() {
   nameAutoFilled.value = false;
@@ -329,7 +392,12 @@ function markNameEdited() {
 
 // ── Helpers ──
 const phaseOptions = ["foundation", "strengthen", "sprint", "mock"];
-const phaseLabels: Record<string, string> = { foundation: "基础阶段", strengthen: "强化阶段", sprint: "冲刺阶段", mock: "模拟阶段" };
+const phaseLabels: Record<string, string> = {
+  foundation: "基础阶段",
+  strengthen: "强化阶段",
+  sprint: "冲刺阶段",
+  mock: "模拟阶段",
+};
 
 /** 拼接 exam_type 各科部分（供持久化与 finish 复用） */
 function buildExamTypeParts(): string[] {
@@ -344,10 +412,14 @@ function buildExamTypeParts(): string[] {
 /** 各科内置考纲方案的 variant（专业课为所选统考科目名） */
 function variantForSubjectKey(key: string): string {
   switch (key) {
-    case "math": return mathVersion.value;
-    case "english": return englishVersion.value;
-    case "politics": return "政治";
-    case "professional": return professionalName.value;
+    case "math":
+      return mathVersion.value;
+    case "english":
+      return englishVersion.value;
+    case "politics":
+      return "政治";
+    case "professional":
+      return professionalName.value;
   }
   return "";
 }
@@ -412,7 +484,7 @@ watch(
   async (key) => {
     if (key !== "progress") return;
     await Promise.allSettled(activeSubjects.value.map((s) => ensureProgressTable(s.key)));
-  },
+  }
 );
 
 /** 科目配置变化时失效全部进度缓存（回退修改科目后重新拉取） */
@@ -430,16 +502,22 @@ watch(
     progressReached.value = {};
     progressTablesLoading.value = {};
     progressTablesError.value = {};
-  },
+  }
 );
 
 /** 当前用户选择的所有活跃科目 */
 const activeSubjects = computed(() => {
   const list: { key: string; label: string; version: string }[] = [];
   if (mathVersion.value) list.push({ key: "math", label: "数学", version: mathVersion.value });
-  if (englishVersion.value) list.push({ key: "english", label: "英语", version: englishVersion.value });
+  if (englishVersion.value)
+    list.push({ key: "english", label: "英语", version: englishVersion.value });
   if (hasPolitics.value) list.push({ key: "politics", label: "政治", version: "" });
-  if (hasProfessional.value) list.push({ key: "professional", label: professionalDisplayName.value || "专业课", version: "" });
+  if (hasProfessional.value)
+    list.push({
+      key: "professional",
+      label: professionalDisplayName.value || "专业课",
+      version: "",
+    });
   return list;
 });
 
@@ -455,23 +533,30 @@ const validationMessage = computed(() => {
       if (!englishVersion.value) return "请选择英语版本（必考）。";
       if (activeSubjects.value.length === 0) return "请至少选择一个考试科目。";
       if (hasProfessional.value && !professionalName.value) return "请选择专业课科目。";
-      if (hasProfessional.value && professionalIsCustom.value && !professionalCustomName.value.trim())
+      if (
+        hasProfessional.value &&
+        professionalIsCustom.value &&
+        !professionalCustomName.value.trim()
+      )
         return "请填写专业课名称。";
       break;
     case "date": {
       const year = new Date().getFullYear();
-      if (!Number.isInteger(examYear.value) || examYear.value < year || examYear.value > year + 3) return `请选择 ${year}–${year + 3} 年。`;
+      if (!Number.isInteger(examYear.value) || examYear.value < year || examYear.value > year + 3)
+        return `请选择 ${year}–${year + 3} 年。`;
       break;
     }
     case "schedule":
       if (studyDaysPerWeek.value < 1) return "每周至少保留 1 个学习日。";
       if (startTime.value >= endTime.value) return "每日结束时间必须晚于开始时间。";
-      if (dailyTargetHours.value < 1 || dailyTargetHours.value > 16) return "每日学习时长需在 1–16 小时之间。";
+      if (dailyTargetHours.value < 1 || dailyTargetHours.value > 16)
+        return "每日学习时长需在 1–16 小时之间。";
       break;
     case "ai": {
       const provider = providerForm.value;
       const started = provider.base_url.trim() || provider.api_key.trim() || provider.model.trim();
-      if (started && (!provider.base_url.trim() || !provider.model.trim())) return "配置 AI 时请至少填写 Base URL 和 Model；也可以直接跳过。";
+      if (started && (!provider.base_url.trim() || !provider.model.trim()))
+        return "配置 AI 时请至少填写 Base URL 和 Model；也可以直接跳过。";
       break;
     }
     case "dida":
@@ -492,7 +577,10 @@ function next() {
   stepError.value = "";
   direction.value = "forward";
   persistCurrentStep();
-  if (isLastStep.value) { finish(); return; }
+  if (isLastStep.value) {
+    finish();
+    return;
+  }
   currentStep.value = Math.min(currentStep.value + 1, visibleSteps.value.length - 1);
 }
 
@@ -530,8 +618,12 @@ function persistCurrentStep() {
   const s = settingsStore.settings;
   if (!s) return;
   switch (step.value.key) {
-    case "name": s.user_name = userName.value.trim(); break;
-    case "date": s.exam_date = `${examYear.value}-12-20`; break;
+    case "name":
+      s.user_name = userName.value.trim();
+      break;
+    case "date":
+      s.exam_date = `${examYear.value}-12-20`;
+      break;
     case "subjects":
       // H40：科目选择持久化到 exam_type，中断引导后不丢失
       s.exam_type = buildExamTypeParts().join(" / ");
@@ -543,7 +635,8 @@ function persistCurrentStep() {
     case "schedule":
       s.study_schedule = {
         ...(s.study_schedule || {}),
-        start_time: startTime.value, end_time: endTime.value,
+        start_time: startTime.value,
+        end_time: endTime.value,
         daily_target_hours: dailyTargetHours.value,
         study_days_per_week: 7 - restDays.value.length,
         rest_days: [...restDays.value],
@@ -556,22 +649,28 @@ function persistCurrentStep() {
             8,
             Math.round(
               Number(dailyTargetHours.value || 0) /
-                Math.max(0.5, Number(standardGranularity.value) || 1.5),
-            ),
-          ),
+                Math.max(0.5, Number(standardGranularity.value) || 1.5)
+            )
+          )
         ),
-        subject_time_allocation:
-          subjectTimeAllocation.value ? { ...subjectTimeAllocation.value } : null,
+        subject_time_allocation: subjectTimeAllocation.value
+          ? { ...subjectTimeAllocation.value }
+          : null,
         enable_review_tasks: enableReviewTasks.value,
         enable_time_tracking: enableTimeTracking.value,
       };
       break;
     case "ai":
       if (providerForm.value.base_url.trim() || providerForm.value.api_key.trim()) {
-        const exists = s.ai_providers.find(p => p.base_url === providerForm.value.base_url && p.name === providerForm.value.name);
+        const exists = s.ai_providers.find(
+          (p) => p.base_url === providerForm.value.base_url && p.name === providerForm.value.name
+        );
         if (!exists) {
-          const newProvider: AIProviderConfig = { ...providerForm.value, id: `provider-${Date.now()}` };
-          s.ai_providers.forEach(p => (p.is_default = false));
+          const newProvider: AIProviderConfig = {
+            ...providerForm.value,
+            id: `provider-${Date.now()}`,
+          };
+          s.ai_providers.forEach((p) => (p.is_default = false));
           s.ai_providers.push(newProvider);
           s.default_provider_id = newProvider.id;
         }
@@ -659,7 +758,8 @@ async function finish() {
     s.ticktick = { ...(s.ticktick || {}), enabled: didaSyncEnabled.value };
     s.study_schedule = {
       ...(s.study_schedule || {}),
-      start_time: startTime.value, end_time: endTime.value,
+      start_time: startTime.value,
+      end_time: endTime.value,
       daily_target_hours: dailyTargetHours.value,
       study_days_per_week: studyDaysPerWeek.value,
       rest_days: [...restDays.value],
@@ -672,12 +772,13 @@ async function finish() {
           8,
           Math.round(
             Number(dailyTargetHours.value || 0) /
-              Math.max(0.5, Number(standardGranularity.value) || 1.5),
-          ),
-        ),
+              Math.max(0.5, Number(standardGranularity.value) || 1.5)
+          )
+        )
       ),
-      subject_time_allocation:
-        subjectTimeAllocation.value ? { ...subjectTimeAllocation.value } : null,
+      subject_time_allocation: subjectTimeAllocation.value
+        ? { ...subjectTimeAllocation.value }
+        : null,
       enable_review_tasks: enableReviewTasks.value,
       enable_time_tracking: enableTimeTracking.value,
     };
@@ -687,16 +788,43 @@ async function finish() {
     // 初始化 State 文件
     const subjects: api.InitStatePayload["subjects"] = [];
     if (mathVersion.value) {
-      subjects.push({ subject: "math", version: mathVersion.value, active: true, phase: (progressPhase.value.math || "foundation"), weekly_hours: 14.0, target_score: 120 });
+      subjects.push({
+        subject: "math",
+        version: mathVersion.value,
+        active: true,
+        phase: progressPhase.value.math || "foundation",
+        weekly_hours: 14.0,
+        target_score: 120,
+      });
     }
     if (englishVersion.value) {
-      subjects.push({ subject: "english", version: englishVersion.value, active: true, phase: (progressPhase.value.english || "foundation"), weekly_hours: 7.0, target_score: 75 });
+      subjects.push({
+        subject: "english",
+        version: englishVersion.value,
+        active: true,
+        phase: progressPhase.value.english || "foundation",
+        weekly_hours: 7.0,
+        target_score: 75,
+      });
     }
     if (hasPolitics.value) {
-      subjects.push({ subject: "politics", active: true, phase: (progressPhase.value.politics || "foundation"), weekly_hours: 5.0, target_score: 70 });
+      subjects.push({
+        subject: "politics",
+        active: true,
+        phase: progressPhase.value.politics || "foundation",
+        weekly_hours: 5.0,
+        target_score: 70,
+      });
     }
     if (hasProfessional.value) {
-      subjects.push({ subject: "professional", active: true, phase: (progressPhase.value.professional || "foundation"), weekly_hours: 10.0, target_score: 120, textbook: professionalDisplayName.value || undefined });
+      subjects.push({
+        subject: "professional",
+        active: true,
+        phase: progressPhase.value.professional || "foundation",
+        weekly_hours: 10.0,
+        target_score: 120,
+        textbook: professionalDisplayName.value || undefined,
+      });
     }
 
     await api.initState({
@@ -730,7 +858,10 @@ function initFormFromSettings() {
   if (!s) return;
   userName.value = s.user_name ?? "";
   targetScore.value = s.target_score || null;
-  if (s.exam_date) { const m = s.exam_date.match(/^(\d{4})/); if (m) examYear.value = parseInt(m[1], 10); }
+  if (s.exam_date) {
+    const m = s.exam_date.match(/^(\d{4})/);
+    if (m) examYear.value = parseInt(m[1], 10);
+  }
   if (s.target_school) targetSchool.value = s.target_school;
   if (s.target_major) targetMajor.value = s.target_major;
   const ss = s.study_schedule;
@@ -748,23 +879,37 @@ function initFormFromSettings() {
     const normalize = (raw: string): string => {
       const strip = raw.trim();
       const map: Record<string, string> = {
-        "数学一": "数一", "数学二": "数二", "数学三": "数三",
-        "英语一": "英一", "英语二": "英二",
+        数学一: "数一",
+        数学二: "数二",
+        数学三: "数三",
+        英语一: "英一",
+        英语二: "英二",
       };
       return map[strip] ?? strip;
     };
     const parts = s.exam_type.split(" / ");
     for (const raw of parts) {
       const p = normalize(raw);
-      if (p === "数一" || p === "数二" || p === "数三") mathVersion.value = p as "数一" | "数二" | "数三";
+      if (p === "数一" || p === "数二" || p === "数三")
+        mathVersion.value = p as "数一" | "数二" | "数三";
       else if (p === "英一" || p === "英二") englishVersion.value = p as "英一" | "英二";
       else if (p === "政治") hasPolitics.value = true;
-      else if (professionalOptions.includes(p)) { hasProfessional.value = true; professionalName.value = p; }
+      else if (professionalOptions.includes(p)) {
+        hasProfessional.value = true;
+        professionalName.value = p;
+      }
       // 专业课泛称（未指定统考科目）：视为「其他/自命题」，但不回填自定义名，
       // 否则重开引导会出现「其他/自命题 · 专业课」这种无意义显示
-      else if (GENERIC_PROFESSIONAL_NAMES.has(p)) { hasProfessional.value = true; professionalName.value = PROFESSIONAL_OTHER; }
+      else if (GENERIC_PROFESSIONAL_NAMES.has(p)) {
+        hasProfessional.value = true;
+        professionalName.value = PROFESSIONAL_OTHER;
+      }
       // 历史自由文本（如"408计算机综合"）精确匹配失败 → 归入「其他/自命题」并回填自定义名
-      else if (p) { hasProfessional.value = true; professionalName.value = PROFESSIONAL_OTHER; professionalCustomName.value = p; }
+      else if (p) {
+        hasProfessional.value = true;
+        professionalName.value = PROFESSIONAL_OTHER;
+        professionalCustomName.value = p;
+      }
     }
   }
   // 读取每日任务数、学科占比与其他安排配置
@@ -773,7 +918,10 @@ function initFormFromSettings() {
     if (ssSchedule.subject_time_allocation) {
       subjectTimeAllocation.value = { ...ssSchedule.subject_time_allocation };
     }
-    if (typeof ssSchedule.standard_granularity === "number" && ssSchedule.standard_granularity > 0) {
+    if (
+      typeof ssSchedule.standard_granularity === "number" &&
+      ssSchedule.standard_granularity > 0
+    ) {
       standardGranularity.value = String(ssSchedule.standard_granularity);
     }
     if (typeof ssSchedule.enable_review_tasks === "boolean") {
@@ -784,7 +932,7 @@ function initFormFromSettings() {
     }
   }
   if (s.ai_providers.length > 0) {
-    const def = s.ai_providers.find(p => p.is_default) ?? s.ai_providers[0];
+    const def = s.ai_providers.find((p) => p.is_default) ?? s.ai_providers[0];
     providerForm.value = { ...def };
   }
   // 滴答同步回读（中断引导后恢复选择）
@@ -792,7 +940,7 @@ function initFormFromSettings() {
 }
 
 function toggleRestDay(day: string) {
-  if (restDays.value.includes(day)) restDays.value = restDays.value.filter(d => d !== day);
+  if (restDays.value.includes(day)) restDays.value = restDays.value.filter((d) => d !== day);
   else restDays.value = [...restDays.value, day];
 }
 
@@ -864,7 +1012,10 @@ onUnmounted(() => {
 
       <!-- Step content -->
       <Card padding="lg" class="step-card">
-        <transition :name="direction === 'forward' ? 'step-forward' : 'step-backward'" mode="out-in">
+        <transition
+          :name="direction === 'forward' ? 'step-forward' : 'step-backward'"
+          mode="out-in"
+        >
           <div :key="step.key" class="step-content">
             <!-- Welcome -->
             <template v-if="step.key === 'welcome'">
@@ -889,7 +1040,10 @@ onUnmounted(() => {
                     完整配置
                   </Button>
                 </div>
-                <p class="hero-hint">快速配置将跳过称呼、考研年份与滴答清单同步（考试日期默认 {{ quickExamDate }}），AI 助手仍需配置。</p>
+                <p class="hero-hint">
+                  快速配置将跳过称呼、考研年份与滴答清单同步（考试日期默认 {{ quickExamDate }}），AI
+                  助手仍需配置。
+                </p>
               </div>
             </template>
 
@@ -917,7 +1071,10 @@ onUnmounted(() => {
                 </div>
                 <p v-if="quickMode" class="quick-skip-note">
                   <Info :size="13" />
-                  <span>快速配置已跳过：称呼问候、考研年份（默认 {{ examYear }}-12-20）、滴答清单同步。以上内容稍后可在「设置」中更改。</span>
+                  <span
+                    >快速配置已跳过：称呼问候、考研年份（默认
+                    {{ examYear }}-12-20）、滴答清单同步。以上内容稍后可在「设置」中更改。</span
+                  >
                 </p>
               </div>
             </template>
@@ -956,30 +1113,87 @@ onUnmounted(() => {
                 <div class="subject-block">
                   <label class="field-label">数学 <span class="subject-required">必考</span></label>
                   <div class="option-grid cols-3">
-                    <button type="button" class="option-chip" :aria-pressed="mathVersion === '数一'" :class="{ active: mathVersion === '数一' }" @click="mathVersion = '数一'">数一</button>
-                    <button type="button" class="option-chip" :aria-pressed="mathVersion === '数二'" :class="{ active: mathVersion === '数二' }" @click="mathVersion = '数二'">数二</button>
-                    <button type="button" class="option-chip" :aria-pressed="mathVersion === '数三'" :class="{ active: mathVersion === '数三' }" @click="mathVersion = '数三'">数三</button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="mathVersion === '数一'"
+                      :class="{ active: mathVersion === '数一' }"
+                      @click="mathVersion = '数一'"
+                    >
+                      数一
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="mathVersion === '数二'"
+                      :class="{ active: mathVersion === '数二' }"
+                      @click="mathVersion = '数二'"
+                    >
+                      数二
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="mathVersion === '数三'"
+                      :class="{ active: mathVersion === '数三' }"
+                      @click="mathVersion = '数三'"
+                    >
+                      数三
+                    </button>
                   </div>
                 </div>
                 <!-- 英语（必考） -->
                 <div class="subject-block">
                   <label class="field-label">英语 <span class="subject-required">必考</span></label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="englishVersion === '英一'" :class="{ active: englishVersion === '英一' }" @click="englishVersion = '英一'">英一</button>
-                    <button type="button" class="option-chip" :aria-pressed="englishVersion === '英二'" :class="{ active: englishVersion === '英二' }" @click="englishVersion = '英二'">英二</button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="englishVersion === '英一'"
+                      :class="{ active: englishVersion === '英一' }"
+                      @click="englishVersion = '英一'"
+                    >
+                      英一
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="englishVersion === '英二'"
+                      :class="{ active: englishVersion === '英二' }"
+                      @click="englishVersion = '英二'"
+                    >
+                      英二
+                    </button>
                   </div>
                 </div>
                 <!-- 政治（必考，无版本配置） -->
                 <div class="subject-block">
                   <label class="field-label">政治 <span class="subject-required">必考</span></label>
-                  <button type="button" class="option-chip active" disabled title="考研必考科目，无需配置">必考</button>
-                  <p class="field-hint" style="margin: 0">政治为必考科目，无需选择版本，将自动纳入学习计划与进度管理。</p>
+                  <button
+                    type="button"
+                    class="option-chip active"
+                    disabled
+                    title="考研必考科目，无需配置"
+                  >
+                    必考
+                  </button>
+                  <p class="field-hint" style="margin: 0">
+                    政治为必考科目，无需选择版本，将自动纳入学习计划与进度管理。
+                  </p>
                 </div>
                 <!-- 专业课（必考） -->
                 <div class="subject-block">
-                  <label class="field-label">专业课 <span class="subject-required">必考</span></label>
-                  <Select v-model="professionalName" :max-width="'100%'" placeholder="选择统考科目或自命题">
-                    <option v-for="opt in professionalOptions" :key="opt" :value="opt">{{ opt }}</option>
+                  <label class="field-label"
+                    >专业课 <span class="subject-required">必考</span></label
+                  >
+                  <Select
+                    v-model="professionalName"
+                    :max-width="'100%'"
+                    placeholder="选择统考科目或自命题"
+                  >
+                    <option v-for="opt in professionalOptions" :key="opt" :value="opt">
+                      {{ opt }}
+                    </option>
                     <option :value="PROFESSIONAL_OTHER">其他/自命题</option>
                   </Select>
                   <input
@@ -1010,41 +1224,75 @@ onUnmounted(() => {
                   请先在上一页选择至少一个考试科目。
                 </div>
                 <div v-for="subj in activeSubjects" :key="subj.key" class="subject-progress-block">
-                  <h3 class="subj-progress-title">{{ subj.label }}<span v-if="subj.version"> · {{ subj.version }}</span></h3>
+                  <h3 class="subj-progress-title">
+                    {{ subj.label }}<span v-if="subj.version"> · {{ subj.version }}</span>
+                  </h3>
                   <div class="field">
                     <label class="field-label">当前阶段</label>
                     <div class="option-grid cols-4">
-                      <button v-for="ph in phaseOptions" :key="ph" class="option-chip"
+                      <button
+                        v-for="ph in phaseOptions"
+                        :key="ph"
+                        class="option-chip"
                         type="button"
                         :aria-pressed="(progressPhase[subj.key] || 'foundation') === ph"
                         :class="{ active: (progressPhase[subj.key] || 'foundation') === ph }"
-                        @click="progressPhase[subj.key] = ph">
+                        @click="progressPhase[subj.key] = ph"
+                      >
                         {{ phaseLabels[ph] }}
                       </button>
                     </div>
                   </div>
-                  <p v-if="progressTablesLoading[subj.key]" class="field-hint">正在加载内置考纲进度表…</p>
+                  <p v-if="progressTablesLoading[subj.key]" class="field-hint">
+                    正在加载内置考纲进度表…
+                  </p>
                   <template v-else-if="tableOptions(subj.key).length > 0">
                     <!-- 多本书（专业课）：书本 + 知识点 横向二级菜单 -->
                     <div v-if="tableOptions(subj.key).length > 1" class="field-row">
                       <div class="field">
                         <label class="field-label">书本</label>
-                        <Select v-model="progressBook[subj.key]" :max-width="'100%'" @change="progressReached[subj.key] = ''">
-                          <option v-for="(t, i) in tableOptions(subj.key)" :key="i" :value="String(i)">{{ t.name }}</option>
+                        <Select
+                          v-model="progressBook[subj.key]"
+                          :max-width="'100%'"
+                          @change="progressReached[subj.key] = ''"
+                        >
+                          <option
+                            v-for="(t, i) in tableOptions(subj.key)"
+                            :key="i"
+                            :value="String(i)"
+                          >
+                            {{ t.name }}
+                          </option>
                         </Select>
                       </div>
                       <div class="field">
                         <label class="field-label">当前学到的知识点</label>
-                        <Select v-model="progressReached[subj.key]" :max-width="'100%'" placeholder="尚未开始（不标记已学）">
-                          <option v-for="ch in chapterOptions(subj.key)" :key="ch.id" :value="ch.id">{{ ch.title }}</option>
+                        <Select
+                          v-model="progressReached[subj.key]"
+                          :max-width="'100%'"
+                          placeholder="尚未开始（不标记已学）"
+                        >
+                          <option
+                            v-for="ch in chapterOptions(subj.key)"
+                            :key="ch.id"
+                            :value="ch.id"
+                          >
+                            {{ ch.title }}
+                          </option>
                         </Select>
                       </div>
                     </div>
                     <!-- 单本书（数学/英语/政治）：仅知识点下拉 -->
                     <div v-else class="field">
                       <label class="field-label">当前学到的知识点</label>
-                      <Select v-model="progressReached[subj.key]" :max-width="'100%'" placeholder="尚未开始（不标记已学）">
-                        <option v-for="ch in chapterOptions(subj.key)" :key="ch.id" :value="ch.id">{{ ch.title }}</option>
+                      <Select
+                        v-model="progressReached[subj.key]"
+                        :max-width="'100%'"
+                        placeholder="尚未开始（不标记已学）"
+                      >
+                        <option v-for="ch in chapterOptions(subj.key)" :key="ch.id" :value="ch.id">
+                          {{ ch.title }}
+                        </option>
                       </Select>
                     </div>
                     <p class="field-hint">选择目前学习到的知识点，以往的内容全部会被标记为已学。</p>
@@ -1073,10 +1321,28 @@ onUnmounted(() => {
                 <div class="field">
                   <label class="field-label">是否启用同步</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="didaSyncEnabled" :class="{ active: didaSyncEnabled }" @click="didaSyncEnabled = true">启用（推荐）</button>
-                    <button type="button" class="option-chip" :aria-pressed="!didaSyncEnabled" :class="{ active: !didaSyncEnabled }" @click="didaSyncEnabled = false">暂不启用</button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="didaSyncEnabled"
+                      :class="{ active: didaSyncEnabled }"
+                      @click="didaSyncEnabled = true"
+                    >
+                      启用（推荐）
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="!didaSyncEnabled"
+                      :class="{ active: !didaSyncEnabled }"
+                      @click="didaSyncEnabled = false"
+                    >
+                      暂不启用
+                    </button>
                   </div>
-                  <p class="field-hint">生成/重排日计划时自动同步到滴答；只读写本系统创建的任务，其余不受影响。</p>
+                  <p class="field-hint">
+                    生成/重排日计划时自动同步到滴答；只读写本系统创建的任务，其余不受影响。
+                  </p>
                 </div>
 
                 <div class="field">
@@ -1093,11 +1359,20 @@ onUnmounted(() => {
                       autocomplete="off"
                       :disabled="hasDidaToken && !didaToken"
                     />
-                    <button class="input-suffix-btn" type="button" aria-label="保存滴答 Token" :disabled="didaTokenSaving || !didaToken.trim()" @click="saveDidaToken">
+                    <button
+                      class="input-suffix-btn"
+                      type="button"
+                      aria-label="保存滴答 Token"
+                      :disabled="didaTokenSaving || !didaToken.trim()"
+                      @click="saveDidaToken"
+                    >
                       <Check :size="15" />
                     </button>
                   </div>
-                  <p class="field-hint">当前状态：{{ hasDidaToken ? "已配置（保存于系统凭据库）" : "未配置" }}。Token 保存后本地不再保留明文，可随时在「设置 → 滴答清单同步」中更换。</p>
+                  <p class="field-hint">
+                    当前状态：{{ hasDidaToken ? "已配置（保存于系统凭据库）" : "未配置" }}。Token
+                    保存后本地不再保留明文，可随时在「设置 → 滴答清单同步」中更换。
+                  </p>
                 </div>
               </div>
             </template>
@@ -1167,7 +1442,9 @@ onUnmounted(() => {
                     step="0.5"
                     class="field-input"
                   />
-                  <p class="field-hint">默认 5 小时，可根据实际情况调整，例如在职备考可设为 3 小时。</p>
+                  <p class="field-hint">
+                    默认 5 小时，可根据实际情况调整，例如在职备考可设为 3 小时。
+                  </p>
                 </div>
                 <div class="field">
                   <label class="field-label">每周休息日（可多选）</label>
@@ -1199,7 +1476,9 @@ onUnmounted(() => {
                 <div class="field">
                   <label class="field-label">
                     每天任务数（自动计算）
-                    <span class="field-hint">（由「每日目标学时 ÷ 标准任务粒度」得出，调整学时时自动变化）</span>
+                    <span class="field-hint"
+                      >（由「每日目标学时 ÷ 标准任务粒度」得出，调整学时时自动变化）</span
+                    >
                   </label>
                   <input
                     :value="derivedTaskCount"
@@ -1231,20 +1510,22 @@ onUnmounted(() => {
                 <div class="field">
                   <label class="field-label">
                     学科时间分配
-                    <span class="field-hint">（按占比分配每日约 {{ dailyTargetHours || 0 }}h 学习时长；活跃科目合计恒为 100%）</span>
+                    <span class="field-hint"
+                      >（按占比分配每日约 {{ dailyTargetHours || 0 }}h 学习时长；活跃科目合计恒为
+                      100%）</span
+                    >
                   </label>
                   <div v-if="activeAllocationKeys.length === 0" class="field-hint">
                     请先在「考试科目」步骤选择科目后再配置占比。
                   </div>
                   <template v-else>
-                    <div
-                      v-for="key in activeAllocationKeys"
-                      :key="key"
-                      class="alloc-row"
-                    >
+                    <div v-for="key in activeAllocationKeys" :key="key" class="alloc-row">
                       <label class="alloc-label">
                         {{ ALLOC_SUBJECT_LABELS[key]() }}
-                        <span class="field-hint">每日约 {{ allocDailyHours(key) }}h · 每周约 {{ allocWeeklyHours(key) }}h</span>
+                        <span class="field-hint"
+                          >每日约 {{ allocDailyHours(key) }}h · 每周约
+                          {{ allocWeeklyHours(key) }}h</span
+                        >
                       </label>
                       <div class="alloc-slider-row">
                         <input
@@ -1257,7 +1538,9 @@ onUnmounted(() => {
                           :style="{ accentColor: ALLOC_SUBJECT_COLORS[key] }"
                           @input="onAllocationSlide(key, ($event.target as HTMLInputElement).value)"
                         />
-                        <span class="alloc-percent">{{ Math.round(effectiveAllocation[key] ?? 0) }}%</span>
+                        <span class="alloc-percent"
+                          >{{ Math.round(effectiveAllocation[key] ?? 0) }}%</span
+                        >
                       </div>
                     </div>
                     <!-- 占比可视化条 -->
@@ -1273,40 +1556,109 @@ onUnmounted(() => {
                       />
                     </div>
                     <div class="alloc-legend">
-                      <span v-for="key in activeAllocationKeys" :key="key" class="alloc-legend-item">
-                        <i class="alloc-legend-dot" :style="{ background: ALLOC_SUBJECT_COLORS[key] }" />
-                        {{ ALLOC_SUBJECT_LABELS[key]() }} {{ Math.round(effectiveAllocation[key] ?? 0) }}%
+                      <span
+                        v-for="key in activeAllocationKeys"
+                        :key="key"
+                        class="alloc-legend-item"
+                      >
+                        <i
+                          class="alloc-legend-dot"
+                          :style="{ background: ALLOC_SUBJECT_COLORS[key] }"
+                        />
+                        {{ ALLOC_SUBJECT_LABELS[key]() }}
+                        {{ Math.round(effectiveAllocation[key] ?? 0) }}%
                       </span>
                     </div>
-                    <button type="button" class="option-chip" style="align-self: flex-start" @click="resetAllocation">
+                    <button
+                      type="button"
+                      class="option-chip"
+                      style="align-self: flex-start"
+                      @click="resetAllocation"
+                    >
                       恢复默认（按各科学时权重推导）
                     </button>
-                    <p class="field-hint">调整任一科目时其余科目等比缩放；占比为 0 的科目不安排任务。</p>
+                    <p class="field-hint">
+                      调整任一科目时其余科目等比缩放；占比为 0 的科目不安排任务。
+                    </p>
                   </template>
                 </div>
                 <div class="field">
                   <label class="field-label">是否安排总结/复习任务</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="enableReviewTasks" :class="{ active: enableReviewTasks }" @click="enableReviewTasks = true">安排（推荐）</button>
-                    <button type="button" class="option-chip" :aria-pressed="!enableReviewTasks" :class="{ active: !enableReviewTasks }" @click="enableReviewTasks = false">只推进新知识点</button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="enableReviewTasks"
+                      :class="{ active: enableReviewTasks }"
+                      @click="enableReviewTasks = true"
+                    >
+                      安排（推荐）
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="!enableReviewTasks"
+                      :class="{ active: !enableReviewTasks }"
+                      @click="enableReviewTasks = false"
+                    >
+                      只推进新知识点
+                    </button>
                   </div>
-                  <p class="field-hint">关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。</p>
+                  <p class="field-hint">
+                    关闭后 AI 不会安排"回顾"/"总结"/"复习"类任务，适合希望持续向前推进的用户。
+                  </p>
                 </div>
                 <div class="field">
                   <label class="field-label">记录学习时长</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="enableTimeTracking" :class="{ active: enableTimeTracking }" @click="enableTimeTracking = true">开启</button>
-                    <button type="button" class="option-chip" :aria-pressed="!enableTimeTracking" :class="{ active: !enableTimeTracking }" @click="enableTimeTracking = false">不开启（默认）</button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="enableTimeTracking"
+                      :class="{ active: enableTimeTracking }"
+                      @click="enableTimeTracking = true"
+                    >
+                      开启
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="!enableTimeTracking"
+                      :class="{ active: !enableTimeTracking }"
+                      @click="enableTimeTracking = false"
+                    >
+                      不开启（默认）
+                    </button>
                   </div>
-                  <p class="field-hint">开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。</p>
+                  <p class="field-hint">
+                    开启后任务卡显示开始/暂停按钮，记录每项任务的专注时长；关闭时只关注完成内容。
+                  </p>
                 </div>
                 <div class="field">
                   <label class="field-label">开机启动</label>
                   <div class="option-grid cols-2">
-                    <button type="button" class="option-chip" :aria-pressed="autostartEnabled" :class="{ active: autostartEnabled }" @click="setAutostart(true)">开机自启</button>
-                    <button type="button" class="option-chip" :aria-pressed="!autostartEnabled" :class="{ active: !autostartEnabled }" @click="setAutostart(false)">不自启</button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="autostartEnabled"
+                      :class="{ active: autostartEnabled }"
+                      @click="setAutostart(true)"
+                    >
+                      开机自启
+                    </button>
+                    <button
+                      type="button"
+                      class="option-chip"
+                      :aria-pressed="!autostartEnabled"
+                      :class="{ active: !autostartEnabled }"
+                      @click="setAutostart(false)"
+                    >
+                      不自启
+                    </button>
                   </div>
-                  <p class="field-hint">开启后开机时自动启动 StudyAgent，可在「设置 → 通用」中修改。</p>
+                  <p class="field-hint">
+                    开启后开机时自动启动 StudyAgent，可在「设置 → 通用」中修改。
+                  </p>
                 </div>
               </div>
             </template>
@@ -1337,9 +1689,15 @@ onUnmounted(() => {
                   </ul>
                   <div class="ai-notice-warn">
                     <AlertTriangle :size="13" />
-                    <span>未配置 AI Provider 时，以上功能将无法使用；其他如查看计划、勾选任务、统计等本地功能不受影响。</span>
+                    <span
+                      >未配置 AI Provider
+                      时，以上功能将无法使用；其他如查看计划、勾选任务、统计等本地功能不受影响。</span
+                    >
                   </div>
-                  <p class="ai-notice-foot">可在此填写任一兼容 OpenAI 接口的服务（OpenAI、火山引擎、硅基流动、Ollama 等）；稍后可在「设置 → AI Provider」中添加、修改或切换。</p>
+                  <p class="ai-notice-foot">
+                    可在此填写任一兼容 OpenAI 接口的服务（OpenAI、火山引擎、硅基流动、Ollama
+                    等）；稍后可在「设置 → AI Provider」中添加、修改或切换。
+                  </p>
                 </div>
 
                 <div class="field">
@@ -1378,7 +1736,12 @@ onUnmounted(() => {
                       class="field-input"
                       placeholder="sk-..."
                     />
-                    <button class="input-suffix-btn" type="button" :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'" @click="showApiKey = !showApiKey">
+                    <button
+                      class="input-suffix-btn"
+                      type="button"
+                      :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+                      @click="showApiKey = !showApiKey"
+                    >
                       <component :is="showApiKey ? EyeOff : Eye" :size="15" />
                     </button>
                   </div>
@@ -1394,32 +1757,19 @@ onUnmounted(() => {
                 </div>
               </div>
             </template>
-
           </div>
         </transition>
       </Card>
 
       <!-- Footer actions -->
       <div class="step-actions">
-        <Button
-          v-if="!isFirstStep && !isLastStep"
-          variant="ghost"
-          size="md"
-          @click="prev"
-        >
+        <Button v-if="!isFirstStep && !isLastStep" variant="ghost" size="md" @click="prev">
           <ArrowLeft :size="16" />
           上一步
         </Button>
 
         <div class="actions-right">
-          <Button
-            v-if="step.skippable"
-            variant="ghost"
-            size="md"
-            @click="skip"
-          >
-            跳过
-          </Button>
+          <Button v-if="step.skippable" variant="ghost" size="md" @click="skip"> 跳过 </Button>
 
           <Button
             v-if="isLastStep"
@@ -2104,7 +2454,9 @@ onUnmounted(() => {
 .step-forward-leave-active,
 .step-backward-enter-active,
 .step-backward-leave-active {
-  transition: opacity var(--transition-normal), transform var(--transition-normal);
+  transition:
+    opacity var(--transition-normal),
+    transform var(--transition-normal);
 }
 
 .step-forward-enter-from {

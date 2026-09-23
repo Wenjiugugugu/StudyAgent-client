@@ -56,7 +56,7 @@ const effective = computed<SubjectTimeAllocation>(() => {
 });
 
 const activeKeys = computed<SubjectKey[]>(() =>
-  ALLOCATION_KEYS.filter((k) => props.subjectActive[k]),
+  ALLOCATION_KEYS.filter((k) => props.subjectActive[k])
 );
 
 const subjectLabel = (key: SubjectKey): string => {
@@ -82,7 +82,7 @@ const dailyHours = (key: SubjectKey): string => {
 const weeklyHours = (key: SubjectKey): string => {
   const studyDays = Math.max(0, 7 - (props.form.rest_days?.length ?? 0));
   const share = effective.value[key] ?? 0;
-  return (((props.form.daily_target_hours || 0) * share) / 100 * studyDays).toFixed(1);
+  return ((((props.form.daily_target_hours || 0) * share) / 100) * studyDays).toFixed(1);
 };
 
 /** 滑块联动：调大该科时其余科目等比缩小，总和恒 100 */
@@ -91,7 +91,7 @@ function onSlide(key: SubjectKey, rawValue: string) {
     effective.value,
     key,
     Number(rawValue),
-    props.subjectActive,
+    props.subjectActive
   );
 }
 
@@ -118,7 +118,8 @@ const SUBJECT_COLORS: Record<SubjectKey, string> = {
       </div>
     </div>
     <p class="field-hint alloc-total-hint">
-      按占比分配每日约 {{ form.daily_target_hours || 0 }}h 学习时长；调整「每日目标学时」后各科每日学时自动更新；活跃科目合计恒为 100%。
+      按占比分配每日约 {{ form.daily_target_hours || 0 }}h
+      学习时长；调整「每日目标学时」后各科每日学时自动更新；活跃科目合计恒为 100%。
     </p>
 
     <div v-if="activeKeys.length === 0" class="form-field form-field-full">
@@ -130,7 +131,9 @@ const SUBJECT_COLORS: Record<SubjectKey, string> = {
         <div v-for="key in activeKeys" :key="key" class="form-field form-field-full alloc-row">
           <label class="form-label">
             {{ subjectLabel(key) }}
-            <span class="field-hint">每日约 {{ dailyHours(key) }}h · 每周约 {{ weeklyHours(key) }}h</span>
+            <span class="field-hint"
+              >每日约 {{ dailyHours(key) }}h · 每周约 {{ weeklyHours(key) }}h</span
+            >
           </label>
           <div class="alloc-slider-row">
             <input
@@ -173,7 +176,9 @@ const SUBJECT_COLORS: Record<SubjectKey, string> = {
             恢复默认（按各科周学时推导）
           </button>
         </div>
-        <p class="field-hint">占比为 0 的科目将不安排任务；未到开始日期的科目即使占比大于 0 也不会安排。</p>
+        <p class="field-hint">
+          占比为 0 的科目将不安排任务；未到开始日期的科目即使占比大于 0 也不会安排。
+        </p>
         <p v-if="allocationDirty" class="field-hint alloc-pending-hint">
           <Info :size="13" />
           调整保存后，最快将于下一次复盘之后应用到本周剩余计划（占比未调整时，将根据复盘实际情况决定是否重排）。

@@ -128,6 +128,7 @@ pub async fn read_background_as_data_url(
 #[tauri::command]
 pub async fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<AppSettings, String> {
     let data_dir = get_data_dir(state.inner())?;
+    crate::validate_settings_file(&data_dir)?;
     let mut settings = load_settings(&data_dir);
     // 前端只需要知道密钥是否已配置，不应接收可直接复用的明文。
     for provider in settings.ai_providers.iter_mut() {
@@ -210,8 +211,9 @@ pub async fn change_data_directory(
     // H17：同步更新 AI 用量日志目录，使日志写入新数据目录
     crate::data::ai_usage::set_log_dir(new_dir.clone());
 
+    let persisted_dirs = crate::data::PERSISTED_DATA_SUBDIRS.join("/、");
     let msg = format!(
-        "数据目录已切换至 {:?}。旧目录 {:?} 中的历史数据未自动迁移，如需保留历史计划/复盘记录，请手动复制 state/、plan/、records/、assets/ 等子目录到新目录。重启应用后配置仍然生效。",
+        "数据目录已切换至 {:?}。旧目录 {:?} 中的历史数据未自动迁移，如需保留，请先使用“导出备份/导入备份”，或复制 {persisted_dirs}/ 等目录到新目录。重启应用后配置仍然生效。",
         new_dir, old_data_dir
     );
     log::info!("{}", msg);

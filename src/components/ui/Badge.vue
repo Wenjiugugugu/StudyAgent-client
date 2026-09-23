@@ -1,11 +1,23 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  variant?: "default" | "success" | "warning" | "danger" | "info" | "math" | "english" | "politics" | "professional";
-  size?: "sm" | "md";
-}>(), {
-  variant: "default",
-  size: "sm",
-});
+withDefaults(
+  defineProps<{
+    variant?:
+      | "default"
+      | "success"
+      | "warning"
+      | "danger"
+      | "info"
+      | "math"
+      | "english"
+      | "politics"
+      | "professional";
+    size?: "sm" | "md";
+  }>(),
+  {
+    variant: "default",
+    size: "sm",
+  }
+);
 </script>
 
 <template>
@@ -26,8 +38,14 @@ withDefaults(defineProps<{
   letter-spacing: -0.01em;
 }
 
-.sm { font-size: var(--text-xs); padding: 2px 8px; }
-.md { font-size: var(--text-sm); padding: 4px 12px; }
+.sm {
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+}
+.md {
+  font-size: var(--text-sm);
+  padding: 4px 12px;
+}
 
 .default {
   background: var(--bg-tertiary);

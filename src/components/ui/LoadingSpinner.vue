@@ -1,11 +1,14 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
-  size?: number;
-  label?: string;
-}>(), {
-  size: 24,
-  label: "",
-});
+withDefaults(
+  defineProps<{
+    size?: number;
+    label?: string;
+  }>(),
+  {
+    size: 24,
+    label: "",
+  }
+);
 </script>
 
 <template>
@@ -39,6 +42,8 @@ withDefaults(defineProps<{
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

@@ -54,11 +54,7 @@ defineExpose({ refresh: runReviewTest });
         <span>Review 解析测试</span>
       </div>
       <div class="section-actions">
-        <input
-          v-model="reviewTestDate"
-          type="date"
-          class="form-input date-input"
-        />
+        <input v-model="reviewTestDate" type="date" class="form-input date-input" />
         <Badge :variant="statusBadge(reviewTest.status)" size="sm">
           {{ statusLabel(reviewTest.status) }}
         </Badge>
@@ -76,7 +72,11 @@ defineExpose({ refresh: runReviewTest });
         {{ issue }}
       </Badge>
     </div>
-    <LoadingSpinner v-if="reviewTest.status === 'loading'" :size="20" label="调用 api.getReview()..." />
+    <LoadingSpinner
+      v-if="reviewTest.status === 'loading'"
+      :size="20"
+      label="调用 api.getReview()..."
+    />
     <div v-if="reviewTest.data" class="plan-summary">
       <div class="info-row">
         <span class="info-key">日期</span>
@@ -84,7 +84,15 @@ defineExpose({ refresh: runReviewTest });
       </div>
       <div class="info-row">
         <span class="info-key">完成率</span>
-        <span class="info-value">{{ reviewTest.data.data.completion.completion_rate }}% (A: {{ reviewTest.data.data.completion.priority_a_done }}/{{ reviewTest.data.data.completion.priority_a_total }} · B: {{ reviewTest.data.data.completion.priority_b_done }}/{{ reviewTest.data.data.completion.priority_b_total }})</span>
+        <span class="info-value"
+          >{{ reviewTest.data.data.completion.completion_rate }}% (A:
+          {{ reviewTest.data.data.completion.priority_a_done }}/{{
+            reviewTest.data.data.completion.priority_a_total
+          }}
+          · B: {{ reviewTest.data.data.completion.priority_b_done }}/{{
+            reviewTest.data.data.completion.priority_b_total
+          }})</span
+        >
       </div>
       <div class="info-row">
         <span class="info-key">总时长</span>
@@ -96,6 +104,8 @@ defineExpose({ refresh: runReviewTest });
       </div>
     </div>
     <pre v-if="reviewTest.data" class="code-block">{{ formatJson(reviewTest.data) }}</pre>
-    <div v-if="reviewTest.status === 'idle'" class="empty-inline">点击「测试」调用 api.getReview()。</div>
+    <div v-if="reviewTest.status === 'idle'" class="empty-inline">
+      点击「测试」调用 api.getReview()。
+    </div>
   </Card>
 </template>

@@ -52,8 +52,14 @@ defineExpose({ refresh: runStateTest });
     </div>
 
     <div v-if="stateTest.error" class="error-text">{{ stateTest.error }}</div>
-    <LoadingSpinner v-if="stateTest.status === 'loading'" :size="20" label="调用 api.getState()..." />
+    <LoadingSpinner
+      v-if="stateTest.status === 'loading'"
+      :size="20"
+      label="调用 api.getState()..."
+    />
     <pre v-if="stateTest.data" class="code-block">{{ formatJson(stateTest.data) }}</pre>
-    <div v-if="stateTest.status === 'idle'" class="empty-inline">点击「测试」调用 api.getState()。</div>
+    <div v-if="stateTest.status === 'idle'" class="empty-inline">
+      点击「测试」调用 api.getState()。
+    </div>
   </Card>
 </template>

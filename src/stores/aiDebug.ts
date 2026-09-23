@@ -109,7 +109,7 @@ function loadPersistedRecords(): AiCallRecord[] {
     // 仅恢复已完成的记录（pending 状态在重启后无意义）
     const restored = parsed.filter(
       (r: unknown): r is AiCallRecord =>
-        typeof r === "object" && r !== null && "id" in r && "status" in r,
+        typeof r === "object" && r !== null && "id" in r && "status" in r
     );
     // 更新 nextId 以避免 ID 冲突
     const maxId = restored.reduce((max, r) => Math.max(max, r.id), 0);
@@ -123,9 +123,7 @@ function loadPersistedRecords(): AiCallRecord[] {
 /** 将记录持久化到 localStorage（仅保存已完成的，且限制数量） */
 function persistRecords(records: AiCallRecord[]) {
   try {
-    const toSave = records
-      .filter((r) => r.status !== "pending")
-      .slice(0, MAX_PERSISTED_RECORDS);
+    const toSave = records.filter((r) => r.status !== "pending").slice(0, MAX_PERSISTED_RECORDS);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
   } catch {
     // localStorage 满或不可用时静默忽略
@@ -146,7 +144,7 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
     status: "success" | "error",
     response: unknown,
     error: string | null,
-    reasoning?: string | null,
+    reasoning?: string | null
   ) => void;
 
   /** 开始一次 AI 调用记录，返回用于结束记录的回调 */
@@ -172,7 +170,12 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
     console.info(`[AI 调用] 开始 ${command} — ${label}`, requestArgs);
 
     const startedAt = performance.now();
-    return (status: "success" | "error", response: unknown, error: string | null, reasoning?: string | null) => {
+    return (
+      status: "success" | "error",
+      response: unknown,
+      error: string | null,
+      reasoning?: string | null
+    ) => {
       const duration = Math.round(performance.now() - startedAt);
       record.durationMs = duration;
       record.status = status;
@@ -200,11 +203,7 @@ export const useAiDebugStore = defineStore("aiDebug", () => {
   }
 
   // 监听 records 变化，自动持久化
-  watch(
-    records,
-    (newRecords) => persistRecords(newRecords),
-    { deep: true },
-  );
+  watch(records, (newRecords) => persistRecords(newRecords), { deep: true });
 
   return {
     records,

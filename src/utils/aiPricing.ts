@@ -436,7 +436,7 @@ export interface CostEstimate {
 export function estimateCost(
   model: string,
   promptTokens: number,
-  completionTokens: number,
+  completionTokens: number
 ): CostEstimate {
   if (!model) {
     return {

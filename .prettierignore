@@ -1,0 +1,7 @@
+# Prettier 忽略项：构建产物、依赖、Rust 侧与锁文件
+dist/
+dist-old-*/
+node_modules/
+src-tauri/
+pnpm-lock.yaml
+*.md

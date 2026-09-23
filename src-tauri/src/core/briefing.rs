@@ -17,11 +17,12 @@ use std::path::Path;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::ai::service::AiService;
+use crate::core::date_utils::{add_days, days_between, now_string};
 use crate::data::briefing::{BriefingData, BriefingFile, BriefingMeta, SubjectEstimation};
 use crate::data::progress_tables::{NodeLevel, NodeStatus, ProgressIndex};
 use crate::data::records::ReviewFile;
 use crate::data::state::StudyState;
-use crate::data::{now_string, DataResult};
+use crate::data::DataResult;
 
 /// Briefing Agent — 每日简报生成器
 pub struct BriefingAgent<'a> {
@@ -198,8 +199,7 @@ impl<'a> BriefingAgent<'a> {
         ));
 
         // 考试倒计时
-        let remaining_days =
-            crate::data::days_between(&state.meta.exam_date, target_date).unwrap_or(0);
+        let remaining_days = days_between(&state.meta.exam_date, target_date).unwrap_or(0);
         prompt.push_str("## 考试信息\n");
         prompt.push_str(&format!(
             "- 考试日期: {}\n- 距离考研还有: {} 天\n- 目标院校: {} {}\n\n",
@@ -296,12 +296,7 @@ impl<'a> BriefingAgent<'a> {
                 prompt.push_str("- 今日暂无计划任务\n");
             } else {
                 for task in &plan.tasks {
-                    let subj_cn = match task.subject {
-                        crate::data::state::SubjectKey::Math => "数学",
-                        crate::data::state::SubjectKey::English => "英语",
-                        crate::data::state::SubjectKey::Politics => "政治",
-                        crate::data::state::SubjectKey::Professional => "专业课",
-                    };
+                    let subj_cn = task.subject.label();
                     let priority_label = match task.priority {
                         crate::data::state::TaskPriority::A => "A",
                         crate::data::state::TaskPriority::B => "B",
@@ -396,25 +391,20 @@ impl<'a> BriefingAgent<'a> {
 
 /// 从进度表索引统计某科进度，返回 `(已完成知识点数, 总知识点数)`。
 ///
-/// 统计该科全部进度表（专业课含总表与各教材表）的 knowledge 节点；
+/// 仅统计该科当前启用进度表的 knowledge 节点；
 /// "已完成" = 状态达「基础」及以上（basic/reinforcing/mastered），
 /// learning/pending 视为剩余。无进度表或无知识点时返回 None。
 fn progress_table_summary(index: &ProgressIndex, subject: &str) -> Option<(usize, usize)> {
-    let set = index.subjects.get(subject)?;
-    if set.tables.is_empty() {
-        return None;
-    }
+    let table = crate::data::progress_tables::active_progress_table(index, subject)?;
     let mut done = 0usize;
     let mut total = 0usize;
-    for table in &set.tables {
-        for node in &table.nodes {
-            if node.level != NodeLevel::Knowledge {
-                continue;
-            }
-            total += 1;
-            if node.status.rank() >= NodeStatus::Basic.rank() {
-                done += 1;
-            }
+    for node in &table.nodes {
+        if node.level != NodeLevel::Knowledge {
+            continue;
+        }
+        total += 1;
+        if node.status.rank() >= NodeStatus::Basic.rank() {
+            done += 1;
         }
     }
     if total == 0 {
@@ -432,13 +422,7 @@ fn progress_table_summary(index: &ProgressIndex, subject: &str) -> Option<(usize
 fn progress_table_remaining_hours(index: &ProgressIndex, subject: &str) -> Option<f64> {
     use crate::data::progress_tables::ProgressNode;
 
-    let set = index.subjects.get(subject)?;
-    let active_id = if set.active_id.is_empty() {
-        set.tables.first()?.id.clone()
-    } else {
-        set.active_id.clone()
-    };
-    let table = set.tables.iter().find(|t| t.id == active_id)?;
+    let table = crate::data::progress_tables::active_progress_table(index, subject)?;
     let remaining: Vec<&ProgressNode> = table
         .nodes
         .iter()
@@ -493,18 +477,7 @@ pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
         if !subj.active {
             continue;
         }
-        let Some(set) = index.subjects.get(key) else {
-            continue;
-        };
-        let active_id = if set.active_id.is_empty() {
-            match set.tables.first() {
-                Some(t) => t.id.clone(),
-                None => continue,
-            }
-        } else {
-            set.active_id.clone()
-        };
-        let Some(table) = set.tables.iter().find(|t| t.id == active_id) else {
+        let Some(table) = crate::data::progress_tables::active_progress_table(&index, key) else {
             continue;
         };
         // 待学知识点（pending/learning 视为剩余）
@@ -623,7 +596,7 @@ fn parse_briefing_json(content: &str) -> DataResult<BriefingData> {
 ///
 /// 返回基于 target_date 前一天的日期字符串
 pub fn yesterday_of(target_date: &str) -> DataResult<String> {
-    crate::data::add_days(target_date, -1)
+    add_days(target_date, -1)
 }
 
 #[cfg(test)]
@@ -705,6 +678,24 @@ mod tests {
                 tables: vec![table],
             },
         );
+        let inactive_table = ProgressTable {
+            id: "t-other".into(),
+            subject: "math".into(),
+            variant: "数一".into(),
+            name: "未启用表".into(),
+            origin: crate::data::progress_tables::TableOrigin::Builtin,
+            created_at: String::new(),
+            updated_at: String::new(),
+            nodes: vec![
+                node("other-1", NodeLevel::Knowledge, NodeStatus::Pending),
+                node("other-2", NodeLevel::Knowledge, NodeStatus::Pending),
+            ],
+        };
+        subjects
+            .get_mut("math")
+            .expect("math set")
+            .tables
+            .push(inactive_table);
         let index = ProgressIndex { subjects };
         // basic + mastered = 2 个已完成；章节节点不计入总数
         let (done, total) = progress_table_summary(&index, "math").expect("应有统计");

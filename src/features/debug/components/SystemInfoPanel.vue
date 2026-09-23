@@ -81,7 +81,9 @@ onUnmounted(() => {
       </div>
       <div class="info-row">
         <span class="info-key">本地时区</span>
-        <span class="info-value text-mono">{{ Intl.DateTimeFormat().resolvedOptions().timeZone }}</span>
+        <span class="info-value text-mono">{{
+          Intl.DateTimeFormat().resolvedOptions().timeZone
+        }}</span>
       </div>
       <div class="info-row">
         <span class="info-key">时区偏移</span>

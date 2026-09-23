@@ -15,12 +15,12 @@
       - 本机 `desktop\src-tauri\target` 会被安全软件随机拦截写入（cargo 报 os error 5），
         直接写它会构建失败并废掉缓存。因此脚本把 cargo 编译目录（CARGO_TARGET_DIR）
         固定到一个持久的缓存目录，绕开被拦截路径。
-      - 默认缓存目录：%LOCALAPPDATA%\StudyAgent\tauri-target（首次使用会全量编译，
-        约 15-22 分钟）；之后再次执行本脚本，cargo 会自动增量，只重编改动部分。
+      - 缓存目录由 -TargetDir、STUDYAGENT_TARGET_DIR 或
+        `%LOCALAPPDATA%\StudyAgent\tauri-target` 决定，不依赖开发者机器专属路径。
       - 只改了前端（Vue）时：先确保 dist 已更新（或保留默认前端构建步骤），
         再跑本脚本，约 1-3 分钟即可出包。
-      - 已存在的缓存目录可直接复用，避免重新全量编译，例如：
-        .\installer\build.ps1 -TargetDir 'D:\c\Users\Administrator\AppData\Local\Temp\tauri-target-070'
+      - 已存在的缓存目录可直接复用，例如：
+        .\installer\build.ps1 -TargetDir 'C:\build-cache\studyagent'
       - 目录可通过环境变量 STUDYAGENT_TARGET_DIR 统一指定（优先级低于 -TargetDir）。
 
 .PARAMETER SkipBuild
@@ -28,8 +28,8 @@
     （适合只重打安装程序）。
 
 .PARAMETER TargetDir
-    cargo 编译缓存目录（CARGO_TARGET_DIR）。默认 %LOCALAPPDATA%\StudyAgent\tauri-target；
-    可用环境变量 STUDYAGENT_TARGET_DIR 覆盖默认值。
+    cargo 编译缓存目录（CARGO_TARGET_DIR）。优先级：-TargetDir >
+    STUDYAGENT_TARGET_DIR > %LOCALAPPDATA%\StudyAgent\tauri-target。
 
 .PARAMETER SkipFrontend
     跳过 tauri 的 beforeBuildCommand（前端 vue-tsc + vite build）。当 dist 已是最新、
@@ -43,7 +43,7 @@
     .\installer\build.ps1 -SkipFrontend
 
     # 复用已有缓存目录（避免全量），其余同默认
-    .\installer\build.ps1 -TargetDir 'D:\c\Users\Administrator\AppData\Local\Temp\tauri-target-070'
+    .\installer\build.ps1 -TargetDir 'C:\build-cache\studyagent'
 
     # 仅用已有 exe 重打安装程序
     .\installer\build.ps1 -SkipBuild

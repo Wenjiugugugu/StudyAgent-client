@@ -10,12 +10,13 @@
 
 use std::path::Path;
 
+use crate::core::date_utils::{days_between, now_string, today_string};
 use crate::data::plan::{
     BasedOn, DailyPlanData, DailyPlanFile, DailyPlanMeta, PlanTask, TaskTemplate, WeekDayPlan,
     WeekPlanFile,
 };
 use crate::data::state::{CurrentTask, StateTask, SubjectKey, TaskStatus};
-use crate::data::{days_between, iso_week_string, now_string, DataResult};
+use crate::data::{iso_week_string, DataResult};
 
 /// 日计划调度器
 pub struct DailyScheduler;
@@ -135,7 +136,7 @@ impl DailyScheduler {
                         .join("、");
                     warnings.push(format!(
                         "{}的「{}」目标计划今日生成失败，未排入该书任务；可尝试重新生成周计划或检查目标设置。",
-                        subject_display_name(&allocation.subject),
+                        allocation.subject.label(),
                         books
                     ));
                 }
@@ -173,7 +174,7 @@ impl DailyScheduler {
                     log::warn!(
                         "排程校验: 跳过已完成章节任务「{}」（{} 已完成「{}」）",
                         template.title,
-                        subject_display_name(&allocation.subject),
+                        allocation.subject.label(),
                         finished
                     );
                     continue;
@@ -254,7 +255,7 @@ impl DailyScheduler {
             .subject_allocations
             .iter()
             .filter(|a| !subject_not_started(&a.subject, date, &subject_start_dates))
-            .map(|a| format!("{}: {}", subject_display_name(&a.subject), a.focus))
+            .map(|a| format!("{}: {}", a.subject.label(), a.focus))
             .collect::<Vec<_>>()
             .join("；");
 
@@ -367,47 +368,27 @@ fn find_day_plan<'a>(week_plan: &'a WeekPlanFile, date: &str) -> DataResult<&'a 
 }
 
 /// 取科目的版本标签（用于 chapter_seq 定位目标章节位置）
+///
+/// 仅数学/英语配有教材版本标签，其余科目无版本概念，返回空串。
 fn goal_subject_version(state: &crate::data::state::StudyState, subject: &SubjectKey) -> String {
     match subject {
-        SubjectKey::Math => state.subjects.math.version.clone().unwrap_or_default(),
-        SubjectKey::English => state.subjects.english.version.clone().unwrap_or_default(),
+        SubjectKey::Math | SubjectKey::English => {
+            subject.state(state).version.clone().unwrap_or_default()
+        }
         _ => String::new(),
-    }
-}
-
-fn subject_display_name(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "数学",
-        SubjectKey::English => "英语",
-        SubjectKey::Politics => "政治",
-        SubjectKey::Professional => "专业课",
-    }
-}
-fn subject_key_str(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "math",
-        SubjectKey::English => "english",
-        SubjectKey::Politics => "politics",
-        SubjectKey::Professional => "professional",
     }
 }
 
 /// 该科目已完成章节标题（用于防重复安排已完成内容）
 fn completed_chapters(state: &crate::data::state::StudyState, subject: &SubjectKey) -> Vec<String> {
-    let s = match subject {
-        SubjectKey::Math => &state.subjects.math,
-        SubjectKey::English => &state.subjects.english,
-        SubjectKey::Politics => &state.subjects.politics,
-        SubjectKey::Professional => &state.subjects.professional,
-    };
-    s.completed.clone()
+    subject.state(state).completed.clone()
 }
 
 /// 今日强度预测注记（E）：读取今天及之前的最近复盘，交给 planner 的强度判定，
 /// 返回一行可写入日计划的学习提示；无复盘数据时返回空串。
 fn today_intensity_note(data_dir: &Path) -> String {
     let dates = crate::data::records::list_review_dates(data_dir).unwrap_or_default();
-    let today = crate::data::today_string();
+    let today = today_string();
     let mut reviews = Vec::new();
     for d in dates
         .into_iter()
@@ -488,7 +469,7 @@ fn subject_not_started(
     date: &str,
     subject_start_dates: &[(&'static str, String)],
 ) -> bool {
-    let key = subject_key_str(subject);
+    let key = subject.key();
     for (k, start_date) in subject_start_dates {
         if *k == key && !start_date.is_empty() {
             // 开始日期严格晚于当天日期，则未开始

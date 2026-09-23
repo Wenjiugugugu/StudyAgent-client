@@ -177,9 +177,7 @@ interface DisplayGroup {
   nodes: ProgressNode[];
 }
 
-const hasChapterNodes = computed(() =>
-  activeTable.value?.nodes.some((n) => n.level === "chapter")
-);
+const hasChapterNodes = computed(() => activeTable.value?.nodes.some((n) => n.level === "chapter"));
 
 const groups = computed<DisplayGroup[]>(() => {
   const t = activeTable.value;
@@ -215,9 +213,7 @@ const groups = computed<DisplayGroup[]>(() => {
     const res: DisplayGroup[] = [];
     const byId = new Map(nodes.map((n) => [n.id, n]));
     for (const ch of chapters) {
-      const children = nodes.filter(
-        (n) => n.level === "knowledge" && n.parent_id === ch.id
-      );
+      const children = nodes.filter((n) => n.level === "knowledge" && n.parent_id === ch.id);
       res.push({ headId: ch.id, title: ch.title, nodes: children });
     }
     // 归属不存在或未指定章节的知识点：独立成组
@@ -259,7 +255,8 @@ const stats = computed(() => {
     advanced: knowledge.filter((n) => PROGRESS_STATUSES.includes(n.status)).length,
     pct: knowledge.length
       ? Math.round(
-          (knowledge.filter((n) => PROGRESS_STATUSES.includes(n.status)).length / knowledge.length) *
+          (knowledge.filter((n) => PROGRESS_STATUSES.includes(n.status)).length /
+            knowledge.length) *
             100
         )
       : 0,
@@ -447,15 +444,17 @@ async function confirmAddNode() {
   if (!title) return;
   savingNode.value = true;
   const level = addNodeLevel.value;
-  const parentId =
-    level === "knowledge" && addNodeParentId.value ? addNodeParentId.value : null;
+  const parentId = level === "knowledge" && addNodeParentId.value ? addNodeParentId.value : null;
   await commitTable((t) => {
     t.nodes.push({
       id: newNodeId(),
       title,
       level,
       parent_id: parentId,
-      phase: level === "chapter" ? title : (chapterChoices.value.find((c) => c.id === parentId)?.title ?? ""),
+      phase:
+        level === "chapter"
+          ? title
+          : (chapterChoices.value.find((c) => c.id === parentId)?.title ?? ""),
       status: "pending",
       planned_date: null,
       note: "",
@@ -521,7 +520,8 @@ function doReorder(draggedId: string, targetId: string) {
 /** 将 flat 列表整理为「章节及其子树」的规范顺序，保证章节内知识点连续 */
 function canonicalizeNodes(list: ProgressNode[]): ProgressNode[] {
   const chapters = list.filter((n) => n.level === "chapter");
-  const childrenOf = (chId: string) => list.filter((n) => n.level === "knowledge" && n.parent_id === chId);
+  const childrenOf = (chId: string) =>
+    list.filter((n) => n.level === "knowledge" && n.parent_id === chId);
   const byId = new Map(list.map((n) => [n.id, n]));
   const out: ProgressNode[] = [];
   const placed = new Set<string>();
@@ -593,10 +593,11 @@ async function saveEdit() {
     n.title = title;
     n.level = editFormLevel.value;
     if (editFormLevel.value === "chapter") n.parent_id = null;
-    else if (n.parent_id === null && editForm.value.parent_id) n.parent_id = editForm.value.parent_id;
+    else if (n.parent_id === null && editForm.value.parent_id)
+      n.parent_id = editForm.value.parent_id;
     n.phase = editForm.value.phase.trim();
     n.note = editForm.value.note.trim();
-    const pd = (editForm.value.planned_date as unknown) as string;
+    const pd = editForm.value.planned_date as unknown as string;
     n.planned_date = pd ? pd : null;
   });
   savingNode.value = false;
@@ -710,9 +711,7 @@ const autoSyncedKey = ref("");
 
 /** 当前方案是否已有精确匹配的内置考纲表 */
 const variantHasBuiltin = computed(() =>
-  allTables.value.some(
-    (t) => t.origin === "builtin" && tableInVariantStrict(t)
-  )
+  allTables.value.some((t) => t.origin === "builtin" && tableInVariantStrict(t))
 );
 
 async function autoSyncBuiltin() {
@@ -854,12 +853,7 @@ async function importTable() {
       updated_at: new Date().toISOString(),
       nodes: parsed.nodes,
     };
-    await api.saveProgressTable(
-      targetSubject,
-      table.variant,
-      table,
-      allTables.value.length === 0
-    );
+    await api.saveProgressTable(targetSubject, table.variant, table, allTables.value.length === 0);
     saveMsg(`已导入进度表「${parsed.name}」`);
     if (targetSubject !== props.subject) {
       emit("importedOtherSubject", targetSubject);
@@ -997,18 +991,24 @@ onMounted(async () => {
             @keydown.esc="renamingTable = false"
           />
           <button class="icon-btn" title="保存" @click="confirmRename"><Check :size="14" /></button>
-          <button class="icon-btn" title="取消" @click="renamingTable = false"><X :size="14" /></button>
+          <button class="icon-btn" title="取消" @click="renamingTable = false">
+            <X :size="14" />
+          </button>
         </template>
         <template v-else>
           <h2 class="table-name">{{ activeTable.name }}</h2>
-          <button class="icon-btn" title="重命名" @click="startRename"><Pencil :size="13" /></button>
+          <button class="icon-btn" title="重命名" @click="startRename">
+            <Pencil :size="13" />
+          </button>
           <button class="icon-btn danger" title="删除进度表" @click="askDeleteTable(activeTable)">
             <Trash2 :size="13" />
           </button>
         </template>
 
         <div class="stats">
-          <span class="stat-text">{{ stats.total }} 节点 · <b>{{ stats.pct }}%</b> 已推进</span>
+          <span class="stat-text"
+            >{{ stats.total }} 节点 · <b>{{ stats.pct }}%</b> 已推进</span
+          >
           <div class="mini-bar slim">
             <div class="mini-bar-fill" :style="{ width: `${stats.pct}%` }" />
           </div>
@@ -1019,19 +1019,21 @@ onMounted(async () => {
       <div class="node-list">
         <div v-for="g in groups" :key="g.headId ?? g.title" class="node-group">
           <div class="group-head" @click="toggleGroup(g)">
-            <component
-              :is="isCollapsed(g) ? Folder : FolderOpen"
-              :size="14"
-              class="group-folder"
-            />
+            <component :is="isCollapsed(g) ? Folder : FolderOpen" :size="14" class="group-folder" />
             <span class="group-title">{{ g.title }}</span>
             <span v-if="hasChapterNodes && g.headId" class="group-level-tag">章节</span>
             <span class="group-count">{{ g.nodes.length }} 知识点</span>
-            <span class="group-meta" v-if="g.nodes.length">{{ groupStats(g).advanced }}/{{ g.nodes.length }}</span>
+            <span class="group-meta" v-if="g.nodes.length"
+              >{{ groupStats(g).advanced }}/{{ g.nodes.length }}</span
+            >
             <span class="mini-bar group-bar">
               <span class="mini-bar-fill" :style="{ width: `${groupStats(g).pct}%` }" />
             </span>
-            <component :is="isCollapsed(g) ? ChevronRight : ChevronDown" :size="14" class="group-chev" />
+            <component
+              :is="isCollapsed(g) ? ChevronRight : ChevronDown"
+              :size="14"
+              class="group-chev"
+            />
           </div>
 
           <div v-if="!isCollapsed(g)" class="group-body">
@@ -1042,7 +1044,11 @@ onMounted(async () => {
               v-for="node in g.nodes"
               :key="node.id"
               class="node-row"
-              :class="{ editing: editNodeId === node.id, dragging: draggingId === node.id, 'drag-over': dragOverId === node.id }"
+              :class="{
+                editing: editNodeId === node.id,
+                dragging: draggingId === node.id,
+                'drag-over': dragOverId === node.id,
+              }"
               draggable="true"
               @dragstart="onDragStart($event, node)"
               @dragover="onDragOver($event, node)"
@@ -1051,14 +1057,27 @@ onMounted(async () => {
             >
               <template v-if="editNodeId === node.id">
                 <div class="edit-grid">
-                  <input v-model="editForm.title" class="edit-input edit-title" placeholder="标题" />
+                  <input
+                    v-model="editForm.title"
+                    class="edit-input edit-title"
+                    placeholder="标题"
+                  />
                   <select v-model="editFormLevel" class="edit-input">
                     <option value="chapter">章节</option>
                     <option value="knowledge">知识点</option>
                   </select>
-                  <input v-model="editForm.phase" class="edit-input" placeholder="所属章节(phase)" />
+                  <input
+                    v-model="editForm.phase"
+                    class="edit-input"
+                    placeholder="所属章节(phase)"
+                  />
                   <input v-model="editForm.planned_date" type="date" class="edit-input edit-date" />
-                  <textarea v-model="editForm.note" class="edit-textarea" placeholder="备注（可选）" rows="1"></textarea>
+                  <textarea
+                    v-model="editForm.note"
+                    class="edit-textarea"
+                    placeholder="备注（可选）"
+                    rows="1"
+                  ></textarea>
                 </div>
                 <div class="edit-actions">
                   <Button variant="primary" size="sm" :loading="savingNode" @click="saveEdit">
@@ -1074,12 +1093,27 @@ onMounted(async () => {
                   <span v-if="node.planned_date" class="node-date">{{ node.planned_date }}</span>
                 </div>
                 <div class="node-actions">
-                  <button class="icon-btn" title="编辑" @click="beginEdit(node)"><Pencil :size="13" /></button>
-                  <button class="icon-btn danger" title="删除" @click="removeNode(node)"><Trash2 :size="13" /></button>
+                  <button class="icon-btn" title="编辑" @click="beginEdit(node)">
+                    <Pencil :size="13" />
+                  </button>
+                  <button class="icon-btn danger" title="删除" @click="removeNode(node)">
+                    <Trash2 :size="13" />
+                  </button>
                 </div>
-                <button class="status-pill" :class="`st-${node.status}`" title="点击切换状态" @click="cycleStatus(node)">
+                <button
+                  class="status-pill"
+                  :class="`st-${node.status}`"
+                  title="点击切换状态"
+                  @click="cycleStatus(node)"
+                >
                   <component
-                    :is="node.status === 'mastered' ? CheckCircle2 : node.status === 'learning' ? CircleDot : RotateCcw"
+                    :is="
+                      node.status === 'mastered'
+                        ? CheckCircle2
+                        : node.status === 'learning'
+                          ? CircleDot
+                          : RotateCcw
+                    "
                     :size="11"
                   />
                   {{ statusLabel(node.status) }}
@@ -1108,15 +1142,31 @@ onMounted(async () => {
     </div>
 
     <!-- 新建进度表 -->
-    <Modal :open="showNewTableModal" title="新建进度表" :close-on-overlay="true" @close="showNewTableModal = false">
+    <Modal
+      :open="showNewTableModal"
+      title="新建进度表"
+      :close-on-overlay="true"
+      @close="showNewTableModal = false"
+    >
       <div class="form-field">
         <label class="form-label">进度表名称</label>
-        <input v-model="newTableName" class="form-input" placeholder="如：数二全程 / 政治强化" @keydown.enter="confirmNewTable" />
+        <input
+          v-model="newTableName"
+          class="form-input"
+          placeholder="如：数二全程 / 政治强化"
+          @keydown.enter="confirmNewTable"
+        />
         <p class="form-hint">将创建在方案「{{ variant }}」下。</p>
       </div>
       <template #footer>
         <Button variant="ghost" size="sm" @click="showNewTableModal = false">取消</Button>
-        <Button variant="primary" size="sm" :disabled="!newTableName.trim()" @click="confirmNewTable">创建</Button>
+        <Button
+          variant="primary"
+          size="sm"
+          :disabled="!newTableName.trim()"
+          @click="confirmNewTable"
+          >创建</Button
+        >
       </template>
     </Modal>
 
@@ -1128,7 +1178,12 @@ onMounted(async () => {
       :close-on-overlay="false"
       @close="showConfirmModal = false"
     >
-      <LoadingSpinner v-if="estimating" :size="24" label="正在读取学习状态..." class="view-loading" />
+      <LoadingSpinner
+        v-if="estimating"
+        :size="24"
+        label="正在读取学习状态..."
+        class="view-loading"
+      />
       <div v-else>
         <p class="form-hint">
           根据你当前的学习状态，检测到以下知识点可能已完成基础轮次。请勾选与实际相符的项
@@ -1140,7 +1195,9 @@ onMounted(async () => {
             <Checkbox :checked="!!selectedKeys[changeKey(e)]" @change="toggleEstimate(e)" />
             <span class="confirm-chapter">{{ e.chapter }}</span>
             <span class="confirm-title">{{ e.node_title }}</span>
-            <span class="confirm-suggest" :class="`st-${e.suggested}`">{{ statusLabel(e.suggested) }}</span>
+            <span class="confirm-suggest" :class="`st-${e.suggested}`">{{
+              statusLabel(e.suggested)
+            }}</span>
           </label>
         </div>
       </div>
@@ -1161,7 +1218,12 @@ onMounted(async () => {
     </Modal>
 
     <!-- 新建节点（选级 + 归属章节） -->
-    <Modal :open="showAddNodeModal" title="添加节点" :close-on-overlay="true" @close="showAddNodeModal = false">
+    <Modal
+      :open="showAddNodeModal"
+      title="添加节点"
+      :close-on-overlay="true"
+      @close="showAddNodeModal = false"
+    >
       <div class="form-field">
         <label class="form-label">节点等级</label>
         <div class="level-options">
@@ -1177,7 +1239,12 @@ onMounted(async () => {
       </div>
       <div class="form-field">
         <label class="form-label">标题</label>
-        <input v-model="addNodeTitle" class="form-input" :placeholder="addNodeLevel === 'chapter' ? '如：第三章 微分中值定理' : '如：洛必达法则'" @keydown.enter="confirmAddNode" />
+        <input
+          v-model="addNodeTitle"
+          class="form-input"
+          :placeholder="addNodeLevel === 'chapter' ? '如：第三章 微分中值定理' : '如：洛必达法则'"
+          @keydown.enter="confirmAddNode"
+        />
       </div>
       <div v-if="addNodeLevel === 'knowledge'" class="form-field">
         <label class="form-label">归属章节</label>
@@ -1189,7 +1256,13 @@ onMounted(async () => {
       </div>
       <template #footer>
         <Button variant="ghost" size="sm" @click="showAddNodeModal = false">取消</Button>
-        <Button variant="primary" size="sm" :disabled="!addNodeTitle.trim()" :loading="savingNode" @click="confirmAddNode">
+        <Button
+          variant="primary"
+          size="sm"
+          :disabled="!addNodeTitle.trim()"
+          :loading="savingNode"
+          @click="confirmAddNode"
+        >
           添加
         </Button>
       </template>
@@ -1205,13 +1278,33 @@ onMounted(async () => {
     </Modal>
 
     <!-- AI 生成内容风险提示（首次点击 AI 生成时弹出，确认后进入配置弹窗） -->
-    <Modal :open="showAiRiskModal" title="AI 生成内容风险提示" :width="560" @close="showAiRiskModal = false">
+    <Modal
+      :open="showAiRiskModal"
+      title="AI 生成内容风险提示"
+      :width="560"
+      @close="showAiRiskModal = false"
+    >
       <div class="ai-risk-box">
         <p class="ai-risk-title">⚠️ AI 生成内容风险提示</p>
-        <p>本功能目前处于早期开发阶段，AI 生成的内容具有一定随机性和不确定性，可能出现包括但不限于内容过时、信息缺失、曲解课程内容、AI 幻觉等问题。</p>
-        <p>此外，AI 服务通过 API 调用时，其生成效果可能与直接使用相关 AI 服务时存在差异。受模型版本、服务配置、上下文信息、可调用工具及工具权限等因素限制，AI 所能够获取和处理的信息可能受到限制，生成质量可能因此降低。同时，网络连接、API 服务状态及其他不可预见因素也可能导致无法连接、请求失败、响应异常或其他未列明的问题，从而导致生成内容不完整或不准确。</p>
-        <p>由于进度表中的内容可能进一步用于规划学习任务、分配学习内容以及预估学习和复习时间，错误的 AI 生成结果可能造成严重的规划偏差，并进一步影响后续学习安排。</p>
-        <p>因此，AI 生成的进度表仅供辅助参考，不应视为准确或权威的学习规划。请务必在使用前自行检查生成内容，并根据实际课程要求、教材、考试范围及个人学习情况进行核验和调整。</p>
+        <p>
+          本功能目前处于早期开发阶段，AI
+          生成的内容具有一定随机性和不确定性，可能出现包括但不限于内容过时、信息缺失、曲解课程内容、AI
+          幻觉等问题。
+        </p>
+        <p>
+          此外，AI 服务通过 API 调用时，其生成效果可能与直接使用相关 AI
+          服务时存在差异。受模型版本、服务配置、上下文信息、可调用工具及工具权限等因素限制，AI
+          所能够获取和处理的信息可能受到限制，生成质量可能因此降低。同时，网络连接、API
+          服务状态及其他不可预见因素也可能导致无法连接、请求失败、响应异常或其他未列明的问题，从而导致生成内容不完整或不准确。
+        </p>
+        <p>
+          由于进度表中的内容可能进一步用于规划学习任务、分配学习内容以及预估学习和复习时间，错误的
+          AI 生成结果可能造成严重的规划偏差，并进一步影响后续学习安排。
+        </p>
+        <p>
+          因此，AI
+          生成的进度表仅供辅助参考，不应视为准确或权威的学习规划。请务必在使用前自行检查生成内容，并根据实际课程要求、教材、考试范围及个人学习情况进行核验和调整。
+        </p>
         <p class="ai-risk-agree">使用本功能即表示你已阅读并了解上述风险。</p>
       </div>
       <template #footer>
@@ -1231,23 +1324,39 @@ onMounted(async () => {
         </div>
         <ul class="preview-list">
           <li v-for="n in genPreview.nodes.slice(0, 8)" :key="n.id">
-            <component :is="n.level === 'chapter' ? FolderOpen : CircleDot" :size="12" class="dot" />
+            <component
+              :is="n.level === 'chapter' ? FolderOpen : CircleDot"
+              :size="12"
+              class="dot"
+            />
             <span v-if="n.phase" class="phase-tag">{{ n.phase }}</span>
             {{ n.title }}
           </li>
-          <li v-if="genPreview.nodes.length > 8" class="more">… 还有 {{ genPreview.nodes.length - 8 }} 个节点</li>
+          <li v-if="genPreview.nodes.length > 8" class="more">
+            … 还有 {{ genPreview.nodes.length - 8 }} 个节点
+          </li>
         </ul>
         <div class="preview-actions">
           <Button variant="ghost" size="sm" @click="genPreview = null">重新生成</Button>
-          <Button variant="primary" size="sm" @click="confirmSaveGenerated">保存为启用进度表</Button>
+          <Button variant="primary" size="sm" @click="confirmSaveGenerated"
+            >保存为启用进度表</Button
+          >
         </div>
       </div>
       <div v-else class="gen-form">
         <div class="form-field">
           <label class="form-label">进度表名称</label>
-          <input v-model="genName" class="form-input" placeholder="留空则自动命名，如「数学进度表」" />
+          <input
+            v-model="genName"
+            class="form-input"
+            placeholder="留空则自动命名，如「数学进度表」"
+          />
         </div>
-        <p class="form-hint">将依据 {{ subjectLabel }}「{{ variant }}」的最新考研考纲，按章节先后顺序生成可供长期打卡的进度节点。</p>
+        <p class="form-hint">
+          将依据 {{ subjectLabel }}「{{
+            variant
+          }}」的最新考研考纲，按章节先后顺序生成可供长期打卡的进度节点。
+        </p>
       </div>
       <template #footer v-if="!generating && !genPreview">
         <Button variant="ghost" size="sm" @click="showGenModal = false">取消</Button>
@@ -1312,8 +1421,21 @@ onMounted(async () => {
   font-size: 12px;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
 }
-.error-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.error-dismiss { display: flex; align-items: center; justify-content: center; padding: 2px; border: none; background: transparent; color: inherit; cursor: pointer; }
+.error-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.error-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
 .action-toast {
   position: absolute;
   top: var(--space-2);
@@ -1350,7 +1472,12 @@ onMounted(async () => {
   flex-wrap: wrap;
   margin-bottom: var(--space-3);
 }
-.table-picker { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.table-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
 .context-pill {
   display: inline-flex;
   align-items: center;
@@ -1372,8 +1499,17 @@ onMounted(async () => {
   min-width: 200px;
   max-width: 100%;
 }
-.toolbar-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.util-cluster { display: flex; align-items: center; gap: 2px; }
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.util-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .util-cluster .ui-button {
   color: var(--text-tertiary);
   font-weight: 400;
@@ -1432,8 +1568,13 @@ onMounted(async () => {
   cursor: pointer;
   transition: all var(--transition-fast);
 }
-.icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-.icon-btn.danger:hover { color: var(--color-danger); }
+.icon-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.icon-btn.danger:hover {
+  color: var(--color-danger);
+}
 
 /* 元信息：N 节点 · X% 已推进 + 细进度条 */
 .stats {
@@ -1459,11 +1600,22 @@ onMounted(async () => {
   background: var(--bg-tertiary);
   overflow: hidden;
 }
-.mini-bar.slim { width: 80px; height: 4px; }
-.mini-bar-fill { height: 100%; background: var(--color-success, #22c55e); transition: width 0.3s ease; }
+.mini-bar.slim {
+  width: 80px;
+  height: 4px;
+}
+.mini-bar-fill {
+  height: 100%;
+  background: var(--color-success, #22c55e);
+  transition: width 0.3s ease;
+}
 
 /* ── 节点树 ── 章节（结构标题）→ 知识点（内容） 之间的层级差 */
-.node-list { display: flex; flex-direction: column; gap: var(--space-3); }
+.node-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
 .node-group {
   display: flex;
   flex-direction: column;
@@ -1483,9 +1635,17 @@ onMounted(async () => {
   background: transparent;
   border-bottom: 1px solid var(--divider-color);
 }
-.group-head:hover { background: var(--bg-tertiary); }
-.group-folder { color: var(--text-tertiary); flex-shrink: 0; transition: color var(--transition-fast); }
-.group-head:hover .group-folder { color: var(--text-secondary); }
+.group-head:hover {
+  background: var(--bg-tertiary);
+}
+.group-folder {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  transition: color var(--transition-fast);
+}
+.group-head:hover .group-folder {
+  color: var(--text-secondary);
+}
 .group-title {
   font-size: 14px;
   font-weight: var(--font-semibold);
@@ -1505,14 +1665,40 @@ onMounted(async () => {
   text-transform: uppercase;
   padding: 0 2px;
 }
-.group-count { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.group-meta { font-size: var(--text-xs); color: var(--text-quaternary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.group-bar { width: 60px; flex-shrink: 0; }
-.group-chev { color: var(--text-tertiary); flex-shrink: 0; }
+.group-count {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.group-meta {
+  font-size: var(--text-xs);
+  color: var(--text-quaternary);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.group-bar {
+  width: 60px;
+  flex-shrink: 0;
+}
+.group-chev {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
 
 /* 知识点列表：紧凑、无背景，hover 出底色 / 边框 */
-.group-body { display: flex; flex-direction: column; gap: 0; padding: 2px 0; }
-.group-empty { padding: var(--space-3); font-size: var(--text-xs); color: var(--text-tertiary); text-align: center; }
+.group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 2px 0;
+}
+.group-empty {
+  padding: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-align: center;
+}
 .node-row {
   display: flex;
   align-items: center;
@@ -1524,21 +1710,38 @@ onMounted(async () => {
   background: transparent;
   transition: background var(--transition-fast);
 }
-.group-body .node-row:last-child { border-bottom: none; }
-.node-row:hover { background: var(--bg-tertiary); }
-.node-row.editing { background: var(--accent-subtle); }
-.node-row.drag-over { background: var(--accent-subtle); }
-.node-row.dragging { opacity: 0.4; }
+.group-body .node-row:last-child {
+  border-bottom: none;
+}
+.node-row:hover {
+  background: var(--bg-tertiary);
+}
+.node-row.editing {
+  background: var(--accent-subtle);
+}
+.node-row.drag-over {
+  background: var(--accent-subtle);
+}
+.node-row.dragging {
+  opacity: 0.4;
+}
 
 .grip {
   color: var(--text-quaternary);
   cursor: grab;
   flex-shrink: 0;
   opacity: 0.4;
-  transition: opacity var(--transition-fast), color var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast);
 }
-.grip:active { cursor: grabbing; }
-.node-row:hover .grip { opacity: 0.9; color: var(--text-tertiary); }
+.grip:active {
+  cursor: grabbing;
+}
+.node-row:hover .grip {
+  opacity: 0.9;
+  color: var(--text-tertiary);
+}
 
 /* 状态胶囊：挪到右侧，尺寸与色彩更克制 */
 .status-pill {
@@ -1558,14 +1761,42 @@ onMounted(async () => {
   min-width: 56px;
   justify-content: center;
 }
-.status-pill:hover { transform: none; background: var(--bg-tertiary); }
-.st-pending { color: var(--text-tertiary); border-color: var(--divider-color); }
-.st-learning { color: var(--accent); border-color: var(--accent-subtle); background: var(--accent-subtle); }
-.st-basic { color: var(--info-color, #0284c7); border-color: var(--color-info-subtle, transparent); background: var(--color-info-subtle, transparent); }
-.st-reinforcing { color: var(--warning-color, #d97706); border-color: var(--color-warning-subtle, transparent); background: var(--color-warning-subtle, transparent); }
-.st-mastered { color: var(--color-success, #16a34a); border-color: var(--color-success-subtle, transparent); background: var(--color-success-subtle, transparent); }
+.status-pill:hover {
+  transform: none;
+  background: var(--bg-tertiary);
+}
+.st-pending {
+  color: var(--text-tertiary);
+  border-color: var(--divider-color);
+}
+.st-learning {
+  color: var(--accent);
+  border-color: var(--accent-subtle);
+  background: var(--accent-subtle);
+}
+.st-basic {
+  color: var(--info-color, #0284c7);
+  border-color: var(--color-info-subtle, transparent);
+  background: var(--color-info-subtle, transparent);
+}
+.st-reinforcing {
+  color: var(--warning-color, #d97706);
+  border-color: var(--color-warning-subtle, transparent);
+  background: var(--color-warning-subtle, transparent);
+}
+.st-mastered {
+  color: var(--color-success, #16a34a);
+  border-color: var(--color-success-subtle, transparent);
+  background: var(--color-success-subtle, transparent);
+}
 
-.node-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0; }
+.node-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
 .node-title {
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
@@ -1573,13 +1804,36 @@ onMounted(async () => {
   word-break: break-word;
   letter-spacing: -0.01em;
 }
-.node-date { font-size: var(--text-xs); color: var(--text-tertiary); margin-top: 1px; }
-.node-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0; transition: opacity var(--transition-fast); }
-.node-row:hover .node-actions, .node-row.editing .node-actions { opacity: 1; }
-.edit-grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
-.edit-title { grid-column: 1 / -1; }
-.edit-date { max-width: 150px; }
-.edit-input, .edit-textarea {
+.node-date {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+.node-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.node-row:hover .node-actions,
+.node-row.editing .node-actions {
+  opacity: 1;
+}
+.edit-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+.edit-title {
+  grid-column: 1 / -1;
+}
+.edit-date {
+  max-width: 150px;
+}
+.edit-input,
+.edit-textarea {
   padding: 6px 10px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -1589,14 +1843,33 @@ onMounted(async () => {
   font-size: var(--text-sm);
   outline: none;
 }
-.edit-input:focus, .edit-textarea:focus { border-color: var(--accent); }
-.edit-textarea { resize: vertical; }
-.edit-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
-.add-row { padding: var(--space-2) 0; }
+.edit-input:focus,
+.edit-textarea:focus {
+  border-color: var(--accent);
+}
+.edit-textarea {
+  resize: vertical;
+}
+.edit-actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+.add-row {
+  padding: var(--space-2) 0;
+}
 
 /* 表单 */
-.form-field { display: flex; flex-direction: column; gap: var(--space-1); }
-.form-label { font-size: var(--text-sm); font-weight: var(--font-medium); color: var(--text-secondary); }
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.form-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
 .form-input {
   height: 36px;
   padding: 0 var(--space-3);
@@ -1608,22 +1881,77 @@ onMounted(async () => {
   font-size: var(--text-sm);
   outline: none;
 }
-.form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
-.form-hint { margin: 0; font-size: var(--text-xs); color: var(--text-tertiary); line-height: var(--leading-normal); }
-.confirm-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--space-3); }
-.confirm-table-name { font-size: var(--text-xs); font-weight: var(--font-semibold); color: var(--text-tertiary); padding: 4px 0 2px; }
-.confirm-row { display: flex; align-items: center; gap: var(--space-2); padding: 4px 6px; border-radius: var(--radius-sm); cursor: pointer; }
-.confirm-row:hover { background: var(--bg-tertiary); }
-.confirm-chapter { font-size: var(--text-xs); color: var(--text-tertiary); flex-shrink: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.confirm-title { font-size: var(--text-sm); color: var(--text-primary); flex: 1; min-width: 0; }
-.confirm-suggest { font-size: var(--text-xs); border: 1px solid var(--border-color); border-radius: var(--radius-full); padding: 1px 6px; flex-shrink: 0; }
-.gen-form { display: flex; flex-direction: column; gap: var(--space-4); }
+.form-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.form-hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: var(--leading-normal);
+}
+.confirm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-3);
+}
+.confirm-table-name {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  padding: 4px 0 2px;
+}
+.confirm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.confirm-row:hover {
+  background: var(--bg-tertiary);
+}
+.confirm-chapter {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.confirm-title {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+}
+.confirm-suggest {
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-full);
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+.gen-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
 .preview-box {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
-.preview-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
 .preview-variant {
   font-size: 11px;
   color: var(--accent);
@@ -1631,10 +1959,31 @@ onMounted(async () => {
   border-radius: var(--radius-xs);
   padding: 1px 6px;
 }
-.preview-name { font-weight: var(--font-semibold); color: var(--text-primary); }
-.preview-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1); max-height: 300px; overflow-y: auto; }
-.preview-list li { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-secondary); }
-.preview-list .dot { color: var(--text-tertiary); flex-shrink: 0; }
+.preview-name {
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+}
+.preview-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 300px;
+  overflow-y: auto;
+}
+.preview-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.preview-list .dot {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
 .phase-tag {
   flex-shrink: 0;
   font-size: 11px;
@@ -1643,11 +1992,20 @@ onMounted(async () => {
   border-radius: var(--radius-xs);
   padding: 1px 6px;
 }
-.preview-list .more { color: var(--text-tertiary); }
-.preview-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.preview-list .more {
+  color: var(--text-tertiary);
+}
+.preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
 
 /* 节点等级选择 */
-.level-options { display: flex; gap: var(--space-2); }
+.level-options {
+  display: flex;
+  gap: var(--space-2);
+}
 .level-option {
   display: flex;
   align-items: center;
@@ -1661,6 +2019,12 @@ onMounted(async () => {
   cursor: pointer;
   transition: all var(--transition-fast);
 }
-.level-option.active { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
-.level-option input { display: none; }
+.level-option.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+.level-option input {
+  display: none;
+}
 </style>

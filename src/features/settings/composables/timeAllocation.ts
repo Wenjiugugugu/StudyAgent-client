@@ -56,7 +56,7 @@ export function spreadToSum(keys: SubjectKey[], shares: number[], target: number
  */
 export function deriveFromWeeklyHours(
   weekly: Record<SubjectKey, number>,
-  active: Record<SubjectKey, boolean>,
+  active: Record<SubjectKey, boolean>
 ): SubjectTimeAllocation {
   const out = emptyAllocation();
   const activeKeys = ALLOCATION_KEYS.filter((k) => active[k]);
@@ -86,7 +86,7 @@ export function deriveFromWeeklyHours(
 export function normalizeAllocation(
   stored: Partial<SubjectTimeAllocation>,
   weekly: Record<SubjectKey, number>,
-  active: Record<SubjectKey, boolean>,
+  active: Record<SubjectKey, boolean>
 ): SubjectTimeAllocation {
   const activeKeys = ALLOCATION_KEYS.filter((k) => active[k]);
   if (activeKeys.length === 0) return emptyAllocation();
@@ -124,7 +124,7 @@ export function adjustAllocation(
   current: SubjectTimeAllocation,
   key: SubjectKey,
   newValue: number,
-  active: Record<SubjectKey, boolean>,
+  active: Record<SubjectKey, boolean>
 ): SubjectTimeAllocation {
   const activeKeys = ALLOCATION_KEYS.filter((k) => active[k]);
   if (activeKeys.length === 0) return { ...current };
@@ -148,7 +148,7 @@ export function adjustAllocation(
       out[k] = base + (i < rem ? 1 : 0);
     });
   } else {
-    const rawShares = others.map((k) => ((Math.max(0, current[k] ?? 0) / otherSum) * need));
+    const rawShares = others.map((k) => (Math.max(0, current[k] ?? 0) / otherSum) * need);
     const spread = spreadToSum(others, rawShares, need);
     others.forEach((k, i) => {
       out[k] = spread[i];

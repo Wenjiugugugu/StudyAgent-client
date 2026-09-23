@@ -99,10 +99,13 @@ export const useTodayStore = defineStore("today", () => {
 
       // 统一 AI 调用：api.generateDailyPlan 内部已含 60s 超时 + 自动取消（aiInvoke）
       await ai.run(
-        () => api.generateDailyPlan(targetDate).then((p) => { plan.value = p; }),
+        () =>
+          api.generateDailyPlan(targetDate).then((p) => {
+            plan.value = p;
+          }),
         "生成日计划失败"
       );
-    } catch (e) {
+    } catch {
       // useAiRequest 已记录 error，此处不再重复赋值
     }
   }

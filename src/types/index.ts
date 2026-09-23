@@ -59,6 +59,8 @@ export interface PlanSummary {
   date: string;
   has_plan: boolean;
   has_review: boolean;
+  /** 未按时复盘后由系统依据任务状态自动生成 */
+  is_default_review: boolean;
   planned_tasks: number;
   planned_hours: number;
   completed_tasks: number;

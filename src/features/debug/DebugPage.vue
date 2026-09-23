@@ -70,7 +70,9 @@ const activeSection = ref("sysinfo");
 function scrollToSection(id: string) {
   const el = document.getElementById(`debug-${id}`);
   if (!el) return;
-  const scroller = el.closest<HTMLElement>(".content-body") ?? document.querySelector<HTMLElement>(".content-body");
+  const scroller =
+    el.closest<HTMLElement>(".content-body") ??
+    document.querySelector<HTMLElement>(".content-body");
   if (!scroller) {
     // 兜底（极少见）：退化到原 scrollIntoView
     el.scrollIntoView({ behavior: "smooth", block: "start" });

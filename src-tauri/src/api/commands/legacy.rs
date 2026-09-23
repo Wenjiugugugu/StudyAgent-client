@@ -33,6 +33,8 @@ pub struct PlanSummary {
     pub date: String,
     pub has_plan: bool,
     pub has_review: bool,
+    /// 是否为用户未复盘后由系统生成的默认记录
+    pub is_default_review: bool,
     pub planned_tasks: i32,
     pub planned_hours: f64,
     pub completed_tasks: i32,

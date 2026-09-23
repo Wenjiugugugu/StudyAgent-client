@@ -1,7 +1,7 @@
 //! 数据备份 / 导出 / 导入
 //!
-//! - `export_backup`：把数据目录下允许的子目录（state/plan/records/config/assets/focus，
-//!   可选 logs/）压缩为 zip 备份文件。
+//! - `export_backup`：把统一注册的持久化数据目录（可选 logs/）压缩为 zip 备份文件，
+//!   并写入带逐文件 SHA-256 的 manifest。
 //! - `import_backup`：校验并解压备份 zip，覆盖前先把现有数据目录备份为 `.bak-{ts}`，
 //!   解压时逐项做路径穿越防护（zip-slip），导入后可重启应用加载。
 //!
@@ -10,11 +10,42 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use super::DataResult;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-/// 允许导出/导入的子目录（相对于 data_dir）
-/// M10：包含 focus（专注记录），避免导入后番茄钟历史丢失
-const BACKUP_SUBDIRS: [&str; 6] = ["state", "plan", "records", "config", "assets", "focus"];
+use super::{DataResult, PERSISTED_DATA_SUBDIRS};
+
+const BACKUP_MANIFEST_FILE: &str = "backup-manifest.json";
+const BACKUP_SCHEMA_VERSION: u32 = 1;
+const MAX_ENTRY_SIZE: u64 = 64 * 1024 * 1024;
+const MAX_TOTAL_SIZE: u64 = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BackupManifest {
+    schema_version: u32,
+    app_version: String,
+    created_at: String,
+    files: Vec<BackupManifestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BackupManifestEntry {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+fn sha256_bytes(content: &[u8]) -> String {
+    Sha256::digest(content)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn is_allowed_backup_path(normalized: &str, include_logs: bool) -> bool {
+    let top = normalized.split('/').next().unwrap_or("");
+    PERSISTED_DATA_SUBDIRS.contains(&top) || include_logs && top == "logs"
+}
 
 /// 从 data_dir 递归收集待备份的相对路径文件列表（不含目录项）
 ///
@@ -22,7 +53,7 @@ const BACKUP_SUBDIRS: [&str; 6] = ["state", "plan", "records", "config", "assets
 /// 确保恢复时可正确写回 data_dir 下对应子目录。
 fn collect_files(data_dir: &Path) -> DataResult<Vec<(PathBuf, PathBuf)>> {
     let mut files = Vec::new();
-    for sub in BACKUP_SUBDIRS {
+    for sub in PERSISTED_DATA_SUBDIRS {
         let root = data_dir.join(sub);
         if !root.exists() {
             continue;
@@ -88,6 +119,7 @@ pub fn export_backup(
     let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
+    let mut manifest_entries = Vec::with_capacity(files.len());
     for (rel, abs) in &files {
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         zip_writer
@@ -98,10 +130,30 @@ pub fn export_backup(
             .map_err(|e| format!("读取文件失败 {:?}: {}", abs, e))?
             .read_to_end(&mut content)
             .map_err(|e| format!("读取文件失败 {:?}: {}", abs, e))?;
+        manifest_entries.push(BackupManifestEntry {
+            path: rel_str.clone(),
+            size: content.len() as u64,
+            sha256: sha256_bytes(&content),
+        });
         zip_writer
             .write_all(&content)
             .map_err(|e| format!("写入 zip 内容失败 {}: {}", rel_str, e))?;
     }
+
+    let manifest = BackupManifest {
+        schema_version: BACKUP_SCHEMA_VERSION,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        created_at: crate::data::now_string(),
+        files: manifest_entries,
+    };
+    let manifest_json =
+        serde_json::to_vec_pretty(&manifest).map_err(|e| format!("序列化备份清单失败: {}", e))?;
+    zip_writer
+        .start_file(BACKUP_MANIFEST_FILE, options)
+        .map_err(|e| format!("写入备份清单失败: {}", e))?;
+    zip_writer
+        .write_all(&manifest_json)
+        .map_err(|e| format!("写入备份清单内容失败: {}", e))?;
 
     let count = files.len();
     let mut zf = zip_writer
@@ -139,11 +191,32 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
 
     // 第一遍：校验所有条目路径，拒绝越界 / 绝对路径 / 盘符
     let mut entries: Vec<(String, bool)> = Vec::new();
+    let mut seen_names = std::collections::HashSet::new();
+    let mut manifest: Option<BackupManifest> = None;
     for i in 0..archive.len() {
-        let entry = archive
+        let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("读取 zip 条目失败: {}", e))?;
         let name = entry.name().to_string();
+        if !seen_names.insert(name.clone()) {
+            return Err(format!("备份文件包含重复路径，已拒绝导入: {}", name));
+        }
+        if name == BACKUP_MANIFEST_FILE {
+            let mut raw = String::new();
+            entry
+                .read_to_string(&mut raw)
+                .map_err(|e| format!("读取备份清单失败: {}", e))?;
+            let parsed: BackupManifest =
+                serde_json::from_str(&raw).map_err(|e| format!("解析备份清单失败: {}", e))?;
+            if parsed.schema_version > BACKUP_SCHEMA_VERSION {
+                return Err(format!(
+                    "备份格式版本 {} 高于当前支持版本 {}，请先升级应用",
+                    parsed.schema_version, BACKUP_SCHEMA_VERSION
+                ));
+            }
+            manifest = Some(parsed);
+            continue;
+        }
         if entry.is_dir() {
             entries.push((name, true));
             continue;
@@ -156,14 +229,50 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
         {
             return Err(format!("备份文件包含非法路径，已拒绝导入: {}", name));
         }
-        let top = normalized.split('/').next().unwrap_or("");
-        if !BACKUP_SUBDIRS.contains(&top) {
+        if !is_allowed_backup_path(&normalized, true) {
             return Err(format!(
                 "备份文件包含不在允许范围内的路径，已拒绝导入: {}",
                 name
             ));
         }
         entries.push((name, false));
+    }
+
+    // 新格式备份在破坏现有数据前完成逐文件完整性验证；旧格式仍保持向后兼容。
+    if let Some(manifest) = &manifest {
+        let manifest_by_path: std::collections::HashMap<&str, &BackupManifestEntry> = manifest
+            .files
+            .iter()
+            .map(|item| (item.path.as_str(), item))
+            .collect();
+        let archive_files: Vec<&str> = entries
+            .iter()
+            .filter_map(|(name, is_dir)| (!is_dir).then_some(name.as_str()))
+            .collect();
+        if manifest_by_path.len() != manifest.files.len()
+            || archive_files.len() != manifest.files.len()
+            || archive_files
+                .iter()
+                .any(|name| !manifest_by_path.contains_key(*name))
+        {
+            return Err("备份清单与压缩包文件列表不一致，已拒绝导入".to_string());
+        }
+        for name in archive_files {
+            let expected = manifest_by_path[name];
+            let mut entry = archive
+                .by_name(name)
+                .map_err(|e| format!("读取 zip 条目失败 {}: {}", name, e))?;
+            if entry.size() > MAX_ENTRY_SIZE || entry.size() != expected.size {
+                return Err(format!("备份文件大小校验失败，已拒绝导入: {}", name));
+            }
+            let mut content = Vec::new();
+            entry
+                .read_to_end(&mut content)
+                .map_err(|e| format!("读取 zip 内容失败 {}: {}", name, e))?;
+            if sha256_bytes(&content) != expected.sha256 {
+                return Err(format!("备份文件完整性校验失败，已拒绝导入: {}", name));
+            }
+        }
     }
 
     // 备份现有数据目录（重命名），失败则不继续，避免破坏现有数据
@@ -193,9 +302,6 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
         .map_err(|e| format!("重建数据目录失败 {:?}: {}", data_dir, e))?;
 
     // 第二遍：解压写入（带大小上限防 zip 炸弹，M11）；中途失败时回滚恢复原数据目录（M12）
-    const MAX_ENTRY_SIZE: u64 = 64 * 1024 * 1024; // 单条目上限 64MB
-    const MAX_TOTAL_SIZE: u64 = 512 * 1024 * 1024; // 总解压上限 512MB
-
     let extraction = (|| -> DataResult<usize> {
         let mut total_size: u64 = 0;
         let mut restored = 0usize;
@@ -205,8 +311,7 @@ pub fn import_backup(data_dir: &Path, zip_path: &Path) -> DataResult<ImportSumma
             }
             let normalized = name.replace('\\', "/");
             // 二次防御：相对路径必须仍落在允许的子目录内（第一遍已过滤 ../ 与绝对路径）
-            let top = normalized.split('/').next().unwrap_or("");
-            if !BACKUP_SUBDIRS.contains(&top) {
+            if !is_allowed_backup_path(&normalized, true) {
                 return Err(format!("解压路径越界，已中止导入: {}", name));
             }
             let mut entry = archive
@@ -293,6 +398,19 @@ mod tests {
         assert_eq!(count, 2, "应导出 2 个文件");
         assert!(zip_path.exists());
 
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut raw_manifest = String::new();
+        archive
+            .by_name(BACKUP_MANIFEST_FILE)
+            .unwrap()
+            .read_to_string(&mut raw_manifest)
+            .unwrap();
+        let manifest: BackupManifest = serde_json::from_str(&raw_manifest).unwrap();
+        assert_eq!(manifest.schema_version, BACKUP_SCHEMA_VERSION);
+        assert_eq!(manifest.files.len(), 2);
+        drop(archive);
+
         // 修改原目录（制造差异），再导入恢复
         std::fs::write(data_dir.join("plan").join("extra.txt"), "x").unwrap();
 
@@ -306,6 +424,72 @@ mod tests {
         // 恢复后的 plan 内容应与导出时一致，且不再有 extra.txt
         assert!(data_dir.join("plan").join("2026-08-18_day.json").exists());
         assert!(!data_dir.join("plan").join("extra.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn export_covers_every_registered_data_directory() {
+        let root = tmpdir("all-dirs");
+        let data_dir = root.join("data");
+        for dir in PERSISTED_DATA_SUBDIRS {
+            let path = data_dir.join(dir).join("sentinel.txt");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, dir).unwrap();
+        }
+
+        let zip_path = root.join("backup.zip");
+        let count = export_backup(&data_dir, &zip_path, false).unwrap();
+        assert_eq!(count, PERSISTED_DATA_SUBDIRS.len());
+
+        let restore_dir = root.join("restore");
+        let summary = import_backup(&restore_dir, &zip_path).unwrap();
+        assert_eq!(summary.files_restored, PERSISTED_DATA_SUBDIRS.len());
+        for dir in PERSISTED_DATA_SUBDIRS {
+            assert!(
+                restore_dir.join(dir).join("sentinel.txt").is_file(),
+                "备份遗漏目录 {dir}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn import_rejects_manifest_hash_mismatch_before_replacing_data() {
+        let root = tmpdir("hash-mismatch");
+        let data_dir = root.join("data");
+        std::fs::create_dir_all(data_dir.join("state")).unwrap();
+        std::fs::write(data_dir.join("state").join("keep.txt"), "original").unwrap();
+
+        let zip_path = root.join("tampered.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(std::io::BufWriter::new(file));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("state/current.state", options).unwrap();
+        writer.write_all(b"tampered").unwrap();
+        let manifest = BackupManifest {
+            schema_version: BACKUP_SCHEMA_VERSION,
+            app_version: "test".to_string(),
+            created_at: "test".to_string(),
+            files: vec![BackupManifestEntry {
+                path: "state/current.state".to_string(),
+                size: 8,
+                sha256: sha256_bytes(b"expected"),
+            }],
+        };
+        writer.start_file(BACKUP_MANIFEST_FILE, options).unwrap();
+        writer
+            .write_all(&serde_json::to_vec(&manifest).unwrap())
+            .unwrap();
+        writer.finish().unwrap();
+
+        let error = import_backup(&data_dir, &zip_path).unwrap_err();
+        assert!(error.contains("完整性校验失败"));
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join("state").join("keep.txt")).unwrap(),
+            "original"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use tauri::State;
 
-use crate::core::goal_planner::{subject_key_str, subject_version};
+use crate::core::goal_planner::subject_version;
 use crate::data::goal::{goal_of_subject_book, read_goals, save_goals, Goal, GoalPlanFile};
 use crate::data::plan::PlanTask;
 use crate::data::progress_tables::load_progress_index;
@@ -58,7 +58,7 @@ pub async fn create_goal(
         return Err("必须选择目标所属的书/板块（book），每书只允许配置一个目标计划".to_string());
     }
 
-    let key = subject_key_str(&subject);
+    let key = subject.key();
     let state_data = read_state_or_default(&data_dir);
     let version = subject_version(&state_data, key);
     let target_position = crate::core::chapter_seq::position(key, &version, &target_chapter)
@@ -100,7 +100,7 @@ pub async fn create_goal(
     if let Some(existing) = goal_of_subject_book(&file, &subject, &book_trimmed) {
         return Err(format!(
             "{}「{}」已有目标计划「{}」，每书只允许一个；请直接编辑该目标，或先删除后再新建。",
-            subject_display_zh(&subject),
+            subject.label(),
             book_trimmed,
             existing.title
         ));
@@ -135,6 +135,8 @@ pub async fn create_goal(
         book: book_trimmed,
         current_position,
         target_position: Some(target_position),
+        // 顺延基准起点 = 用户设置的截止日；超期未达标时 deadline 会在此基础上自动顺延
+        extend_base_deadline: deadline.clone(),
         active: true,
         status: "active".to_string(),
     };
@@ -291,7 +293,7 @@ pub async fn update_goal(
         .ok_or_else(|| format!("目标 {} 不存在", goal.id))?;
 
     // 位置重新校验：目标章节必须命中考纲顺序表
-    let key = subject_key_str(&goal.subject);
+    let key = goal.subject.key();
     let state_data = read_state_or_default(&data_dir);
     let version = subject_version(&state_data, key);
     let target_position = crate::core::chapter_seq::position(key, &version, &goal.target_chapter)
@@ -352,12 +354,20 @@ pub async fn update_goal(
             if conflict.id != goal.id {
                 return Err(format!(
                     "{}「{}」已有目标计划「{}」，每书只允许一个。",
-                    subject_display_zh(&goal.subject),
+                    goal.subject.label(),
                     goal.book,
                     conflict.title
                 ));
             }
         }
+    }
+
+    // 顺延基准重置：用户手改了截止日 → 以新截止日为自动顺延的起算基准。
+    // 未改动时沿用原基准（本字段由复盘自动顺延维护，不能被前端旧快照覆盖掉）。
+    if goal.deadline != prev.deadline {
+        goal.extend_base_deadline = goal.deadline.clone();
+    } else {
+        goal.extend_base_deadline = prev.extend_base_deadline.clone();
     }
 
     // 生命周期重算：每书唯一，无法用「删掉再建」重启目标，因此编辑即重启入口
@@ -401,7 +411,7 @@ pub async fn generate_goal_plan(
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
     let state_data = read_state_or_default(&data_dir);
-    let key = subject_key_str(&subject);
+    let key = subject.key();
     let version = subject_version(&state_data, key);
 
     // 收集要生成任务的目标：指定 id 时取一条；否则取当天该科目所有生效目标
@@ -433,10 +443,7 @@ pub async fn generate_goal_plan(
     } else {
         let goals_all = crate::data::goal::active_goals_for_subject(&data_dir, &subject, &date);
         if goals_all.is_empty() {
-            return Err(format!(
-                "{} 当天没有生效的目标区间",
-                subject_display_zh(&subject)
-            ));
+            return Err(format!("{} 当天没有生效的目标区间", subject.label()));
         }
         goals_all
     };
@@ -468,15 +475,6 @@ pub async fn generate_goal_plan(
 pub(crate) fn renumber_task_ids(tasks: &mut [PlanTask], date: &str) {
     for (i, task) in tasks.iter_mut().enumerate() {
         task.id = format!("{}-{:02}", date, i + 1);
-    }
-}
-
-fn subject_display_zh(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "数学",
-        SubjectKey::English => "英语",
-        SubjectKey::Politics => "政治",
-        SubjectKey::Professional => "专业课",
     }
 }
 

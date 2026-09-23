@@ -32,7 +32,10 @@ export async function invoke<T = unknown>(
 }
 
 /**
- * 带回退的调用：Tauri 优先，失败则使用 mock 函数
+ * 带回退的调用：仅浏览器开发模式使用 mock；桌面环境中的后端错误必须透传。
+ *
+ * 不能在 Tauri 命令失败时回退 mock，否则写操作会向界面报告“成功”，但真实数据
+ * 并未落盘；读操作也可能用示例数据覆盖用户对真实状态的判断。
  */
 export async function invokeWithFallback<T = unknown>(
   command: string,
@@ -42,15 +45,7 @@ export async function invokeWithFallback<T = unknown>(
   if (!isTauri()) {
     return fallback();
   }
-  try {
-    return await invoke<T>(command, args);
-  } catch (error) {
-    console.warn(
-      `[API] Tauri command "${command}" failed, falling back to mock:`,
-      error
-    );
-    return fallback();
-  }
+  return invoke<T>(command, args);
 }
 
 /**
@@ -59,15 +54,14 @@ export async function invokeWithFallback<T = unknown>(
  * 在非 Tauri 环境下抛出错误（区别于 invoke 的浏览器模式提示）。
  * L29：复用 invoke，仅包装错误消息。
  */
-export async function invokeDirect<T>(
-  command: string,
-  args?: Record<string, unknown>
-): Promise<T> {
+export async function invokeDirect<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try {
     return await invoke<T>(command, args);
   } catch (error) {
     if (!isTauri()) {
-      throw new Error(`命令 "${command}" 需要 Tauri 运行环境，请在桌面应用中运行`);
+      throw new Error(`命令 "${command}" 需要 Tauri 运行环境，请在桌面应用中运行`, {
+        cause: error,
+      });
     }
     throw error;
   }

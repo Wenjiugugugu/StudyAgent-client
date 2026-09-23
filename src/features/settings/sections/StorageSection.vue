@@ -57,8 +57,8 @@ const {
         </Button>
       </div>
       <p class="field-hint">
-        数据目录存储学习计划、复盘记录、状态文件等。更改后历史数据不会自动迁移，如需保留请手动复制
-        <code class="inline-code">state/</code>、<code class="inline-code">plan/</code>、<code class="inline-code">records/</code>、<code class="inline-code">assets/</code> 等子目录到新目录。更改后立即生效，重启后保留。
+        数据目录存储学习计划、复盘、进度表与自适应状态。更改目录前请先导出备份，切换后再导入；
+        这样可以完整迁移所有已注册的数据目录。更改后立即生效，重启后保留。
       </p>
       <div v-if="dirChangeMsg" class="dir-change-msg" :class="{ error: dirChangeError }">
         <component :is="dirChangeError ? AlertCircle : CheckCircle" :size="14" />
@@ -92,8 +92,8 @@ const {
         </Button>
       </div>
       <p class="field-hint">
-        导出会把学习计划、复盘记录、状态、设置与教材等数据打包为 zip 备份；
-        导入会覆盖当前数据（导入前自动备份原数据目录），完成后需重启应用生效。
+        导出会打包学习计划、复盘、状态、进度表、自适应规划、设置与教材数据，并写入逐文件完整性校验；
+        导入会先验证备份，再自动保留当前数据目录，完成后需重启应用生效。
       </p>
       <div v-if="backupMsg" class="backup-msg" :class="{ error: backupError }">
         <component :is="backupError ? AlertCircle : CheckCircle" :size="14" />

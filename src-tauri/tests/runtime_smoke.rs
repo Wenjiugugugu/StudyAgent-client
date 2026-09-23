@@ -19,13 +19,24 @@ use studyagent_desktop_lib::data::state::{read_state_or_default, SubjectKey};
 
 const SMOKE_DATE: &str = "2026-07-28";
 
+/// demo-data 的查找顺序（两者都试，取先存在的）：
+///   1. `desktop/demo-data` —— 已迁入仓库根，整套开发都在 desktop 下进行
+///   2. `D:\StudyAgent\demo-data` —— 历史位置（仓库之外），向后兼容
+///
+/// 目录已 gitignore，故在 CI 或他人 clone 上仍不存在，缺失时跳过而不是失败。
 fn demo_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR = desktop/src-tauri
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo-data")
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let in_repo = manifest.join("../../demo-data"); // desktop/demo-data
+    let legacy = manifest.join("../../../demo-data"); // D:\StudyAgent\demo-data
+    if in_repo.exists() {
+        in_repo
+    } else {
+        legacy
+    }
 }
 
-/// demo-data 位于**仓库之外**（仓库根是 desktop/），因此在 CI 或他人 clone 上并不存在。
-/// 这些用例只在具备该演示数据的本机开发环境运行，缺失时跳过而不是失败。
+/// demo-data 目录缺失时跳过用例（本地开发数据，CI 上没有）
 macro_rules! require_demo_data {
     () => {
         if !demo_dir().exists() {
@@ -237,6 +248,8 @@ fn goal_backward_schedule_includes_start_chapter_on_first_day() {
         book: String::new(),
         current_position: Some(start_pos.saturating_sub(1)),
         target_position: Some(start_pos),
+        // 自动顺延基准日：与 deadline 一致（用户未改过截止日）
+        extend_base_deadline: "2026-07-29".to_string(),
         active: true,
         status: "active".to_string(),
     };

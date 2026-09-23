@@ -107,7 +107,9 @@ const prevWeekReport = computed(() => {
     totalPlanned > 0
       ? Math.round((totalCompleted / totalPlanned) * 100)
       : reviewedDays.length
-        ? Math.round(reviewedDays.reduce((a, s) => a + (s.completion_rate ?? 0), 0) / reviewedDays.length)
+        ? Math.round(
+            reviewedDays.reduce((a, s) => a + (s.completion_rate ?? 0), 0) / reviewedDays.length
+          )
         : 0;
   return {
     studyDays: studyDays.length,
@@ -184,13 +186,11 @@ async function confirmGenerate() {
   generating.value = true;
   generateError.value = "";
   try {
-    const excludedDays: ExcludedDay[] = Object.entries(configExcluded.value).map(
-      ([date, cfg]) => ({
-        date,
-        reason_type: cfg.reason_type,
-        note: cfg.note.trim() || undefined,
-      })
-    );
+    const excludedDays: ExcludedDay[] = Object.entries(configExcluded.value).map(([date, cfg]) => ({
+      date,
+      reason_type: cfg.reason_type,
+      note: cfg.note.trim() || undefined,
+    }));
     const workloadAdjustment =
       wlDirection.value === "unchanged"
         ? undefined
@@ -291,7 +291,7 @@ watch(
         </h4>
         <div class="wl-direction-grid">
           <button
-            v-for="opt in (['increase', 'unchanged', 'decrease'] as WorkloadDirection[])"
+            v-for="opt in ['increase', 'unchanged', 'decrease'] as WorkloadDirection[]"
             :key="opt"
             type="button"
             class="wl-direction-btn"
@@ -304,7 +304,7 @@ watch(
         <div v-if="wlDirection !== 'unchanged'" class="wl-level-row">
           <span class="form-label">幅度：</span>
           <button
-            v-for="opt in (['small', 'large'] as WorkloadLevel[])"
+            v-for="opt in ['small', 'large'] as WorkloadLevel[]"
             :key="opt"
             type="button"
             class="wl-level-btn"
@@ -329,7 +329,9 @@ watch(
           <CalendarDays :size="14" />
           特殊情况排除日期（本周不学习的日子）
         </h4>
-        <p class="config-hint">勾选本周不学习的日期，AI 会把任务量分摊到其他学习日。排除日自动免复盘。</p>
+        <p class="config-hint">
+          勾选本周不学习的日期，AI 会把任务量分摊到其他学习日。排除日自动免复盘。
+        </p>
         <div class="exclude-day-grid">
           <div
             v-for="day in configExcludeCandidates"
@@ -375,7 +377,12 @@ watch(
 
     <template #footer>
       <Button variant="ghost" :disabled="generating" @click="emit('close')">取消</Button>
-      <Button variant="primary" :loading="generating" :disabled="generating" @click="confirmGenerate">
+      <Button
+        variant="primary"
+        :loading="generating"
+        :disabled="generating"
+        @click="confirmGenerate"
+      >
         <Sparkles :size="14" />
         {{ generating ? "生成中…" : "生成周计划" }}
       </Button>

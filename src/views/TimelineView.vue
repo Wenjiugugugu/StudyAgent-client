@@ -5,10 +5,7 @@ import { GitBranch } from "lucide-vue-next";
 
 <template>
   <div class="timeline-view">
-    <EmptyState
-      title="Timeline 即将上线"
-      description="学习时间线功能正在开发中，敬请期待。"
-    >
+    <EmptyState title="Timeline 即将上线" description="学习时间线功能正在开发中，敬请期待。">
       <template #actions>
         <div class="coming-soon-hint">
           <GitBranch :size="20" />

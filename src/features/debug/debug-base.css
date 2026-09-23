@@ -484,10 +484,18 @@
   min-width: 48px;
 }
 
-.log-item.log .log-level { color: var(--text-tertiary); }
-.log-item.info .log-level { color: var(--color-info); }
-.log-item.warn .log-level { color: var(--color-warning); }
-.log-item.error .log-level { color: var(--color-danger); }
+.log-item.log .log-level {
+  color: var(--text-tertiary);
+}
+.log-item.info .log-level {
+  color: var(--color-info);
+}
+.log-item.warn .log-level {
+  color: var(--color-warning);
+}
+.log-item.error .log-level {
+  color: var(--color-danger);
+}
 
 .log-text {
   color: var(--text-secondary);
@@ -495,8 +503,12 @@
   flex: 1;
 }
 
-.log-item.error .log-text { color: var(--color-danger); }
-.log-item.warn .log-text { color: var(--text-primary); }
+.log-item.error .log-text {
+  color: var(--color-danger);
+}
+.log-item.warn .log-text {
+  color: var(--text-primary);
+}
 
 /* ── AI 调用记录 ── */
 .ai-call-list {
@@ -526,7 +538,10 @@
   background: var(--bg-secondary);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .pagination-btn:hover:not(:disabled) {

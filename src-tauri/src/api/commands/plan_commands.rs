@@ -29,6 +29,40 @@ use crate::{
 
 use super::legacy::*;
 
+/// 自动补记默认复盘的截止日。今日学习开始前仍允许补昨天的复盘；开始后，
+/// 昨天进入默认标记。更早的缺失记录始终可以补记。
+fn default_review_cutoff(data_dir: &std::path::Path) -> Result<String, String> {
+    let today = crate::data::today_string();
+    let yesterday = crate::data::add_days(&today, -1)?;
+    let settings = crate::load_settings(data_dir);
+    let start_time = settings
+        .study_schedule
+        .get("start_time")
+        .and_then(|value| value.as_str())
+        .filter(|value| {
+            let parts: Vec<_> = value.split(':').collect();
+            parts.len() == 2
+                && parts[0].parse::<u8>().is_ok_and(|hour| hour < 24)
+                && parts[1].parse::<u8>().is_ok_and(|minute| minute < 60)
+        })
+        .unwrap_or("09:00");
+    let now_hm = chrono::Local::now().format("%H:%M").to_string();
+    if now_hm.as_str() < start_time {
+        crate::data::add_days(&yesterday, -1)
+    } else {
+        Ok(yesterday)
+    }
+}
+
+fn backfill_due_default_reviews(data_dir: &std::path::Path) -> Result<(), String> {
+    let cutoff = default_review_cutoff(data_dir)?;
+    let created = crate::data::records::backfill_default_reviews(data_dir, &cutoff)?;
+    if !created.is_empty() {
+        log::info!("已生成系统默认复盘: {}", created.join(", "));
+    }
+    Ok(())
+}
+
 /// 读取今日计划
 ///
 /// 读取今天的 `plan/YYYY-MM-DD_day.json` 文件。
@@ -36,6 +70,9 @@ use super::legacy::*;
 #[tauri::command]
 pub async fn get_today_plan(state: State<'_, Mutex<AppState>>) -> Result<DailyPlanFile, String> {
     let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    backfill_due_default_reviews(&data_dir)?;
     let today = crate::data::today_string();
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &today)
 }
@@ -89,6 +126,9 @@ pub async fn list_plan_summaries(
     state: State<'_, Mutex<AppState>>,
 ) -> Result<Vec<PlanSummary>, String> {
     let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    backfill_due_default_reviews(&data_dir)?;
     let dates = crate::data::plan::list_daily_plan_dates(&data_dir)?;
 
     // 收集所有周计划中标记为休息日的日期（持久化记录，不受后期设置调整影响）
@@ -150,6 +190,10 @@ pub async fn list_plan_summaries(
             date,
             has_plan: plan.is_some(),
             has_review: review.is_some(),
+            is_default_review: review
+                .as_ref()
+                .map(|item| item.meta.default_marked)
+                .unwrap_or(false),
             planned_tasks,
             planned_hours,
             completed_tasks,
@@ -169,6 +213,7 @@ pub async fn list_plan_summaries(
                 date: rest_date.clone(),
                 has_plan: false,
                 has_review: false,
+                is_default_review: false,
                 planned_tasks: 0,
                 planned_hours: 0.0,
                 completed_tasks: 0,
@@ -189,6 +234,7 @@ pub async fn list_plan_summaries(
                 date: ex_date.clone(),
                 has_plan: false,
                 has_review: false,
+                is_default_review: false,
                 planned_tasks: 0,
                 planned_hours: 0.0,
                 completed_tasks: 0,
@@ -218,6 +264,9 @@ pub async fn get_week_summaries(
 ) -> Result<Vec<PlanSummary>, String> {
     crate::data::validate_date(&week_start)?;
     let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    backfill_due_default_reviews(&data_dir)?;
 
     // 读取本周的周计划，获取休息日标记和特殊情况排除日
     let iso_week = iso_week_string(&week_start)?;
@@ -270,6 +319,10 @@ pub async fn get_week_summaries(
             date: date_str,
             has_plan: plan.is_some(),
             has_review: review.is_some(),
+            is_default_review: review
+                .as_ref()
+                .map(|item| item.meta.default_marked)
+                .unwrap_or(false),
             planned_tasks,
             planned_hours,
             completed_tasks,

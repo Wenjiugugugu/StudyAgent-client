@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use super::state::SubjectKey;
-use super::{atomic_write, read_file_content, DataResult};
+use super::{atomic_write, deadline_active_on, read_file_content, DataResult};
 
 // ============================================================================
 // 结构
@@ -68,6 +68,13 @@ pub struct Goal {
     /// 目标在顺序表中的位置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_position: Option<usize>,
+    /// 自动顺延的基准截止日（用户最后一次手改的截止日）。
+    ///
+    /// 未达标时 deadline 会被自动 +1 天（直至达标），本字段固定不动，
+    /// 用于计算顺延上限「基准日 + 缓冲天数」，防止无限顺延。
+    /// 旧数据为空时，首次复盘中以当时的 deadline 作为基准补齐。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub extend_base_deadline: String,
     /// 是否仍生效（未到截止日且未达标）
     #[serde(default = "default_true")]
     pub active: bool,
@@ -137,8 +144,12 @@ pub fn save_goals(data_dir: &Path, file: &GoalPlanFile) -> DataResult<()> {
 ///
 /// 每科唯一意味着目标不能靠「删掉再建」来重启，因此编辑保存后需要重算：
 /// - 已达目标位置 → completed（不再生效）
-/// - 截止日已过 → expired（不再生效）
+/// - 截止日已过（严格早于今天）→ expired（不再生效）
 /// - 其余 → active（恢复生效）
+///
+/// 截止日判定统一走 [`deadline_active_on`]（**截止日当天仍算生效**），与
+/// `active_goals_for_subject`、`goal_planner::extend_goal_deadline_on_miss` 同口径：
+/// 用户在截止日当天复盘时，当天任务还能把目标带达标，不应在复盘那一刻就被判过期。
 pub fn refresh_goal_lifecycle(goal: &mut Goal, today: &str) {
     let reached = matches!(
         (goal.current_position, goal.target_position),
@@ -147,7 +158,7 @@ pub fn refresh_goal_lifecycle(goal: &mut Goal, today: &str) {
     if reached {
         goal.active = false;
         goal.status = "completed".to_string();
-    } else if !goal.deadline.is_empty() && goal.deadline.as_str() < today {
+    } else if !deadline_active_on(&goal.deadline, today) {
         goal.active = false;
         goal.status = "expired".to_string();
     } else {
@@ -198,12 +209,7 @@ pub fn active_goals_for_subject(data_dir: &Path, subject: &SubjectKey, today: &s
     file.data
         .goals
         .iter()
-        .filter(|g| {
-            g.subject == *subject
-                && g.active
-                && !g.deadline.is_empty()
-                && g.deadline.as_str() >= today
-        })
+        .filter(|g| g.subject == *subject && g.active && deadline_active_on(&g.deadline, today))
         .cloned()
         .collect()
 }
@@ -219,7 +225,7 @@ pub fn active_goals_for_subject(data_dir: &Path, subject: &SubjectKey, today: &s
 pub fn active_goal_for(data_dir: &Path, subject: &SubjectKey, today: &str) -> Option<Goal> {
     let file = read_goals(data_dir).ok()?;
     let goal = goal_of_subject(&file, subject)?;
-    if goal.active && !goal.deadline.is_empty() && goal.deadline.as_str() >= today {
+    if goal.active && deadline_active_on(&goal.deadline, today) {
         Some(goal.clone())
     } else {
         None
@@ -269,6 +275,7 @@ mod tests {
                     target_position: Some(40),
                     active: true,
                     status: "active".to_string(),
+                    extend_base_deadline: "2026-09-20".to_string(),
                 }],
             },
         };
@@ -405,6 +412,60 @@ mod tests {
         refresh_goal_lifecycle(&mut g, "2026-09-11");
         assert!(!g.active);
         assert_eq!(g.status, "completed");
+    }
+
+    /// 截止日边界：**当天仍生效**，只有严格早于今天才算过期。
+    ///
+    /// 这条口径必须与 `active_goals_for_subject` 以及
+    /// `goal_planner::extend_goal_deadline_on_miss` 一致（三处共用
+    /// `date_utils::deadline_active_on`）；
+    /// 曾经三处不一致，导致用户在截止日当天复盘时目标被当场判过期、
+    /// 当天任务再没机会把它带达标。
+    #[test]
+    fn refresh_lifecycle_deadline_day_still_active() {
+        let mut g = Goal {
+            id: "goal-math-1".to_string(),
+            subject: SubjectKey::Math,
+            deadline: "2026-09-20".to_string(),
+            current_position: Some(3),
+            target_position: Some(40),
+            ..Default::default()
+        };
+        // 截止日当天 → 仍生效
+        refresh_goal_lifecycle(&mut g, "2026-09-20");
+        assert!(g.active, "截止日当天应仍为进行中");
+        assert_eq!(g.status, "active");
+
+        // 次日 → 过期
+        refresh_goal_lifecycle(&mut g, "2026-09-21");
+        assert!(!g.active);
+        assert_eq!(g.status, "expired");
+    }
+
+    /// `extend_base_deadline`（自动顺延基准）不参与生命周期判定，只在复盘顺延时使用；
+    /// 但序列化上必须与旧数据兼容：缺失时为空串且不写盘。
+    #[test]
+    fn extend_base_deadline_is_optional_and_backward_compatible() {
+        // 旧格式（Goal 上无 `extend_base_deadline` 字段）能正常解析
+        let legacy = r#"{
+            "version": "1.0.0",
+            "meta": {
+                "generated_at": "2026-09-01T10:00",
+                "based_on": { "state": "state/current.state", "user_model": "m", "exam_config": "c" }
+            },
+            "data": { "goals": [{
+                "id": "goal-math-1", "subject": "math", "title": "t",
+                "deadline": "2026-09-20", "target_chapter": "极限",
+                "current_position": 3, "target_position": 40,
+                "active": true, "status": "active"
+            }] }
+        }"#;
+        let file: GoalPlanFile = serde_json::from_str(legacy).expect("旧数据应可解析");
+        assert!(file.data.goals[0].extend_base_deadline.is_empty());
+
+        // 空值不写盘（旧版本读回时不会因为多出的字段而困惑）
+        let json = serde_json::to_string(&file.data.goals[0]).unwrap();
+        assert!(!json.contains("extend_base_deadline"));
     }
 
     #[test]

@@ -1,5 +1,9 @@
 # Dependencies
 node_modules/
+.pnpm-store/
+
+# Project documentation (maintained outside the source repository)
+docs/
 .pnp
 .pnp.js
 
@@ -80,8 +84,8 @@ installer/StudyAgent-client-*/
 installer/StudyAgent-*-sha256.txt
 
 # 敏感文件（预防性规则）
-# demo-data 位于仓库之外，但其中的 config/settings.json 含明文 API key；
-# 一旦有人把它复制进仓库，这条规则可以兜住。
+# demo-data 整目录不入库（个人学习演示数据）；其中 config/settings.json 含明文 API key。
+demo-data/
 demo-data/config/settings.json
 
 # Runtime data（仅仓库根目录的运行数据，不误伤 src-tauri/src/data/ 源码）
@@ -94,3 +98,13 @@ demo-data/config/settings.json
 
 # Rust/toolchain build caches
 src-tauri/.tmp/
+
+# ─────────────────────────────────────────────────────────────
+# 本地 AI 工具目录（记忆 / 技能 / 设计资产，均属个人上下文，不入库）
+# 仓库根即本目录，故这些路径即 D:\StudyAgent\desktop\<dir>
+# ─────────────────────────────────────────────────────────────
+.workbuddy/
+.trae/
+.codex/
+.agents/
+.design_library/

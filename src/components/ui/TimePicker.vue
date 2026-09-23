@@ -62,9 +62,7 @@ const displayValue = computed(() => {
 });
 
 // 小时列表 00-23
-const hours = computed(() =>
-  Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
-);
+const hours = computed(() => Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")));
 
 // 分钟列表（按 minuteStep 生成）
 const minutes = computed(() => {
@@ -125,7 +123,10 @@ function scrollToSelected() {
     if (!container) return;
     const el = container.querySelector(selector) as HTMLElement | null;
     if (el) {
-      container.scrollTo({ top: el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2, behavior: "auto" });
+      container.scrollTo({
+        top: el.offsetTop - container.clientHeight / 2 + el.clientHeight / 2,
+        behavior: "auto",
+      });
     }
   };
   scrollTo(hourListRef.value, ".time-col-item.hour-active");
@@ -135,12 +136,7 @@ function scrollToSelected() {
 
 <template>
   <div ref="rootRef" class="time-picker" :class="{ disabled }">
-    <button
-      type="button"
-      class="tp-display"
-      :disabled="disabled"
-      @click="toggleOpen"
-    >
+    <button type="button" class="tp-display" :disabled="disabled" @click="toggleOpen">
       <span v-if="displayValue" class="tp-value">{{ displayValue }}</span>
       <span v-else class="tp-placeholder">{{ placeholder }}</span>
       <ChevronDown :size="14" class="tp-arrow" :class="{ open }" />
@@ -333,7 +329,9 @@ function scrollToSelected() {
 /* 弹出动画 */
 .tp-pop-enter-active,
 .tp-pop-leave-active {
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  transition:
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .tp-pop-enter-from,

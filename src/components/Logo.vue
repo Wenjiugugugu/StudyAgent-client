@@ -1,10 +1,5 @@
 <template>
-  <svg
-    viewBox="0 0 64 64"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    class="app-logo"
-  >
+  <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" class="app-logo">
     <!-- 外框：圆角六边形（跟随主色调） -->
     <path
       class="logo-shell"

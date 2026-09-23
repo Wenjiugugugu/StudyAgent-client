@@ -72,12 +72,7 @@ defineExpose({ refresh: loadAiUsageLog });
         <span>AI 用量日志</span>
       </div>
       <div class="section-actions">
-        <Button
-          variant="ghost"
-          size="sm"
-          :loading="aiUsageLoading"
-          @click="loadAiUsageLog"
-        >
+        <Button variant="ghost" size="sm" :loading="aiUsageLoading" @click="loadAiUsageLog">
           <RefreshCw :size="14" />
           <span>刷新</span>
         </Button>
@@ -93,9 +88,7 @@ defineExpose({ refresh: loadAiUsageLog });
       </div>
     </div>
 
-    <p class="section-desc">
-      根据各厂商官方定价估算费用，仅供参考。{{ pricingNote }}
-    </p>
+    <p class="section-desc">根据各厂商官方定价估算费用，仅供参考。{{ pricingNote }}</p>
 
     <!-- 时间筛选 -->
     <div class="usage-filter">
@@ -130,12 +123,16 @@ defineExpose({ refresh: loadAiUsageLog });
         </div>
         <div class="usage-stat-card">
           <span class="usage-stat-label">输入 Token</span>
-          <span class="usage-stat-value text-mono">{{ formatTokens(usageSummary.totalInput) }}</span>
+          <span class="usage-stat-value text-mono">{{
+            formatTokens(usageSummary.totalInput)
+          }}</span>
           <span class="usage-stat-sub">{{ usageSummary.totalInput.toLocaleString() }} tokens</span>
         </div>
         <div class="usage-stat-card">
           <span class="usage-stat-label">输出 Token</span>
-          <span class="usage-stat-value text-mono">{{ formatTokens(usageSummary.totalOutput) }}</span>
+          <span class="usage-stat-value text-mono">{{
+            formatTokens(usageSummary.totalOutput)
+          }}</span>
           <span class="usage-stat-sub">{{ usageSummary.totalOutput.toLocaleString() }} tokens</span>
         </div>
         <div class="usage-stat-card usage-stat-cost">
@@ -145,8 +142,12 @@ defineExpose({ refresh: loadAiUsageLog });
         </div>
         <div class="usage-stat-card">
           <span class="usage-stat-label">总耗时</span>
-          <span class="usage-stat-value text-mono">{{ formatUsageDuration(usageSummary.totalDurationMs) }}</span>
-          <span class="usage-stat-sub">平均 {{ formatUsageDuration(usageSummary.avgDurationMs) }}/次</span>
+          <span class="usage-stat-value text-mono">{{
+            formatUsageDuration(usageSummary.totalDurationMs)
+          }}</span>
+          <span class="usage-stat-sub"
+            >平均 {{ formatUsageDuration(usageSummary.avgDurationMs) }}/次</span
+          >
         </div>
       </div>
 
@@ -161,11 +162,7 @@ defineExpose({ refresh: loadAiUsageLog });
             <span class="usage-col-num">输出</span>
             <span class="usage-col-cost">费用</span>
           </div>
-          <div
-            v-for="row in usageSummary.byModel"
-            :key="row.model"
-            class="usage-row"
-          >
+          <div v-for="row in usageSummary.byModel" :key="row.model" class="usage-row">
             <span class="usage-col-model text-mono">{{ row.model }}</span>
             <span class="usage-col-num text-mono">{{ row.calls }}</span>
             <span class="usage-col-num text-mono">{{ formatTokens(row.input) }}</span>
@@ -186,11 +183,7 @@ defineExpose({ refresh: loadAiUsageLog });
             <span class="usage-col-num">输出</span>
             <span class="usage-col-cost">费用</span>
           </div>
-          <div
-            v-for="row in usageSummary.byAgent"
-            :key="row.agent"
-            class="usage-row"
-          >
+          <div v-for="row in usageSummary.byAgent" :key="row.agent" class="usage-row">
             <span class="usage-col-model">{{ agentLabel(row.agent) }}</span>
             <span class="usage-col-num text-mono">{{ row.calls }}</span>
             <span class="usage-col-num text-mono">{{ formatTokens(row.input) }}</span>
@@ -211,7 +204,11 @@ defineExpose({ refresh: loadAiUsageLog });
         :class="{ expanded: expandedUsageIdx === usagePageStart + i }"
       >
         <button class="usage-item-header" @click="toggleUsageEntry(usagePageStart + i)">
-          <ChevronRight :size="14" class="ai-call-chevron" :class="{ open: expandedUsageIdx === usagePageStart + i }" />
+          <ChevronRight
+            :size="14"
+            class="ai-call-chevron"
+            :class="{ open: expandedUsageIdx === usagePageStart + i }"
+          />
           <span class="usage-item-time text-mono">{{ formatUsageTimestamp(entry.timestamp) }}</span>
           <Badge :variant="usageStatusBadge(entry.status)" size="sm">
             {{ usageStatusLabel(entry.status) }}
@@ -221,7 +218,9 @@ defineExpose({ refresh: loadAiUsageLog });
           <span class="usage-item-tokens text-mono">
             ↑{{ formatTokens(entry.prompt_tokens) }} · ↓{{ formatTokens(entry.completion_tokens) }}
           </span>
-          <span class="usage-item-duration text-mono">{{ formatUsageDuration(entry.duration_ms) }}</span>
+          <span class="usage-item-duration text-mono">{{
+            formatUsageDuration(entry.duration_ms)
+          }}</span>
           <span class="usage-item-cost text-mono">
             {{ formatCost(usageCostMap.get(usageEntryKey(entry))?.costCny ?? 0) }}
           </span>
@@ -302,8 +301,15 @@ defineExpose({ refresh: loadAiUsageLog });
       </div>
     </div>
 
-    <div v-if="!aiUsageLoading && filteredUsageLog.length === 0 && !aiUsageError" class="empty-inline">
-      {{ aiUsageLog.length === 0 ? "暂无 AI 用量记录。生成计划、生成复盘或在助手页发送对话后会显示在此。" : "当前筛选条件下无记录。" }}
+    <div
+      v-if="!aiUsageLoading && filteredUsageLog.length === 0 && !aiUsageError"
+      class="empty-inline"
+    >
+      {{
+        aiUsageLog.length === 0
+          ? "暂无 AI 用量记录。生成计划、生成复盘或在助手页发送对话后会显示在此。"
+          : "当前筛选条件下无记录。"
+      }}
     </div>
   </Card>
 </template>

@@ -141,9 +141,7 @@ watch(formTargetChapter, () => {
 const bookConflict = computed<Goal | null>(() => {
   if (!formBook.value) return null;
   const others = goals.value.filter((g) => g.id !== editingId.value);
-  return (
-    others.find((g) => g.subject === formSubject.value && g.book === formBook.value) ?? null
-  );
+  return others.find((g) => g.subject === formSubject.value && g.book === formBook.value) ?? null;
 });
 
 /** 已被目标计划占用的 (subject, book) 集合（用于科目下拉标注；排除当前正在编辑的那条） */
@@ -271,7 +269,7 @@ async function save() {
         formDeadline.value,
         formTargetChapter.value.trim(),
         formStartChapter.value.trim() || undefined,
-        formBook.value.trim(),
+        formBook.value.trim()
       );
     }
     resetForm();
@@ -299,7 +297,8 @@ const sortedGoals = computed(() => {
     if (a.status !== b.status) return a.status === "active" ? -1 : 1;
     return a.deadline.localeCompare(b.deadline);
   });
-});onMounted(reload);
+});
+onMounted(reload);
 </script>
 
 <template>
@@ -328,7 +327,8 @@ const sortedGoals = computed(() => {
             <label class="field-label">科目</label>
             <Select v-model="formSubject">
               <option v-for="s in SUBJECTS" :key="s.key" :value="s.key">
-                {{ s.label }}{{ (occupiedBooksBySubject.get(s.key)?.size ?? 0) > 0 ? "（已有目标）" : "" }}
+                {{ s.label
+                }}{{ (occupiedBooksBySubject.get(s.key)?.size ?? 0) > 0 ? "（已有目标）" : "" }}
               </option>
             </Select>
           </div>
@@ -338,38 +338,61 @@ const sortedGoals = computed(() => {
           </div>
           <div class="field field-wide">
             <label class="field-label">目标描述（如 "9/20 前完成线性方程组"）</label>
-            <input v-model="formTitle" type="text" class="text-input" placeholder="例：9/20 前完成线性方程组" />
+            <input
+              v-model="formTitle"
+              type="text"
+              class="text-input"
+              placeholder="例：9/20 前完成线性方程组"
+            />
           </div>
           <div class="field">
             <label class="field-label">所属书/板块</label>
-            <Select v-model="formBook" :placeholder="hasChapterOptions ? '选择书/板块' : '暂无进度表'">
+            <Select
+              v-model="formBook"
+              :placeholder="hasChapterOptions ? '选择书/板块' : '暂无进度表'"
+            >
               <template v-if="hasChapterOptions">
-                <option v-for="g in chapterGroups" :key="g.group || '__empty'" :value="g.group || ''">
+                <option
+                  v-for="g in chapterGroups"
+                  :key="g.group || '__empty'"
+                  :value="g.group || ''"
+                >
                   {{ g.group || "（未分组）" }}
                 </option>
               </template>
               <option v-else value="" disabled>暂无进度表，请先到「进度」页创建</option>
             </Select>
             <p v-if="formBook && activeProgressTable" class="field-hint">
-              选自「{{ activeProgressTable.name }}」{{ editingId ? "；改书后需重新选择该书的目标章节" : "" }}
+              选自「{{ activeProgressTable.name }}」{{
+                editingId ? "；改书后需重新选择该书的目标章节" : ""
+              }}
             </p>
           </div>
           <div class="field">
             <label class="field-label">目标章节（从该书的知识点选）</label>
-            <Select v-model="formTargetChapter" :placeholder="hasChapterOptions ? '选择目标章节' : '暂无进度表'">
+            <Select
+              v-model="formTargetChapter"
+              :placeholder="hasChapterOptions ? '选择目标章节' : '暂无进度表'"
+            >
               <template v-if="hasChapterOptions && bookChapterItems.length">
                 <optgroup :label="formBook || ''">
                   <option v-for="c in bookChapterItems" :key="c" :value="c">{{ c }}</option>
                 </optgroup>
               </template>
               <template v-else-if="hasChapterOptions">
-                <optgroup v-for="(g, gi) in chapterGroups" :key="g.group || `g${gi}`" :label="g.group">
+                <optgroup
+                  v-for="(g, gi) in chapterGroups"
+                  :key="g.group || `g${gi}`"
+                  :label="g.group"
+                >
                   <option v-for="c in g.items" :key="c" :value="c">{{ c }}</option>
                 </optgroup>
               </template>
               <option v-else value="" disabled>暂无进度表，请先到「进度」页创建</option>
             </Select>
-            <p v-if="activeProgressTable" class="field-hint">选自「{{ activeProgressTable.name }}」</p>
+            <p v-if="activeProgressTable" class="field-hint">
+              选自「{{ activeProgressTable.name }}」
+            </p>
           </div>
           <div class="field">
             <label class="field-label">起始位置（可选，此前内容视为已学）</label>
@@ -381,15 +404,18 @@ const sortedGoals = computed(() => {
                 </optgroup>
               </template>
             </Select>
-            <p v-if="formBook && activeProgressTable" class="field-hint">选自「{{ activeProgressTable.name }}」</p>
+            <p v-if="formBook && activeProgressTable" class="field-hint">
+              选自「{{ activeProgressTable.name }}」
+            </p>
           </div>
         </div>
 
         <!-- 每书唯一：该 (subject, book) 已被占用时不再提供新建，引导去编辑已有那条 -->
         <div v-if="bookConflict" class="notice-banner">
           <span class="notice-text">
-            {{ subjectLabel(formSubject) }}「{{ formBook }}」已有目标计划「{{ bookConflict.title }}」
-            （截止 {{ bookConflict.deadline }}）。每书只允许一个，请直接编辑它。
+            {{ subjectLabel(formSubject) }}「{{ formBook }}」已有目标计划「{{
+              bookConflict.title
+            }}」 （截止 {{ bookConflict.deadline }}）。每书只允许一个，请直接编辑它。
           </span>
           <Button variant="secondary" size="sm" @click="startEdit(bookConflict)">去编辑</Button>
         </div>
@@ -419,7 +445,9 @@ const sortedGoals = computed(() => {
       <!-- 区间列表 -->
       <section class="list">
         <div v-if="duplicateBooks.length" class="warn-banner" role="alert">
-          检测到同 (科目, 书/板块) 重复：{{ duplicateBooks.join("、") }}。每书只允许一个目标计划，请删除多余条目。
+          检测到同 (科目, 书/板块) 重复：{{
+            duplicateBooks.join("、")
+          }}。每书只允许一个目标计划，请删除多余条目。
         </div>
         <EmptyState
           v-if="sortedGoals.length === 0"
@@ -427,11 +455,18 @@ const sortedGoals = computed(() => {
           description="点上方「新建目标区间」，为某科设置截止日与目标章节，开始按目标安排每天任务。"
         />
         <div v-else class="goal-cards">
-          <div v-for="g in sortedGoals" :key="g.id" class="goal-card" :class="{ inactive: g.status !== 'active' }">
+          <div
+            v-for="g in sortedGoals"
+            :key="g.id"
+            class="goal-card"
+            :class="{ inactive: g.status !== 'active' }"
+          >
             <div class="goal-row">
               <Badge :variant="g.subject" size="md">{{ subjectLabel(g.subject) }}</Badge>
               <Badge v-if="g.book" variant="info" size="sm">「{{ g.book }}」</Badge>
-              <Badge :variant="statusMeta(g.status).variant">{{ statusMeta(g.status).label }}</Badge>
+              <Badge :variant="statusMeta(g.status).variant">{{
+                statusMeta(g.status).label
+              }}</Badge>
               <span class="goal-title">{{ g.title }}</span>
               <div class="goal-actions">
                 <button type="button" class="icon-btn" title="编辑" @click="startEdit(g)">
@@ -645,7 +680,9 @@ const sortedGoals = computed(() => {
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast);
 }
 .icon-btn:hover {
   background: var(--bg-overlay);

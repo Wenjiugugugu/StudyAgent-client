@@ -1,5 +1,6 @@
 //! Deterministic planning rules.
 
+use crate::core::date_utils::add_days;
 use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, SubjectKey};
 
@@ -475,24 +476,6 @@ pub(crate) fn today_intensity_label(reviews: &[ReviewFile]) -> String {
     }
 }
 
-pub(crate) fn subject_key_str(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "math",
-        SubjectKey::English => "english",
-        SubjectKey::Politics => "politics",
-        SubjectKey::Professional => "professional",
-    }
-}
-
-pub(crate) fn subject_cn(subject: &SubjectKey) -> &'static str {
-    match subject {
-        SubjectKey::Math => "数学",
-        SubjectKey::English => "英语",
-        SubjectKey::Politics => "政治",
-        SubjectKey::Professional => "专业课",
-    }
-}
-
 pub(crate) fn weighted_spread(total: i64, weights: &[(SubjectKey, f64)]) -> Vec<i64> {
     if weights.is_empty() {
         return Vec::new();
@@ -545,18 +528,16 @@ pub(crate) fn subject_task_budget(
     subject_start_dates: &[(&'static str, String)],
     allocation: Option<&std::collections::HashMap<String, f64>>,
 ) -> Vec<(SubjectKey, i64)> {
-    let subjects = [
-        (SubjectKey::Math, &state.subjects.math),
-        (SubjectKey::English, &state.subjects.english),
-        (SubjectKey::Politics, &state.subjects.politics),
-        (SubjectKey::Professional, &state.subjects.professional),
-    ];
+    let subjects = SubjectKey::ALL.map(|key| {
+        let subject = key.state(state);
+        (key, subject)
+    });
     let mut weights: Vec<(SubjectKey, f64)> = Vec::new();
     for (key, subject) in subjects {
         if !subject.active {
             continue;
         }
-        let key_str = subject_key_str(&key);
+        let key_str = key.key();
         if let Some((_, start_date)) = subject_start_dates
             .iter()
             .find(|(candidate, date)| *candidate == key_str && !date.is_empty())
@@ -644,7 +625,7 @@ pub(crate) fn memory_curve_review_items(
                 task_review.title.trim().to_string()
             };
             for interval in INTERVALS {
-                let Ok(due_date) = crate::data::add_days(&review.meta.date, interval) else {
+                let Ok(due_date) = add_days(&review.meta.date, interval) else {
                     continue;
                 };
                 if due_date.as_str() >= week_start && due_date.as_str() <= week_end {
@@ -660,7 +641,7 @@ pub(crate) fn memory_curve_review_items(
     result.sort_by(|a, b| {
         a.due_date
             .cmp(&b.due_date)
-            .then_with(|| subject_key_str(&a.subject).cmp(subject_key_str(&b.subject)))
+            .then_with(|| a.subject.key().cmp(b.subject.key()))
             .then_with(|| a.title.cmp(&b.title))
     });
     result

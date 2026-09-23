@@ -1,0 +1,26 @@
+# 行尾与文本属性统一（对应重构路线图 Q15）
+#
+# 背景：此前无 .gitattributes，Windows 上 core.autocrlf 行为不一致，
+# 工作区出现 LF / CRLF 混用（同一文件内混行的也有）。
+# 约定：仓库内文本一律按 LF 存取；Windows 脚本（ps1/bat/cmd）保持 CRLF。
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做行尾/编码转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.exe binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary
+
+# 锁文件与构建产物不必参与 diff 统计
+pnpm-lock.yaml -diff

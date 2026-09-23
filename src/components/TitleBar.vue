@@ -83,15 +83,33 @@ defineExpose({ toggleMaximize });
     </button>
     <button class="window-btn" type="button" @click="toggleMaximize" aria-label="最大化/还原">
       <svg v-if="isMaximized" width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <path d="M3.5 1.5H9.5C10.0523 1.5 10.5 1.94772 10.5 2.5V8.5M8.5 10.5H2.5C1.94772 10.5 1.5 10.0523 1.5 9.5V3.5H8.5V10.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+        <path
+          d="M3.5 1.5H9.5C10.0523 1.5 10.5 1.94772 10.5 2.5V8.5M8.5 10.5H2.5C1.94772 10.5 1.5 10.0523 1.5 9.5V3.5H8.5V10.5Z"
+          stroke="currentColor"
+          stroke-width="1.2"
+          stroke-linejoin="round"
+        />
       </svg>
       <svg v-else width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <rect x="1.5" y="1.5" width="9" height="9" rx="0.5" stroke="currentColor" stroke-width="1.2" />
+        <rect
+          x="1.5"
+          y="1.5"
+          width="9"
+          height="9"
+          rx="0.5"
+          stroke="currentColor"
+          stroke-width="1.2"
+        />
       </svg>
     </button>
     <button class="window-btn win-close" type="button" @click="close" aria-label="关闭">
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <path d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <path
+          d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
+          stroke="currentColor"
+          stroke-width="1.2"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
   </div>
@@ -116,7 +134,9 @@ defineExpose({ toggleMaximize });
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background-color var(--transition-fast), color var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast);
   outline: none;
 }
 
