@@ -3333,6 +3333,7 @@ fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanP
 /// 对 AI 周计划做最终科目覆盖校验：每个未来学习日都必须为当日应排的科目
 /// 至少保留一条任务。缺失时优先取该科进度表中尚未被本周任务覆盖的待学知识点；
 /// 没有可用知识点时复用该科已有任务，或按当前学习状态生成一条明确的兜底任务。
+#[allow(clippy::too_many_arguments)]
 fn enforce_daily_subject_task_coverage(
     plan: &mut WeekPlanFile,
     data_dir: &Path,

@@ -7,7 +7,7 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      "@": resolve(__dirname, "src"),
+      "@": resolve(import.meta.dirname, "src"),
     },
   },
   // Tauri expects a fixed port and exposes env vars for configuration
@@ -20,15 +20,12 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_ENV_*"],
   build: {
     // Tauri uses Chromium on Windows and WebKit on macOS/Linux
-    target:
-      process.env.TAURI_ENV_PLATFORM === "windows"
-        ? "chrome105"
-        : "safari13",
+    target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
     // don't minify for debug builds
-    minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
+    minify: !process.env.TAURI_ENV_DEBUG ? "oxc" : false,
     // produce sourcemaps for debug builds
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return;
