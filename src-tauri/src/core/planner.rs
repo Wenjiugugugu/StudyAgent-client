@@ -319,6 +319,7 @@ impl<'a> Planner<'a> {
             enable_review_tasks,
             &basics_done_labels,
             &week_plan.data.excluded_days,
+            &hidden_task_ids_for_date(data_dir, review_date),
         );
         crate::data::write_ai_debug_log(
             data_dir,
@@ -481,6 +482,24 @@ impl<'a> Planner<'a> {
                 }
             }
         }
+
+        let daily_task_floor = crate::core::planning::pure::min_daily_task_count(
+            &state,
+            &week_end,
+            &subject_start_dates,
+            subject_time_allocation.as_ref(),
+        );
+        enforce_daily_subject_task_coverage(
+            &mut week_plan,
+            data_dir,
+            &state,
+            &week_end,
+            &subject_start_dates,
+            subject_time_allocation.as_ref(),
+            daily_task_floor,
+            standard_granularity,
+            Some(&regen_dates),
+        );
 
         // 去重/校正可能改写了周计划，持久化后再生成日计划
         // 同时刷新学科占比快照：本次重排已按当前占比生成剩余天数，
@@ -774,6 +793,23 @@ impl<'a> Planner<'a> {
         // enforce 确保排除日仍为休息日（AI 可能在重排时误塞任务）
         let excluded_snapshot2 = week_plan.data.excluded_days.clone();
         enforce_excluded_days(&mut week_plan, &excluded_snapshot2)?;
+        let daily_task_floor = crate::core::planning::pure::min_daily_task_count(
+            &state,
+            &week_end,
+            &subject_start_dates,
+            subject_time_allocation.as_ref(),
+        );
+        enforce_daily_subject_task_coverage(
+            &mut week_plan,
+            data_dir,
+            &state,
+            &week_end,
+            &subject_start_dates,
+            subject_time_allocation.as_ref(),
+            daily_task_floor,
+            standard_granularity,
+            Some(&regen_dates),
+        );
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
         log::info!("周计划已更新（排除日重排）, 影响日期: {:?}", regen_dates);
         crate::data::write_ai_debug_log(
@@ -824,6 +860,8 @@ impl<'a> Planner<'a> {
                 status: task.status.clone(),
                 started_at: None,
                 accumulated_minutes: 0,
+                source: task.source.clone(),
+                ai_reference: task.ai_reference,
             })
             .collect();
 
@@ -1076,6 +1114,20 @@ impl<'a> Planner<'a> {
             &week_all_dates,
             &orig_snapshot,
             &empty_declared,
+        );
+
+        // Prompt 与任务预算只能约束 AI，不能保证它实际为每个科目返回任务。
+        // 在持久化前补齐当日缺失科目，确保预算中的每日覆盖要求成为硬约束。
+        enforce_daily_subject_task_coverage(
+            &mut week_plan,
+            data_dir,
+            &state,
+            &week_end,
+            &subject_start_dates,
+            subject_time_allocation.as_ref(),
+            adaptive_parameters.daily_task_count,
+            standard_granularity,
+            None,
         );
 
         // 3.4b 任务粒度规范化：时长上限拆分 / 下限合并 / 原子性拆分（兜底 AI 不规范输出）
@@ -1985,7 +2037,10 @@ impl<'a> Planner<'a> {
             for plan in prev_week_daily_plans.iter() {
                 let date = &plan.meta.date;
                 let weekday = weekday_name(date).unwrap_or_else(|_| "未知".to_string());
-                let is_rest = plan.data.tasks.is_empty();
+                // 用户关闭「允许 AI 参考」的任务不计入参考口径
+                let ai_tasks: Vec<&crate::data::plan::PlanTask> =
+                    plan.data.tasks.iter().filter(|t| t.ai_visible()).collect();
+                let is_rest = ai_tasks.is_empty();
                 prompt.push_str(&format!(
                     "\n**{}（{}）**{}",
                     date,
@@ -1996,12 +2051,13 @@ impl<'a> Planner<'a> {
                     // 计划任务
                     prompt.push_str(&format!(
                         "- 计划任务数: {}, 计划总时长: {:.1}h\n",
-                        plan.data.total_tasks, plan.data.total_hours
+                        ai_tasks.len(),
+                        ai_tasks.iter().map(|t| t.estimated_hours).sum::<f64>()
                     ));
                     // 按科目分组任务标题
                     use std::collections::BTreeMap;
                     let mut by_subject: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-                    for task in &plan.data.tasks {
+                    for task in ai_tasks {
                         let subj = task.subject.label();
                         by_subject
                             .entry(subj)
@@ -2012,6 +2068,21 @@ impl<'a> Planner<'a> {
                         prompt.push_str(&format!("  - {}: {}\n", subj, titles.join("、")));
                     }
                 }
+                // 用户关闭「允许 AI 参考」的任务：即使出现在复盘中，也不写入提示词
+                let hidden_ids: std::collections::HashSet<&str> = plan
+                    .data
+                    .tasks
+                    .iter()
+                    .filter(|t| !t.ai_visible())
+                    .map(|t| t.id.as_str())
+                    .collect();
+                let hidden_titles: std::collections::HashSet<&str> = plan
+                    .data
+                    .tasks
+                    .iter()
+                    .filter(|t| !t.ai_visible())
+                    .map(|t| t.title.as_str())
+                    .collect();
                 // 对应复盘
                 if let Some(review) = review_by_date.get(date.as_str()) {
                     let (a_total, a_done, b_total, b_done, rate) =
@@ -2044,6 +2115,12 @@ impl<'a> Planner<'a> {
                     // 收集未完成任务（incomplete / partial），格式: (date, subject, title, status)
                     for tr in &review.task_reviews {
                         let st = tr.status.as_str();
+                        // 跳过用户禁止 AI 参考的任务（按 task_id 命中，标题兜底旧数据）
+                        if hidden_ids.contains(tr.task_id.as_str())
+                            || (!tr.title.is_empty() && hidden_titles.contains(tr.title.as_str()))
+                        {
+                            continue;
+                        }
                         if st == "incomplete" || st == "partial" {
                             let subj_label = match tr.subject.as_str() {
                                 "math" => "数学",
@@ -2328,6 +2405,7 @@ END_PREVIOUS_OUTPUT>>>
         enable_review_tasks: bool,
         basics_done_labels: &[String],
         excluded_days: &[ExcludedDay],
+        hidden_task_ids: &std::collections::HashSet<String>,
     ) -> String {
         let remaining = days_between(&state.meta.exam_date, regen_start).unwrap_or(0);
         let iso_week = iso_week_string(week_start).unwrap_or_else(|_| "YYYY-Www".to_string());
@@ -2380,7 +2458,12 @@ END_PREVIOUS_OUTPUT>>>
             prompt.push_str("\n### 任务复盘明细\n");
             prompt.push_str("| 科目 | 任务 | 状态 | 掌握程度 | 未完成原因 |\n");
             prompt.push_str("|------|------|------|----------|------------|\n");
-            for tr in &review.task_reviews {
+            // 用户关闭「允许 AI 参考」的任务不写入提示词
+            for tr in review
+                .task_reviews
+                .iter()
+                .filter(|tr| !hidden_task_ids.contains(&tr.task_id))
+            {
                 let subj_label = match tr.subject.as_str() {
                     "math" => "数学",
                     "english" => "英语",
@@ -3130,106 +3213,294 @@ fn planner_subject_cn_from_str(subject: &str) -> &'static str {
 /// 从而保留不同学科之间的估时差异，不把 estimation_factor 在学科内抵消掉。
 fn apply_adaptive_parameters(plan: &mut WeekPlanFile, parameters: &AdaptivePlanParameters) {
     use std::collections::HashMap;
-
-    let mut current_total = 0.0f64;
-
-    for day in &mut plan.data.days {
-        if day.is_rest_day {
-            continue;
-        }
-        for allocation in &mut day.subject_allocations {
-            let subject = allocation.subject.key().to_string();
-            let estimation_factor = parameters
+    plan.data.days.sort_by(|a, b| a.date.cmp(&b.date));
+    let study_indices: Vec<_> = plan
+        .data
+        .days
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| !d.is_rest_day)
+        .map(|(i, _)| i)
+        .collect();
+    let Some(&last_day) = study_indices.last() else {
+        return;
+    };
+    let mut queue = Vec::new();
+    for &i in &study_indices {
+        for allocation in &mut plan.data.days[i].subject_allocations {
+            let factor = parameters
                 .estimation_factors
-                .get(&subject)
+                .get(allocation.subject.key())
                 .copied()
                 .unwrap_or(1.0)
                 .clamp(0.8, 1.25);
-            for template in &mut allocation.task_templates {
-                if template.estimated_hours > 0.0 {
-                    template.estimated_hours *= estimation_factor;
+            for mut task in allocation.task_templates.drain(..) {
+                // 只允许用户效率校准改变估时，容量限制不能改变真实工作量。
+                if task.estimated_hours.is_finite() && task.estimated_hours > 0.0 {
+                    task.estimated_hours *= factor;
+                } else {
+                    task.estimated_hours = crate::core::planning::pure::STANDARD_GRANULARITY_HOURS;
                 }
+                queue.push((
+                    i,
+                    allocation.subject.clone(),
+                    allocation.focus.clone(),
+                    task,
+                ));
             }
-            let total: f64 = allocation
-                .task_templates
-                .iter()
-                .map(|task| task.estimated_hours.max(0.0))
-                .sum();
-            current_total += total;
+            allocation.hours = 0.0;
         }
     }
+    let mut daily_hours = vec![0.0; plan.data.days.len()];
+    let mut subject_hours: HashMap<String, f64> = HashMap::new();
+    let mut scheduled_total = 0.0;
+    // nominal_total_hours 是校准前的名义工作量；校准后的任务估时需与实际容量比较。
+    let actual_week_budget =
+        if parameters.capacity_hours.is_finite() && parameters.capacity_hours > 0.0 {
+            parameters.capacity_hours
+        } else {
+            parameters.nominal_total_hours
+        };
+    let mut deferred_hours = 0.0;
+    let mut deferred_count = 0;
+    let mut blocked: HashMap<(String, Option<String>), usize> = HashMap::new();
+    for (source, subject, focus, task) in queue {
+        let hours = task.estimated_hours;
+        let key = (subject.key().to_string(), task.textbook.clone());
+        let first_day = source.max(blocked.get(&key).copied().unwrap_or(source));
+        let subject_limit = parameters
+            .subject_hours
+            .get(subject.key())
+            .copied()
+            .map(|h| {
+                h * parameters
+                    .estimation_factors
+                    .get(subject.key())
+                    .copied()
+                    .unwrap_or(1.0)
+                    .clamp(0.8, 1.25)
+            })
+            .unwrap_or(actual_week_budget);
+        let destination = study_indices.iter().copied().find(|&i| {
+            i >= first_day
+                && daily_hours[i] + hours <= parameters.daily_target_hours + 1e-9
+                && scheduled_total + hours <= actual_week_budget + 1e-9
+                && subject_hours.get(subject.key()).copied().unwrap_or(0.0) + hours
+                    <= subject_limit + 1e-9
+        });
+        let i = destination.unwrap_or(last_day);
+        blocked.insert(key, i);
+        if destination.is_none() {
+            deferred_count += 1;
+            deferred_hours += hours;
+        } else {
+            scheduled_total += hours;
+            *subject_hours.entry(subject.key().into()).or_default() += hours;
+        }
+        daily_hours[i] += hours;
+        let day = &mut plan.data.days[i];
+        if !day.subject_allocations.iter().any(|a| a.subject == subject) {
+            day.subject_allocations
+                .push(crate::data::plan::DaySubjectAllocation {
+                    subject: subject.clone(),
+                    focus,
+                    ..Default::default()
+                });
+        }
+        let allocation = day
+            .subject_allocations
+            .iter_mut()
+            .find(|a| a.subject == subject)
+            .unwrap();
+        allocation.hours += hours;
+        allocation.task_templates.push(task);
+    }
+    if deferred_count > 0 {
+        plan.data.goals.push(format!("容量不足：{} 条任务约 {:.1}h 无法放入本周预算，已保留至最后学习日交由日计划记录积压，请调整目标或学习容量。", deferred_count, deferred_hours));
+    }
+    for subject in &mut plan.data.subjects {
+        subject.weekly_hours = plan
+            .data
+            .days
+            .iter()
+            .flat_map(|d| &d.subject_allocations)
+            .filter(|a| a.subject == subject.subject)
+            .map(|a| a.hours)
+            .sum();
+    }
+}
 
-    // 只做全周归一化，确保 sum(subject hours) 不膨胀，同时保留学科估时系数
-    // 造成的相对时长差异。AI 已在 prompt 中拿到各科预算，异常偏离时由这一
-    // 步骤将全周总量拉回确定性预算。
-    let global_scale = if current_total > 0.0 && parameters.nominal_total_hours > 0.0 {
-        // AI 低于预算时保持保守，不为了填满预算而人为拉长任务；
-        // 只有超预算时才做确定性缩减。
-        (parameters.nominal_total_hours / current_total).min(1.0)
-    } else {
-        1.0
-    };
-    let mut final_subject_totals: HashMap<String, f64> = HashMap::new();
-    for day in &mut plan.data.days {
-        if day.is_rest_day {
-            continue;
-        }
-        for allocation in &mut day.subject_allocations {
-            let subject = allocation.subject.key().to_string();
-            for template in &mut allocation.task_templates {
-                template.estimated_hours = (template.estimated_hours * global_scale).max(0.0);
-            }
-            allocation.hours = allocation
-                .task_templates
-                .iter()
-                .map(|task| task.estimated_hours.max(0.0))
-                .sum();
-            *final_subject_totals.entry(subject).or_insert(0.0) += allocation.hours;
-        }
+/// 对 AI 周计划做最终科目覆盖校验：每个未来学习日都必须为当日应排的科目
+/// 至少保留一条任务。缺失时优先取该科进度表中尚未被本周任务覆盖的待学知识点；
+/// 没有可用知识点时复用该科已有任务，或按当前学习状态生成一条明确的兜底任务。
+fn enforce_daily_subject_task_coverage(
+    plan: &mut WeekPlanFile,
+    data_dir: &Path,
+    state: &StudyState,
+    week_end: &str,
+    subject_start_dates: &[(&'static str, String)],
+    subject_time_allocation: Option<&std::collections::HashMap<String, f64>>,
+    daily_task_count: i64,
+    standard_granularity: f64,
+    only_dates: Option<&[String]>,
+) {
+    use std::collections::HashMap;
+
+    let budgets = subject_task_budget(
+        state,
+        daily_task_count,
+        week_end,
+        subject_start_dates,
+        subject_time_allocation,
+    );
+    if budgets.is_empty() {
+        return;
     }
 
-    // 对明显超出学科预算的科目只做向下投影；预算未填满时不人为拉长，
-    // 贯彻“宁可保守，不制造新的计划压力”。
-    let subject_scales: HashMap<String, f64> = final_subject_totals
-        .iter()
-        .filter_map(|(subject, current)| {
-            let target = parameters.subject_hours.get(subject).copied()?;
-            if *current > target * 1.05 && *current > 0.0 {
-                Some((subject.clone(), target / current))
-            } else {
-                Some((subject.clone(), 1.0))
-            }
-        })
-        .collect();
-    if subject_scales.values().any(|scale| *scale < 0.999_999) {
-        final_subject_totals.clear();
-        for day in &mut plan.data.days {
-            if day.is_rest_day {
+    let mut planned_titles: HashMap<String, Vec<String>> = HashMap::new();
+    let mut reusable_templates: HashMap<String, crate::data::plan::TaskTemplate> = HashMap::new();
+    for day in &plan.data.days {
+        for allocation in &day.subject_allocations {
+            let mut valid_tasks = allocation
+                .task_templates
+                .iter()
+                .filter(|task| !task.title.trim().is_empty());
+            let Some(first_task) = valid_tasks.next() else {
                 continue;
-            }
-            for allocation in &mut day.subject_allocations {
-                let subject = allocation.subject.key().to_string();
-                let scale = subject_scales.get(&subject).copied().unwrap_or(1.0);
-                for template in &mut allocation.task_templates {
-                    template.estimated_hours = (template.estimated_hours * scale).max(0.0);
-                }
-                allocation.hours = allocation
+            };
+            let key = allocation.subject.key().to_string();
+            planned_titles.entry(key.clone()).or_default().extend(
+                allocation
                     .task_templates
                     .iter()
-                    .map(|task| task.estimated_hours.max(0.0))
-                    .sum();
-                *final_subject_totals.entry(subject).or_insert(0.0) += allocation.hours;
-            }
+                    .filter(|task| !task.title.trim().is_empty())
+                    .map(|task| task.title.clone()),
+            );
+            reusable_templates
+                .entry(key)
+                .or_insert_with(|| (*first_task).clone());
         }
     }
 
-    for subject_plan in &mut plan.data.subjects {
-        let subject = subject_plan.subject.key();
-        if let Some(final_total) = final_subject_totals.get(subject) {
-            subject_plan.weekly_hours = *final_total;
-        } else if let Some(target) = parameters.subject_hours.get(subject) {
-            subject_plan.weekly_hours = *target;
+    let progress_index = crate::data::load_progress_index(data_dir);
+    let today = today_string();
+    for day in &mut plan.data.days {
+        // 历史日计划不在本次生成范围内，休息日也不补任务。
+        if day.is_rest_day
+            || day.date.as_str() < today.as_str()
+            || only_dates.is_some_and(|dates| !dates.contains(&day.date))
+        {
+            continue;
         }
+
+        for (subject, count) in &budgets {
+            if *count <= 0 || planner_subject_not_started(subject, &day.date, subject_start_dates) {
+                continue;
+            }
+            let key = subject.key().to_string();
+            let has_task = day.subject_allocations.iter().any(|allocation| {
+                allocation.subject == *subject
+                    && allocation
+                        .task_templates
+                        .iter()
+                        .any(|task| !task.title.trim().is_empty())
+            });
+            if has_task {
+                continue;
+            }
+
+            let titles = planned_titles.entry(key.clone()).or_default();
+            let task = subject_coverage_fallback_template(
+                subject,
+                state,
+                &progress_index,
+                titles,
+                reusable_templates.get(&key),
+                standard_granularity,
+            );
+            let hours = task.estimated_hours.max(0.0);
+            if let Some(allocation) = day
+                .subject_allocations
+                .iter_mut()
+                .find(|allocation| allocation.subject == *subject)
+            {
+                allocation.hours += hours;
+                if allocation.focus.trim().is_empty() {
+                    allocation.focus = "当日科目覆盖".to_string();
+                }
+                allocation.task_templates.push(task.clone());
+            } else {
+                day.subject_allocations
+                    .push(crate::data::plan::DaySubjectAllocation {
+                        subject: subject.clone(),
+                        hours,
+                        focus: "当日科目覆盖".to_string(),
+                        task_templates: vec![task.clone()],
+                    });
+            }
+            titles.push(task.title.clone());
+            reusable_templates.entry(key).or_insert(task);
+        }
+    }
+}
+
+fn subject_coverage_fallback_template(
+    subject: &crate::data::state::SubjectKey,
+    state: &StudyState,
+    progress_index: &crate::data::progress_tables::ProgressIndex,
+    planned_titles: &[String],
+    reusable: Option<&crate::data::plan::TaskTemplate>,
+    standard_granularity: f64,
+) -> crate::data::plan::TaskTemplate {
+    use crate::data::progress_tables::{active_progress_table, NodeLevel, NodeStatus};
+
+    if let Some(table) = active_progress_table(progress_index, subject.key()) {
+        if let Some(node) = table.nodes.iter().find(|node| {
+            node.level == NodeLevel::Knowledge
+                && matches!(node.status, NodeStatus::Pending | NodeStatus::Learning)
+                && !node.title.trim().is_empty()
+                && !planned_titles
+                    .iter()
+                    .any(|title| crate::core::progress_sync::node_matches(node, &node.phase, title))
+        }) {
+            let title = if !node.phase.trim().is_empty() && !node.title.contains(&node.phase) {
+                format!("{}：{}", node.phase, node.title)
+            } else {
+                node.title.clone()
+            };
+            return crate::data::plan::TaskTemplate {
+                title,
+                estimated_hours: node
+                    .estimated_hours
+                    .filter(|hours| *hours > 0.0)
+                    .unwrap_or(standard_granularity),
+                goal: format!("完成知识点「{}」的首次学习。", node.title),
+                ..Default::default()
+            };
+        }
+    }
+
+    if let Some(template) = reusable {
+        let mut task = template.clone();
+        if task.estimated_hours <= 0.0 {
+            task.estimated_hours = standard_granularity;
+        }
+        return task;
+    }
+
+    let subject_state = subject.state(state);
+    let focus = subject_state.current_focus.trim();
+    let title = if !focus.is_empty() {
+        format!("{}：复习与练习", focus)
+    } else if active_progress_table(progress_index, subject.key()).is_some() {
+        format!("{}：滚动复习已学内容与错题", subject.label())
+    } else {
+        format!("{}：按当前计划完成一项学习内容", subject.label())
+    };
+    crate::data::plan::TaskTemplate {
+        title,
+        estimated_hours: standard_granularity,
+        ..Default::default()
     }
 }
 
@@ -3830,6 +4101,23 @@ fn basics_done_labels(data_dir: &Path) -> Vec<String> {
         .iter()
         .map(|key| planner_subject_cn_from_str(key).to_string())
         .collect()
+}
+
+/// 收集某日期日计划中「禁止 AI 参考」的任务 ID 集合
+///
+/// 复盘数据（`review.task_reviews`）由用户在本机提交，可能包含这些任务；
+/// 重排 prompt 引用复盘明细时必须据此过滤，避免间接把任务内容喂给 AI。
+fn hidden_task_ids_for_date(data_dir: &Path, date: &str) -> std::collections::HashSet<String> {
+    crate::data::plan::read_daily_plan(data_dir, date)
+        .map(|plan| {
+            plan.data
+                .tasks
+                .iter()
+                .filter(|t| !t.ai_visible())
+                .map(|t| t.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 收集本周处于「截止日规划区间」的科目键集合。
@@ -4606,7 +4894,11 @@ mod tests {
         }];
         // 周 08-03..08-09：+1 → 08-04，+3 → 08-06，+7 → 08-10（出周，排除）
         let items = memory_curve_review_items(&[r], "2026-08-03", "2026-08-09");
-        assert_eq!(items.len(), 2, "+7 落在周外应排除");
+        assert_eq!(
+            items.len(),
+            1,
+            "只安排下一次到期复习，后续间隔由复习结果决定"
+        );
         assert!(items.iter().all(|i| i.subject == SubjectKey::Math));
         assert!(items
             .iter()
@@ -4754,5 +5046,101 @@ mod tests {
             .find(|a| a.subject == SubjectKey::Math)
             .unwrap();
         assert_eq!(math.task_templates.len(), 1);
+    }
+
+    #[test]
+    fn completed_network_chapter_keeps_new_professional_tasks() {
+        let mut state = StudyState::default();
+        state.subjects.professional.completed = vec!["计算机网络".to_string()];
+        let mut week = week_plan_with_math_day();
+        let allocation = &mut week.data.days[0].subject_allocations[0];
+        allocation.subject = SubjectKey::Professional;
+        allocation.task_templates[0].title = "计算机网络·物理层：数据通信基础".to_string();
+        allocation.task_templates[1].title = "计算机网络·数据链路层：差错控制".to_string();
+        let before = week.clone();
+        let dates = vec![week.data.days[0].date.clone()];
+
+        consistency_check_and_correct(
+            &mut week,
+            &state,
+            &dates,
+            &before,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(
+            week.data.days[0].subject_allocations[0]
+                .task_templates
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn weekly_budget_moves_content_without_falsifying_estimates() {
+        let mut week = WeekPlanFile::default();
+        for date in ["2026-09-30", "2026-10-01"] {
+            week.data.days.push(crate::data::plan::WeekDayPlan {
+                date: date.into(),
+                ..Default::default()
+            });
+        }
+        week.data.days[0]
+            .subject_allocations
+            .push(crate::data::plan::DaySubjectAllocation {
+                subject: crate::data::state::SubjectKey::Math,
+                task_templates: vec![
+                    crate::data::plan::TaskTemplate {
+                        title: "先学".into(),
+                        estimated_hours: 2.0,
+                        ..Default::default()
+                    },
+                    crate::data::plan::TaskTemplate {
+                        title: "后学".into(),
+                        estimated_hours: 2.0,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            });
+        let parameters = AdaptivePlanParameters {
+            daily_target_hours: 2.0,
+            nominal_total_hours: 4.0,
+            ..Default::default()
+        };
+        apply_adaptive_parameters(&mut week, &parameters);
+        assert_eq!(
+            week.data.days[0].subject_allocations[0].task_templates[0].title,
+            "先学"
+        );
+        assert_eq!(
+            week.data.days[1].subject_allocations[0].task_templates[0].title,
+            "后学"
+        );
+        let sum: f64 = week
+            .data
+            .days
+            .iter()
+            .flat_map(|d| &d.subject_allocations)
+            .flat_map(|a| &a.task_templates)
+            .map(|t| t.estimated_hours)
+            .sum();
+        assert_eq!(sum, 4.0);
+        let calibrated = AdaptivePlanParameters {
+            capacity_hours: 5.0,
+            daily_target_hours: 2.5,
+            nominal_total_hours: 4.0,
+            estimation_factors: std::collections::HashMap::from([("math".into(), 1.25)]),
+            subject_hours: std::collections::HashMap::from([("math".into(), 4.0)]),
+            ..Default::default()
+        };
+        apply_adaptive_parameters(&mut week, &calibrated);
+        assert!(
+            week.data.goals.is_empty(),
+            "校准后的 5h 任务应放入真实 5h 容量，而不是与名义 4h 比较"
+        );
+        assert_eq!(
+            week.data.days[1].subject_allocations[0].task_templates[0].estimated_hours,
+            2.5
+        );
     }
 }

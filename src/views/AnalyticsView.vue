@@ -62,20 +62,54 @@ const rangeOptions: { value: AnalyticsRange; label: string }[] = [
 ];
 
 // 主题色
-const isDark = computed(() => settingsStore.theme === "dark");
-const textColor = computed(() => (isDark.value ? "#cbd5e1" : "#475569"));
-const axisLineColor = computed(() => (isDark.value ? "#475569" : "#cbd5e1"));
-const gridLineColor = computed(() => (isDark.value ? "#334155" : "#e2e8f0"));
+const isDark = computed(
+  () =>
+    settingsStore.theme === "dark" || document.documentElement.getAttribute("data-theme") === "dark"
+);
+const textColor = computed(() => (isDark.value ? "#cccccc" : "#333333"));
+const axisLineColor = computed(() => (isDark.value ? "rgba(255, 255, 255, 0.14)" : "#e0e0e0"));
+const gridLineColor = computed(() => (isDark.value ? "rgba(255, 255, 255, 0.08)" : "#f0f0f0"));
 
-// 主题色板
+function blendColor(from: string, to: string, ratio: number): string {
+  const parse = (color: string): [number, number, number] | null => {
+    const match = color.match(/^#?([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i);
+    if (!match) return null;
+    return [parseInt(match[1], 16), parseInt(match[2], 16), parseInt(match[3], 16)];
+  };
+  const source = parse(from);
+  const target = parse(to);
+  if (!source || !target) return from;
+  const channels = source.map((value, index) =>
+    Math.round(value + (target[index] - value) * ratio)
+  );
+  return `#${channels.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+const chartAccent = computed(
+  () => settingsStore.accentColor || (isDark.value ? "#2997ff" : "#0066cc")
+);
+const chartSurface = computed(() => (isDark.value ? "#272729" : "#ffffff"));
+
+// Charts use tints of the one selected action color. Semantic feedback keeps its status colors.
 const palette = {
-  primary: "#6366f1",
-  success: "#10b981",
-  warning: "#f59e0b",
-  danger: "#ef4444",
-  info: "#3b82f6",
-  purple: "#a855f7",
-  cyan: "#06b6d4",
+  get primary() {
+    return chartAccent.value;
+  },
+  get info() {
+    return blendColor(chartAccent.value, chartSurface.value, 0.32);
+  },
+  get purple() {
+    return blendColor(chartAccent.value, chartSurface.value, 0.56);
+  },
+  get cyan() {
+    return blendColor(chartAccent.value, chartSurface.value, 0.78);
+  },
+  get muted() {
+    return isDark.value ? "#7a7a7a" : "#cccccc";
+  },
+  success: "#34c759",
+  warning: "#ff9f0a",
+  danger: "#ff3b30",
 };
 
 // ── 图表配置 ──
@@ -131,14 +165,14 @@ const completionOption = computed(() => {
         type: "bar",
         yAxisIndex: 1,
         data: points.map((p) => p.planned_tasks),
-        itemStyle: { color: palette.info, opacity: 0.6 },
+        itemStyle: { color: palette.muted, opacity: 0.6 },
       },
       {
         name: "已完成",
         type: "bar",
         yAxisIndex: 1,
         data: points.map((p) => p.completed_tasks),
-        itemStyle: { color: palette.success },
+        itemStyle: { color: palette.info },
       },
     ],
   };
@@ -174,7 +208,7 @@ const hoursOption = computed(() => {
         type: "line",
         smooth: true,
         data: points.map((p) => p.planned_hours.toFixed(2)),
-        itemStyle: { color: palette.warning },
+        itemStyle: { color: palette.muted },
         lineStyle: { type: "dashed" as const },
       },
       {
@@ -182,7 +216,7 @@ const hoursOption = computed(() => {
         type: "line",
         smooth: true,
         data: points.map((p) => p.actual_hours.toFixed(2)),
-        itemStyle: { color: palette.success },
+        itemStyle: { color: palette.primary },
         areaStyle: { opacity: 0.2 },
       },
     ],
@@ -190,15 +224,15 @@ const hoursOption = computed(() => {
 });
 
 // 3. 阻碍因素分布饼图（原「任务掌握度分布」位置：复盘已不再采集掌握程度）
-const BLOCKER_COLORS = [
-  palette.warning,
-  palette.danger,
+const DISTRIBUTION_COLORS = computed(() => [
+  palette.primary,
   palette.info,
-  palette.success,
   palette.purple,
   palette.cyan,
-  palette.primary,
-];
+  blendColor(chartAccent.value, chartSurface.value, 0.4),
+  blendColor(chartAccent.value, chartSurface.value, 0.68),
+  blendColor(chartAccent.value, isDark.value ? "#000000" : "#1d1d1f", 0.25),
+]);
 const blockersOption = computed(() => {
   const blockers = store.reviewQuality?.blockers ?? [];
   return {
@@ -207,7 +241,7 @@ const blockersOption = computed(() => {
       bottom: 0,
       textStyle: { color: textColor.value },
     },
-    color: BLOCKER_COLORS,
+    color: DISTRIBUTION_COLORS.value,
     series: [
       {
         type: "pie",
@@ -216,7 +250,7 @@ const blockersOption = computed(() => {
         avoidLabelOverlap: false,
         itemStyle: {
           borderRadius: 6,
-          borderColor: isDark.value ? "#1e293b" : "#fff",
+          borderColor: isDark.value ? "#252527" : "#ffffff",
           borderWidth: 2,
         },
         label: { show: false, position: "center" },
@@ -268,13 +302,8 @@ const feelingOption = computed(() => {
         type: "line",
         smooth: true,
         data: feelings.map((f) => f.score),
-        itemStyle: { color: palette.purple },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(168, 85, 247, 0.3)" },
-            { offset: 1, color: "rgba(168, 85, 247, 0.02)" },
-          ]),
-        },
+        itemStyle: { color: palette.primary },
+        areaStyle: { color: palette.primary, opacity: 0.12 },
         markLine: {
           silent: true,
           data: [{ yAxis: 2 }],
@@ -296,6 +325,7 @@ const difficultyOption = computed(() => {
       textStyle: { color: textColor.value },
       type: "scroll",
     },
+    color: DISTRIBUTION_COLORS.value,
     series: [
       {
         type: "pie",
@@ -307,7 +337,7 @@ const difficultyOption = computed(() => {
         })),
         itemStyle: {
           borderRadius: 4,
-          borderColor: isDark.value ? "#1e293b" : "#fff",
+          borderColor: isDark.value ? "#252527" : "#ffffff",
           borderWidth: 2,
         },
         label: { color: textColor.value },
@@ -374,7 +404,7 @@ function buildComparisonOption(cmp: PeriodComparison | undefined) {
         name: cmp.previous_label,
         type: "bar",
         data: previousData,
-        itemStyle: { color: palette.cyan, borderRadius: [4, 4, 0, 0] },
+        itemStyle: { color: palette.info, borderRadius: [4, 4, 0, 0] },
       },
     ],
   };
@@ -426,6 +456,7 @@ const predictionStatus = computed(() => {
     at_risk: { icon: AlertTriangle, color: palette.warning, label: "存在风险" },
     off_track: { icon: AlertTriangle, color: palette.danger, label: "明显偏离" },
     no_data: { icon: Minus, color: palette.info, label: "数据不足" },
+    trend_only: { icon: Minus, color: palette.info, label: "执行趋势" },
   };
   return { ...p, ...map[p.status] };
 });

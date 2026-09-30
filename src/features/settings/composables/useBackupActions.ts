@@ -84,7 +84,7 @@ export function useBackupActions(deps: BackupActionsDeps) {
     exporting.value = true;
     try {
       const count = await settingsApi.exportBackup(dest, false);
-      backupMsg.value = `导出成功：共 ${count} 个文件，已保存到 ${dest}`;
+      backupMsg.value = `导出成功：共 ${count} 个文件，已保存到 ${dest}。AI API Key 和滴答 Token 未包含在备份中。`;
       backupError.value = false;
     } catch (e) {
       backupMsg.value = `导出失败：${e instanceof Error ? e.message : String(e)}`;
@@ -116,7 +116,7 @@ export function useBackupActions(deps: BackupActionsDeps) {
     // M13：覆盖式导入前二次确认（原数据会自动备份到 bak 目录，但需明确提醒）
     if (
       !window.confirm(
-        "导入备份将覆盖当前全部数据（原数据会自动备份到 bak 目录，可恢复）。确定继续？"
+        "备份不包含本机系统凭据库中的 AI API Key 和滴答 Token，跨设备导入后需重新配置。导入将覆盖当前全部数据（原数据会自动备份到 bak 目录，可恢复）。确定继续？"
       )
     ) {
       return;

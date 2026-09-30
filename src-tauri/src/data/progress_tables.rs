@@ -275,6 +275,8 @@ pub struct SubjectProgressSet {
 #[serde(rename_all = "snake_case", default)]
 pub struct ProgressIndex {
     pub subjects: HashMap<String, SubjectProgressSet>,
+    /// 上次用随包考纲合并内置表的应用版本；旧索引默认为空。
+    pub builtin_revision: String,
 }
 
 // ============================================================================
@@ -796,7 +798,10 @@ mod tests {
                 tables: vec![table],
             },
         );
-        ProgressIndex { subjects }
+        ProgressIndex {
+            subjects,
+            ..Default::default()
+        }
     }
 
     #[test]

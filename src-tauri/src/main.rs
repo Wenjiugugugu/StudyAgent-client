@@ -102,6 +102,13 @@ fn main() {
         .setup(|app| {
             log::info!("Tauri 应用已启动");
 
+            // 升级后先合并新版随包考纲，再让计划与进度页面读取数据。
+            if let Err(error) = list_progress_tables(
+                app.state::<std::sync::Mutex<studyagent_desktop_lib::AppState>>(),
+            ) {
+                log::error!("启动时更新内置考纲失败：{}", error);
+            }
+
             // 获取主窗口
             if let Some(window) = app.get_webview_window("main") {
                 let title = window.title().unwrap_or_default();
@@ -217,6 +224,10 @@ fn main() {
             generate_daily_plan,
             generate_week_plan,
             add_excluded_day_and_regenerate,
+            // Plan — 手动任务（用户显式添加 / AI 参考开关 / 删除）
+            add_manual_task,
+            set_task_ai_reference,
+            delete_manual_task,
             // Goal（目标与截止日规划区间）
             list_goals,
             create_goal,
@@ -251,6 +262,7 @@ fn main() {
             set_active_progress_variant,
             generate_progress_table,
             builtin_progress_table,
+            refresh_builtin_progress_tables,
             estimate_progress_from_state,
             apply_progress_statuses,
             batch_update_progress,

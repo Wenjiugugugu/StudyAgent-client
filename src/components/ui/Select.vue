@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 /**
  * 统一下拉选择器（胶囊风格，与整体 UI 一致，带弹出动画）
  *
@@ -287,6 +288,7 @@ onUnmounted(() => document.removeEventListener("mousedown", onDocClick));
       <div
         v-if="open"
         :id="`${uid}-panel`"
+        v-liquid-glass="{ strength: 0.08 }"
         class="select-panel"
         role="listbox"
         @keydown="onPanelKeydown"

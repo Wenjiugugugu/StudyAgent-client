@@ -203,10 +203,11 @@ function statusMeta(status: string): { variant: "success" | "info" | "default"; 
 }
 
 function progressOf(g: Goal): number {
-  const cur = g.current_position ?? 0;
-  const tgt = g.target_position ?? 0;
-  if (tgt <= 0) return 0;
-  return Math.min(100, Math.round((cur / tgt) * 100));
+  if (g.status === "completed") return 100;
+  const cur = g.current_position ?? -1;
+  const tgt = g.target_position;
+  if (tgt == null || tgt < 0 || cur < 0) return 0;
+  return Math.min(100, Math.round(((cur + 1) / (tgt + 1)) * 100));
 }
 
 function startEdit(g: Goal) {

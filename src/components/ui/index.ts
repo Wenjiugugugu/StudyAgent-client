@@ -14,6 +14,10 @@ export { default as LoadingSpinner } from "./LoadingSpinner.vue";
 export { default as Modal } from "./Modal.vue";
 export { default as ProgressBar } from "./ProgressBar.vue";
 export { default as Select } from "./Select.vue";
+export { default as Switch } from "./Switch.vue";
 export { default as TimePicker } from "./TimePicker.vue";
 
 export { isTopModal, registerModal, unregisterModal, type ModalStackEntry } from "./modal-stack";
+
+export { default as SegmentedControl } from "./SegmentedControl.vue";
+export { default as Slider } from "./Slider.vue";

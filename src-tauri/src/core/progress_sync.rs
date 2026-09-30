@@ -77,8 +77,21 @@ fn bigrams(s: &str) -> HashSet<String> {
 
 /// 2-gram 重叠系数 = |A ∩ B| / min(|A|, |B|)，取值 0.0 ~ 1.0
 fn bigram_overlap(a: &str, b: &str) -> f64 {
-    let ga = bigrams(a);
-    let gb = bigrams(b);
+    let distinctive = |s: &str| {
+        [
+            "的基本概念",
+            "基本概念",
+            "的定义",
+            "的性质",
+            "的基本原理",
+            "基本原理",
+            "的概念",
+        ]
+        .iter()
+        .fold(s.to_string(), |value, phrase| value.replace(phrase, ""))
+    };
+    let ga = bigrams(&distinctive(a));
+    let gb = bigrams(&distinctive(b));
     if ga.is_empty() || gb.is_empty() {
         return 0.0;
     }
@@ -221,15 +234,90 @@ fn apply_task_to_subject(
         return 0;
     }
 
+    // 先解析显式书/章节限定，再评分。确切标题可命中多个并列知识点；
+    // 模糊召回只接受唯一且显著领先的候选，不能把全部相似节点一起升级。
+    let h = norm(&task_title);
+    let chapter_id = table
+        .nodes
+        .iter()
+        .filter(|n| n.level == NodeLevel::Chapter)
+        .find(|n| task_title.contains(&format!("{}｜", n.title)))
+        .map(|n| n.id.clone());
+    let mut candidates: Vec<(usize, f64)> = table
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.level == NodeLevel::Knowledge)
+        .filter(|(_, n)| {
+            chapter_id
+                .as_ref()
+                .is_none_or(|id| n.parent_id.as_ref() == Some(id))
+        })
+        .filter(|(_, n)| node_matches(n, &n.phase, &task_title))
+        .map(|(i, n)| {
+            let t = norm(&n.title);
+            let c = norm(&n.phase);
+            let hlen = h.chars().count();
+            let clen = c.chars().count();
+            let exact = contains(&h, &t)
+                || contains(&t, &h)
+                || (!c.is_empty()
+                    && (h == c
+                        || (hlen >= clen
+                            && hlen - clen <= CHAPTER_ENTRY_SLACK
+                            && (h.starts_with(&c) || h.ends_with(&c)))));
+            (i, if exact { 2.0 } else { bigram_overlap(&h, &t) })
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut selected: HashSet<usize> = if candidates.first().is_some_and(|c| c.1 >= 2.0) {
+        candidates
+            .iter()
+            .filter(|c| c.1 >= 2.0)
+            .map(|c| c.0)
+            .collect()
+    } else if candidates.first().is_some_and(|top| {
+        candidates
+            .get(1)
+            .is_none_or(|second| top.1 - second.1 >= 0.15)
+    }) {
+        candidates.first().map(|c| c.0).into_iter().collect()
+    } else {
+        HashSet::new()
+    };
+    if chapter_id.is_none() {
+        let ambiguous: HashSet<usize> = selected
+            .iter()
+            .copied()
+            .filter(|&i| {
+                selected.iter().any(|&j| {
+                    i != j
+                        && norm(&table.nodes[i].title) == norm(&table.nodes[j].title)
+                        && table.nodes[i].parent_id != table.nodes[j].parent_id
+                })
+            })
+            .collect();
+        selected.retain(|i| !ambiguous.contains(i));
+    }
     let mut changed = 0;
-    for node in table.nodes.iter_mut() {
+    for (i, node) in table.nodes.iter_mut().enumerate() {
         if node.level != NodeLevel::Knowledge {
             continue;
         }
-        if !node_matches(node, &node.phase, &task_title) {
+        if !selected.contains(&i) {
             continue;
         }
-        let new_s = node.status.max_with(target);
+        // 复盘反馈困难时，次日计划里的任务可能是第一次接触的新知识点。
+        // 只有已经达到「基础」的节点才进入强化；待学/学习中节点先标为学习中，
+        // 避免仅因当天整体感受或其他知识点薄弱就跳过首次学习阶段。
+        let node_target = if target == NodeStatus::Reinforcing
+            && matches!(node.status, NodeStatus::Pending | NodeStatus::Learning)
+        {
+            NodeStatus::Learning
+        } else {
+            target
+        };
+        let new_s = node.status.max_with(node_target);
         if new_s != node.status {
             node.status = new_s;
             changed += 1;
@@ -237,6 +325,11 @@ fn apply_task_to_subject(
     }
     if changed > 0 {
         table.updated_at = now_string();
+    }
+    let changed_variant = table.variant.clone();
+    let changed_name = table.name.clone();
+    if changed > 0 && subject == "professional" {
+        changed += sync_professional_table_change(index, &changed_variant, &changed_name);
     }
     changed
 }
@@ -400,6 +493,7 @@ pub fn apply_estimated_statuses(
 ) -> Result<usize, String> {
     let mut index = load_progress_index(data_dir);
     let mut changed = 0usize;
+    let mut changed_tables: Vec<(String, String)> = Vec::new();
     if let Some(set) = index.subjects.get_mut(subject) {
         for ch in changes {
             let target = parse_node_status(&ch.status);
@@ -413,6 +507,7 @@ pub fn apply_estimated_statuses(
             if new_s != node.status {
                 node.status = new_s;
                 changed += 1;
+                changed_tables.push((table.variant.clone(), table.name.clone()));
             }
         }
         if changed > 0 {
@@ -421,6 +516,13 @@ pub fn apply_estimated_statuses(
                     t.updated_at = now_string();
                 }
             }
+        }
+    }
+    if subject == "professional" {
+        changed_tables.sort();
+        changed_tables.dedup();
+        for (variant, name) in changed_tables {
+            changed += sync_professional_table_change(&mut index, &variant, &name);
         }
     }
     if changed > 0 {
@@ -483,6 +585,7 @@ pub fn apply_batch_round(
         }
 
         // 1) 各表「学到第几章」覆盖推进（只升不降）
+        let mut changed_masters: Vec<(String, String)> = Vec::new();
         {
             let Some(set) = index.subjects.get_mut(&u.subject) else {
                 continue;
@@ -496,7 +599,19 @@ pub fn apply_batch_round(
                     table.updated_at = now_string();
                     tables_updated += 1;
                     nodes_changed += changed;
+                    if u.subject == "professional" && table.name.ends_with(" · 总专业课进度表")
+                    {
+                        changed_masters.push((table.variant.clone(), table.name.clone()));
+                    }
                 }
+            }
+        }
+
+        for (variant, name) in changed_masters {
+            let changed = sync_professional_table_change(&mut index, &variant, &name);
+            if changed > 0 {
+                tables_updated += 1;
+                nodes_changed += changed;
             }
         }
 
@@ -776,6 +891,172 @@ fn apply_master_derivation(
     }
     if changed > 0 {
         master.updated_at = now_string();
+    }
+    changed
+}
+
+/// 内置专业课总表与教材表的状态联动。总表和教材的知识点粒度不同，
+/// 因此沿用教材→总表的覆盖比例，反向把总表板块的前 N 个知识点覆盖度
+/// 映射到关联教材的前 N 个知识点。章节节点仅作进度摘要，不参与反向计算。
+pub fn sync_professional_table_change(
+    index: &mut ProgressIndex,
+    variant: &str,
+    changed_table_name: &str,
+) -> usize {
+    let Some(exam) = crate::core::professional::find(variant) else {
+        return 0;
+    };
+    if exam.books.is_empty() {
+        return 0;
+    }
+    let master_name = format!("{} · 总专业课进度表", exam.name);
+    if changed_table_name == master_name {
+        let mut changed = apply_books_from_master(index, &exam, &master_name);
+        for status in [
+            NodeStatus::Learning,
+            NodeStatus::Basic,
+            NodeStatus::Reinforcing,
+            NodeStatus::Mastered,
+        ] {
+            changed += apply_master_derivation(index, "professional", variant, status);
+        }
+        changed
+    } else if exam
+        .books
+        .iter()
+        .any(|book| changed_table_name == format!("{} · 教材：{}", exam.name, book.name))
+    {
+        [
+            NodeStatus::Learning,
+            NodeStatus::Basic,
+            NodeStatus::Reinforcing,
+            NodeStatus::Mastered,
+        ]
+        .into_iter()
+        .map(|status| apply_master_derivation(index, "professional", variant, status))
+        .sum()
+    } else {
+        0
+    }
+}
+
+fn apply_books_from_master(
+    index: &mut ProgressIndex,
+    exam: &crate::core::professional::ProfExam,
+    master_name: &str,
+) -> usize {
+    let Some(set) = index.subjects.get_mut("professional") else {
+        return 0;
+    };
+    let Some(master) = set
+        .tables
+        .iter()
+        .find(|table| table.variant == exam.short && table.name == master_name)
+    else {
+        return 0;
+    };
+    let mut section_statuses: HashMap<&str, Vec<NodeStatus>> = HashMap::new();
+    for section in exam.master {
+        section_statuses.insert(
+            section.phase,
+            master
+                .nodes
+                .iter()
+                .filter(|node| node.level == NodeLevel::Knowledge && node.phase == section.phase)
+                .map(|node| node.status)
+                .collect(),
+        );
+    }
+
+    let mut changed = 0;
+    for book in &exam.books {
+        if book.master_links.is_empty() {
+            continue;
+        }
+        let name = format!("{} · 教材：{}", exam.name, book.name);
+        let Some(table) = set
+            .tables
+            .iter_mut()
+            .find(|table| table.variant == exam.short && table.name == name)
+        else {
+            continue;
+        };
+        let knowledge: Vec<usize> = table
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node)| (node.level == NodeLevel::Knowledge).then_some(i))
+            .collect();
+        if knowledge.is_empty() {
+            continue;
+        }
+        let book_changed_before = changed;
+        for status in [
+            NodeStatus::Learning,
+            NodeStatus::Basic,
+            NodeStatus::Reinforcing,
+            NodeStatus::Mastered,
+        ] {
+            // 一本教材关联多个总表板块时，合并这些板块的知识点覆盖度，
+            // 避免只学了其中一个板块就把整本教材全部推进。
+            let (advanced, total) = book
+                .master_links
+                .iter()
+                .filter_map(|link| section_statuses.get(link))
+                .fold((0usize, 0usize), |(advanced, total), nodes| {
+                    (
+                        advanced
+                            + nodes
+                                .iter()
+                                .filter(|node| node.rank() >= status.rank())
+                                .count(),
+                        total + nodes.len(),
+                    )
+                });
+            let fraction = if total == 0 {
+                0.0
+            } else {
+                advanced as f64 / total as f64
+            };
+            let count = (fraction * knowledge.len() as f64).round() as usize;
+            for &index in knowledge.iter().take(count) {
+                let node = &mut table.nodes[index];
+                let next = node.status.max_with(status);
+                if next != node.status {
+                    node.status = next;
+                    changed += 1;
+                }
+            }
+        }
+        // 教材章节只有全部知识点达到某等级时才提升到该等级。
+        let chapter_ids: Vec<String> = table
+            .nodes
+            .iter()
+            .filter(|node| node.level == NodeLevel::Chapter)
+            .map(|node| node.id.clone())
+            .collect();
+        for chapter_id in chapter_ids {
+            let children: Vec<NodeStatus> = table
+                .nodes
+                .iter()
+                .filter(|node| node.parent_id.as_deref() == Some(chapter_id.as_str()))
+                .map(|node| node.status)
+                .collect();
+            if children.is_empty() {
+                continue;
+            }
+            let lowest = children.into_iter().min_by_key(NodeStatus::rank).unwrap();
+            if let Some(chapter) = table.nodes.iter_mut().find(|node| node.id == chapter_id) {
+                let next = chapter.status.max_with(lowest);
+                if next != chapter.status {
+                    chapter.status = next;
+                    changed += 1;
+                }
+            }
+        }
+        if changed > book_changed_before {
+            table.updated_at = now_string();
+        }
     }
     changed
 }
@@ -1307,5 +1588,180 @@ mod tests {
             .iter()
             .filter(|n| n.parent_id.as_deref() == Some(other_chapter.id.as_str()))
             .all(|n| n.status == NodeStatus::Pending));
+    }
+
+    #[test]
+    fn builtin_professional_variants_sync_in_both_directions() {
+        use crate::core::professional::{all_names, build_tables, find};
+
+        for variant in all_names().split('、') {
+            let exam = find(variant).expect("内置专业课应能按短名识别");
+            let Some(book_spec) = exam.books.iter().find(|book| !book.master_links.is_empty())
+            else {
+                continue; // 无指定教材的方案只有总表，无分表可联动
+            };
+            let master_name = format!("{} · 总专业课进度表", exam.name);
+            let book_name = format!("{} · 教材：{}", exam.name, book_spec.name);
+            let mut index = ProgressIndex::default();
+            let mut tables = build_tables(&exam);
+            for (i, table) in tables.iter_mut().enumerate() {
+                table.id = format!("table-{i}");
+            }
+            index
+                .subjects
+                .entry("professional".to_string())
+                .or_default()
+                .tables = tables;
+
+            // 总表推进关联板块，教材知识点应随之推进。
+            {
+                let master = index
+                    .subjects
+                    .get_mut("professional")
+                    .unwrap()
+                    .tables
+                    .iter_mut()
+                    .find(|table| table.name == master_name)
+                    .unwrap();
+                for node in &mut master.nodes {
+                    if node.level == NodeLevel::Knowledge
+                        && book_spec.master_links.contains(&node.phase.as_str())
+                    {
+                        node.status = NodeStatus::Basic;
+                    }
+                }
+            }
+            assert!(
+                sync_professional_table_change(&mut index, variant, &master_name) > 0,
+                "{variant} 总表应推动教材"
+            );
+            let book = index.subjects["professional"]
+                .tables
+                .iter()
+                .find(|table| table.name == book_name)
+                .unwrap();
+            assert!(
+                book.nodes
+                    .iter()
+                    .filter(|node| node.level == NodeLevel::Knowledge)
+                    .all(|node| node.status.rank() >= NodeStatus::Basic.rank()),
+                "{variant} 教材应达到基础"
+            );
+
+            // 教材再推进到掌握，总表关联板块也应更新。
+            {
+                let book = index
+                    .subjects
+                    .get_mut("professional")
+                    .unwrap()
+                    .tables
+                    .iter_mut()
+                    .find(|table| table.name == book_name)
+                    .unwrap();
+                for node in &mut book.nodes {
+                    if node.level == NodeLevel::Knowledge {
+                        node.status = NodeStatus::Mastered;
+                    }
+                }
+            }
+            assert!(
+                sync_professional_table_change(&mut index, variant, &book_name) > 0,
+                "{variant} 教材应推动总表"
+            );
+            let master = index.subjects["professional"]
+                .tables
+                .iter()
+                .find(|table| table.name == master_name)
+                .unwrap();
+            assert!(
+                master
+                    .nodes
+                    .iter()
+                    .any(|node| node.level == NodeLevel::Knowledge
+                        && book_spec.master_links.contains(&node.phase.as_str())
+                        && node.status == NodeStatus::Mastered),
+                "{variant} 总表应有掌握节点"
+            );
+        }
+    }
+
+    #[test]
+    fn partial_master_network_progress_reaches_network_book() {
+        use crate::core::professional::{build_tables, find};
+
+        let exam = find("408 计算机").unwrap();
+        let mut index = ProgressIndex::default();
+        let mut tables = build_tables(&exam);
+        for (i, table) in tables.iter_mut().enumerate() {
+            table.id = format!("table-{i}");
+        }
+        let master_name = tables[0].name.clone();
+        let first_network = tables[0]
+            .nodes
+            .iter_mut()
+            .find(|node| node.level == NodeLevel::Knowledge && node.phase == "计算机网络")
+            .unwrap();
+        first_network.status = NodeStatus::Basic;
+        index
+            .subjects
+            .entry("professional".to_string())
+            .or_default()
+            .tables = tables;
+
+        let changed = sync_professional_table_change(&mut index, exam.short, &master_name);
+        assert!(changed > 0);
+        let network_book = index.subjects["professional"]
+            .tables
+            .iter()
+            .find(|table| table.name.contains("教材：计算机网络·"))
+            .unwrap();
+        let knowledge: Vec<_> = network_book
+            .nodes
+            .iter()
+            .filter(|node| node.level == NodeLevel::Knowledge)
+            .collect();
+        assert!(knowledge
+            .iter()
+            .any(|node| node.status == NodeStatus::Basic));
+        assert!(knowledge
+            .iter()
+            .any(|node| node.status == NodeStatus::Pending));
+    }
+
+    #[test]
+    fn generic_concept_suffix_does_not_confuse_sync_and_communication() {
+        let node = kn_node("进程通信的基本概念", "操作系统");
+        assert!(!node_matches(&node, &node.phase, "进程同步的基本概念"));
+        assert!(node_matches(&node, &node.phase, "复习进程通信的基本概念"));
+    }
+
+    #[test]
+    fn ambiguous_fuzzy_candidates_are_not_automatically_upgraded() {
+        let mut index = ProgressIndex::default();
+        index.subjects.insert(
+            "math".into(),
+            crate::data::progress_tables::SubjectProgressSet {
+                active_id: "t".into(),
+                active_variant: "数二".into(),
+                tables: vec![ProgressTable {
+                    id: "t".into(),
+                    variant: "数二".into(),
+                    nodes: vec![
+                        kn_node("连续分配存储管理方式甲", "存储器管理"),
+                        kn_node("连续分配存储管理方式乙", "存储器管理"),
+                    ],
+                    ..Default::default()
+                }],
+            },
+        );
+        assert_eq!(
+            apply_task_to_subject(
+                &mut index,
+                "math",
+                "连续分配内存管理方式",
+                NodeStatus::Basic
+            ),
+            0
+        );
     }
 }

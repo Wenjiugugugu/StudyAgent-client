@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { ChevronDown } from "lucide-vue-next";
 
@@ -143,7 +144,7 @@ function scrollToSelected() {
     </button>
 
     <transition name="tp-pop">
-      <div v-if="open" class="tp-panel">
+      <div v-if="open" v-liquid-glass="{ strength: 0.08 }" class="tp-panel">
         <div class="tp-col-wrap">
           <div class="tp-col-head">时</div>
           <div ref="hourListRef" class="tp-col">

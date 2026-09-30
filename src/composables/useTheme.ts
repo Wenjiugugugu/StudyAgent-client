@@ -1,4 +1,4 @@
-import { watch, onMounted, onUnmounted } from "vue";
+import { computed, watch, onMounted, onUnmounted } from "vue";
 import { useSettingsStore } from "@/stores/settings";
 import { isTauri } from "@/api/tauri";
 import { readBackgroundAsDataUrl } from "@/api";
@@ -225,7 +225,7 @@ export function useTheme() {
   );
 
   return {
-    theme: settingsStore.theme,
+    theme: computed(() => settingsStore.theme),
     visualMode: settingsStore.visualMode,
     accentColor: settingsStore.accentColor,
     backgroundImage: settingsStore.backgroundImage,

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 /**
  * 工作台 — Hero 头部
  *
@@ -27,7 +28,7 @@ defineProps<{
         {{ dateLabel }}
       </span>
     </div>
-    <div class="hero-countdown">
+    <div v-liquid-glass class="hero-countdown">
       <span class="countdown-number">{{ remainingDays }}</span>
       <span class="countdown-unit">天后考研</span>
     </div>

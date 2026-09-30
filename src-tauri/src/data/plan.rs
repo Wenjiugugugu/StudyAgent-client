@@ -9,7 +9,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::state::{RiskLevel, RiskSubject, SubjectKey, TaskPriority, TaskStatus};
+use super::state::{
+    default_true, is_true, RiskLevel, RiskSubject, SubjectKey, TaskPriority, TaskSource, TaskStatus,
+};
 use super::{add_days, get_week_end, list_dir_files, read_file_content, DataResult};
 
 // ============================================================================
@@ -213,6 +215,9 @@ pub struct DailyPlanMeta {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DailyPlanData {
+    /// 因容量限制未排入的完整任务；下个学习日继续安排，真实估时不被压缩。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_tasks: Vec<PlanTask>,
     pub remaining_days: i64,
     pub target: String,
     pub strategy: String,
@@ -233,7 +238,7 @@ pub struct DailyPlanData {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanTask {
     pub id: String,
     pub subject: SubjectKey,
@@ -252,6 +257,47 @@ pub struct PlanTask {
     /// 滴答清单任务 ID（同步对账后回填；None 表示尚未同步到滴答）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dida_task_id: Option<String>,
+    /// 任务来源：ai（AI/计划生成）/ manual（用户手动添加）
+    /// 旧计划文件无此字段，反序列化为 ai
+    #[serde(default)]
+    pub source: TaskSource,
+    /// 是否允许 AI 参考此任务；false 时该任务不会写入任何 AI 提示词
+    /// 旧计划文件无此字段，反序列化为 true
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub ai_reference: bool,
+}
+
+impl Default for PlanTask {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            subject: SubjectKey::default(),
+            title: String::new(),
+            priority: TaskPriority::default(),
+            estimated_hours: 0.0,
+            goal: String::new(),
+            completion_criteria: Vec::new(),
+            textbook: None,
+            style_tips: None,
+            fallback_plan: None,
+            status: TaskStatus::default(),
+            dida_task_id: None,
+            source: TaskSource::default(),
+            ai_reference: true,
+        }
+    }
+}
+
+impl PlanTask {
+    /// 是否为用户手动添加的任务
+    pub fn is_manual(&self) -> bool {
+        self.source == TaskSource::Manual
+    }
+
+    /// 该任务是否允许写入 AI 提示词
+    pub fn ai_visible(&self) -> bool {
+        self.ai_reference
+    }
 }
 
 // ============================================================================
@@ -378,15 +424,21 @@ pub fn clear_daily_plan(data_dir: &Path, date: &str) -> DataResult<bool> {
         return Ok(false);
     }
     let mut plan = read_daily_plan(data_dir, date)?;
-    plan.data.tasks.clear();
-    plan.data.total_tasks = 0;
-    plan.data.total_hours = 0.0;
+    // 用户手动添加的任务不随计划清空而丢失（只有用户自己能删除）
+    plan.data.tasks.retain(|t| t.is_manual());
+    recalc_totals(&mut plan.data);
     save_daily_plan(data_dir, &plan)?;
     Ok(true)
 }
 
 /// 保存日计划 JSON
+///
+/// 保存前会把磁盘上已有的「用户手动添加」任务补回本次写入的 tasks 中，
+/// 避免 AI 重新生成计划、切分日计划、排除日重排等路径覆盖用户显式添加的任务。
 pub fn save_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> {
+    let mut plan = plan.clone();
+    preserve_manual_tasks_from_disk(data_dir, &mut plan);
+    let plan = &plan;
     let path = daily_plan_path(data_dir, &plan.meta.date);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -398,6 +450,138 @@ pub fn save_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> 
     super::atomic_write(&path, &json)
         .map_err(|e| format!("写入日计划文件失败 {:?}: {}", path, e))?;
     Ok(())
+}
+
+// ============================================================================
+// 手动任务（用户显式添加）支持
+// ============================================================================
+
+/// 重新计算日计划的统计量（任务数 / 预计总时长）
+pub fn recalc_totals(data: &mut DailyPlanData) {
+    data.total_tasks = data.tasks.len() as i32;
+    data.total_hours = data.tasks.iter().map(|t| t.estimated_hours).sum();
+}
+
+/// 为指定日期分配下一个可用的任务 ID（格式 `YYYY-MM-DD-NN`）
+///
+/// 取该日期已有任务中最大 NN + 1；无匹配任务时返回 `-01`。
+pub fn next_task_id(date: &str, tasks: &[PlanTask]) -> String {
+    let max = tasks
+        .iter()
+        .filter_map(|t| {
+            let id = t.id.as_str();
+            if id.len() > 11 && id.as_bytes()[10] == b'-' && id.starts_with(date) {
+                id[11..].parse::<u32>().ok()
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    format!("{}-{:02}", date, max + 1)
+}
+
+/// 把磁盘上已有的手动任务补回本次要写入的 plan（原地修改）
+///
+/// 规则：
+/// - 只回补 `source == manual` 的任务；
+/// - 与目标 plan 中已有任务「id 相同」或「同为手动且科目+标题相同」视为同一任务，跳过；
+/// - id 已被 AI 任务占用时重新分配序号，牺牲对账历史以保住任务本身。
+fn preserve_manual_tasks_from_disk(data_dir: &Path, plan: &mut DailyPlanFile) {
+    let Ok(existing) = read_daily_plan(data_dir, &plan.meta.date) else {
+        return;
+    };
+    let mut changed = false;
+    for old in existing.data.tasks.into_iter().filter(|t| t.is_manual()) {
+        let duplicated = plan.data.tasks.iter().any(|t| {
+            t.id == old.id || (t.is_manual() && t.subject == old.subject && t.title == old.title)
+        });
+        if duplicated {
+            continue;
+        }
+        let mut task = old;
+        if plan.data.tasks.iter().any(|t| t.id == task.id) {
+            task.id = next_task_id(&plan.meta.date, &plan.data.tasks);
+        }
+        plan.data.tasks.push(task);
+        changed = true;
+    }
+    if changed {
+        recalc_totals(&mut plan.data);
+    }
+}
+
+/// 以日计划的 tasks 为准重建 `state.current_task`（保留已有的计时/完成状态）
+///
+/// 用于手动添加/删除任务后，让 State 与日计划保持一致：
+/// 任务是 `update_task_status` / 计时命令的匹配依据，不同步会导致找不到任务。
+/// 仅当目标日期就是 State 当前记录的日期，或目标日期为今天时才写入（历史日期不动 State）。
+pub fn resync_plan_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
+    let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+    if state.current_task.date != date && date != crate::data::today_string() {
+        return Ok(());
+    }
+
+    use std::collections::HashMap;
+    // 保留已有任务的完成状态、计时信息与 AI 参考开关
+    let previous: HashMap<String, crate::data::state::StateTask> = state
+        .current_task
+        .tasks
+        .iter()
+        .filter_map(|t| t.task_id.clone().map(|id| (id, t.clone())))
+        .collect();
+
+    let tasks: Vec<crate::data::state::StateTask> = plan
+        .data
+        .tasks
+        .iter()
+        .map(|t| {
+            let prev = previous.get(&t.id);
+            crate::data::state::StateTask {
+                task_id: Some(t.id.clone()),
+                subject: format!("{:?}", t.subject).to_lowercase(),
+                task: t.title.clone(),
+                priority: t.priority.clone(),
+                status: prev
+                    .map(|p| p.status.clone())
+                    .unwrap_or_else(|| t.status.clone()),
+                started_at: prev.and_then(|p| p.started_at.clone()),
+                accumulated_minutes: prev.map(|p| p.accumulated_minutes).unwrap_or(0),
+                source: t.source.clone(),
+                ai_reference: t.ai_reference,
+            }
+        })
+        .collect();
+
+    let focus = if plan.data.strategy.is_empty() {
+        state.current_task.focus.clone()
+    } else {
+        plan.data.strategy.clone()
+    };
+
+    state.current_task = crate::data::state::CurrentTask {
+        date: date.to_string(),
+        focus,
+        total_hours: Some(plan.data.total_hours),
+        tasks,
+        note: String::new(),
+    };
+
+    crate::data::state::save_state(data_dir, &state)
+}
+
+/// 从 `state.current_task.tasks` 中移除指定任务（删除手动任务时调用）
+pub fn remove_task_from_state(data_dir: &Path, task_id: &str) -> DataResult<()> {
+    let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+    let before = state.current_task.tasks.len();
+    state
+        .current_task
+        .tasks
+        .retain(|t| t.task_id.as_deref() != Some(task_id));
+    if state.current_task.tasks.len() == before {
+        return Ok(());
+    }
+    crate::data::state::save_state(data_dir, &state)
 }
 
 /// 读取指定 ISO 周的周计划 JSON
@@ -479,8 +663,14 @@ pub fn read_daily_plan_with_merged_status(
     }
 
     // 仅今天才同步到 state（避免历史日期覆盖今天的 state，导致刷新时状态丢失）
-    if is_today && (!state_matched || state_has_no_tasks_for_date(data_dir, date)) {
-        if let Err(e) = sync_plan_tasks_to_state(data_dir, date, &plan) {
+    // 除常规同步外，state 缺少 plan 中某条任务（如用户刚手动添加、计划重生成后
+    // 保留了手动任务）时也重建一次，否则勾选完成 / 计时会「找不到任务」。
+    if is_today
+        && (!state_matched
+            || state_has_no_tasks_for_date(data_dir, date)
+            || state_missing_plan_task_ids(data_dir, date, &plan))
+    {
+        if let Err(e) = resync_plan_to_state(data_dir, date, &plan) {
             log::warn!("自动同步 plan 任务到 state 失败: {}", e);
         }
     }
@@ -515,77 +705,24 @@ fn state_has_no_tasks_for_date(data_dir: &Path, date: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// 将 plan 任务同步到 state.current_task
-fn sync_plan_tasks_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
-    let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
-
-    // 已有任务时不覆盖（保护已完成状态）
-    // 但需校验 task_id 日期前缀与 date 一致，防止被污染的 state（task_id 与任务内容错位）被保留
-    if state.current_task.date == date
-        && !state.current_task.tasks.is_empty()
-        && state_tasks_date_prefix_matches(&state.current_task.tasks, date)
-    {
-        return Ok(());
+/// 检查 state 中是否缺少 plan 里的任务（按 task_id 比对）
+///
+/// 用于「计划重生成后保留了手动任务」等场景触发一次 State 重建，
+/// 保证每条计划任务都能在 State 中被勾选完成 / 计时。
+fn state_missing_plan_task_ids(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> bool {
+    let Ok(state) = crate::data::state::read_state(data_dir) else {
+        return true;
+    };
+    if state.current_task.date != date {
+        return true;
     }
-
-    use std::collections::HashMap;
-
-    // 保留已有的任务状态（如果已有部分任务）
-    // 仅继承日期前缀与 date 一致的 task_id 的状态，避免从被污染的 state 继承错位状态
-    let existing_status: HashMap<&str, &crate::data::state::TaskStatus> = state
+    let ids: std::collections::HashSet<&str> = state
         .current_task
         .tasks
         .iter()
-        .filter_map(|t| {
-            t.task_id.as_ref().and_then(|id| {
-                // task_id 格式 YYYY-MM-DD-NN，校验日期前缀
-                if id.len() >= 10 && &id[..10] == date {
-                    Some((id.as_str(), &t.status))
-                } else {
-                    None
-                }
-            })
-        })
+        .filter_map(|t| t.task_id.as_deref())
         .collect();
-
-    let tasks: Vec<crate::data::state::StateTask> = plan
-        .data
-        .tasks
-        .iter()
-        .map(|task| {
-            // 优先继承 state 中已有的完成状态；否则沿用 plan 中已合并的 status（保护 review 合并结果）
-            let status = existing_status
-                .get(task.id.as_str())
-                .cloned()
-                .cloned()
-                .unwrap_or_else(|| task.status.clone());
-            crate::data::state::StateTask {
-                task_id: Some(task.id.clone()),
-                subject: format!("{:?}", task.subject).to_lowercase(),
-                task: task.title.clone(),
-                priority: task.priority.clone(),
-                status,
-                started_at: None,
-                accumulated_minutes: 0,
-            }
-        })
-        .collect();
-
-    let focus = if plan.data.strategy.is_empty() {
-        state.current_task.focus.clone()
-    } else {
-        plan.data.strategy.clone()
-    };
-
-    state.current_task = crate::data::state::CurrentTask {
-        date: date.to_string(),
-        focus,
-        total_hours: Some(plan.data.total_hours),
-        tasks,
-        note: String::new(),
-    };
-
-    crate::data::state::save_state(data_dir, &state)
+    plan.data.tasks.iter().any(|t| !ids.contains(t.id.as_str()))
 }
 
 /// 从 Review 的完成任务列表合并状态到 Plan 任务
@@ -863,6 +1000,8 @@ mod tests {
                         fallback_plan: Some("若 2h 内无法完成，至少确保概念理解".to_string()),
                         status: TaskStatus::Pending,
                         dida_task_id: None,
+                        source: crate::data::state::TaskSource::Ai,
+                        ai_reference: true,
                     },
                     PlanTask {
                         id: "2026-07-25-02".to_string(),
@@ -877,6 +1016,8 @@ mod tests {
                         fallback_plan: Some("若时间紧张，至少完成阅读与生词标记".to_string()),
                         status: TaskStatus::Pending,
                         dida_task_id: None,
+                        source: crate::data::state::TaskSource::Ai,
+                        ai_reference: true,
                     },
                 ],
                 style_tips: vec!["例子驱动型学习者".to_string()],
@@ -996,6 +1137,8 @@ mod tests {
             fallback_plan: None,
             status: TaskStatus::Pending,
             dida_task_id: None,
+            source: crate::data::state::TaskSource::Ai,
+            ai_reference: true,
         }
     }
 

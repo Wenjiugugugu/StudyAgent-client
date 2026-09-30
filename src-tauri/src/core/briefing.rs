@@ -21,7 +21,7 @@ use crate::core::date_utils::{add_days, days_between, now_string};
 use crate::data::briefing::{BriefingData, BriefingFile, BriefingMeta, SubjectEstimation};
 use crate::data::progress_tables::{NodeLevel, NodeStatus, ProgressIndex};
 use crate::data::records::ReviewFile;
-use crate::data::state::StudyState;
+use crate::data::state::{StudyPhase, StudyState};
 use crate::data::DataResult;
 
 /// Briefing Agent — 每日简报生成器
@@ -153,7 +153,12 @@ impl<'a> BriefingAgent<'a> {
         );
 
         // 7. 解析 AI 返回的 JSON
-        let briefing_data = parse_briefing_json(&response.content)?;
+        let mut briefing_data = parse_briefing_json(&response.content)?;
+        reconcile_estimations_with_progress(
+            &mut briefing_data.estimations,
+            deterministic_estimations(data_dir),
+            &progress_index,
+        );
 
         // 8. 组装 BriefingFile
         let briefing = BriefingFile {
@@ -292,10 +297,13 @@ impl<'a> BriefingAgent<'a> {
         // 今日任务重点（来自目标日期日计划）
         prompt.push_str("## 今日任务重点\n");
         if let Some(plan) = target_plan {
-            if plan.tasks.is_empty() {
+            // 用户关闭「允许 AI 参考」的任务不进入提示词
+            let ai_tasks: Vec<&crate::data::plan::PlanTask> =
+                plan.tasks.iter().filter(|t| t.ai_visible()).collect();
+            if ai_tasks.is_empty() {
                 prompt.push_str("- 今日暂无计划任务\n");
             } else {
-                for task in &plan.tasks {
+                for task in ai_tasks {
                     let subj_cn = task.subject.label();
                     let priority_label = match task.priority {
                         crate::data::state::TaskPriority::A => "A",
@@ -318,41 +326,43 @@ impl<'a> BriefingAgent<'a> {
         let daily_target_hours = settings.daily_target_hours();
         let study_days_per_week = settings.study_days_per_week();
 
-        let push_subject =
-            |key: &str, name: &str, subj: &crate::data::state::SubjectState, p: &mut String| {
-                if !subj.active {
-                    return;
-                }
-                p.push_str(&format!("### {}（{}）\n", name, key));
-                p.push_str(&format!("- 阶段: {:?}\n", subj.phase));
-                p.push_str(&format!("- 每周时长: {}h\n", subj.weekly_hours));
-                p.push_str(&format!("- 当前重点: {}\n", subj.current_focus));
+        let push_subject = |key: &str,
+                            name: &str,
+                            subj: &crate::data::state::SubjectState,
+                            p: &mut String| {
+            if !subj.active {
+                return;
+            }
+            p.push_str(&format!("### {}（{}）\n", name, key));
+            p.push_str(&format!("- 阶段: {:?}\n", subj.phase));
+            p.push_str(&format!("- 每周时长: {}h\n", subj.weekly_hours));
+            p.push_str(&format!("- 当前重点: {}\n", subj.current_focus));
+            p.push_str(&format!(
+                "- 已完成章节 ({}): {:?}\n",
+                subj.completed.len(),
+                subj.completed
+            ));
+            // 进度表统计：已完成/剩余知识点数 + 剩余预估总时长（供 AI 更准确地估时）
+            if let Some((done, total)) = progress_table_summary(progress_index, key, &subj.phase) {
+                let remain_hours = progress_table_remaining_hours(progress_index, key, &subj.phase)
+                    .map(|h| format!("，预估共需约 {} 小时", h))
+                    .unwrap_or_default();
                 p.push_str(&format!(
-                    "- 已完成章节 ({}): {:?}\n",
-                    subj.completed.len(),
-                    subj.completed
+                    "- 进度表: 已完成 {}/{} 个知识点（剩余 {} 个{}）\n",
+                    done,
+                    total,
+                    total.saturating_sub(done),
+                    remain_hours
                 ));
-                // 进度表统计：已完成/剩余知识点数 + 剩余预估总时长（供 AI 更准确地估时）
-                if let Some((done, total)) = progress_table_summary(progress_index, key) {
-                    let remain_hours = progress_table_remaining_hours(progress_index, key)
-                        .map(|h| format!("，预估共需约 {} 小时", h))
-                        .unwrap_or_default();
-                    p.push_str(&format!(
-                        "- 进度表: 已完成 {}/{} 个知识点（剩余 {} 个{}）\n",
-                        done,
-                        total,
-                        total.saturating_sub(done),
-                        remain_hours
-                    ));
-                }
-                if !subj.weak_chapters.is_empty() {
-                    p.push_str(&format!("- 薄弱章节: {:?}\n", subj.weak_chapters));
-                }
-                p.push_str(&format!(
-                    "- 教材: {}\n\n",
-                    subj.textbook.as_deref().unwrap_or("未指定")
-                ));
-            };
+            }
+            if !subj.weak_chapters.is_empty() {
+                p.push_str(&format!("- 薄弱章节: {:?}\n", subj.weak_chapters));
+            }
+            p.push_str(&format!(
+                "- 教材: {}\n\n",
+                subj.textbook.as_deref().unwrap_or("未指定")
+            ));
+        };
 
         push_subject("math", "数学", &state.subjects.math, &mut prompt);
         push_subject("english", "英语", &state.subjects.english, &mut prompt);
@@ -392,9 +402,23 @@ impl<'a> BriefingAgent<'a> {
 /// 从进度表索引统计某科进度，返回 `(已完成知识点数, 总知识点数)`。
 ///
 /// 仅统计该科当前启用进度表的 knowledge 节点；
-/// "已完成" = 状态达「基础」及以上（basic/reinforcing/mastered），
-/// learning/pending 视为剩余。无进度表或无知识点时返回 None。
-fn progress_table_summary(index: &ProgressIndex, subject: &str) -> Option<(usize, usize)> {
+/// "已完成"按当前学习阶段判定：基础阶段达到 basic，强化阶段达到 reinforcing，
+/// 冲刺/模考阶段达到 mastered。无进度表或无知识点时返回 None。
+fn target_status_for_phase(phase: &StudyPhase) -> Option<NodeStatus> {
+    match phase {
+        StudyPhase::Foundation => Some(NodeStatus::Basic),
+        StudyPhase::Strengthen => Some(NodeStatus::Reinforcing),
+        StudyPhase::Sprint | StudyPhase::Mock => Some(NodeStatus::Mastered),
+        StudyPhase::Complete => None,
+    }
+}
+
+fn progress_table_summary(
+    index: &ProgressIndex,
+    subject: &str,
+    phase: &StudyPhase,
+) -> Option<(usize, usize)> {
+    let target = target_status_for_phase(phase)?;
     let table = crate::data::progress_tables::active_progress_table(index, subject)?;
     let mut done = 0usize;
     let mut total = 0usize;
@@ -403,7 +427,7 @@ fn progress_table_summary(index: &ProgressIndex, subject: &str) -> Option<(usize
             continue;
         }
         total += 1;
-        if node.status.rank() >= NodeStatus::Basic.rank() {
+        if node.status.rank() >= target.rank() {
             done += 1;
         }
     }
@@ -419,15 +443,20 @@ fn progress_table_summary(index: &ProgressIndex, subject: &str) -> Option<(usize
 /// 依据节点的隐藏预估值 `estimated_hours`（缺失时按标题确定性估算回退），
 /// 供简报 AI prompt 与无 AI 兜底估时共用，保证「阶段估时」口径一致。
 /// 无启用表或无剩余知识点时返回 None。
-fn progress_table_remaining_hours(index: &ProgressIndex, subject: &str) -> Option<f64> {
+fn progress_table_remaining_hours(
+    index: &ProgressIndex,
+    subject: &str,
+    phase: &StudyPhase,
+) -> Option<f64> {
     use crate::data::progress_tables::ProgressNode;
 
+    let target = target_status_for_phase(phase)?;
     let table = crate::data::progress_tables::active_progress_table(index, subject)?;
     let remaining: Vec<&ProgressNode> = table
         .nodes
         .iter()
         .filter(|n| n.level == NodeLevel::Knowledge)
-        .filter(|n| matches!(n.status, NodeStatus::Pending | NodeStatus::Learning))
+        .filter(|n| n.status.rank() < target.rank())
         .collect();
     if remaining.is_empty() {
         return None;
@@ -458,7 +487,7 @@ fn progress_table_remaining_hours(index: &ProgressIndex, subject: &str) -> Optio
 /// 仅在某科存在启用进度表且有剩余知识点时返回该科；无任何数据时返回空。
 pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
     use crate::core::estimated_time::{adjust_hours, estimate_knowledge_hours, EstimateAdjustment};
-    use crate::data::progress_tables::{load_progress_index, NodeLevel, NodeStatus, ProgressNode};
+    use crate::data::progress_tables::{load_progress_index, NodeLevel, ProgressNode};
 
     let state = crate::data::state::read_state_or_default(data_dir);
     let settings = crate::load_settings(data_dir);
@@ -480,14 +509,17 @@ pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
         let Some(table) = crate::data::progress_tables::active_progress_table(&index, key) else {
             continue;
         };
-        // 待学知识点（pending/learning 视为剩余）
-        let pending: Vec<&ProgressNode> = table
+        let Some(target) = target_status_for_phase(&subj.phase) else {
+            continue;
+        };
+        // 根据当前学习阶段寻找尚未达到该阶段目标状态的知识点。
+        let remaining: Vec<&ProgressNode> = table
             .nodes
             .iter()
             .filter(|n| n.level == NodeLevel::Knowledge)
-            .filter(|n| matches!(n.status, NodeStatus::Pending | NodeStatus::Learning))
+            .filter(|n| n.status.rank() < target.rank())
             .collect();
-        if pending.is_empty() {
+        if remaining.is_empty() {
             continue;
         }
         // 复合调整系数：从自适应周计划状态读取（效率 + 反馈），完成率无周分析上下文时取中性 0.85
@@ -503,7 +535,7 @@ pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
             },
         };
         // 剩余预估总时长（逐知识点调整后求和）
-        let remaining_hours: f64 = pending
+        let remaining_hours: f64 = remaining
             .iter()
             .map(|n| {
                 let base = n
@@ -522,7 +554,7 @@ pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
             continue;
         }
         let days = (remaining_hours / daily_hours).ceil() as i32;
-        let current_chapter = pending
+        let current_chapter = remaining
             .iter()
             .find(|n| !n.phase.trim().is_empty())
             .map(|n| n.phase.trim().to_string())
@@ -539,6 +571,35 @@ pub fn deterministic_estimations(data_dir: &Path) -> Vec<SubjectEstimation> {
         });
     }
     out
+}
+
+/// 当前启用的进度表是剩余天数的权威来源。AI 可以描述学习位置，但不能用旧的
+/// 估时覆盖后来调整过的知识点状态；达到当前阶段目标的启用表也不应继续显示旧估时。
+pub fn reconcile_estimations_with_progress(
+    estimations: &mut Vec<SubjectEstimation>,
+    deterministic: Vec<SubjectEstimation>,
+    index: &ProgressIndex,
+) {
+    estimations.retain(|estimate| {
+        crate::data::progress_tables::active_progress_table(index, &estimate.subject).is_none()
+            || deterministic
+                .iter()
+                .any(|current| current.subject == estimate.subject)
+    });
+    for current in deterministic {
+        if let Some(existing) = estimations
+            .iter_mut()
+            .find(|estimate| estimate.subject == current.subject)
+        {
+            existing.estimated_days_to_finish = current.estimated_days_to_finish;
+            existing.note = current.note;
+            if existing.current_chapter.trim().is_empty() {
+                existing.current_chapter = current.current_chapter;
+            }
+        } else {
+            estimations.push(current);
+        }
+    }
 }
 
 // ============================================================================
@@ -602,6 +663,26 @@ pub fn yesterday_of(target_date: &str) -> DataResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_progress_replaces_stale_ai_days_but_keeps_chapter() {
+        let mut saved = vec![SubjectEstimation {
+            subject: "professional".into(),
+            current_chapter: "第二章 物理层".into(),
+            estimated_days_to_finish: 1,
+            note: "仅剩一个知识点".into(),
+        }];
+        let current = vec![SubjectEstimation {
+            subject: "professional".into(),
+            current_chapter: "第一章 概述".into(),
+            estimated_days_to_finish: 50,
+            note: "按当前进度表约需 83 小时".into(),
+        }];
+        reconcile_estimations_with_progress(&mut saved, current, &ProgressIndex::default());
+        assert_eq!(saved[0].estimated_days_to_finish, 50);
+        assert_eq!(saved[0].current_chapter, "第二章 物理层");
+        assert!(saved[0].note.contains("83 小时"));
+    }
 
     #[test]
     fn parse_briefing_json_handles_plain_json() {
@@ -696,13 +777,17 @@ mod tests {
             .expect("math set")
             .tables
             .push(inactive_table);
-        let index = ProgressIndex { subjects };
+        let index = ProgressIndex {
+            subjects,
+            ..Default::default()
+        };
         // basic + mastered = 2 个已完成；章节节点不计入总数
-        let (done, total) = progress_table_summary(&index, "math").expect("应有统计");
+        let (done, total) =
+            progress_table_summary(&index, "math", &StudyPhase::Foundation).expect("应有统计");
         assert_eq!(done, 2);
         assert_eq!(total, 3);
         // 无进度表的科目返回 None
-        assert!(progress_table_summary(&index, "english").is_none());
+        assert!(progress_table_summary(&index, "english", &StudyPhase::Foundation).is_none());
     }
 
     #[test]
@@ -745,7 +830,6 @@ mod tests {
         .unwrap();
 
         let est = deterministic_estimations(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
 
         // 仅 math 有启用表且有剩余知识点；n2 为 basic（已完成）不计入剩余
         let math = est
@@ -758,5 +842,24 @@ mod tests {
         assert!(math.note.contains("内置考纲"));
         // 无进度表的科目不输出
         assert!(!est.iter().any(|e| e.subject == "english"));
+
+        // 基础知识点全部标为 basic 后，强化阶段仍须显示数学估时。
+        std::fs::write(
+            dir.join("state").join("current.state"),
+            "[subjects.math]\nactive = true\nphase = \"strengthen\"\nweekly_hours = 12.0\n",
+        )
+        .unwrap();
+        let index_path = dir.join("progress_tables").join("progress_index.json");
+        let all_basic = std::fs::read_to_string(&index_path)
+            .unwrap()
+            .replace("\"status\":\"pending\"", "\"status\":\"basic\"");
+        std::fs::write(index_path, all_basic).unwrap();
+        let strengthen_est = deterministic_estimations(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        let math = strengthen_est
+            .iter()
+            .find(|e| e.subject == "math")
+            .expect("强化阶段的 basic 节点仍须估时");
+        assert_eq!(math.estimated_days_to_finish, 3);
     }
 }

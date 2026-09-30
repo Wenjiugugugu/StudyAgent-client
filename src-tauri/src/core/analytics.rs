@@ -141,11 +141,13 @@ pub struct PeriodComparison {
 /// 目标达成预测
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoalPrediction {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_completion_date: Option<String>,
     /// 近7天平均完成率
     pub recent_avg_completion_rate: f64,
     /// 近7天平均每日学习时长
     pub recent_avg_daily_hours: f64,
-    /// 基于近7天完成率推算的预期完成率
+    /// 截止日前可完成的剩余需求比例（多目标取最差覆盖率）
     pub expected_completion_rate: f64,
     /// 预测状态：on_track / at_risk / off_track
     pub status: String,
@@ -603,7 +605,7 @@ fn build_comparison_and_prediction(
     )?;
 
     // 预测
-    let prediction = build_prediction(reviews, today);
+    let prediction = build_prediction(data_dir, reviews, today);
 
     Ok(ComparisonAndPrediction {
         week_comparison,
@@ -681,83 +683,185 @@ fn compute_period_metrics(data_dir: &Path, start: &str, end: &str) -> DataResult
     })
 }
 
-fn build_prediction(reviews: &[ReviewFile], today: &str) -> GoalPrediction {
-    // 近7天数据
-    let seven_days_ago = add_days(today, -6).unwrap_or_else(|_| today.to_string());
-    let recent: Vec<&ReviewFile> = reviews
+fn build_prediction(data_dir: &Path, reviews: &[ReviewFile], today: &str) -> GoalPrediction {
+    use crate::core::goal_planner::{available_goal_days, calibrated_goal_points, subject_version};
+    let start = add_days(today, -6).unwrap_or_else(|_| today.to_string());
+    let recent: Vec<_> = reviews
         .iter()
-        .filter(|r| {
-            r.meta.date.as_str() >= seven_days_ago.as_str() && r.meta.date.as_str() <= today
-        })
+        .filter(|r| r.meta.date >= start && r.meta.date.as_str() <= today)
         .collect();
-
-    if recent.is_empty() {
-        return GoalPrediction {
-            recent_avg_completion_rate: 0.0,
-            recent_avg_daily_hours: 0.0,
-            expected_completion_rate: 0.0,
-            status: "no_data".to_string(),
-            description: "近7天暂无复盘数据，无法预测".to_string(),
-        };
-    }
-
-    let mut total_planned = 0i32;
-    let mut total_done = 0i32;
+    let exempt = collect_exempt_dates(data_dir, &start, today);
+    let mut planned = 0;
+    let mut done = 0;
     let mut total_hours = 0.0;
-    for r in &recent {
-        if !r.task_reviews.is_empty() {
-            total_planned += r.task_reviews.len() as i32;
-            total_done += r
-                .task_reviews
-                .iter()
-                .filter(|t| t.status == "completed")
-                .count() as i32;
+    let mut subject_progress = HashMap::<String, f64>::new();
+    let mut sample_days = HashMap::<String, HashSet<String>>::new();
+    for review in &recent {
+        let (a, ad, b, bd, _) = records::review_completion_stats(review);
+        planned += a + b;
+        done += ad + bd;
+        total_hours += records::review_actual_hours(review).max(0.0);
+        if exempt.contains(&review.meta.date)
+            || review.daily_review.as_ref().is_some_and(|d| {
+                !d.external_interference.is_empty() && d.external_interference != "none"
+            })
+            || (!review.data.external_interference.is_empty()
+                && review.data.external_interference != "none")
+        {
+            continue;
         }
-        total_hours += crate::data::records::review_actual_hours(r);
+        let daily = crate::data::plan::read_daily_plan(data_dir, &review.meta.date).ok();
+        for task in &review.task_reviews {
+            sample_days
+                .entry(task.subject.clone())
+                .or_default()
+                .insert(review.meta.date.clone());
+            let estimate = task.estimated_hours.or_else(|| {
+                daily
+                    .as_ref()?
+                    .data
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == task.task_id)
+                    .map(|t| t.estimated_hours)
+            });
+            if let Some(hours) = estimate.filter(|h| h.is_finite() && *h > 0.0) {
+                let completion = match task.status.as_str() {
+                    "completed" => 1.0,
+                    "partial" => task.completion.clamp(0.0, 1.0),
+                    _ => 0.0,
+                };
+                *subject_progress.entry(task.subject.clone()).or_default() += hours * completion;
+            }
+        }
     }
-
-    // 近7天平均完成率用任务数加权口径（总完成 ÷ 总计划），与全站口径一致。
-    let recent_avg_completion_rate = if total_planned > 0 {
-        (total_done as f64 / total_planned as f64) * 100.0
-    } else {
-        0.0
+    let mut result = GoalPrediction {
+        recent_avg_completion_rate: if planned > 0 {
+            done as f64 / planned as f64 * 100.0
+        } else {
+            0.0
+        },
+        recent_avg_daily_hours: total_hours / 7.0,
+        status: "no_data".into(),
+        description: "近期有效数据不足，暂无法预测目标完成时间".into(),
+        ..Default::default()
     };
-    let recent_avg_daily_hours = total_hours / 7.0;
-
-    // 预测状态：基于近7天平均完成率
-    let (status, description) = if recent_avg_completion_rate >= 80.0 {
-        (
-            "on_track".to_string(),
-            format!(
-                "近7天平均完成率 {:.0}%，进度健康，按此节奏可顺利完成目标",
-                recent_avg_completion_rate
-            ),
-        )
-    } else if recent_avg_completion_rate >= 50.0 {
-        (
-            "at_risk".to_string(),
-            format!(
-                "近7天平均完成率 {:.0}%，存在风险，建议调整任务量或学习方式",
-                recent_avg_completion_rate
-            ),
-        )
-    } else {
-        (
-            "off_track".to_string(),
-            format!(
-                "近7天平均完成率 {:.0}%，明显偏离目标，需要重新评估计划",
-                recent_avg_completion_rate
-            ),
-        )
+    let state = crate::data::state::read_state_or_default(data_dir);
+    let index = crate::data::progress_tables::load_progress_index(data_dir);
+    let goals_file = match crate::data::goal::read_goals(data_dir) {
+        Ok(g) => g,
+        Err(_) => {
+            result.description = "目标数据无法读取，暂无法预测".into();
+            return result;
+        }
     };
-
-    GoalPrediction {
-        recent_avg_completion_rate,
-        recent_avg_daily_hours,
-        expected_completion_rate: recent_avg_completion_rate,
-        status,
-        description,
+    let mut goals: Vec<_> = goals_file
+        .data
+        .goals
+        .iter()
+        .filter(|g| g.status != "completed" && (g.active || g.status == "expired"))
+        .collect();
+    goals.sort_by(|a, b| a.deadline.cmp(&b.deadline));
+    if goals.is_empty() {
+        result.status = if recent.is_empty() {
+            "no_data"
+        } else {
+            "trend_only"
+        }
+        .into();
+        result.description = "尚无待完成的截止日目标；当前仅展示近期执行趋势".into();
+        return result;
     }
+    let mut cumulative = HashMap::<String, f64>::new();
+    let mut worst_coverage = 1.0f64;
+    let mut descriptions = Vec::new();
+    let tomorrow = add_days(today, 1).unwrap_or_else(|_| today.to_string());
+    for goal in goals {
+        let key = goal.subject.key();
+        let samples = sample_days.get(key).map(|s| s.len()).unwrap_or(0);
+        let points =
+            match calibrated_goal_points(data_dir, goal, &subject_version(&state, key), &index) {
+                Ok(points) => points,
+                Err(_) => {
+                    result.description = "部分目标无法定位剩余内容，请检查目标和进度表".into();
+                    return result;
+                }
+            };
+        if points.is_empty() {
+            continue;
+        }
+        if samples < 3 {
+            result.description = format!(
+                "{}近期有效复盘不足 3 天，暂无法可靠预测目标",
+                goal.subject.label()
+            );
+            return result;
+        }
+        let remaining: f64 = points.iter().map(|p| p.2).sum();
+        let demand = cumulative.entry(key.into()).or_default();
+        *demand += remaining;
+        let possible = available_goal_days(data_dir, &start, today, &goal.subject);
+        let configured = possible.first().map(|d| d.1).unwrap_or(0.0);
+        // 用实际完成的工作量估计推进速度；未复盘的学习日计入时间跨度，避免选择性复盘高估速度。
+        let speed = (subject_progress.get(key).copied().unwrap_or(0.0)
+            / possible.len().max(1) as f64)
+            .min(configured);
+        let remaining_days =
+            available_goal_days(data_dir, &tomorrow, &goal.deadline, &goal.subject);
+        let available = speed * remaining_days.len() as f64;
+        worst_coverage = worst_coverage.min((available / *demand).clamp(0.0, 1.0));
+        let count = if speed > 0.0 {
+            (*demand / speed).ceil() as usize
+        } else {
+            0
+        };
+        if count == 0 || count > 500 {
+            descriptions.push(format!("{}：近期推进速度不足，无法给出完成日期", goal.book));
+            worst_coverage = 0.0;
+            continue;
+        }
+        let horizon = add_days(&tomorrow, (count.saturating_mul(7).min(3659)) as i64)
+            .unwrap_or_else(|_| goal.deadline.clone());
+        let calendar = available_goal_days(data_dir, &tomorrow, &horizon, &goal.subject);
+        let date_at = |factor: f64| {
+            calendar
+                .get(((*demand / (speed * factor)).ceil() as usize).saturating_sub(1))
+                .map(|d| d.0.clone())
+        };
+        if let (Some(estimate), Some(early), Some(late)) =
+            (date_at(1.0), date_at(1.25), date_at(0.75))
+        {
+            result.estimated_completion_date = Some(
+                result
+                    .estimated_completion_date
+                    .as_ref()
+                    .map(|d| d.max(&estimate).clone())
+                    .unwrap_or(estimate.clone()),
+            );
+            descriptions.push(format!(
+                "{}约 {} 完成，按速度上下浮动 25% 估算为 {} 至 {}（截止 {}）",
+                goal.book, estimate, early, late, goal.deadline
+            ));
+        } else {
+            descriptions.push(format!("{}：可用学习日不足，无法给出完成日期", goal.book));
+            worst_coverage = 0.0;
+        }
+    }
+    result.expected_completion_rate = worst_coverage * 100.0;
+    result.status = if worst_coverage >= 1.0 {
+        "on_track"
+    } else if worst_coverage >= 0.8 {
+        "at_risk"
+    } else {
+        "off_track"
+    }
+    .into();
+    result.description = if descriptions.is_empty() {
+        "目标内容已完成，请刷新目标状态".into()
+    } else {
+        descriptions.join("；")
+    };
+    result
 }
 
 // ============================================================================
@@ -891,5 +995,62 @@ mod tests {
         let (s2, e2) = prev_month_range("2026-01-15");
         assert_eq!(s2, "2025-12-01");
         assert_eq!(e2, "2025-12-31");
+    }
+    #[test]
+    fn high_task_completion_does_not_hide_an_unreachable_goal() {
+        let dir = std::env::temp_dir().join(format!(
+            "sa_prediction_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut state = crate::data::state::StudyState::default();
+        state.subjects.math.version = Some("数二".into());
+        state.subjects.math.active = true;
+        state.subjects.math.weekly_hours = 30.0;
+        crate::data::state::save_state(&dir, &state).unwrap();
+        let mut file = crate::data::goal::GoalPlanFile::default();
+        file.data.goals.push(crate::data::goal::Goal {
+            subject: crate::data::state::SubjectKey::Math,
+            current_position: Some(0),
+            target_position: Some(20),
+            deadline: "2026-10-01".into(),
+            active: true,
+            status: "active".into(),
+            ..Default::default()
+        });
+        crate::data::goal::save_goals(&dir, &file).unwrap();
+        let reviews: Vec<_> = ["2026-09-28", "2026-09-29", "2026-09-30"]
+            .iter()
+            .map(|date| {
+                let mut r = ReviewFile::default();
+                r.meta.date = (*date).into();
+                r.task_reviews.push(crate::data::records::TaskReviewEntry {
+                    status: "completed".into(),
+                    subject: "math".into(),
+                    estimated_hours: Some(1.0),
+                    actual_minutes: Some(60),
+                    ..Default::default()
+                });
+                r
+            })
+            .collect();
+        let p = build_prediction(&dir, &reviews, "2026-09-30");
+        assert_eq!(p.recent_avg_completion_rate, 100.0);
+        assert_eq!(p.status, "off_track");
+        assert!(p.expected_completion_rate < 20.0);
+        assert!(p.estimated_completion_date.is_some());
+        assert_eq!(
+            build_prediction(&dir, &reviews[..1], "2026-09-30").status,
+            "no_data"
+        );
+        file.data.goals.clear();
+        crate::data::goal::save_goals(&dir, &file).unwrap();
+        assert_eq!(
+            build_prediction(&dir, &reviews, "2026-09-30").status,
+            "trend_only"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

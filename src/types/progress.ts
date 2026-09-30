@@ -64,6 +64,8 @@ export interface SubjectProgressSet {
 /** 全部进度表索引 */
 export interface ProgressIndex {
   subjects: Record<string, SubjectProgressSet>;
+  /** 最近一次自动合并随包考纲的应用版本 */
+  builtin_revision?: string;
 }
 
 /** 导出/分享用便携格式 */

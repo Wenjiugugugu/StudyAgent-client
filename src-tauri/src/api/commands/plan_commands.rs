@@ -15,10 +15,11 @@ use crate::core::review::ReviewAgent;
 use crate::core::user_model::UserModelService;
 use crate::data::assets::{UserCapability, UserObservation};
 use crate::data::plan::{
-    iso_week_string, DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment,
+    iso_week_string, DailyPlanFile, ExcludedDay, PlanTask, WeekPlanFile, WorkloadAdjustment,
 };
 use crate::data::records::ReviewFile;
 use crate::data::state::{StudyState, TaskStatus};
+use crate::data::state::{SubjectKey, TaskPriority, TaskSource};
 use crate::tools::dispatcher::{execute_builtin_tool, is_builtin_tool};
 use crate::tools::mcp::{MCPServerStatus, ToolCallResult};
 use crate::{
@@ -74,7 +75,9 @@ pub async fn get_today_plan(state: State<'_, Mutex<AppState>>) -> Result<DailyPl
     let _io_guard = io_lock.lock().await;
     backfill_due_default_reviews(&data_dir)?;
     let today = crate::data::today_string();
-    crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &today)
+    let mut plan = crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &today)?;
+    crate::core::scheduler::append_missing_subject_warnings(&data_dir, &mut plan);
+    Ok(plan)
 }
 
 /// 读取指定日期的计划
@@ -87,7 +90,11 @@ pub async fn get_plan_by_date(
 ) -> Result<DailyPlanFile, String> {
     crate::data::validate_date(&date)?;
     let data_dir = get_data_dir(state.inner())?;
-    crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
+    let mut plan = crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)?;
+    if date == crate::data::today_string() {
+        crate::core::scheduler::append_missing_subject_warnings(&data_dir, &mut plan);
+    }
+    Ok(plan)
 }
 
 /// 读取周计划
@@ -531,4 +538,184 @@ pub async fn regenerate_remaining_days(
         consistency_warnings,
         changes,
     })
+}
+
+// ============================================================================
+// 手动任务（用户显式添加 / 删除 / AI 参考开关）
+// ============================================================================
+
+/// 解析科目字符串（math / english / politics / professional）
+fn parse_subject_key(subject: &str) -> Result<SubjectKey, String> {
+    match subject.trim().to_lowercase().as_str() {
+        "math" => Ok(SubjectKey::Math),
+        "english" => Ok(SubjectKey::English),
+        "politics" => Ok(SubjectKey::Politics),
+        "professional" => Ok(SubjectKey::Professional),
+        other => Err(format!("未知科目: {}", other)),
+    }
+}
+
+/// 目标日期还没有日计划文件时使用的骨架计划
+///
+/// 让「今天还没有生成计划」的用户也能手动添加任务；AI 后续生成计划时
+/// `save_daily_plan` 会保留其中的手动任务。
+fn empty_daily_plan(date: &str) -> DailyPlanFile {
+    DailyPlanFile {
+        version: "1.0.0".to_string(),
+        meta: crate::data::plan::DailyPlanMeta {
+            date: date.to_string(),
+            generated_at: crate::data::now_string(),
+            r#type: "manual".to_string(),
+            based_on: Default::default(),
+        },
+        data: crate::data::plan::DailyPlanData::default(),
+        view: None,
+    }
+}
+
+/// 手动添加一条任务到指定日期的日计划
+///
+/// - `subject`: math | english | politics | professional
+/// - `title`: 任务具体内容
+/// - `estimated_hours`: 预计时长（可选，默认 0）
+/// - `ai_reference`: 是否允许 AI 参考该任务（可选，默认 true）
+///
+/// 前端调用: `invoke('add_manual_task', { date, subject, title, estimatedHours, aiReference })`
+#[tauri::command]
+pub async fn add_manual_task(
+    date: String,
+    subject: String,
+    title: String,
+    estimated_hours: Option<f64>,
+    ai_reference: Option<bool>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<DailyPlanFile, String> {
+    crate::data::validate_date(&date)?;
+    let subject_key = parse_subject_key(&subject)?;
+
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("任务内容不能为空".to_string());
+    }
+    if title.chars().count() > 200 {
+        return Err("任务内容过长（上限 200 字）".to_string());
+    }
+    let hours = estimated_hours.unwrap_or(0.0).clamp(0.0, 24.0);
+    let allow_ai = ai_reference.unwrap_or(true);
+
+    let data_dir = get_data_dir(state.inner())?;
+    // H1 并发保护：串行化 plan/state 的读-改-写
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)
+        .unwrap_or_else(|_| empty_daily_plan(&date));
+
+    let task_id = crate::data::plan::next_task_id(&date, &plan.data.tasks);
+    plan.data.tasks.push(PlanTask {
+        id: task_id,
+        subject: subject_key,
+        title,
+        priority: TaskPriority::B,
+        estimated_hours: hours,
+        goal: String::new(),
+        completion_criteria: Vec::new(),
+        textbook: None,
+        style_tips: None,
+        fallback_plan: None,
+        status: TaskStatus::Pending,
+        dida_task_id: None,
+        source: TaskSource::Manual,
+        ai_reference: allow_ai,
+    });
+
+    crate::data::plan::recalc_totals(&mut plan.data);
+    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
+    // 任务需同时存在于 State 中，否则勾选完成 / 计时会「找不到任务」
+    crate::data::plan::resync_plan_to_state(&data_dir, &date, &plan)?;
+
+    log::info!(
+        "已手动添加任务: {} [{}] {}（AI 参考: {}）",
+        date,
+        subject,
+        plan.data
+            .tasks
+            .last()
+            .map(|t| t.title.as_str())
+            .unwrap_or(""),
+        allow_ai
+    );
+
+    crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
+}
+
+/// 设置某条任务是否允许 AI 参考
+///
+/// 关闭后该任务不会出现在任何发送给 AI 的提示词中（简报、复盘、周计划等）。
+/// 前端调用: `invoke('set_task_ai_reference', { taskId, allow })`
+#[tauri::command]
+pub async fn set_task_ai_reference(
+    task_id: String,
+    allow: bool,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let date = crate::data::task_id_date_prefix(&task_id)
+        .ok_or_else(|| format!("无效的任务 ID: {}", task_id))?
+        .to_string();
+    crate::data::validate_date(&date)?;
+
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)?;
+    let task = plan
+        .data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == task_id)
+        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    task.ai_reference = allow;
+
+    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
+    crate::data::plan::resync_plan_to_state(&data_dir, &date, &plan)?;
+    log::info!("任务 AI 参考已更新: {} -> {}", task_id, allow);
+    Ok(())
+}
+
+/// 删除一条手动添加的任务（AI 生成的任务不可删除）
+///
+/// 前端调用: `invoke('delete_manual_task', { taskId })`
+#[tauri::command]
+pub async fn delete_manual_task(
+    task_id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<DailyPlanFile, String> {
+    let date = crate::data::task_id_date_prefix(&task_id)
+        .ok_or_else(|| format!("无效的任务 ID: {}", task_id))?
+        .to_string();
+    crate::data::validate_date(&date)?;
+
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+
+    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)?;
+    let target = plan
+        .data
+        .tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .ok_or_else(|| format!("未找到任务: {}", task_id))?;
+    if !target.is_manual() {
+        return Err("只能删除手动添加的任务".to_string());
+    }
+
+    plan.data.tasks.retain(|t| t.id != task_id);
+    crate::data::plan::recalc_totals(&mut plan.data);
+    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
+    crate::data::plan::remove_task_from_state(&data_dir, &task_id)?;
+
+    log::info!("已删除手动任务: {}", task_id);
+    crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
 }

@@ -1061,6 +1061,8 @@ mod tests {
             fallback_plan: None,
             status: TaskStatus::Pending,
             dida_task_id: None,
+            source: crate::data::state::TaskSource::Ai,
+            ai_reference: true,
         }
     }
 

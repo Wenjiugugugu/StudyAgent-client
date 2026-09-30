@@ -33,6 +33,9 @@ import {
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import EmptyState from "@/components/ui/EmptyState.vue";
+import Modal from "@/components/ui/Modal.vue";
+import Select from "@/components/ui/Select.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import WeekPlanGenerateModal from "@/components/plan/WeekPlanGenerateModal.vue";
 import {
   ChevronLeft,
@@ -47,6 +50,10 @@ import {
   Sparkles,
   Play,
   Pause,
+  Plus,
+  Eye,
+  EyeOff,
+  Trash2,
 } from "lucide-vue-next";
 import type { PlanTask, SubjectKey, ExcludedReasonType, Goal } from "@/types";
 
@@ -349,6 +356,10 @@ interface TaskRow {
   /** 今日计划中的序号（1 起） */
   index: number;
   status: RowStatus;
+  /** 是否为用户手动添加的任务（可删除） */
+  isManual: boolean;
+  /** 是否允许 AI 参考该任务（缺省视为允许） */
+  aiVisible: boolean;
   /** 预计用时（分钟） */
   estMin: number;
   /** 实际已计时（分钟，未启用计时或无记录时为 0） */
@@ -400,6 +411,8 @@ const rows = computed<TaskRow[]>(() =>
       task,
       index: i + 1,
       status,
+      isManual: task.source === "manual",
+      aiVisible: task.ai_reference !== false,
       estMin,
       actualMin,
       remainMin: status === "in_progress" ? Math.max(0, estMin - actualMin) : null,
@@ -528,6 +541,86 @@ async function toggleTaskDone(row: TaskRow) {
     }
   }
   await todayStore.updateTaskStatus(row.task.id, "done");
+}
+
+// ────────────────────────────────────────────────────────────
+// 手动添加任务（科目 + 具体内容 + 是否允许 AI 参考）
+// ────────────────────────────────────────────────────────────
+
+const SUBJECT_KEYS: SubjectKey[] = ["math", "english", "politics", "professional"];
+
+const showAddTask = ref(false);
+const adding = ref(false);
+const addError = ref("");
+const newTask = ref<{
+  subject: SubjectKey;
+  title: string;
+  hours: number;
+  aiReference: boolean;
+}>({ subject: "math", title: "", hours: 1, aiReference: true });
+
+function onSubjectChange(v: string | number | null) {
+  newTask.value.subject = String(v) as SubjectKey;
+}
+
+function openAddTask() {
+  newTask.value = { subject: "math", title: "", hours: 1, aiReference: true };
+  addError.value = "";
+  showAddTask.value = true;
+}
+
+function closeAddTask() {
+  showAddTask.value = false;
+  addError.value = "";
+}
+
+async function submitAddTask() {
+  const title = newTask.value.title.trim();
+  if (!title || adding.value) return;
+  adding.value = true;
+  try {
+    await todayStore.addManualTask(
+      currentDate.value,
+      newTask.value.subject,
+      title,
+      Number.isFinite(newTask.value.hours) ? Math.max(0, newTask.value.hours) : 0,
+      newTask.value.aiReference
+    );
+    // 新任务需要计时状态（可能为空），并刷新分组与统计
+    await loadTaskTimers();
+    actionError.value = "";
+    closeAddTask();
+  } catch (e) {
+    console.error("添加任务失败", e);
+    addError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    adding.value = false;
+  }
+}
+
+/** 切换任务的「允许 AI 参考」开关：关闭后该任务不再写入任何 AI 提示词 */
+async function toggleAiReference(row: TaskRow) {
+  const next = !row.aiVisible;
+  try {
+    await todayStore.setTaskAiReference(row.task.id, next);
+    actionError.value = "";
+  } catch (e) {
+    console.error("切换 AI 参考失败", e);
+    reportActionError(next ? "恢复 AI 参考失败" : "关闭 AI 参考失败", e);
+  }
+}
+
+/** 删除手动添加的任务（AI 任务不可删除） */
+async function removeTask(row: TaskRow) {
+  if (!row.isManual) return;
+  try {
+    await todayStore.removeManualTask(row.task.id);
+    await loadTaskTimers();
+    actionError.value = "";
+  } catch (e) {
+    console.error("删除任务失败", e);
+    reportActionError("删除任务失败", e);
+  }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -779,6 +872,10 @@ onUnmounted(() => {
           <Sparkles :size="15" />
           生成本周计划
         </Button>
+        <Button v-if="canModifyTasks" variant="secondary" @click="openAddTask">
+          <Plus :size="15" />
+          添加任务
+        </Button>
         <Button v-if="!isToday" variant="secondary" @click="goBack">{{ backLabel }}</Button>
       </template>
     </EmptyState>
@@ -873,21 +970,40 @@ onUnmounted(() => {
         <section class="plan-main">
           <div class="list-head">
             <h2 class="list-title">今日任务</h2>
-            <button
-              v-if="groups.length > 1"
-              class="text-btn muted"
-              type="button"
-              @click="toggleAllGroups"
-            >
-              {{ allCollapsed ? "全部展开" : "全部折叠" }}
-            </button>
+            <div class="list-head-actions">
+              <button
+                v-if="canModifyTasks"
+                class="text-btn"
+                type="button"
+                title="手动添加一条任务，并设置是否允许 AI 参考"
+                @click="openAddTask"
+              >
+                <Plus :size="13" />
+                添加任务
+              </button>
+              <button
+                v-if="groups.length > 1"
+                class="text-btn muted"
+                type="button"
+                @click="toggleAllGroups"
+              >
+                {{ allCollapsed ? "全部展开" : "全部折叠" }}
+              </button>
+            </div>
           </div>
 
           <EmptyState
             v-if="groups.length === 0"
             title="今日暂无任务"
-            description="该日期的计划中没有任务条目。"
-          />
+            description="该日期的计划中没有任务条目，可以手动添加一条。"
+          >
+            <template #actions>
+              <Button v-if="canModifyTasks" variant="secondary" @click="openAddTask">
+                <Plus :size="15" />
+                添加任务
+              </Button>
+            </template>
+          </EmptyState>
 
           <div v-else class="group-list">
             <section v-for="g in groups" :key="g.subject" class="subject-group">
@@ -915,7 +1031,17 @@ onUnmounted(() => {
 
                   <div class="row-body" :class="{ 'has-timer': timeTrackingEnabled }">
                     <span class="row-index">{{ indexLabel(row.index) }}</span>
-                    <span class="row-title">{{ row.task.title }}</span>
+                    <span class="row-title">
+                      {{ row.task.title }}
+                      <span v-if="row.isManual" class="row-tag">手动</span>
+                      <span
+                        v-if="!row.aiVisible"
+                        class="row-tag muted"
+                        title="该任务不会出现在 AI 提示词中"
+                      >
+                        AI 不参考
+                      </span>
+                    </span>
                     <span class="row-time">
                       {{
                         row.remainMin !== null
@@ -942,6 +1068,32 @@ onUnmounted(() => {
                       <Play v-else :size="12" />
                     </button>
                     <span class="row-meta">{{ row.meta.join(" · ") }}</span>
+                  </div>
+
+                  <div class="row-actions">
+                    <button
+                      class="row-action"
+                      :class="{ off: !row.aiVisible }"
+                      type="button"
+                      :title="
+                        row.aiVisible ? 'AI 可参考此任务，点击关闭' : 'AI 不参考此任务，点击恢复'
+                      "
+                      :aria-label="`${row.task.title} — ${row.aiVisible ? '关闭 AI 参考' : '恢复 AI 参考'}`"
+                      @click="toggleAiReference(row)"
+                    >
+                      <Eye v-if="row.aiVisible" :size="13" />
+                      <EyeOff v-else :size="13" />
+                    </button>
+                    <button
+                      v-if="row.isManual"
+                      class="row-action danger only-hover"
+                      type="button"
+                      title="删除此手动任务"
+                      :aria-label="`${row.task.title} — 删除任务`"
+                      @click="removeTask(row)"
+                    >
+                      <Trash2 :size="13" />
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1014,6 +1166,73 @@ onUnmounted(() => {
         </aside>
       </div>
     </template>
+
+    <!-- 手动添加任务：科目 + 具体内容 + 是否允许 AI 参考 -->
+    <Modal :open="showAddTask" title="添加任务" :width="440" @close="closeAddTask">
+      <div class="add-form">
+        <div class="form-row">
+          <label class="form-label" for="manual-task-subject">科目</label>
+          <Select
+            id="manual-task-subject"
+            :model-value="newTask.subject"
+            @update:model-value="onSubjectChange"
+          >
+            <option v-for="s in SUBJECT_KEYS" :key="s" :value="s">{{ subjectLabels[s] }}</option>
+          </Select>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label" for="manual-task-title">具体内容</label>
+          <textarea
+            id="manual-task-title"
+            v-model="newTask.title"
+            class="form-input form-textarea"
+            rows="3"
+            maxlength="200"
+            placeholder="例如：第十八章 多元函数微分学 660 题 20-45"
+            @keydown.ctrl.enter="submitAddTask"
+          ></textarea>
+        </div>
+
+        <div class="form-row">
+          <label class="form-label" for="manual-task-hours">预计时长</label>
+          <div class="hours-row">
+            <input
+              id="manual-task-hours"
+              v-model.number="newTask.hours"
+              class="form-input"
+              type="number"
+              min="0"
+              max="24"
+              step="0.5"
+            />
+            <span class="form-unit">小时</span>
+          </div>
+        </div>
+
+        <div class="ai-toggle">
+          <Checkbox v-model="newTask.aiReference" />
+          <div class="ai-toggle-text" @click="newTask.aiReference = !newTask.aiReference">
+            <span class="ai-toggle-title">允许 AI 参考此任务</span>
+            <small>关闭后，该任务不会出现在任何发送给 AI 的内容中（简报、复盘、周计划等）。</small>
+          </div>
+        </div>
+
+        <p v-if="addError" class="form-error">{{ addError }}</p>
+      </div>
+
+      <template #footer>
+        <Button variant="secondary" @click="closeAddTask">取消</Button>
+        <Button
+          variant="primary"
+          :loading="adding"
+          :disabled="!newTask.title.trim() || adding"
+          @click="submitAddTask"
+        >
+          添加
+        </Button>
+      </template>
+    </Modal>
 
     <!-- 生成周计划配置弹窗：上周报告 / 任务量调整 / 排除日（原每周计划页功能） -->
     <WeekPlanGenerateModal
@@ -1134,6 +1353,9 @@ onUnmounted(() => {
 }
 
 .text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: none;
   background: transparent;
   padding: 2px 6px;
@@ -1225,6 +1447,12 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: var(--space-3);
   padding-bottom: var(--space-2);
+}
+
+.list-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .list-title {
@@ -1451,6 +1679,149 @@ onUnmounted(() => {
 }
 .task-row.in_progress .row-title {
   font-weight: var(--font-semibold);
+}
+
+/* ── 任务来源 / AI 参考标签 ── */
+.row-tag {
+  margin-left: var(--space-2);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.row-tag.muted {
+  background: transparent;
+  border: 1px dashed var(--border-color-strong);
+  color: var(--text-quaternary);
+}
+
+/* ── 任务行操作：AI 参考开关（常显）、删除（仅手动任务，hover 显示） ── */
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-quaternary);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    opacity var(--transition-fast);
+}
+.row-action:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+/* AI 参考已关闭：用警示色提示该任务不进入 AI 提示词 */
+.row-action.off {
+  color: var(--color-warning);
+}
+.row-action.danger:hover {
+  color: var(--color-danger);
+}
+.row-action.only-hover {
+  opacity: 0;
+}
+.task-row:hover .row-action.only-hover,
+.row-action.only-hover:focus-visible {
+  opacity: 1;
+}
+
+/* ── 添加任务表单（Modal 内） ── */
+.add-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.form-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-secondary);
+}
+.form-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+.form-input:focus {
+  border-color: var(--accent);
+}
+.form-textarea {
+  min-height: 68px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.hours-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.hours-row .form-input {
+  width: 110px;
+}
+.form-unit {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+.ai-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+}
+.ai-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  cursor: pointer;
+}
+.ai-toggle-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+}
+.ai-toggle-text small {
+  font-size: var(--text-xs);
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+.form-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger);
 }
 
 /* ════════ 右：概览（无容器，纯信息列 + 细线分区）════════

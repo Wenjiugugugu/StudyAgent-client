@@ -106,11 +106,13 @@ export interface PeriodComparison {
 
 /** 目标达成预测 */
 export interface GoalPrediction {
+  /** 按近期推进速度估计的完成日期 */
+  estimated_completion_date?: string;
   /** 近7天平均完成率 */
   recent_avg_completion_rate: number;
   /** 近7天平均每日学习时长 */
   recent_avg_daily_hours: number;
-  /** 基于近7天完成率推算的预期完成率 */
+  /** 截止日前可完成的剩余需求比例，多目标取最差覆盖率 */
   expected_completion_rate: number;
   /** 预测状态：on_track / at_risk / off_track / no_data */
   status: string;

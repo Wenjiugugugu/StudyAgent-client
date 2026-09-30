@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 /**
  * 各科「进度表」编辑器（考纲方案变体驱动）
  *
@@ -668,33 +669,11 @@ async function loadBuiltin() {
   loadingBuiltin.value = true;
   error.value = "";
   try {
-    const drafts = await api.builtinProgressTable(props.subject, props.variant);
-    if (!drafts.length) {
-      error.value = "内置考纲未生成任何进度表";
-      return;
-    }
-    // 重新生成前清理同方案下旧的内置考纲表，避免旧数据污染/重复
-    await api.deleteBuiltinProgressTables(props.subject, props.variant);
-    // 专业课可能返回多份（第 1 份为总专业课进度表，其后为各教材进度表），全部入库并启用总表
-    let first = true;
-    for (const d of drafts) {
-      try {
-        await api.saveProgressTable(props.subject, props.variant, d, first);
-      } catch (e) {
-        error.value = `保存「${d.name}」失败：${errMsg(e)}`;
-        return;
-      }
-      first = false;
-    }
-    // 全部落盘后一次性刷新索引，保证表下拉立即展示「总表 + 各教材表」（逐份保存刷新无法保证最终一致）
+    const result = await api.refreshBuiltinProgressTables(props.subject, props.variant);
     await reload();
-    if (drafts.length > 1) {
-      saveMsg(
-        `已加载内置考纲（${drafts.length} 份：总专业课进度表 + ${drafts.length - 1} 份教材进度表）`
-      );
-    } else {
-      saveMsg(`已加载内置考纲进度表（${drafts[0].nodes.length} 个节点）`);
-    }
+    saveMsg(
+      `内置考纲已更新：保留 ${result.nodes_preserved} 个节点，新增 ${result.nodes_added} 个节点`
+    );
   } catch (e) {
     error.value = `加载内置考纲失败：${errMsg(e)}`;
   } finally {
@@ -929,7 +908,7 @@ onMounted(async () => {
       <p v-if="lastActionMsg" class="action-toast">{{ lastActionMsg }}</p>
 
       <!-- 顶部：表切换 + 操作；「生成进度表」两个入口（内置考纲 / AI 生成）独占右侧强调集群，其他为弱化工具按钮 -->
-      <div class="toolbar">
+      <div v-liquid-glass="{ strength: 0.08 }" class="toolbar glass-toolbar">
         <div class="table-picker">
           <span class="context-pill">{{ subjectLabel }}</span>
           <span class="context-pill quiet">{{ variant }}</span>
@@ -970,9 +949,9 @@ onMounted(async () => {
               size="sm"
               :loading="loadingBuiltin"
               @click="loadBuiltin"
-              title="内置官方考研大纲，无需 AI 直接生成"
+              title="合并当前随包考纲，保留已有学习进度"
             >
-              <BookOpen :size="13" /> 内置考纲
+              <BookOpen :size="13" /> 更新内置考纲
             </Button>
             <Button variant="soft" size="sm" @click="openGenModal">
               <Sparkles :size="14" /> AI 生成

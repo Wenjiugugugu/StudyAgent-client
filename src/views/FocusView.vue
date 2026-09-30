@@ -20,6 +20,9 @@ import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Select from "@/components/ui/Select.vue";
+import SegmentedControl from "@/components/ui/SegmentedControl.vue";
+import { vLiquidGlass } from "@/directives/liquidGlass";
+import Switch from "@/components/ui/Switch.vue";
 import {
   Play,
   Pause,
@@ -153,7 +156,7 @@ onMounted(async () => {
       </div>
 
       <!-- 控制区 -->
-      <div class="controls">
+      <div v-liquid-glass="{ strength: 0.08 }" class="controls glass-toolbar">
         <!-- 未开始（含模式切换） -->
         <template v-if="focus.sub === 'idle'">
           <Button
@@ -167,22 +170,15 @@ onMounted(async () => {
           <Button v-else variant="primary" size="lg" @click="focus.startStopwatch">
             <Play :size="18" /> 开始计时
           </Button>
-          <div class="mode-switch">
-            <Button
-              :variant="focus.mode === 'countdown' ? 'primary' : 'ghost'"
-              size="sm"
-              @click="focus.mode = 'countdown'"
-            >
-              <Timer :size="15" /> 倒计时
-            </Button>
-            <Button
-              :variant="focus.mode === 'stopwatch' ? 'primary' : 'ghost'"
-              size="sm"
-              @click="focus.mode = 'stopwatch'"
-            >
-              <Hourglass :size="15" /> 正计时
-            </Button>
-          </div>
+          <SegmentedControl
+            :model-value="focus.mode"
+            :options="[
+              { value: 'countdown', label: '倒计时', icon: Timer },
+              { value: 'stopwatch', label: '正计时', icon: Hourglass },
+            ]"
+            label="计时模式"
+            @update:model-value="focus.mode = $event as 'countdown' | 'stopwatch'"
+          />
         </template>
 
         <!-- 运行/暂停中 -->
@@ -296,29 +292,19 @@ onMounted(async () => {
         </label>
         <div class="config-field config-toggle">
           <span class="config-label">学习结束后自动进入休息</span>
-          <button
-            class="toggle-switch"
-            :class="{ on: focus.config.autoBreak }"
-            role="switch"
-            :aria-checked="focus.config.autoBreak"
+          <Switch
+            v-model="focus.config.autoBreak"
+            label="学习结束后自动进入休息"
             :disabled="focus.isRunning || focus.isPaused"
-            @click="focus.config.autoBreak = !focus.config.autoBreak"
-          >
-            <span class="toggle-thumb" />
-          </button>
+          />
         </div>
         <div class="config-field config-toggle">
           <span class="config-label">长休息（每 N 个番茄后）</span>
-          <button
-            class="toggle-switch"
-            :class="{ on: focus.config.longBreakEnabled }"
-            role="switch"
-            :aria-checked="focus.config.longBreakEnabled"
+          <Switch
+            v-model="focus.config.longBreakEnabled"
+            label="长休息（每 N 个番茄后）"
             :disabled="focus.isRunning || focus.isPaused"
-            @click="focus.config.longBreakEnabled = !focus.config.longBreakEnabled"
-          >
-            <span class="toggle-thumb" />
-          </button>
+          />
         </div>
         <label class="config-field">
           <span class="config-label">长休时长（分钟）</span>
@@ -577,44 +563,6 @@ onMounted(async () => {
   flex-direction: row;
   align-items: center;
   gap: var(--space-3);
-}
-/* 滑动开关 */
-.toggle-switch {
-  position: relative;
-  width: 40px;
-  height: 22px;
-  border-radius: 11px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color-strong);
-  cursor: pointer;
-  padding: 0;
-  flex-shrink: 0;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast);
-}
-.toggle-switch.on {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-.toggle-switch:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.toggle-thumb {
-  position: absolute;
-  top: 50%;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  transform: translateY(-50%);
-  transition: transform var(--transition-fast);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-.toggle-switch.on .toggle-thumb {
-  transform: translateX(18px) translateY(-50%);
 }
 .config-hint {
   font-size: var(--text-xs);

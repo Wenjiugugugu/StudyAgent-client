@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, type Component } from "vue";
-import { useRoute } from "vue-router";
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type Component } from "vue";
+import { vLiquidGlass, pulseLiquidGlass, holdLiquidGlass } from "@/directives/liquidGlass";
+import { swellLiquidGlass } from "@/utils/liquidGlassMotion";
+import { useRoute, useRouter } from "vue-router";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settings";
 import { getUiFlag, setUiFlag } from "@/api";
@@ -27,6 +29,7 @@ import { useAppVersion } from "@/version";
 const { theme, toggleTheme } = useTheme();
 const settingsStore = useSettingsStore();
 const route = useRoute();
+const router = useRouter();
 const isDev = import.meta.env.DEV;
 const { version } = useAppVersion();
 
@@ -53,15 +56,35 @@ function toggleCollapse() {
 }
 
 const navRef = ref<HTMLElement | null>(null);
-const indicatorStyle = ref<{ transform: string; height: string; opacity: number }>({
-  transform: "translateY(0px)",
+const sidebarRef = ref<HTMLElement | null>(null);
+const indicatorLens = ref<HTMLElement | null>(null);
+
+let swell: Animation | undefined;
+let indicatorFrame = 0;
+let navResize: ResizeObserver | undefined;
+onMounted(() => {
+  navResize = new ResizeObserver(updateIndicator);
+  if (navRef.value) navResize.observe(navRef.value);
+  if (sidebarRef.value) navResize.observe(sidebarRef.value);
+});
+onBeforeUnmount(() => {
+  cancelAnimationFrame(indicatorFrame);
+  navResize?.disconnect();
+  swell?.cancel();
+});
+
+let activeItem: HTMLElement | null = null;
+const indicatorStyle = ref({
+  transform: "translate3d(0px, 0px, 0px)",
+  width: "0px",
   height: "0px",
   opacity: 0,
 });
 
 function updateIndicator() {
-  requestAnimationFrame(() => {
-    if (!navRef.value) return;
+  cancelAnimationFrame(indicatorFrame);
+  indicatorFrame = requestAnimationFrame(() => {
+    if (dragging.value || !navRef.value || !sidebarRef.value) return;
     // 「计划」页面固定跟随一级按钮，命中的二级子项仅文字高亮，
     // 避免在自动展开或切换子项时先命中二级链接导致指示条跳位。
     // 展开态「计划」一级按钮是 .nav-group 的直接子按钮。这里直接查询而非用模板 ref：
@@ -70,18 +93,147 @@ function updateIndicator() {
     const planItem = navRef.value.querySelector<HTMLElement>(".nav-group > button.nav-item");
     const active =
       (!collapsed.value && isPlanActive() ? planItem : null) ??
-      (navRef.value.querySelector(".nav-item.active") as HTMLElement | null);
+      sidebarRef.value.querySelector<HTMLElement>(".nav .nav-item.active, .bottom-item.active");
     if (!active) {
       indicatorStyle.value.opacity = 0;
       return;
     }
+    const itemRect = active.getBoundingClientRect();
+    const sidebarRect = sidebarRef.value.getBoundingClientRect();
+    const navRect = navRef.value.getBoundingClientRect();
+    if (
+      navRef.value.contains(active) &&
+      (itemRect.top < navRect.top - 1 || itemRect.bottom > navRect.bottom + 1)
+    ) {
+      indicatorStyle.value.opacity = 0;
+      return;
+    }
+    if (activeItem && activeItem !== active) {
+      pulseLiquidGlass(indicatorLens.value);
+      swell = swellLiquidGlass(indicatorLens.value, swell, { x: 1.065, y: 1.34, duration: 680 });
+    }
+    activeItem = active;
     indicatorStyle.value = {
-      transform: `translateY(${active.offsetTop}px)`,
-      height: `${active.offsetHeight}px`,
+      transform: `translate3d(${itemRect.left - sidebarRect.left - sidebarRef.value.clientLeft}px, ${itemRect.top - sidebarRect.top - sidebarRef.value.clientTop}px, 0px)`,
+      width: `${itemRect.width}px`,
+      height: `${itemRect.height}px`,
       opacity: 1,
     };
   });
 }
+
+const dragging = ref(false);
+let drag: { id: number; x: number; y: number; offset: number; rect: DOMRect } | null = null;
+let suppressClick = false;
+let clickReset: ReturnType<typeof setTimeout> | undefined;
+
+function startIndicatorDrag(event: PointerEvent) {
+  if (event.button !== 0 || !event.isPrimary || !sidebarRef.value || !activeItem) return;
+  const target = event.target instanceof Element ? event.target.closest(".nav-item") : null;
+  if (target !== activeItem) return;
+  const rect = activeItem.getBoundingClientRect();
+  drag = {
+    id: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+    offset: event.clientY - rect.top,
+    rect,
+  };
+  suppressClick = false;
+  clearTimeout(clickReset);
+}
+
+function moveIndicatorDrag(event: PointerEvent) {
+  if (!drag || drag.id !== event.pointerId || !sidebarRef.value) return;
+  if (!(event.buttons & 1)) {
+    endIndicatorDrag(event);
+    return;
+  }
+  if (!dragging.value && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
+  event.preventDefault();
+  if (!dragging.value) {
+    dragging.value = true;
+    sidebarRef.value.setPointerCapture(event.pointerId);
+    cancelAnimationFrame(indicatorFrame);
+    swell?.cancel();
+    holdLiquidGlass(indicatorLens.value);
+  }
+  const sidebar = sidebarRef.value;
+  const bounds = sidebar.getBoundingClientRect();
+  const top = Math.max(
+    0,
+    Math.min(bounds.height - drag.rect.height, event.clientY - bounds.top - drag.offset)
+  );
+  indicatorStyle.value = {
+    ...indicatorStyle.value,
+    transform: `translate3d(${drag.rect.left - bounds.left - sidebar.clientLeft}px, ${top - sidebar.clientTop}px, 0px)`,
+  };
+}
+
+function endIndicatorDrag(event: PointerEvent) {
+  if (!drag || drag.id !== event.pointerId) return;
+  const moved = dragging.value;
+  const dropY = event.clientY - drag.offset + drag.rect.height / 2;
+  drag = null;
+  dragging.value = false;
+  if (sidebarRef.value?.hasPointerCapture(event.pointerId))
+    sidebarRef.value.releasePointerCapture(event.pointerId);
+  if (!moved) return;
+  suppressClick = true;
+  // The synthesized click follows pointerup. Expire suppression for gestures without a click.
+  clickReset = setTimeout(() => {
+    suppressClick = false;
+  }, 0);
+  pulseLiquidGlass(indicatorLens.value);
+  swell = swellLiquidGlass(indicatorLens.value, swell, { x: 1.065, y: 1.25, duration: 480 });
+  if (event.type === "pointerup" && sidebarRef.value) {
+    const root = sidebarRef.value.getBoundingClientRect();
+    if (event.clientX >= root.left && event.clientX <= root.right) {
+      const targets = Array.from(
+        sidebarRef.value.querySelectorAll<HTMLElement>("a.nav-item, .nav-group > button.nav-item")
+      ).filter((element) => {
+        const rect = element.getBoundingClientRect();
+        const container = navRef.value?.contains(element)
+          ? navRef.value.getBoundingClientRect()
+          : root;
+        return (
+          rect.height > 0 && rect.top >= container.top - 1 && rect.bottom <= container.bottom + 1
+        );
+      });
+      const target = targets.find((element) => {
+        const rect = element.getBoundingClientRect();
+        return dropY >= rect.top - 2 && dropY <= rect.bottom + 2;
+      });
+      const path =
+        target?.getAttribute("href") ?? (target?.tagName === "BUTTON" ? planGroup.path : undefined);
+      if (path) {
+        void router.push(path).finally(() => nextTick(updateIndicator));
+        return;
+      }
+    }
+  }
+  nextTick(updateIndicator);
+}
+
+function leaveIndicatorDrag() {
+  if (!dragging.value) drag = null;
+}
+
+function cancelIndicatorDrag(event: KeyboardEvent) {
+  if (event.key === "Escape" && drag) {
+    event.preventDefault();
+    endIndicatorDrag(new PointerEvent("pointercancel", { pointerId: drag.id }));
+  }
+}
+
+function blockDragClick(event: MouseEvent) {
+  if (!suppressClick) return;
+  suppressClick = false;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+onBeforeUnmount(() => clearTimeout(clickReset));
 
 /** 计划组「分裂/融入」动画结束后重算指示条，避免布局变化后位置偏移 */
 function onPlanMorphDone() {
@@ -154,7 +306,13 @@ watch(
 );
 
 watch(
-  [() => route.path, () => collapsed.value, () => planOpen.value],
+  [
+    () => route.path,
+    () => collapsed.value,
+    () => planOpen.value,
+    () => settingsStore.visualMode,
+    isFloating,
+  ],
   () => nextTick(updateIndicator),
   { immediate: true }
 );
@@ -174,7 +332,24 @@ function onPlanClick() {
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ collapsed, floating: isFloating }">
+  <aside
+    ref="sidebarRef"
+    class="sidebar"
+    :class="{ collapsed, floating: isFloating, 'indicator-dragging': dragging }"
+    @pointerdown="startIndicatorDrag"
+    @pointermove="moveIndicatorDrag"
+    @pointerleave="leaveIndicatorDrag"
+    @keydown="cancelIndicatorDrag"
+    @pointerup="endIndicatorDrag"
+    @pointercancel="endIndicatorDrag"
+    @lostpointercapture="endIndicatorDrag"
+    @click.capture="blockDragClick"
+    @dragstart.prevent
+  >
+    <!-- Optics keep one stacking order and return to neutral before travel ends. -->
+    <div class="nav-indicator" :style="indicatorStyle" aria-hidden="true">
+      <span ref="indicatorLens" v-liquid-glass="{ strength: 0 }" class="nav-indicator-lens" />
+    </div>
     <!-- App Brand / Drag Region -->
     <div class="brand" data-tauri-drag-region>
       <div v-if="settingsStore.showLogo" class="brand-icon">
@@ -187,8 +362,7 @@ function onPlanClick() {
     </div>
 
     <!-- Navigation -->
-    <nav ref="navRef" class="nav">
-      <div class="nav-indicator" :style="indicatorStyle" aria-hidden="true" />
+    <nav ref="navRef" class="nav" @scroll.passive="updateIndicator">
       <template
         v-for="entry in menuEntries"
         :key="entry.kind === 'item' ? entry.item.name : 'plan'"
@@ -332,6 +506,7 @@ function onPlanClick() {
    Deeper translucent base + heavy backdrop blur reads clearly against the
    lighter content area; faint inner highlight simulates glass edge. */
 .sidebar {
+  position: relative;
   box-sizing: border-box;
   flex: 0 0 var(--sidebar-width);
   width: var(--sidebar-width);
@@ -432,8 +607,8 @@ function onPlanClick() {
 }
 /* 悬浮岛模式下指示条较默认略收窄（留出呼吸空间），但仍保持较宽的观感 */
 .sidebar.floating .nav-indicator {
-  left: 2px;
-  right: 2px;
+  left: 0;
+  right: auto;
 }
 
 /* Brand */
@@ -497,7 +672,7 @@ function onPlanClick() {
 .nav-indicator {
   position: absolute;
   left: 0;
-  right: 0;
+  right: auto;
   top: 0;
   border-radius: var(--radius-md);
   background: var(--accent-subtle);
@@ -734,6 +909,25 @@ function onPlanClick() {
   .nav-children {
     transition: none;
     animation: none;
+  }
+}
+/* Keep native touch scrolling elsewhere; the selected pill owns its drag gesture. */
+.nav-item.active {
+  touch-action: none;
+}
+.sidebar.indicator-dragging {
+  user-select: none;
+  cursor: grabbing;
+}
+.sidebar.indicator-dragging .nav-indicator {
+  transition: none !important;
+}
+:root[data-visual-mode="liquid-glass"] .sidebar.indicator-dragging .nav-indicator-lens {
+  transform: scale(1.065, 1.25);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-visual-mode="liquid-glass"] .sidebar.indicator-dragging .nav-indicator-lens {
+    transform: none;
   }
 }
 </style>

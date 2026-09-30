@@ -153,9 +153,12 @@ impl<'a> ReviewAgent<'a> {
                 plan.data.total_hours, plan.data.total_tasks, plan.data.target, plan.data.strategy
             ));
 
-            if !plan.data.tasks.is_empty() {
+            // 用户关闭「允许 AI 参考」的任务不进入提示词
+            let ai_tasks: Vec<&crate::data::plan::PlanTask> =
+                plan.data.tasks.iter().filter(|t| t.ai_visible()).collect();
+            if !ai_tasks.is_empty() {
                 prompt.push_str("### 任务列表\n");
-                for task in &plan.data.tasks {
+                for task in ai_tasks {
                     let status_str = match task.status {
                         TaskStatus::Done => "已完成",
                         TaskStatus::Abandoned => "已放弃",
@@ -185,7 +188,7 @@ impl<'a> ReviewAgent<'a> {
                 state.current_task.focus,
                 state.current_task.total_hours.unwrap_or(0.0)
             ));
-            for task in &state.current_task.tasks {
+            for task in state.current_task.tasks.iter().filter(|t| t.ai_reference) {
                 prompt.push_str(&format!(
                     "  - [{:?}] {} ({:?}) - {:?}\n",
                     task.priority, task.subject, task.task, task.status
@@ -195,10 +198,25 @@ impl<'a> ReviewAgent<'a> {
         }
 
         // 滴答清单确认完成（以滴答勾选为准，用户在手机端勾选也会进入这里）
-        if !dida_completed.is_empty() {
+        // 用户关闭「允许 AI 参考」的任务即使在滴答侧完成，也不写入提示词
+        let hidden_titles: std::collections::HashSet<&str> = plan
+            .map(|p| {
+                p.data
+                    .tasks
+                    .iter()
+                    .filter(|t| !t.ai_visible())
+                    .map(|t| t.title.as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let dida_visible: Vec<&String> = dida_completed
+            .iter()
+            .filter(|t| !hidden_titles.contains(t.as_str()))
+            .collect();
+        if !dida_visible.is_empty() {
             prompt.push_str("## 滴答确认完成（来自滴答清单同步）\n");
             prompt.push_str("以下任务在滴答清单中已被标记为完成（可能在本应用外勾选），复盘时请按已完成处理：\n");
-            for t in dida_completed {
+            for t in dida_visible {
                 prompt.push_str(&format!("- {}\n", t));
             }
             prompt.push('\n');

@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import Slider from "@/components/ui/Slider.vue";
 import Card from "@/components/ui/Card.vue";
+import Switch from "@/components/ui/Switch.vue";
+import LiquidGlassPreview from "@/components/LiquidGlassPreview.vue";
 import { useSettingsStore } from "@/stores/settings";
 import { Palette, Check, Droplet, RotateCcw, ImagePlus, Trash2 } from "lucide-vue-next";
 import { useAppearanceSettings } from "../composables/useAppearanceSettings";
@@ -74,6 +77,7 @@ const {
           <span class="visual-mode-desc">{{ opt.desc }}</span>
         </button>
       </div>
+      <LiquidGlassPreview v-if="settingsStore.visualMode === 'liquid-glass'" />
     </div>
 
     <!-- 侧边栏样式 -->
@@ -150,15 +154,11 @@ const {
           <label class="form-label">显示左上角 Logo</label>
           <span class="toggle-desc">关闭后侧边栏左上角只显示文字</span>
         </div>
-        <button
-          class="toggle-switch"
-          :class="{ on: settingsStore.showLogo }"
-          role="switch"
-          :aria-checked="settingsStore.showLogo"
-          @click="handleSetShowLogo(!settingsStore.showLogo)"
-        >
-          <span class="toggle-thumb" />
-        </button>
+        <Switch
+          :model-value="settingsStore.showLogo"
+          label="显示左上角 Logo"
+          @change="handleSetShowLogo"
+        />
       </div>
     </div>
 
@@ -195,14 +195,13 @@ const {
         模糊度
         <span class="slider-value">{{ settingsStore.backgroundBlur.toFixed(1) }}px</span>
       </label>
-      <input
-        type="range"
-        min="0"
-        max="20"
-        step="0.5"
-        :value="settingsStore.backgroundBlur"
-        class="bg-slider"
-        @input="handleSetBackgroundBlur(parseFloat(($event.target as HTMLInputElement).value))"
+      <Slider
+        :min="0"
+        :max="20"
+        :step="0.5"
+        :model-value="settingsStore.backgroundBlur"
+        label="背景模糊度"
+        @update:model-value="handleSetBackgroundBlur"
       />
     </div>
 
@@ -212,14 +211,13 @@ const {
         不透明度
         <span class="slider-value">{{ Math.round(settingsStore.backgroundOpacity * 100) }}%</span>
       </label>
-      <input
-        type="range"
-        min="0.1"
-        max="1"
-        step="0.05"
-        :value="settingsStore.backgroundOpacity"
-        class="bg-slider"
-        @input="handleSetBackgroundOpacity(parseFloat(($event.target as HTMLInputElement).value))"
+      <Slider
+        :min="0.1"
+        :max="1"
+        :step="0.05"
+        :model-value="settingsStore.backgroundOpacity"
+        label="背景不透明度"
+        @update:model-value="handleSetBackgroundOpacity"
       />
     </div>
   </Card>
