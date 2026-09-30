@@ -697,6 +697,15 @@ const showYesterdayReviewBanner = computed(() => {
   return nowMinutes.value < dailyStartMinutes.value;
 });
 
+/** 昨日复盘提示只在「每日开始时间之前」展示：已到学习开始时间后不再打扰 */
+const showYesterdayReviewBanner = computed(() => {
+  if (!todayStore.missingYesterdayReview) return false;
+  if (!isToday.value) return true;
+  // 未配置开始时间时保持原有行为
+  if (dailyStartMinutes.value < 0) return true;
+  return nowMinutes.value < dailyStartMinutes.value;
+});
+
 // ── 休息日 / 排除日 ──
 const isCurrentDateRestDay = computed(() => {
   const restDays = settingsStore.settings?.study_schedule?.rest_days ?? ["周日"];
