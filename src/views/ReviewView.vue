@@ -2583,17 +2583,16 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 /* Date bar */
 .date-bar {
   position: sticky;
-  top: 0;
+  top: var(--space-2);
   z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  background: var(--bg-primary);
-  padding: var(--space-4) 0;
-  margin: 0 calc(-1 * var(--space-8));
-  padding-left: var(--space-8);
-  padding-right: var(--space-8);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: var(--space-3) var(--space-4);
   flex-wrap: wrap;
 }
 

@@ -10,6 +10,19 @@
   --lg-y: 0%;
 }
 :root[data-theme="dark"][data-visual-mode="liquid-glass"] {
+  /* Every surface, including nested cards and controls, shares the blue-gray material. */
+  --bg-primary: #1a2231;
+  --bg-secondary: #202b3b;
+  --bg-tertiary: #273446;
+  --bg-elevated: #202b3b;
+  --surface-1: #202b3b;
+  --surface-2: #243143;
+  --surface-3: #29394d;
+  --surface-accent: #25394b;
+  --sidebar-solid: #202b3b;
+  --text-secondary: #b0bdce;
+  --text-tertiary: #8998ad;
+  --text-quaternary: #5f7088;
   --lg-fill: rgba(29, 35, 48, 0.14);
   --lg-raised: rgba(32, 39, 53, 0.25);
   --lg-clear: rgba(255, 255, 255, 0.025);
@@ -398,6 +411,28 @@
   :is(.ui-card, .settings-section, .theme-card, .visual-mode-card) {
   background: rgba(28, 35, 48, 0.76);
   border-color: rgba(255, 255, 255, 0.09);
+}
+/* Broad status surfaces use a quiet tint; icons and labels retain their semantic colour. */
+:root[data-visual-mode="liquid-glass"] .review-view .date-bar {
+  background: color-mix(in srgb, var(--surface-1) 76%, transparent);
+  border-color: var(--lg-edge-low);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  backdrop-filter: blur(12px) saturate(120%);
+}
+[data-theme="dark"][data-visual-mode="liquid-glass"] .briefing-missing-review {
+  background: color-mix(in srgb, var(--color-warning) 5%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--color-warning) 28%, var(--surface-2));
+}
+[data-theme="dark"][data-visual-mode="liquid-glass"] .date-card.done {
+  background: color-mix(in srgb, var(--color-success) 7%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--color-success) 32%, var(--bg-elevated));
+}
+[data-theme="dark"][data-visual-mode="liquid-glass"] .date-card.today {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--bg-elevated));
+}
+[data-theme="dark"][data-visual-mode="liquid-glass"] .date-card:hover {
+  border-color: var(--border-color-strong);
 }
 :root[data-visual-mode="liquid-glass"] :is(.theme-card, .visual-mode-card).active {
   border-color: var(--accent);

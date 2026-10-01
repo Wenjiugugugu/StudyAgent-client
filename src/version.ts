@@ -14,7 +14,7 @@ import { ref, type Ref } from "vue";
 import { invokeDirect, isTauri } from "@/api/tauri";
 
 /** 兜底版本号（浏览器模式 / 读取失败时） */
-export const FALLBACK_APP_VERSION = "0.8.0-pre";
+export const FALLBACK_APP_VERSION = "0.8.0";
 
 /** 调用后端获取应用真实版本 */
 async function fetchAppVersion(): Promise<string> {

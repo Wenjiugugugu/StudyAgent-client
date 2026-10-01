@@ -32,6 +32,7 @@ const route = useRoute();
 const router = useRouter();
 const isDev = import.meta.env.DEV;
 const { version } = useAppVersion();
+const emit = defineEmits<{ resizeStart: []; resizeEnd: []; resizeFinished: [] }>();
 
 // ── 侧边栏收展（收起后仅显示图标）──
 // M7：持久化改走「后端 ui_flags 文件」（localStorage 部分环境随重启丢失）；
@@ -49,15 +50,58 @@ onMounted(async () => {
 });
 
 function toggleCollapse() {
+  const sidebar = sidebarRef.value;
+  const startWidth = sidebar?.getBoundingClientRect().width ?? 0;
+  finishResize();
+  emit("resizeStart");
+  swell?.cancel();
+  activeItem = null;
+  holdLiquidGlass(indicatorLens.value, 0);
   collapsed.value = !collapsed.value;
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? "1" : "0");
   void setUiFlag(COLLAPSE_KEY, collapsed.value ? "1" : "0").catch(() => {});
-  nextTick(updateIndicator);
+  nextTick(() => {
+    const content = sidebarContentRef.value;
+    const endWidth = sidebar?.getBoundingClientRect().width ?? 0;
+    emit("resizeEnd");
+    if (
+      sidebar &&
+      content &&
+      startWidth &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      // Freeze inner navigation geometry; only the outer shell changes width.
+      content.style.width = `${content.getBoundingClientRect().width}px`;
+      sidebar.style.width = "auto";
+      sidebar.style.minWidth = "0";
+      resizeAnimation = sidebar.animate(
+        [{ flexBasis: `${startWidth}px` }, { flexBasis: `${endWidth}px` }],
+        { duration: 260, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }
+      );
+      resizeAnimation.onfinish = () => {
+        finishResize();
+        emit("resizeFinished");
+      };
+    } else {
+      emit("resizeFinished");
+    }
+    updateIndicator();
+  });
 }
 
 const navRef = ref<HTMLElement | null>(null);
 const sidebarRef = ref<HTMLElement | null>(null);
+const sidebarContentRef = ref<HTMLElement | null>(null);
 const indicatorLens = ref<HTMLElement | null>(null);
+let resizeAnimation: Animation | undefined;
+
+function finishResize() {
+  resizeAnimation?.cancel();
+  resizeAnimation = undefined;
+  sidebarContentRef.value?.style.removeProperty("width");
+  sidebarRef.value?.style.removeProperty("width");
+  sidebarRef.value?.style.removeProperty("min-width");
+}
 
 let swell: Animation | undefined;
 let indicatorFrame = 0;
@@ -65,12 +109,13 @@ let navResize: ResizeObserver | undefined;
 onMounted(() => {
   navResize = new ResizeObserver(updateIndicator);
   if (navRef.value) navResize.observe(navRef.value);
-  if (sidebarRef.value) navResize.observe(sidebarRef.value);
+  if (sidebarContentRef.value) navResize.observe(sidebarContentRef.value);
 });
 onBeforeUnmount(() => {
   cancelAnimationFrame(indicatorFrame);
   navResize?.disconnect();
   swell?.cancel();
+  finishResize();
 });
 
 let activeItem: HTMLElement | null = null;
@@ -350,153 +395,158 @@ function onPlanClick() {
     <div class="nav-indicator" :style="indicatorStyle" aria-hidden="true">
       <span ref="indicatorLens" v-liquid-glass="{ strength: 0 }" class="nav-indicator-lens" />
     </div>
-    <!-- App Brand / Drag Region -->
-    <div class="brand" data-tauri-drag-region>
-      <div v-if="settingsStore.showLogo" class="brand-icon">
-        <Logo />
+    <div ref="sidebarContentRef" class="sidebar-content">
+      <!-- App Brand / Drag Region -->
+      <div class="brand" data-tauri-drag-region>
+        <div v-if="settingsStore.showLogo" class="brand-icon">
+          <Logo />
+        </div>
+        <div class="brand-text" :class="{ 'no-logo': !settingsStore.showLogo }">
+          <span class="brand-name">StudyAgent</span>
+        </div>
       </div>
-      <div class="brand-text" :class="{ 'no-logo': !settingsStore.showLogo }">
-        <span class="brand-name">StudyAgent</span>
-        <span class="brand-tagline">考研学习智能体</span>
-      </div>
-    </div>
 
-    <!-- Navigation -->
-    <nav ref="navRef" class="nav" @scroll.passive="updateIndicator">
-      <template
-        v-for="entry in menuEntries"
-        :key="entry.kind === 'item' ? entry.item.name : 'plan'"
-      >
-        <!-- 普通导航项 -->
-        <router-link
-          v-if="entry.kind === 'item'"
-          :to="entry.item.path"
-          class="nav-item"
-          :class="{ reserved: entry.item.reserved }"
-          active-class="active"
-          :title="collapsed ? entry.item.label : ''"
+      <!-- Navigation -->
+      <nav ref="navRef" class="nav" @scroll.passive="updateIndicator">
+        <template
+          v-for="entry in menuEntries"
+          :key="entry.kind === 'item' ? entry.item.name : 'plan'"
         >
-          <component :is="entry.item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
-          <span class="nav-label">{{ entry.item.label }}</span>
+          <!-- 普通导航项 -->
+          <router-link
+            v-if="entry.kind === 'item'"
+            :to="entry.item.path"
+            class="nav-item"
+            :class="{ reserved: entry.item.reserved }"
+            active-class="active"
+            :title="collapsed ? entry.item.label : ''"
+          >
+            <component :is="entry.item.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
+            <span class="nav-label">{{ entry.item.label }}</span>
+          </router-link>
+
+          <!-- 「计划」二级菜单 -->
+          <div v-else class="nav-group">
+            <!-- 收起态：一级「计划」图标分裂为 3 个二级菜单图标 -->
+            <transition
+              name="plan-cols"
+              @after-enter="onPlanMorphDone"
+              @after-leave="onPlanMorphDone"
+            >
+              <div v-if="collapsed" class="plan-cols">
+                <router-link
+                  v-for="c in planGroup.children"
+                  :key="c.name"
+                  :to="c.path"
+                  class="nav-item"
+                  active-class="active"
+                  :title="c.label"
+                >
+                  <component :is="c.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
+                  <span class="nav-label">{{ c.label }}</span>
+                </router-link>
+              </div>
+            </transition>
+
+            <!-- 展开态：一级菜单 + 内联二级菜单（二级图标融入回去） -->
+            <template v-if="!collapsed">
+              <button
+                type="button"
+                class="nav-item"
+                :class="{ active: isPlanActive() }"
+                :aria-expanded="planOpen"
+                aria-controls="plan-subnav"
+                @click="onPlanClick"
+              >
+                <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
+                <span class="nav-label">{{ planGroup.label }}</span>
+                <span class="nav-chevron" :class="{ open: planOpen }" aria-hidden="true"></span>
+              </button>
+              <div id="plan-subnav" v-show="planOpen" class="nav-children">
+                <router-link
+                  v-for="c in planGroup.children"
+                  :key="c.name"
+                  :to="c.path"
+                  class="nav-item nav-child"
+                  active-class="active"
+                >
+                  <component
+                    :is="c.icon"
+                    :size="17"
+                    :stroke-width="1.5"
+                    class="nav-icon child-icon"
+                  />
+                  <span class="nav-label">{{ c.label }}</span>
+                </router-link>
+              </div>
+            </template>
+          </div>
+        </template>
+      </nav>
+
+      <!-- Bottom Section -->
+      <div class="sidebar-bottom">
+        <router-link
+          v-if="isDebugAvailable"
+          to="/debug"
+          class="nav-item bottom-item"
+          active-class="active"
+          :title="collapsed ? '调试' : ''"
+        >
+          <Bug :size="19" :stroke-width="1.5" class="nav-icon" />
+          <span class="nav-label">调试</span>
         </router-link>
 
-        <!-- 「计划」二级菜单 -->
-        <div v-else class="nav-group">
-          <!-- 收起态：一级「计划」图标分裂为 3 个二级菜单图标 -->
-          <transition
-            name="plan-cols"
-            @after-enter="onPlanMorphDone"
-            @after-leave="onPlanMorphDone"
-          >
-            <div v-if="collapsed" class="plan-cols">
-              <router-link
-                v-for="c in planGroup.children"
-                :key="c.name"
-                :to="c.path"
-                class="nav-item"
-                active-class="active"
-                :title="c.label"
-              >
-                <component :is="c.icon" :size="19" :stroke-width="1.5" class="nav-icon" />
-                <span class="nav-label">{{ c.label }}</span>
-              </router-link>
-            </div>
-          </transition>
+        <router-link
+          to="/settings"
+          class="nav-item bottom-item"
+          active-class="active"
+          :title="collapsed ? '设置' : ''"
+        >
+          <Settings :size="19" :stroke-width="1.5" class="nav-icon" />
+          <span class="nav-label">设置</span>
+        </router-link>
 
-          <!-- 展开态：一级菜单 + 内联二级菜单（二级图标融入回去） -->
-          <template v-if="!collapsed">
-            <button
-              type="button"
-              class="nav-item"
-              :class="{ active: isPlanActive() }"
-              :aria-expanded="planOpen"
-              aria-controls="plan-subnav"
-              @click="onPlanClick"
-            >
-              <component :is="Calendar" :size="19" :stroke-width="1.5" class="nav-icon" />
-              <span class="nav-label">{{ planGroup.label }}</span>
-              <span class="nav-chevron" :class="{ open: planOpen }" aria-hidden="true"></span>
-            </button>
-            <div id="plan-subnav" v-show="planOpen" class="nav-children">
-              <router-link
-                v-for="c in planGroup.children"
-                :key="c.name"
-                :to="c.path"
-                class="nav-item nav-child"
-                active-class="active"
-              >
-                <component
-                  :is="c.icon"
-                  :size="17"
-                  :stroke-width="1.5"
-                  class="nav-icon child-icon"
-                />
-                <span class="nav-label">{{ c.label }}</span>
-              </router-link>
-            </div>
-          </template>
-        </div>
-      </template>
-    </nav>
+        <button
+          type="button"
+          class="nav-item theme-toggle"
+          @click="toggleTheme"
+          :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
+          :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''"
+        >
+          <component
+            :is="theme === 'dark' ? SunMedium : Moon"
+            :size="19"
+            :stroke-width="1.5"
+            class="nav-icon"
+          />
+          <span class="nav-label">{{ theme === "dark" ? "浅色" : "深色" }}</span>
+        </button>
 
-    <!-- Bottom Section -->
-    <div class="sidebar-bottom">
-      <router-link
-        v-if="isDebugAvailable"
-        to="/debug"
-        class="nav-item bottom-item"
-        active-class="active"
-        :title="collapsed ? '调试' : ''"
-      >
-        <Bug :size="19" :stroke-width="1.5" class="nav-icon" />
-        <span class="nav-label">调试</span>
-      </router-link>
+        <router-link
+          to="/settings#settings-update"
+          class="version-label"
+          title="前往设置页检查更新"
+        >
+          <span>Beta {{ version }}</span>
+        </router-link>
 
-      <router-link
-        to="/settings"
-        class="nav-item bottom-item"
-        active-class="active"
-        :title="collapsed ? '设置' : ''"
-      >
-        <Settings :size="19" :stroke-width="1.5" class="nav-icon" />
-        <span class="nav-label">设置</span>
-      </router-link>
-
-      <button
-        type="button"
-        class="nav-item theme-toggle"
-        @click="toggleTheme"
-        :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
-        :title="collapsed ? (theme === 'dark' ? '浅色' : '深色') : ''"
-      >
-        <component
-          :is="theme === 'dark' ? SunMedium : Moon"
-          :size="19"
-          :stroke-width="1.5"
-          class="nav-icon"
-        />
-        <span class="nav-label">{{ theme === "dark" ? "浅色" : "深色" }}</span>
-      </button>
-
-      <router-link to="/settings#settings-update" class="version-label" title="前往设置页检查更新">
-        <span>Beta {{ version }}</span>
-      </router-link>
-
-      <button
-        type="button"
-        class="nav-item collapse-toggle"
-        @click="toggleCollapse"
-        :aria-label="collapsed ? '展开侧边栏' : '收起侧边栏'"
-        :title="collapsed ? '展开侧边栏' : '收起侧边栏'"
-      >
-        <component
-          :is="collapsed ? ChevronsRight : ChevronsLeft"
-          :size="19"
-          :stroke-width="1.5"
-          class="nav-icon"
-        />
-        <span class="nav-label">{{ collapsed ? "" : "收起侧边栏" }}</span>
-      </button>
+        <button
+          type="button"
+          class="nav-item collapse-toggle"
+          @click="toggleCollapse"
+          :aria-label="collapsed ? '展开侧边栏' : '收起侧边栏'"
+          :title="collapsed ? '展开侧边栏' : '收起侧边栏'"
+        >
+          <component
+            :is="collapsed ? ChevronsRight : ChevronsLeft"
+            :size="19"
+            :stroke-width="1.5"
+            class="nav-icon"
+          />
+          <span class="nav-label">{{ collapsed ? "" : "收起侧边栏" }}</span>
+        </button>
+      </div>
     </div>
   </aside>
 </template>
@@ -507,6 +557,7 @@ function onPlanClick() {
    lighter content area; faint inner highlight simulates glass edge. */
 .sidebar {
   position: relative;
+  z-index: 1;
   box-sizing: border-box;
   flex: 0 0 var(--sidebar-width);
   width: var(--sidebar-width);
@@ -517,7 +568,6 @@ function onPlanClick() {
   -webkit-backdrop-filter: saturate(200%) blur(30px);
   display: flex;
   flex-direction: column;
-  padding: var(--space-3) var(--space-2) var(--space-3);
   /* Reserve the same edge box in standard and liquid-glass modes. */
   border: var(--sidebar-control-border-width) solid transparent;
   border-right-color: var(--border-color);
@@ -525,12 +575,17 @@ function onPlanClick() {
   user-select: none;
   /* 展开/收起时裁切仍在滑动的文字，避免溢出到内容区 */
   overflow: hidden;
-  /* 宽度过渡（Apple motion curve）：flex 布局会逐帧重算，
-     右侧内容随之平滑让位，无需对内容区单独加动画 */
-  transition:
-    flex-basis var(--transition-slow),
-    width var(--transition-slow),
-    min-width var(--transition-slow);
+  /* Only this shell resizes; navigation and page geometry stay fixed during motion. */
+}
+
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-3) var(--space-2);
 }
 
 /* 收起态：仅显示图标 */
@@ -575,9 +630,7 @@ function onPlanClick() {
   padding-bottom: 0;
   transition:
     opacity 0.1s ease,
-    transform 0.1s ease,
-    max-height var(--transition-slow),
-    padding var(--transition-slow);
+    transform 0.1s ease;
 }
 /* 折叠箭头仅淡出（保留其自身的旋转过渡） */
 .sidebar.collapsed .nav-chevron {
@@ -650,12 +703,7 @@ function onPlanClick() {
   font-weight: var(--font-bold);
   color: var(--text-primary);
   letter-spacing: -0.02em;
-}
-
-.brand-tagline {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  font-weight: var(--font-medium);
+  white-space: nowrap;
 }
 
 .nav {
@@ -770,6 +818,7 @@ function onPlanClick() {
 
 /* 「计划」二级菜单 */
 .nav-group {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -786,6 +835,8 @@ function onPlanClick() {
     transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
 .plan-cols-leave-active {
+  position: absolute;
+  width: 100%;
   transition:
     opacity 0.16s ease,
     transform 0.16s ease;
@@ -879,7 +930,7 @@ function onPlanClick() {
   cursor: pointer;
   font-family: inherit;
   border-radius: var(--radius-xs);
-  /* 收起/展开：跟随文字动画 + 自身高度联动 */
+  /* Settle height immediately so resizing does not keep moving the bottom controls. */
   max-height: 48px;
   overflow: hidden;
   opacity: 1;
@@ -887,9 +938,7 @@ function onPlanClick() {
     background var(--transition-fast),
     color var(--transition-fast),
     opacity 0.2s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
-    transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s,
-    max-height var(--transition-slow),
-    padding var(--transition-slow);
+    transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s;
 }
 
 .version-label:hover:not(:disabled) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref, watch, nextTick, onBeforeUnmount } from "vue";
 import { useRoute } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import SideBar from "./SideBar.vue";
@@ -11,6 +11,67 @@ const settingsStore = useSettingsStore();
 const titleBarRef = ref<InstanceType<typeof TitleBar> | null>(null);
 const isMaximized = ref(false);
 const contentBodyRef = ref<HTMLElement | null>(null);
+const mainContentRef = ref<HTMLElement | null>(null);
+let resizeAnimation: Animation | undefined;
+let headerAnimation: Animation | undefined;
+let pageLeft = 0;
+let headerLeft = 0;
+
+function getPageLeft() {
+  return (
+    contentBodyRef.value?.firstElementChild?.getBoundingClientRect().left ??
+    contentBodyRef.value?.getBoundingClientRect().left ??
+    0
+  );
+}
+
+function finishSidebarResize() {
+  resizeAnimation?.cancel();
+  headerAnimation?.cancel();
+  resizeAnimation = undefined;
+  headerAnimation = undefined;
+  const content = mainContentRef.value;
+  for (const property of ["position", "left", "top", "height", "width"])
+    content?.style.removeProperty(property);
+}
+
+function onSidebarResizeStart() {
+  // Capture the visible page, including its centring and any interrupted motion.
+  pageLeft = getPageLeft();
+  headerLeft =
+    mainContentRef.value?.querySelector(".header-left")?.getBoundingClientRect().left ?? 0;
+  finishSidebarResize();
+}
+
+function onSidebarResizeEnd() {
+  const content = mainContentRef.value;
+  if (!content || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const offset = pageLeft - getPageLeft();
+  const header = content.querySelector<HTMLElement>(".header-left");
+  const headerOffset = headerLeft - (header?.getBoundingClientRect().left ?? 0);
+  const bounds = content.getBoundingClientRect();
+  const parent = content.parentElement!.getBoundingClientRect();
+  // Keep the page out of flex layout while the sidebar shell animates its width.
+  Object.assign(content.style, {
+    position: "absolute",
+    left: `${bounds.left - parent.left}px`,
+    top: "0",
+    height: "100%",
+    width: `${bounds.width}px`,
+  });
+  // Final width is already applied. Animate from the actual old page position so
+  // centred views neither jump at the start nor recenter when the shell finishes.
+  resizeAnimation = contentBodyRef.value?.animate(
+    [{ transform: `translateX(${offset}px)` }, { transform: "translateX(0)" }],
+    { duration: 260, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }
+  );
+  headerAnimation = header?.animate(
+    [{ transform: `translateX(${headerOffset}px)` }, { transform: "translateX(0)" }],
+    { duration: 260, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }
+  );
+}
+
+onBeforeUnmount(finishSidebarResize);
 
 /** 是否启用悬浮岛式侧边栏（用于调整顶部标题的布局与材质） */
 const isFloating = computed(() => settingsStore.sidebarStyle === "floating");
@@ -37,10 +98,14 @@ watch(
     <div class="app-background-layer" aria-hidden="true"></div>
     <div class="app-body">
       <!-- Left Sidebar -->
-      <SideBar />
+      <SideBar
+        @resize-start="onSidebarResizeStart"
+        @resize-end="onSidebarResizeEnd"
+        @resize-finished="finishSidebarResize"
+      />
 
       <!-- Main Content -->
-      <main class="main-content">
+      <main ref="mainContentRef" class="main-content">
         <header
           class="content-header"
           data-tauri-drag-region
@@ -122,6 +187,7 @@ watch(
 }
 
 .app-body {
+  position: relative;
   flex: 1;
   display: flex;
   overflow: hidden;
