@@ -165,22 +165,21 @@
 }
 
 /* ── Dark Theme ── */
-/* Aligned with Apple design library .dark block.
-   基础底色不使用纯黑（#000 在 OLED/大屏上过重），统一抬到 #17171a 一档，
-   上层 surface / sidebar 同步抬升相同幅度以保持原有层次差。 */
+/* Keep the page quiet while lifting card surfaces above it.
+   卡片使用更亮的灰色层级，避免与页面底色融成一片。 */
 :root[data-theme="dark"] {
   --bg-primary: #17171a;
   --bg-solid: #17171a;
-  --bg-secondary: #242428;
-  --bg-tertiary: #2c2c30;
-  --bg-elevated: #242428;
+  --bg-secondary: #29292d;
+  --bg-tertiary: #303034;
+  --bg-elevated: #29292d;
   --bg-overlay: rgba(255, 255, 255, 0.04);
 
   /* Layered surfaces — dark equivalents */
-  --surface-1: #242428;
-  --surface-2: #2c2c30;
-  --surface-3: #323236;
-  --surface-accent: #202a3a;
+  --surface-1: #29292d;
+  --surface-2: #303034;
+  --surface-3: #36363b;
+  --surface-accent: #2a3547;
 
   --header-bg: rgba(23, 23, 26, 0.72);
 
@@ -190,7 +189,7 @@
   --sidebar-item-active: rgba(255, 255, 255, 0.11);
 
   --text-primary: #f5f5f7;
-  --text-secondary: #8e8e93;
+  --text-secondary: #a1a1a6;
   --text-tertiary: #6e6e73;
   --text-quaternary: #48484a;
   --text-on-accent: #ffffff;
@@ -203,7 +202,7 @@
   --accent-hover: #85b3ff;
   --accent-pressed: #5b8def;
   --accent-subtle: rgba(107, 160, 255, 0.15);
-  --accent-soft: #1a2230;
+  --accent-soft: #293448;
 
   --color-success: #30d158;
   --color-success-subtle: rgba(48, 209, 88, 0.15);
@@ -242,9 +241,9 @@
 
 :root[data-theme="dark"][data-has-background="true"] {
   --bg-primary: rgba(23, 23, 26, 0.72);
-  --bg-secondary: rgba(36, 36, 40, 0.72);
-  --bg-tertiary: rgba(44, 44, 48, 0.72);
-  --bg-elevated: rgba(36, 36, 40, 0.85);
+  --bg-secondary: rgba(41, 41, 45, 0.72);
+  --bg-tertiary: rgba(48, 48, 52, 0.72);
+  --bg-elevated: rgba(41, 41, 45, 0.85);
   --sidebar-bg: rgba(48, 48, 52, 0.72);
   --header-bg: rgba(23, 23, 26, 0.6);
 }

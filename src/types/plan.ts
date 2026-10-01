@@ -7,7 +7,7 @@
  * - view: 仅供人类阅读的 Markdown，程序不得解析
  */
 
-import type { SubjectKey, TaskPriority, TaskStatus } from "./state";
+import type { SubjectKey, TaskPriority, TaskSource, TaskStatus } from "./state";
 
 /** 计划依赖的数据源 */
 export interface BasedOn {
@@ -75,6 +75,8 @@ export interface DailyPlanMeta {
 
 /** 日计划业务数据 */
 export interface DailyPlanData {
+  /** 容量不足时保留至下个学习日的任务 */
+  deferred_tasks?: PlanTask[];
   remaining_days: number;
   target: string;
   strategy: string;
@@ -199,6 +201,12 @@ export interface PlanTask {
   style_tips?: string;
   fallback_plan?: string;
   status: TaskStatus;
+  /** 滴答清单任务 ID（同步对账后回填） */
+  dida_task_id?: string;
+  /** 任务来源：ai（AI/计划生成，默认）/ manual（用户手动添加） */
+  source?: TaskSource;
+  /** 是否允许 AI 参考此任务；false 时不会写入任何 AI 提示词（缺省视为 true） */
+  ai_reference?: boolean;
 }
 
 /** 兼容别名：DailyPlan 等价于 DailyPlanFile（完整文件） */

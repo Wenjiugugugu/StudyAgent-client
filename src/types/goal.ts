@@ -17,6 +17,8 @@ export type GoalStatus = "active" | "completed" | "expired";
 
 /** 一条截止日规划区间（绑定单一科目 + 书/板块） */
 export interface Goal {
+  /** 当前剩余进度的倒排起算日 */
+  planning_start?: string;
   /** 唯一标识，如 "goal-math-线性代数-1" */
   id: string;
   /** 关联科目 */
@@ -31,7 +33,7 @@ export interface Goal {
   start_chapter?: string;
   /** 目标所属的书/板块（进度表 chapter 节点标题），如「高等数学」「线性代数」 */
   book: string;
-  /** 当前进度在顺序表中的位置（自动维护） */
+  /** 已完成到的位置；缺省表示首个知识点尚未完成 */
   current_position?: number;
   /** 目标在顺序表中的位置 */
   target_position?: number;

@@ -605,39 +605,83 @@ pub(crate) fn memory_curve_review_items(
     week_start: &str,
     week_end: &str,
 ) -> Vec<MemoryReviewItem> {
-    const INTERVALS: [i64; 3] = [1, 3, 7];
-    let mut result: Vec<MemoryReviewItem> = Vec::new();
-    for review in reviews {
-        for task_review in &review.task_reviews {
-            if task_review.mastery != "weak" {
+    const INTERVALS: [i64; 5] = [1, 3, 7, 14, 30];
+    // 由复盘记录重建每项内容的最近状态，重复提交不会额外产生复习任务。
+    let mut states: std::collections::HashMap<(String, String), (String, usize)> =
+        std::collections::HashMap::new();
+    let mut ordered: Vec<_> = reviews
+        .iter()
+        .filter(|r| r.meta.date.as_str() <= week_start)
+        .collect();
+    ordered.sort_by(|a, b| a.meta.date.cmp(&b.meta.date));
+    for review in ordered {
+        for task in &review.task_reviews {
+            if task.status != "completed" && task.status != "partial" {
                 continue;
             }
-            let subject = match task_review.subject.as_str() {
-                "math" => SubjectKey::Math,
-                "english" => SubjectKey::English,
-                "politics" => SubjectKey::Politics,
-                "professional" => SubjectKey::Professional,
-                _ => continue,
-            };
-            let title = if task_review.title.trim().is_empty() {
-                "薄弱内容".to_string()
+            let raw = task.title.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            let is_revisit = raw.ends_with("天回访）") && raw.contains("（+");
+            let title = if is_revisit {
+                raw.rsplit_once("（+").map(|p| p.0).unwrap_or(raw)
             } else {
-                task_review.title.trim().to_string()
+                raw
             };
-            for interval in INTERVALS {
-                let Ok(due_date) = add_days(&review.meta.date, interval) else {
-                    continue;
-                };
-                if due_date.as_str() >= week_start && due_date.as_str() <= week_end {
-                    result.push(MemoryReviewItem {
-                        due_date,
-                        subject: subject.clone(),
-                        title: format!("{}（+{}天回访）", title, interval),
-                    });
-                }
+            let key = (task.subject.clone(), title.to_string());
+            let content_difficulty = task
+                .blockers
+                .iter()
+                .any(|b| matches!(b.as_str(), "understanding" | "problems" | "memorization"));
+            let daily_difficulty = review.daily_review.as_ref().is_some_and(|d| {
+                d.overall_feeling == "hard"
+                    && matches!(
+                        d.main_difficulty.as_str(),
+                        "understanding" | "problems" | "memorization"
+                    )
+            });
+            if task.mastery == "mastered" {
+                states.remove(&key);
+            } else if task.mastery == "weak" || content_difficulty || daily_difficulty {
+                states.insert(key, (review.meta.date.clone(), 0));
+            } else if is_revisit && task.status == "completed" {
+                let stage = states
+                    .get(&key)
+                    .map(|s| s.1 + 1)
+                    .unwrap_or(1)
+                    .min(INTERVALS.len() - 1);
+                states.insert(key, (review.meta.date.clone(), stage));
             }
         }
     }
+    let mut result = Vec::new();
+    for ((subject, title), (last_date, stage)) in states {
+        let subject = match subject.as_str() {
+            "math" => SubjectKey::Math,
+            "english" => SubjectKey::English,
+            "politics" => SubjectKey::Politics,
+            "professional" => SubjectKey::Professional,
+            _ => continue,
+        };
+        let Ok(due) = add_days(&last_date, INTERVALS[stage]) else {
+            continue;
+        };
+        // 逾期复习顺延至本次排程起点，休息日由日调度器继续顺延。
+        let due_date = if due.as_str() < week_start {
+            week_start.to_string()
+        } else {
+            due
+        };
+        if due_date.as_str() <= week_end {
+            result.push(MemoryReviewItem {
+                due_date,
+                subject,
+                title: format!("{}（+{}天回访）", title, INTERVALS[stage]),
+            });
+        }
+    }
+
     result.sort_by(|a, b| {
         a.due_date
             .cmp(&b.due_date)
@@ -668,40 +712,56 @@ pub(crate) fn check_review_needs_regeneration(review: &ReviewFile) -> bool {
 pub(crate) fn matches_completed(title: &str, completed: &str) -> bool {
     let title = title.trim();
     let completed = completed.trim();
+    // State.completed 同时保存具体任务和笼统章节名。任意前缀匹配会把
+    // 「计算机网络」误当成「计算机网络·物理层」已完成，导致整科任务被删空。
+    // 仅允许完整标题相同，或只差明确的考试版本后缀。
     if title.is_empty() || completed.is_empty() {
         return false;
     }
     if title == completed {
         return true;
     }
-    title
-        .strip_prefix(completed)
-        .and_then(|rest| rest.chars().next())
-        .map(|character| {
-            matches!(
-                character,
-                '：' | ':'
-                    | '，'
-                    | ','
-                    | '、'
-                    | '。'
-                    | '；'
-                    | ';'
-                    | '('
-                    | '（'
-                    | '·'
-                    | '-'
-                    | '—'
-                    | ')'
-                    | '）'
-            )
-        })
-        .unwrap_or(false)
+    const VERSION_SUFFIXES: [&str; 12] = [
+        "（数一）",
+        "（数二）",
+        "（数三）",
+        "（数学一）",
+        "（数学二）",
+        "（数学三）",
+        "（英一）",
+        "（英二）",
+        "（英语一）",
+        "（英语二）",
+        "（408）",
+        "（政治）",
+    ];
+    VERSION_SUFFIXES.iter().any(|suffix| {
+        title
+            .strip_suffix(suffix)
+            .is_some_and(|base| base.trim() == completed)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_chapter_does_not_remove_new_subtopic() {
+        assert!(!matches_completed(
+            "计算机网络·物理层：数据通信基础",
+            "计算机网络"
+        ));
+        assert!(!matches_completed("计算机网络（数据链路层）", "计算机网络"));
+        assert!(matches_completed(
+            "计算机网络体系结构",
+            "计算机网络体系结构"
+        ));
+        assert!(matches_completed(
+            "向量组的线性相关与线性无关（数二）",
+            "向量组的线性相关与线性无关"
+        ));
+    }
 
     #[test]
     fn derive_task_count_basic() {
@@ -992,5 +1052,34 @@ mod tests {
         assert_eq!(signals.streak_days, 7);
         let decision = v2_decide(&signals);
         assert_eq!(decision.rule, "A1_1.15");
+    }
+
+    #[test]
+    fn new_review_feedback_drives_revisit_and_success_extends_interval() {
+        use crate::data::records::TaskReviewEntry;
+        let mut first = ReviewFile::default();
+        first.meta.date = "2026-09-28".into();
+        first.task_reviews.push(TaskReviewEntry {
+            subject: "math".into(),
+            title: "函数".into(),
+            status: "completed".into(),
+            blockers: vec!["understanding".into()],
+            ..Default::default()
+        });
+        let items = memory_curve_review_items(&[first.clone()], "2026-09-30", "2026-10-06");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].due_date, "2026-09-30");
+        let mut second = ReviewFile::default();
+        second.meta.date = "2026-09-29".into();
+        second.task_reviews.push(TaskReviewEntry {
+            subject: "math".into(),
+            title: "函数（+1天回访）".into(),
+            status: "completed".into(),
+            ..Default::default()
+        });
+        let items = memory_curve_review_items(&[second, first], "2026-09-30", "2026-10-06");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].due_date, "2026-10-02");
+        assert!(items[0].title.contains("+3天"));
     }
 }

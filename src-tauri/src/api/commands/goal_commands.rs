@@ -63,7 +63,7 @@ pub async fn create_goal(
     let version = subject_version(&state_data, key);
     let target_position = crate::core::chapter_seq::position(key, &version, &target_chapter)
         .ok_or_else(|| format!("未能在地图中考纲顺序表中定位目标章节「{}」", target_chapter))?;
-    let start_chapter_str = start_chapter.unwrap_or_default();
+    let mut start_chapter_str = start_chapter.unwrap_or_default();
     let start_position = if start_chapter_str.is_empty() {
         None
     } else {
@@ -80,7 +80,7 @@ pub async fn create_goal(
     };
 
     // 计算书本第一知识点位置（顺序表中 position），用于 current_position 的兜底：
-    // 用户在「中等章节」想推进一本书时，让倒排从该书第一点（的前一位置）开始，
+    // 用户在「中等章节」想推进一本书时，让倒排从该书第一点（的前一位置，首项之前为 None）开始，
     // 避免把目标范围扩展到这本书之前的内容。
     let book_first_pos = book_first_position(&data_dir, key, &version, &book_trimmed);
 
@@ -109,12 +109,22 @@ pub async fn create_goal(
     // current_position 语义 = 「已完成到的位置」，倒排从 current_position + 1 开始派发
     //（见 core/goal_planner::backward_schedule）。
     // - 显式给了 start_chapter：UI 承诺「此前内容视为已学」，即该章本身要学，故回退一位；
-    // - 未给：用该书第一知识点位置的前一位置（saturate 至 0）。
+    // - 未给：用该书第一知识点位置的前一位置（首项之前为 None）。
     // 两个分支必须同为「前一位置」，否则用户选中的起始章会被静默跳过。
-    let current_position = match start_position {
-        Some(p) => Some(p.saturating_sub(1)),
-        None => book_first_pos.map(|p| p.saturating_sub(1)),
-    };
+    let first = start_position
+        .or(book_first_pos)
+        .ok_or("无法确定本书起点，请选择起始知识点")?;
+    if first > target_position {
+        return Err("起始知识点不能晚于目标知识点".to_string());
+    }
+    if start_chapter_str.is_empty() {
+        start_chapter_str = crate::core::chapter_seq::syllabus_points(key, &version)
+            .and_then(|points| points.get(first))
+            .ok_or("起始位置超出考纲")?
+            .to_string();
+    }
+    // None 表示尚未完成首个知识点；不能把位置 0 当成已完成。
+    let current_position = first.checked_sub(1);
 
     let seq = file
         .data
@@ -126,6 +136,7 @@ pub async fn create_goal(
         + 1;
     let id = format!("goal-{}-{}-{}", key, slugify_book(&book_trimmed), seq);
     let goal = Goal {
+        planning_start: crate::data::today_string(),
         id,
         subject: subject.clone(),
         title,
@@ -160,43 +171,15 @@ fn book_position_range(
     book: &str,
 ) -> Option<(usize, usize)> {
     let idx = load_progress_index(data_dir);
-    let set = idx.subjects.get(subject_key)?;
-    let table = if !set.active_id.is_empty() {
-        set.tables.iter().find(|t| t.id == set.active_id)
-    } else {
-        set.tables.first()
-    }?;
-    let chapter = table
-        .nodes
-        .iter()
-        .find(|n| n.level == crate::data::progress_tables::NodeLevel::Chapter && n.title == book)?;
-    let mut titles: Vec<String> = table
-        .nodes
-        .iter()
-        .filter(|n| {
-            n.level == crate::data::progress_tables::NodeLevel::Knowledge
-                && n.parent_id.as_deref() == Some(chapter.id.as_str())
-        })
-        .map(|n| n.title.clone())
-        .collect();
-    if titles.is_empty() {
-        // chapter 自身没有 knowledge 子节点：退化用 chapter 标题定位
-        titles.push(chapter.title.clone());
-    }
-    let positions: Vec<usize> = titles
-        .iter()
-        .filter_map(|t| crate::core::chapter_seq::position(subject_key, version, t))
-        .collect();
-    let min = *positions.iter().min()?;
-    let max = *positions.iter().max()?;
-    Some((min, max))
+    let positions = crate::core::goal_planner::book_positions(&idx, subject_key, version, book)?;
+    Some((*positions.first()?, *positions.last()?))
 }
 
 /// 用进度表中该科目启用表的目标章节→book 节点关系，给出书本第一知识点的全局 position。
 ///
 /// 取 `book_position_range` 的下界（即该书在考纲顺序表中最早的知识点）；
 /// 若进度表无此书、或无法在 chapter_seq 顺序表中定位任一该书下的知识点，
-/// 返回 None（create_goal/update_goal 会回退到 saturating_sub(1) 的兜底）。
+/// 返回 None 时要求用户明确选择起始知识点。
 fn book_first_position(
     data_dir: &std::path::Path,
     subject_key: &str,
@@ -335,15 +318,28 @@ pub async fn update_goal(
     // 重新计算 current_position 的兜底
     // 语义统一：current_position = 「已完成到的位置」，倒排从 +1 开始派发。
     let prev = &file.data.goals[pos];
+    goal.planning_start = crate::data::today_string();
     let book_changed = prev.book != goal.book;
     match start_position {
         // 显式给了起点：UI 承诺「此前内容视为已学」，该章本身要学 → 回退一位
-        Some(p) => goal.current_position = Some(p.saturating_sub(1)),
+        Some(p)
+            if prev.start_chapter != goal.start_chapter
+                || book_changed
+                || prev.subject != goal.subject =>
+        {
+            goal.current_position = p.checked_sub(1);
+        }
+        Some(_) => goal.current_position = prev.current_position,
         None => {
             if book_changed || goal.current_position.is_none() {
                 // 切书 / 首次补位置：按新书第一知识点位置的前一位置兜底
-                goal.current_position = book_first_position(&data_dir, key, &version, &goal.book)
-                    .map(|p| p.saturating_sub(1));
+                let first = book_first_position(&data_dir, key, &version, &goal.book)
+                    .ok_or("无法确定本书起点，请选择起始知识点")?;
+                goal.current_position = first.checked_sub(1);
+                goal.start_chapter = crate::core::chapter_seq::syllabus_points(key, &version)
+                    .and_then(|points| points.get(first))
+                    .ok_or("起始位置超出考纲")?
+                    .to_string();
             }
         }
     }
@@ -511,6 +507,8 @@ mod tests {
             fallback_plan: None,
             status: crate::data::state::TaskStatus::Pending,
             dida_task_id: None,
+            source: crate::data::state::TaskSource::Ai,
+            ai_reference: true,
         }
     }
 
@@ -580,6 +578,7 @@ mod tests {
                     tables: vec![table],
                 },
             )]),
+            ..Default::default()
         };
         save_progress_index(&tmp, &index).unwrap();
 

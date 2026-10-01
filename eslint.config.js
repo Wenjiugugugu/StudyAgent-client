@@ -14,7 +14,7 @@ import prettier from "eslint-config-prettier";
 export default [
   {
     // 构建产物、第三方依赖与 Rust 侧不参与前端检查
-    ignores: ["dist/**", "dist-old-*/**", "node_modules/**", "src-tauri/**", ".tmp-esbuild/**"],
+    ignores: ["dist/**", "dist-old-*/**", "node_modules/**", "src-tauri/**", ".tmp-esbuild/**", "installer/tmp_*/**"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

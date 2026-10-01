@@ -8,6 +8,7 @@
  */
 import { ref, computed, onMounted } from "vue";
 import * as api from "@/api";
+import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import Button from "@/components/ui/Button.vue";
 import LoadingSpinner from "@/components/ui/LoadingSpinner.vue";
 import ProgressTableView from "@/components/progress/ProgressTableView.vue";
@@ -157,19 +158,15 @@ onMounted(reload);
               <span class="more-count">{{ otherProfessional.length }}</span>
             </button>
           </template>
-          <template v-else>
-            <button
-              v-for="v in api.PROGRESS_VARIANTS[s.key] ?? []"
-              :key="v"
-              type="button"
-              class="variant-chip"
-              :class="{ active: v === activeVariantOf(s.key) }"
-              @click="pickVariant(s.key, v)"
-            >
-              <span class="chip-label">{{ v }}</span>
-              <ChevronRight v-if="v !== activeVariantOf(s.key)" :size="12" class="chip-folded" />
-            </button>
-          </template>
+          <SegmentedControl
+            v-else
+            :model-value="activeVariantOf(s.key)"
+            :options="
+              (api.PROGRESS_VARIANTS[s.key] ?? []).map((value) => ({ value, label: value }))
+            "
+            :label="`${s.label}考纲方案`"
+            @update:model-value="pickVariant(s.key, $event)"
+          />
         </div>
 
         <!-- 专业课折叠区：其余专业课全部折叠到这里，点击即切换启用 -->

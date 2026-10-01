@@ -8,6 +8,7 @@
  * 保存后影响周计划生成与复盘重排的任务条数分布与各科学时。
  */
 import { computed } from "vue";
+import Slider from "@/components/ui/Slider.vue";
 import Card from "@/components/ui/Card.vue";
 import { PieChart, Info } from "lucide-vue-next";
 import type { SubjectTimeAllocation } from "@/types/settings";
@@ -136,15 +137,12 @@ const SUBJECT_COLORS: Record<SubjectKey, string> = {
             >
           </label>
           <div class="alloc-slider-row">
-            <input
-              type="range"
-              min="0"
-              max="100"
+            <Slider
               :step="SLIDER_STEP"
-              :value="effective[key]"
-              class="alloc-slider"
-              :style="{ accentColor: SUBJECT_COLORS[key] }"
-              @input="onSlide(key, ($event.target as HTMLInputElement).value)"
+              :model-value="effective[key]"
+              :color="SUBJECT_COLORS[key]"
+              :label="`${subjectLabel(key)}学时占比`"
+              @update:model-value="onSlide(key, String($event))"
             />
             <span class="alloc-percent">{{ Math.round(effective[key] ?? 0) }}%</span>
           </div>

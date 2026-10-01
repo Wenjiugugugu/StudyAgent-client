@@ -3,17 +3,21 @@
 //! 提供进度表的 列表 / 保存(增改) / 删除 / 启用切换 / AI 生成。
 //! AI 生成以内置官方考研考纲（core::chapter_seq）为依据；专业课另附内置教材章节参考。
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
 use crate::data::{
-    load_progress_index, new_progress_id, now_string, save_progress_index, NodeLevel, NodeStatus,
-    ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet, TableOrigin,
+    load_progress_index, new_progress_id, now_string, progress_index_path, save_progress_index,
+    NodeLevel, NodeStatus, ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet,
+    TableOrigin,
 };
 use crate::{get_data_dir, get_data_dir_and_ai, AppState};
+
+static BUILTIN_REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
 /// 校验学科 key（与教材导入一致的宽松规则：字母/数字/连字符/下划线）
 fn validate_subject(subject: &str) -> Result<(), String> {
@@ -49,8 +53,32 @@ fn ensure_node_ids(table: &mut ProgressTable) {
 /// 前端调用: `invoke('list_progress_tables')`
 #[tauri::command]
 pub fn list_progress_tables(state: State<'_, Mutex<AppState>>) -> Result<ProgressIndex, String> {
+    let _refresh_guard = BUILTIN_REFRESH_LOCK.lock().map_err(|e| e.to_string())?;
     let data_dir = get_data_dir(state.inner())?;
-    Ok(load_progress_index(&data_dir))
+    ensure_index_readable(&data_dir)?;
+    let index = load_progress_index(&data_dir);
+    if index.builtin_revision == env!("CARGO_PKG_VERSION") {
+        return Ok(index);
+    }
+    let variants: Vec<(String, String)> = index
+        .subjects
+        .iter()
+        .flat_map(|(subject, set)| {
+            set.tables
+                .iter()
+                .filter(|table| table.origin == TableOrigin::Builtin)
+                .map(|table| (subject.clone(), table.variant.clone()))
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    for (subject, variant) in variants {
+        refresh_builtin_progress_tables_inner(subject, variant, state.clone())?;
+    }
+    let mut index = load_progress_index(&data_dir);
+    index.builtin_revision = env!("CARGO_PKG_VERSION").to_string();
+    save_progress_index(&data_dir, &index)?;
+    Ok(index)
 }
 
 /// 新增或更新某科的一份进度表
@@ -101,7 +129,16 @@ pub fn save_progress_table(
     }
     table.updated_at = now;
 
+    let mut status_changed = false;
     if let Some(existing) = set.tables.iter_mut().find(|t| t.id == new_id) {
+        status_changed = table.nodes.iter().any(|node| {
+            existing
+                .nodes
+                .iter()
+                .find(|old| old.id == node.id)
+                .map(|old| old.status != node.status)
+                .unwrap_or(node.status != NodeStatus::Pending)
+        });
         existing.name = table.name.clone();
         existing.variant = table.variant.clone();
         existing.subject = table.subject.clone();
@@ -125,6 +162,14 @@ pub fn save_progress_table(
         if !table.variant.is_empty() {
             set.active_variant = table.variant.clone();
         }
+    }
+
+    if subject == "professional" && status_changed {
+        crate::core::progress_sync::sync_professional_table_change(
+            &mut index,
+            &table.variant,
+            &table.name,
+        );
     }
 
     save_progress_index(&data_dir, &index)?;
@@ -207,6 +252,233 @@ pub fn delete_builtin_progress_tables(
         save_progress_index(&data_dir, &index)?;
     }
     Ok(removed)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RefreshBuiltinResult {
+    pub tables_updated: usize,
+    pub tables_added: usize,
+    pub nodes_added: usize,
+    pub nodes_preserved: usize,
+    pub legacy_nodes_preserved: usize,
+}
+
+/// 用当前随包考纲更新内置表。整份索引只保存一次；旧节点无法匹配时保留在表内，
+/// 避免考纲改名或删除条目时丢失状态、备注与历史引用。
+#[tauri::command]
+pub fn refresh_builtin_progress_tables(
+    subject: String,
+    variant: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<RefreshBuiltinResult, String> {
+    let _refresh_guard = BUILTIN_REFRESH_LOCK.lock().map_err(|e| e.to_string())?;
+    refresh_builtin_progress_tables_inner(subject, variant, state)
+}
+
+fn refresh_builtin_progress_tables_inner(
+    subject: String,
+    variant: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<RefreshBuiltinResult, String> {
+    validate_subject(&subject)?;
+    let drafts = builtin_progress_table(subject.clone(), variant.clone(), state.clone())?;
+    if drafts.is_empty() {
+        return Err("内置考纲未生成任何进度表".to_string());
+    }
+    let data_dir = get_data_dir(state.inner())?;
+    ensure_index_readable(&data_dir)?;
+    let mut index = load_progress_index(&data_dir);
+    let set = subject_set(&mut index, &subject);
+    let mut result = RefreshBuiltinResult {
+        tables_updated: 0,
+        tables_added: 0,
+        nodes_added: 0,
+        nodes_preserved: 0,
+        legacy_nodes_preserved: 0,
+    };
+    let mut first_id = None;
+    for mut draft in drafts {
+        let existing = find_matching_builtin_table(set, &draft);
+        let existing = existing.map(|i| &mut set.tables[i]);
+        if let Some(table) = existing {
+            let (nodes, preserved, legacy) = merge_builtin_nodes(&table.nodes, draft.nodes);
+            result.nodes_added += nodes.len() - preserved - legacy;
+            result.nodes_preserved += preserved;
+            result.legacy_nodes_preserved += legacy;
+            table.nodes = nodes;
+            table.name = draft.name;
+            table.updated_at = now_string();
+            first_id.get_or_insert_with(|| table.id.clone());
+            result.tables_updated += 1;
+        } else {
+            result.nodes_added += draft.nodes.len();
+            draft.id = new_progress_id("p", &draft.name);
+            draft.subject = subject.clone();
+            draft.created_at = now_string();
+            draft.updated_at = draft.created_at.clone();
+            first_id.get_or_insert_with(|| draft.id.clone());
+            set.tables.push(draft);
+            result.tables_added += 1;
+        }
+    }
+    if set.active_id.is_empty() {
+        if let Some(id) = first_id {
+            set.active_id = id;
+            set.active_variant = variant;
+        }
+    }
+    save_progress_index(&data_dir, &index)?;
+    Ok(result)
+}
+
+fn find_matching_builtin_table(set: &SubjectProgressSet, draft: &ProgressTable) -> Option<usize> {
+    let exact = set.tables.iter().position(|table| {
+        table.origin == TableOrigin::Builtin
+            && table.variant == draft.variant
+            && table.name == draft.name
+    });
+    let suffix = draft.name.rsplit(" · ").next().unwrap_or(&draft.name);
+    let candidates: Vec<usize> = set
+        .tables
+        .iter()
+        .enumerate()
+        .filter_map(|(i, table)| {
+            (table.origin == TableOrigin::Builtin
+                && table.variant == draft.variant
+                && table.name.rsplit(" · ").next() == Some(suffix))
+            .then_some(i)
+        })
+        .collect();
+    exact.or_else(|| (candidates.len() == 1).then(|| candidates[0]))
+}
+
+fn ensure_index_readable(data_dir: &std::path::Path) -> Result<(), String> {
+    let path = progress_index_path(data_dir);
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取进度表失败，原文件已保留：{e}"))?;
+    serde_json::from_str::<ProgressIndex>(&raw)
+        .map_err(|e| format!("进度表文件无法解析，原文件已保留：{e}"))?;
+    Ok(())
+}
+
+fn merge_builtin_nodes(
+    old_nodes: &[ProgressNode],
+    new_nodes: Vec<ProgressNode>,
+) -> (Vec<ProgressNode>, usize, usize) {
+    let mut used = HashSet::new();
+    let mut id_map = HashMap::new();
+    let mut merged = Vec::with_capacity(new_nodes.len() + old_nodes.len());
+    let mut preserved = 0;
+    for mut node in new_nodes {
+        // 先按章节与标题精确匹配；章节改名时仅允许唯一标题匹配。
+        let exact = old_nodes.iter().enumerate().find(|(i, old)| {
+            !used.contains(i)
+                && old.level == node.level
+                && old.title.trim() == node.title.trim()
+                && old.phase.trim() == node.phase.trim()
+        });
+        let matched = exact.or_else(|| {
+            let candidates: Vec<_> = old_nodes
+                .iter()
+                .enumerate()
+                .filter(|(i, old)| {
+                    !used.contains(i)
+                        && old.level == node.level
+                        && old.title.trim() == node.title.trim()
+                })
+                .collect();
+            (candidates.len() == 1).then(|| candidates[0])
+        });
+        if let Some((i, old)) = matched {
+            used.insert(i);
+            id_map.insert(node.id.clone(), old.id.clone());
+            node.id = old.id.clone();
+            node.status = old.status;
+            node.planned_date = old.planned_date.clone();
+            if !old.note.trim().is_empty() {
+                node.note = old.note.clone();
+            }
+            preserved += 1;
+        }
+        merged.push(node);
+    }
+    for node in &mut merged {
+        if let Some(parent) = &node.parent_id {
+            if let Some(old_id) = id_map.get(parent) {
+                node.parent_id = Some(old_id.clone());
+            }
+        }
+    }
+    let legacy = old_nodes.len() - used.len();
+    for (i, node) in old_nodes.iter().enumerate() {
+        if !used.contains(&i) {
+            merged.push(node.clone());
+        }
+    }
+    (merged, preserved, legacy)
+}
+
+#[cfg(test)]
+mod builtin_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn new_builtin_table_without_match_does_not_crash() {
+        let set = SubjectProgressSet::default();
+        let draft = ProgressTable {
+            name: "新教材 · 教材：计算机网络".into(),
+            variant: "408 计算机".into(),
+            origin: TableOrigin::Builtin,
+            ..Default::default()
+        };
+        assert_eq!(find_matching_builtin_table(&set, &draft), None);
+    }
+
+    fn node(id: &str, title: &str, phase: &str, level: NodeLevel) -> ProgressNode {
+        ProgressNode {
+            id: id.into(),
+            title: title.into(),
+            phase: phase.into(),
+            level,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn refresh_keeps_progress_and_old_nodes_when_syllabus_changes() {
+        let mut old_chapter = node("chapter-old", "旧章节", "旧章节", NodeLevel::Chapter);
+        old_chapter.status = NodeStatus::Basic;
+        let mut old_point = node("point-old", "共同知识点", "旧章节", NodeLevel::Knowledge);
+        old_point.parent_id = Some("chapter-old".into());
+        old_point.status = NodeStatus::Reinforcing;
+        old_point.note = "我的笔记".into();
+        let mut removed = node("removed", "旧考纲知识点", "旧章节", NodeLevel::Knowledge);
+        removed.parent_id = Some("chapter-old".into());
+        removed.status = NodeStatus::Basic;
+        let old = vec![old_chapter, old_point, removed];
+
+        let new_chapter = node("chapter-new", "新章节", "新章节", NodeLevel::Chapter);
+        let mut moved = node("point-new", "共同知识点", "新章节", NodeLevel::Knowledge);
+        moved.parent_id = Some("chapter-new".into());
+        let mut added = node("added", "新增知识点", "新章节", NodeLevel::Knowledge);
+        added.parent_id = Some("chapter-new".into());
+        let (merged, preserved, legacy) =
+            merge_builtin_nodes(&old, vec![new_chapter, moved, added]);
+
+        assert_eq!((preserved, legacy), (1, 2));
+        assert_eq!(merged[1].id, "point-old");
+        assert_eq!(merged[1].status, NodeStatus::Reinforcing);
+        assert_eq!(merged[1].note, "我的笔记");
+        assert_eq!(merged[1].parent_id.as_deref(), Some("chapter-new"));
+        assert_eq!(merged[2].status, NodeStatus::Pending);
+        assert!(merged
+            .iter()
+            .any(|n| n.id == "removed" && n.status == NodeStatus::Basic));
+    }
 }
 
 /// 设定某科启用哪份进度表（同一时刻每科仅一份启用，并同步启用方案为该表所属方案）

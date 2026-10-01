@@ -104,7 +104,7 @@ fn clear_completed(state_path: &Path) {
     std::fs::write(state_path, out).unwrap();
 }
 
-/// 真实数据：过滤已完成内容 + 任务 ID 唯一 + 总时长不超预算
+/// 真实数据：过滤已完成内容 + 任务 ID 唯一 + 真实工时与容量告警一致
 #[test]
 fn demo_data_daily_plan_filters_completed_and_fits_budget() {
     require_demo_data!();
@@ -122,11 +122,11 @@ fn demo_data_daily_plan_filters_completed_and_fits_budget() {
     ids.dedup();
     assert_eq!(before, ids.len(), "日计划任务 ID 不应重复");
 
-    // 预算约束（两位小数舍入留 0.05 容差）
+    // 保底内容无法放入预算时如实报告，不能通过压缩估时制造可行性。
     let budget = studyagent_desktop_lib::load_settings(&dir).daily_target_hours();
     assert!(budget > 0.0, "demo-data 应配置每日目标时长");
     assert!(
-        plan.data.total_hours <= budget + 0.05,
+        plan.data.total_hours <= budget + 0.05 || !plan.data.warnings.is_empty(),
         "总时长 {:.2}h 超过预算 {:.2}h",
         plan.data.total_hours,
         budget
@@ -176,7 +176,7 @@ fn demo_data_daily_plan_filters_completed_and_fits_budget() {
 }
 
 /// 清空已完成记录后：多科任务应全部保留（每科保底 1 条），
-/// 且总时长超预算时走「等比压缩」而非删除整科任务（M3 护栏的真实数据验证）
+/// 且总时长超预算时保留真实估时并告警（M3 护栏的真实数据验证）
 #[test]
 fn demo_data_daily_plan_keeps_all_subjects_when_nothing_completed() {
     require_demo_data!();
@@ -203,8 +203,8 @@ fn demo_data_daily_plan_keeps_all_subjects_when_nothing_completed() {
 
     let budget = studyagent_desktop_lib::load_settings(&dir).daily_target_hours();
     assert!(
-        plan.data.total_hours <= budget + 0.05,
-        "压缩后总时长 {:.2}h 应回到预算 {:.2}h 附近",
+        plan.data.total_hours <= budget + 0.05 || !plan.data.warnings.is_empty(),
+        "真实总时长 {:.2}h 超过预算 {:.2}h 时必须告警",
         plan.data.total_hours,
         budget
     );
@@ -239,6 +239,7 @@ fn goal_backward_schedule_includes_start_chapter_on_first_day() {
 
     // 模拟修复后的 create_goal：起始章本身要学 → current_position = position - 1
     let goal = Goal {
+        planning_start: SMOKE_DATE.into(),
         id: "goal-math-smoke-1".to_string(),
         subject: SubjectKey::Math,
         title: "冒烟：从指定章开始".to_string(),

@@ -79,8 +79,24 @@ impl DailyScheduler {
         // 收集（科目，任务模板），统一做「防重复已完成内容 / 确定性排序」后再落 ID
         let mut pending: Vec<(SubjectKey, TaskTemplate)> = Vec::new();
         // 生成过程中的降级提示（目标倒排失败、预算裁剪），随日计划返回给前端展示
-        let mut warnings: Vec<String> = Vec::new();
-        for allocation in &day_plan.subject_allocations {
+        let mut warnings = crate::core::goal_planner::goal_capacity_warnings(data_dir, date);
+        let mut goals = crate::data::goal::read_goals(data_dir)?.data.goals;
+        goals.sort_by(|a, b| a.deadline.cmp(&b.deadline).then(a.book.cmp(&b.book)));
+        let mut allocations = day_plan.subject_allocations.clone();
+        for goal in goals
+            .iter()
+            .filter(|g| g.active && g.deadline.as_str() >= date)
+        {
+            if goal.subject.state(&state).active
+                && !allocations.iter().any(|a| a.subject == goal.subject)
+            {
+                allocations.push(crate::data::plan::DaySubjectAllocation {
+                    subject: goal.subject.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        for allocation in &allocations {
             // 兜底：若该科目在当天还未到开始学习日期，则跳过
             if subject_not_started(&allocation.subject, date, &subject_start_dates) {
                 log::warn!(
@@ -92,12 +108,17 @@ impl DailyScheduler {
             }
             // 截止日规划区间：该科目当天有任一「生效区间」时，按目标倒排知识点任务接管。
             // 支持同科不同书/板块同时并行推进（每书一条独立目标），所以这里要遍历全部。
-            let active_goals =
-                crate::data::goal::active_goals_for_subject(data_dir, &allocation.subject, date);
+            let active_goals: Vec<_> = goals
+                .iter()
+                .filter(|g| {
+                    g.subject == allocation.subject && g.active && g.deadline.as_str() >= date
+                })
+                .collect();
             if !active_goals.is_empty() {
                 let version = goal_subject_version(&state, &allocation.subject);
                 let mut all_goal_tasks: Vec<crate::data::plan::PlanTask> = Vec::new();
                 let mut any_tasks = false;
+                let mut valid_goal = false;
                 // 生成失败的书/板块（书 → 失败原因），用于向用户提示
                 let mut failed_books: Vec<(String, String)> = Vec::new();
                 for goal in &active_goals {
@@ -105,10 +126,13 @@ impl DailyScheduler {
                         data_dir, goal, date, &version,
                     ) {
                         Ok(ts) if !ts.is_empty() => {
+                            valid_goal = true;
                             any_tasks = true;
                             all_goal_tasks.extend(ts);
                         }
-                        Ok(_) => {}
+                        Ok(_) => {
+                            valid_goal = true;
+                        }
                         Err(e) => {
                             log::warn!(
                                 "科目 {:?} 书本「{}」目标倒排生成失败: {}",
@@ -156,11 +180,26 @@ impl DailyScheduler {
                             estimated_hours: t.estimated_hours,
                             goal: t.goal,
                             completion_criteria: t.completion_criteria,
+                            textbook: t.textbook,
                             ..Default::default()
                         })
                         .collect();
                     pending.extend(owned.into_iter().map(|tp| (allocation.subject.clone(), tp)));
                     continue;
+                }
+                if valid_goal {
+                    continue;
+                }
+                if !failed_books.is_empty() {
+                    warnings.push(format!(
+                        "{}目标倒排失败：{}",
+                        allocation.subject.label(),
+                        failed_books
+                            .iter()
+                            .map(|(book, error)| format!("{}：{}", book, error))
+                            .collect::<Vec<_>>()
+                            .join("；")
+                    ));
                 }
             }
             // 排程可行性校验：过滤已完成章节的重复任务（防重复安排已完成内容）
@@ -183,7 +222,7 @@ impl DailyScheduler {
             }
         }
 
-        // 排程可行性校验：任务数量告警（不裁剪，避免丢失任务；时长超额由下方预算归一化承担）
+        // 排程可行性校验：任务数量告警（不裁剪，避免丢失任务；时长超额由下方预算积压记录与容量告警承担）
         // 期望条数与设置页同口径：由「每日目标学时 ÷ 用户设置的任务粒度」派生
         let max_tasks = crate::core::planning::pure::derive_task_count_with_granularity(
             settings.daily_target_hours(),
@@ -200,14 +239,80 @@ impl DailyScheduler {
             );
         }
 
-        // 日计划确定性排序（任务分级 A/B 已下线）：大块头优先（防拖延）> 科目 > 标题
-        pending.sort_by(|(sa, ta), (sb, tb)| {
-            tb.estimated_hours
-                .partial_cmp(&ta.estimated_hours)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| subject_ord(sa).cmp(&subject_ord(sb)))
-                .then_with(|| ta.title.cmp(&tb.title))
+        // 保留考纲顺序；到期复习和上个学习日的积压内容优先，禁止按时长重排前置知识。
+        let mut carry = carried_tasks(data_dir, date);
+        carry.retain(|t| {
+            !subject_not_started(&t.subject, date, &subject_start_dates)
+                && !completed_chapters(&state, &t.subject)
+                    .iter()
+                    .any(|c| matches_completed(&t.title, c))
+                && !goals.iter().any(|g| {
+                    g.subject == t.subject
+                        && t.textbook.as_deref() == Some(g.book.as_str())
+                        && g.current_position.is_some_and(|position| {
+                            crate::core::chapter_seq::position(
+                                t.subject.key(),
+                                &goal_subject_version(&state, &t.subject),
+                                &t.title,
+                            )
+                            .is_some_and(|p| p <= position)
+                        })
+                })
         });
+        for task in carry.into_iter().rev() {
+            pending.retain(|(s, t)| *s != task.subject || t.title != task.title);
+            pending.insert(
+                0,
+                (
+                    task.subject,
+                    TaskTemplate {
+                        title: task.title,
+                        estimated_hours: task.estimated_hours,
+                        goal: task.goal,
+                        completion_criteria: task.completion_criteria,
+                        textbook: task.textbook,
+                        ..Default::default()
+                    },
+                ),
+            );
+        }
+        let recent = crate::data::records::list_review_dates(data_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| d.as_str() < date)
+            .filter_map(|d| crate::data::records::read_review(data_dir, &d).ok())
+            .collect::<Vec<_>>();
+        let progress_index = crate::data::progress_tables::load_progress_index(data_dir);
+        for item in crate::core::planning::pure::memory_curve_review_items(&recent, date, date)
+            .into_iter()
+            .rev()
+        {
+            if item.subject.state(&state).active
+                && (settings.enable_review_tasks()
+                    || crate::data::progress_tables::active_table_basics_done(
+                        &progress_index,
+                        item.subject.key(),
+                    ))
+                && !subject_not_started(&item.subject, date, &subject_start_dates)
+                && !pending
+                    .iter()
+                    .any(|(s, t)| *s == item.subject && t.title == item.title)
+            {
+                pending.insert(
+                    0,
+                    (
+                        item.subject,
+                        TaskTemplate {
+                            title: item.title,
+                            estimated_hours: 0.5,
+                            goal: "巩固薄弱内容并检查掌握情况".into(),
+                            completion_criteria: vec!["完成回忆或练习，并检查错误".into()],
+                            ..Default::default()
+                        },
+                    ),
+                );
+            }
+        }
 
         let mut tasks = Vec::new();
         for (seq, (subject, template)) in (1i32..).zip(pending) {
@@ -215,30 +320,36 @@ impl DailyScheduler {
             tasks.push(task);
         }
 
-        // 每日任务量预算约束：按 trim_to_budget 裁剪（每科保底 1 条；必要时等比压缩）
+        // 每科保底并保留真实估时，容量不足的其他任务进入积压队列。
         let raw_total_hours: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
         let budget = settings.daily_target_hours();
-        let (trimmed, compressed) = trim_to_budget(&mut tasks, budget);
-        if trimmed > 0 || compressed {
+        let original_tasks = tasks.clone();
+        let (trimmed, overloaded) = trim_to_budget(&mut tasks, budget);
+        let retained: std::collections::HashSet<_> = tasks.iter().map(|t| t.id.clone()).collect();
+        let deferred_tasks: Vec<_> = original_tasks
+            .into_iter()
+            .filter(|t| !retained.contains(&t.id))
+            .collect();
+        if trimmed > 0 || overloaded {
             let total: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
             log::warn!(
-                "每日预算：今日任务原总时长 {:.2}h 超过预算 {:.2}h，已裁剪 {} 条（每科保底 1 条）、压缩={}，最终 {:.2}h",
+                "每日预算：原总时长 {:.2}h，预算 {:.2}h，待安排 {} 条、保底超载={}，最终真实估时 {:.2}h",
                 raw_total_hours,
                 budget,
                 trimmed,
-                compressed,
+                overloaded,
                 total
             );
             if trimmed > 0 {
                 warnings.push(format!(
-                    "今日任务总时长超出每日目标 {:.2}h，已按「每科至少保留 1 条」裁剪 {} 条任务{}；如需更多内容请调高每日目标时长。",
+                    "今日任务超出每日目标 {:.2}h，{} 条任务已保存为待安排任务，下个学习日继续安排。{}",
                     budget,
                     trimmed,
-                    if compressed { "并等比压缩剩余任务时长" } else { "" }
+                    if overloaded { "每科保底任务仍超过预算，已保留真实估时，请调整学习容量或目标。" } else { "" }
                 ));
             } else {
                 warnings.push(format!(
-                    "今日任务时长超出每日目标 {:.2}h，且每科已仅剩 1 条，已按预算等比压缩时长。",
+                    "每科保底任务仍超出每日目标 {:.2}h，已保留真实估时；请调整学习容量或目标。",
                     budget
                 ));
             }
@@ -265,6 +376,7 @@ impl DailyScheduler {
         }
 
         let daily_data = DailyPlanData {
+            deferred_tasks,
             remaining_days,
             target,
             strategy: strategy.clone(),
@@ -278,7 +390,7 @@ impl DailyScheduler {
             warnings,
         };
 
-        let plan = DailyPlanFile {
+        let mut plan = DailyPlanFile {
             version: "1.0.0".to_string(),
             meta: DailyPlanMeta {
                 date: date.to_string(),
@@ -299,6 +411,9 @@ impl DailyScheduler {
             data: daily_data,
             view: None,
         };
+
+        // 生成时写入提示；读取旧日计划时也会运行同一检查。
+        append_missing_subject_warnings(data_dir, &mut plan);
 
         // 同步初始化 State.current_task
         // 原则：每次生成新的日计划，都强制重置 current_task 为该日全新任务，状态全部 Pending。
@@ -339,6 +454,8 @@ impl DailyScheduler {
                         status: TaskStatus::Pending,
                         started_at: None,
                         accumulated_minutes: 0,
+                        source: t.source.clone(),
+                        ai_reference: t.ai_reference,
                     })
                     .collect(),
                 note: String::new(),
@@ -379,6 +496,33 @@ fn goal_subject_version(state: &crate::data::state::StudyState, subject: &Subjec
     }
 }
 
+/// 对新生成和已有的日计划补充缺科提示。读取旧计划时只修改返回值，
+/// 使安装版留下的 0 任务计划也能在页面上说明原因。
+pub fn append_missing_subject_warnings(data_dir: &Path, plan: &mut DailyPlanFile) {
+    let state = crate::data::state::read_state_or_default(data_dir);
+    let settings = crate::load_settings(data_dir);
+    let start_dates = settings.subject_start_dates();
+    let shares = settings.subject_time_allocation();
+    for subject in SubjectKey::ALL {
+        if !subject.state(&state).active
+            || subject_not_started(&subject, &plan.meta.date, &start_dates)
+            || shares.as_ref().is_some_and(|allocation| {
+                allocation.get(subject.key()).copied().unwrap_or(0.0) <= 0.0
+            })
+            || plan.data.tasks.iter().any(|task| task.subject == subject)
+        {
+            continue;
+        }
+        let warning = format!(
+            "{}今日未排入任务：周计划可能漏排，或任务在生成时被过滤。请检查本周计划并重新生成。",
+            subject.label()
+        );
+        if !plan.data.warnings.contains(&warning) {
+            plan.data.warnings.push(warning);
+        }
+    }
+}
+
 /// 该科目已完成章节标题（用于防重复安排已完成内容）
 fn completed_chapters(state: &crate::data::state::StudyState, subject: &SubjectKey) -> Vec<String> {
     subject.state(state).completed.clone()
@@ -406,58 +550,9 @@ fn today_intensity_note(data_dir: &Path) -> String {
     crate::core::planner::today_intensity_label(&reviews)
 }
 
-/// 判断任务标题是否明确命中已完成章节（边界匹配，避免误杀"矩阵的特征值"这类子主题）。
-///
-/// 命中条件：
-/// - 标题与已完成章节完全相等；
-/// - 标题以章节名开头，且紧随其后为分隔符 / 标点（如"矩阵：性质"、"矩阵、性质"）。
-///   其余情况（如"矩阵的特征值"中"的"）视为新内容，不命中，保留该任务（不丢任务）。
+/// 与周计划去重使用同一条精确标题规则，避免日计划再次误删子主题。
 fn matches_completed(title: &str, completed: &str) -> bool {
-    let t = title.trim();
-    let c = completed.trim();
-    if t.is_empty() || c.is_empty() {
-        return false;
-    }
-    if t == c {
-        return true;
-    }
-    if let Some(rest) = t.strip_prefix(c) {
-        let is_delimiter = rest
-            .chars()
-            .next()
-            .map(|ch| {
-                matches!(
-                    ch,
-                    '：' | ':'
-                        | '，'
-                        | ','
-                        | '、'
-                        | '。'
-                        | '；'
-                        | ';'
-                        | '('
-                        | '（'
-                        | '·'
-                        | '-'
-                        | '—'
-                        | ')'
-                        | '）'
-                )
-            })
-            .unwrap_or(false);
-        return is_delimiter;
-    }
-    false
-}
-
-/// 稳定的科目排序权重（用于无 AB 分级下的确定性日计划排序）
-fn subject_ord(subject: &SubjectKey) -> i32 {
-    match subject {
-        SubjectKey::Math => 0,
-        SubjectKey::English => 1,
-        SubjectKey::Politics => 2,
-        SubjectKey::Professional => 3,
-    }
+    crate::core::planning::pure::matches_completed(title, completed)
 }
 
 /// 判断某科目在指定日期是否还未到开始学习日期
@@ -498,60 +593,102 @@ fn template_to_task(
         fallback_plan: template.fallback_plan.clone(),
         status: TaskStatus::Pending,
         dida_task_id: None,
+        source: crate::data::state::TaskSource::Ai,
+        ai_reference: true,
     }
 }
 
-/// 按每日时长预算裁剪任务（原地修改），返回 `(裁剪条数, 是否执行了等比压缩)`。
-///
-/// 规则（顺序即优先级）：
-/// 1. `budget <= 0` 或任务为空、总时长未超预算 → 不做任何改动；
-/// 2. 从末尾（时长最短，调用方已按降序排好）往前裁，**跳过「该科最后一条」**——
-///    周计划层有「每科每天至少 1 条任务」护栏（`pure::min_daily_task_count`），
-///    这里若无视它把某科裁成空白，护栏就形同虚设；
-/// 3. 每科都只剩 1 条仍超预算 → 对保留任务等比压缩作为最后兜底
-///    （单条任务本身超预算属 AI 粒度问题，周计划层已做拆分，此处是兜底）。
-///
-/// 压缩按两位小数取整，可能使总时长极轻微超过预算（≤ 每条 0.005h 的舍入误差）。
+/// 取上一个已生成日计划的积压任务，并排除之后明确完成的内容。
+fn carried_tasks(data_dir: &Path, date: &str) -> Vec<PlanTask> {
+    let dates = crate::data::plan::list_daily_plan_dates(data_dir).unwrap_or_default();
+    let previous = dates.iter().filter(|d| d.as_str() < date).max();
+    let first_date = previous.map(|d| d.as_str()).unwrap_or(date);
+    let mut queue = previous
+        .and_then(|d| crate::data::plan::read_daily_plan(data_dir, d).ok())
+        .map(|p| p.data.deferred_tasks)
+        .unwrap_or_default();
+    // 同日重新生成也必须保留已有积压，避免 AI 更换周计划后把旧任务丢掉。
+    if let Ok(current) = crate::data::plan::read_daily_plan(data_dir, date) {
+        queue.extend(current.data.deferred_tasks);
+    }
+    let mut completed: std::collections::HashSet<(String, String)> =
+        crate::data::records::list_review_dates(data_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| d.as_str() >= first_date && d.as_str() <= date)
+            .filter_map(|d| crate::data::records::read_review(data_dir, &d).ok())
+            .flat_map(|r| r.task_reviews)
+            .filter(|t| t.status == "completed")
+            .map(|t| (t.subject, t.title))
+            .collect();
+    let state = crate::data::state::read_state_or_default(data_dir);
+    if state.current_task.date == date {
+        completed.extend(
+            state
+                .current_task
+                .tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Done)
+                .map(|t| (t.subject.clone(), t.task.clone())),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    queue
+        .into_iter()
+        .filter(|t| {
+            let key = (t.subject.key().to_string(), t.title.clone());
+            !completed.contains(&key) && seen.insert(key)
+        })
+        .collect()
+}
+
+/// 优先保留各科最早的一条，其他任务仅在真实工时能放入预算时安排。
+/// 返回 (待安排条数, 保底任务仍超预算)，绝不缩短任务估时。
 fn trim_to_budget(tasks: &mut Vec<PlanTask>, budget: f64) -> (usize, bool) {
-    if budget <= 0.0 || tasks.is_empty() {
+    if tasks.is_empty() {
         return (0, false);
     }
-    let mut remaining: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
-    if remaining <= budget {
-        return (0, false);
+    let budget = if budget.is_finite() {
+        budget.max(0.0)
+    } else {
+        0.0
+    };
+    if budget == 0.0 {
+        let count = tasks.len();
+        tasks.clear();
+        return (count, false);
     }
-
-    // 各科当前任务条数（用于「每科保底 1 条」判定）
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for t in tasks.iter() {
-        *counts.entry(format!("{:?}", t.subject)).or_default() += 1;
-    }
-
-    let mut trimmed = 0usize;
-    let mut idx = tasks.len();
-    while remaining > budget && idx > 0 {
-        idx -= 1;
-        let key = format!("{:?}", tasks[idx].subject);
-        if counts.get(&key).copied().unwrap_or(0) <= 1 {
-            continue; // 该科最后一条：保底不裁
+    let mut seen = std::collections::HashSet::new();
+    let mut keep = vec![false; tasks.len()];
+    let mut hours = 0.0;
+    for (i, task) in tasks.iter().enumerate() {
+        if seen.insert(task.subject.key()) {
+            keep[i] = true;
+            hours += task.estimated_hours.max(0.0);
         }
-        let removed = tasks.remove(idx);
-        remaining -= removed.estimated_hours;
-        if let Some(c) = counts.get_mut(&key) {
-            *c -= 1;
-        }
-        trimmed += 1;
     }
-
-    let mut compressed = false;
-    if remaining > budget {
-        let scale = budget / remaining;
-        for t in tasks.iter_mut() {
-            t.estimated_hours = (t.estimated_hours * scale * 100.0).round() / 100.0;
+    let mut blocked = std::collections::HashSet::new();
+    for (i, task) in tasks.iter().enumerate() {
+        if keep[i] {
+            continue;
         }
-        compressed = true;
+        // 某书前面的知识点被延后时，后面的内容也延后；不修改用户的跳跃进度判定。
+        let key = (task.subject.key(), task.textbook.as_deref().unwrap_or(""));
+        if !blocked.contains(&key) && hours + task.estimated_hours.max(0.0) <= budget + 1e-9 {
+            keep[i] = true;
+            hours += task.estimated_hours.max(0.0);
+        } else {
+            blocked.insert(key);
+        }
     }
-    (trimmed, compressed)
+    let old_len = tasks.len();
+    let mut i = 0;
+    tasks.retain(|_| {
+        let retain = keep[i];
+        i += 1;
+        retain
+    });
+    (old_len - tasks.len(), hours > budget + 1e-9)
 }
 
 #[cfg(test)]
@@ -703,6 +840,16 @@ current_focus = "计组"
         assert_eq!(daily.data.tasks[0].subject, SubjectKey::Math);
         assert_eq!(daily.data.total_hours, 1.5);
         assert_eq!(daily.data.total_tasks, 1);
+        assert!(daily
+            .data
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("专业课今日未排入任务")));
+
+        // 读取已有计划再次检查时，提示不应重复堆积。
+        let mut loaded = daily.clone();
+        append_missing_subject_warnings(&tmp, &mut loaded);
+        assert_eq!(loaded.data.warnings.len(), daily.data.warnings.len());
 
         // 休息日应返回错误
         let rest_result = DailyScheduler::generate_daily_plan(&tmp, "2026-07-25", true);
@@ -712,7 +859,7 @@ current_focus = "计组"
     }
 
     #[test]
-    fn test_daily_budget_caps_total_hours() {
+    fn test_daily_budget_reports_irreducible_overload() {
         let tmp = std::env::temp_dir().join(format!(
             "studyagent_scheduler_budget_test_{}",
             std::time::SystemTime::now()
@@ -771,19 +918,15 @@ current_focus = "计组"
         crate::data::plan::save_week_plan(&tmp, &week_plan).unwrap();
 
         let daily = DailyScheduler::generate_daily_plan(&tmp, "2026-07-20", true).unwrap();
-        // 默认每日预算 5.0h，任务原 8.0h 应被归一化到 ≤ 预算
-        let budget = crate::load_settings(&tmp).daily_target_hours();
-        assert!(budget > 0.0);
-        assert!(
-            daily.data.total_hours <= budget,
-            "总时长 {:.2} 应不超过预算 {:.2}",
-            daily.data.total_hours,
-            budget
+        assert_eq!(
+            daily.data.total_hours, 8.0,
+            "任务内容未减少时必须保留真实估时"
         );
-        assert!(daily.data.total_hours > 0.0);
-        // 归一化后 total_hours 仍等于各任务之和
-        let sum: f64 = daily.data.tasks.iter().map(|t| t.estimated_hours).sum();
-        assert!((daily.data.total_hours - sum).abs() < 1e-6);
+        assert!(daily
+            .data
+            .warnings
+            .iter()
+            .any(|w| w.contains("保留真实估时")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -803,6 +946,8 @@ current_focus = "计组"
             fallback_plan: None,
             status: TaskStatus::Pending,
             dida_task_id: None,
+            source: crate::data::state::TaskSource::Ai,
+            ai_reference: true,
         }
     }
 
@@ -820,7 +965,7 @@ current_focus = "计组"
         assert_eq!(tasks[0].estimated_hours, 2.0);
     }
 
-    /// 每科保底 1 条：只裁「同科多余」的任务，三科各 1 条时改为压缩
+    /// 每科保底 1 条：只裁「同科多余」的任务，三科各 1 条时保留真实估时并报告超载
     #[test]
     fn trim_to_budget_keeps_one_task_per_subject() {
         // 已按 estimated_hours 降序（大块头在前）
@@ -833,18 +978,87 @@ current_focus = "计组"
         let (trimmed, compressed) = trim_to_budget(&mut tasks, 5.0);
         // 只能裁掉「数学」多出来的那条；三科各 1 条必须保留
         assert_eq!(trimmed, 1);
-        assert!(compressed, "每科仅剩 1 条仍超预算时应退回等比压缩");
+        assert!(compressed, "每科仅剩 1 条仍超预算时应报告容量不足");
         assert_eq!(tasks.len(), 3);
         let mut subjects: Vec<String> = tasks.iter().map(|t| format!("{:?}", t.subject)).collect();
         subjects.sort();
         subjects.dedup();
         assert_eq!(subjects.len(), 3, "每科至少保留 1 条任务");
-        // 压缩后总时长回到预算附近（两位小数舍入允许极小超出）
         let total: f64 = tasks.iter().map(|t| t.estimated_hours).sum();
-        assert!(
-            total <= 5.0 + 0.05,
-            "压缩后总时长 {:.2} 应接近预算 5.00",
-            total
+        assert_eq!(total, 9.0, "保底任务超预算时必须如实展示容量缺口");
+    }
+
+    #[test]
+    fn zero_budget_defers_every_task() {
+        let mut tasks = vec![plan_task("数学", SubjectKey::Math, 2.0)];
+        assert_eq!(trim_to_budget(&mut tasks, 0.0), (1, false));
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn budget_selection_keeps_earlier_points_and_real_estimates() {
+        let mut tasks = vec![
+            plan_task("先学", SubjectKey::Math, 1.0),
+            plan_task("后学", SubjectKey::Math, 3.0),
+            plan_task("再后学", SubjectKey::Math, 0.5),
+        ];
+        assert_eq!(trim_to_budget(&mut tasks, 2.0), (2, false));
+        assert_eq!(tasks[0].title, "先学");
+        assert_eq!(tasks[0].estimated_hours, 1.0);
+    }
+    #[test]
+    fn deferred_tasks_survive_roundtrip_and_next_day_generation() {
+        let dir = std::env::temp_dir().join(format!(
+            "sa_carry_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut week = WeekPlanFile::default();
+        week.meta.week_start = "2026-09-28".into();
+        week.meta.week_end = "2026-10-04".into();
+        for date in ["2026-09-30", "2026-10-01"] {
+            week.data.days.push(crate::data::plan::WeekDayPlan {
+                date: date.into(),
+                subject_allocations: vec![crate::data::plan::DaySubjectAllocation {
+                    subject: SubjectKey::Math,
+                    task_templates: vec![TaskTemplate {
+                        title: "普通任务".into(),
+                        estimated_hours: 1.0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+        week.data.days[0].subject_allocations[0]
+            .task_templates
+            .push(TaskTemplate {
+                title: "积压任务".into(),
+                estimated_hours: 5.0,
+                ..Default::default()
+            });
+        save_week_plan(&dir, &week).unwrap();
+        let first = DailyScheduler::generate_daily_plan(&dir, "2026-09-30", false).unwrap();
+        assert_eq!(first.data.deferred_tasks.len(), 1);
+        crate::data::plan::save_daily_plan(&dir, &first).unwrap();
+        let second = DailyScheduler::generate_daily_plan(&dir, "2026-10-01", false).unwrap();
+        assert_eq!(second.data.tasks[0].title, "积压任务");
+        assert_eq!(second.data.tasks[0].estimated_hours, 5.0);
+        assert_eq!(second.data.deferred_tasks.len(), 1);
+        assert_eq!(second.data.deferred_tasks[0].title, "普通任务");
+        crate::data::plan::save_daily_plan(&dir, &second).unwrap();
+        let repeated = DailyScheduler::generate_daily_plan(&dir, "2026-10-01", false).unwrap();
+        assert_eq!(repeated.data.tasks.len(), 1);
+        assert_eq!(
+            repeated.data.deferred_tasks.len(),
+            1,
+            "同日重排既不能丢失积压，也不能重复积压任务"
         );
+        assert_eq!(repeated.data.deferred_tasks[0].title, "普通任务");
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
@@ -627,10 +628,37 @@ function ocIsLearned(n: ProgressNode): boolean {
   return ocRankOf(n) >= STATUS_RANK.basic;
 }
 
-/** 当前查看表内按顺序的可声明单位：有章节取章节，否则平铺知识点 */
-const ocUnits = computed<ProgressNode[]>(() =>
-  hasChapters.value ? chapterNodes.value : knowledgeNodes.value
+/**
+ * 计划外学习的选择粒度：
+ * - `chapter`：整章推进（点选章节 → 从目前进度到该章整段补记）
+ * - `knowledge`：逐条勾选知识点（全表平铺，跨章节自由多选，不受章节顺序约束）
+ * 有章节的表默认章节粒度；无章节的表只能知识点粒度。
+ */
+const ocMode = ref<"chapter" | "knowledge">("chapter");
+
+/** 当前表实际生效的粒度：无章节节点时强制知识点粒度 */
+const effectiveOcMode = computed<"chapter" | "knowledge">(() =>
+  hasChapters.value ? ocMode.value : "knowledge"
 );
+
+/** 当前查看表内按顺序的可声明单位：章节粒度取章节，知识点粒度取全表知识点 */
+const ocUnits = computed<ProgressNode[]>(() =>
+  effectiveOcMode.value === "chapter" ? chapterNodes.value : knowledgeNodes.value
+);
+
+/** 知识点粒度下的行：补充所属章节名，便于跨章节浏览时定位 */
+function chapterTitleOf(node: ProgressNode): string {
+  if (!node.parent_id) return "未分组";
+  return activeTable.value?.nodes.find((n) => n.id === node.parent_id)?.title ?? "未分组";
+}
+
+/** 切换选择粒度：章节粒度会锁定进度指针快照，知识点粒度不参与指针，需清掉待确认回退态 */
+function setOcMode(next: "chapter" | "knowledge") {
+  if (ocMode.value === next) return;
+  ocMode.value = next;
+  correctionTarget.value = null;
+  ocHint.value = "";
+}
 
 function ocIndexOf(node: ProgressNode): number {
   return ocUnits.value.findIndex((u) => u.id === node.id);
@@ -724,6 +752,8 @@ async function applyForwardPointer(idx: number) {
   const subject = activeSubject.value;
   const table = activeTable.value;
   if (!table) return;
+  // 仅章节粒度支持整段推进
+  if (effectiveOcMode.value !== "chapter") return;
   ensureOcSnapshot(subject);
   const tail = ocTail.value[`${subject}|${table.id}`] ?? -1;
   if (idx <= tail) return;
@@ -739,7 +769,11 @@ async function applyForwardPointer(idx: number) {
 
   if (toAdd.length) {
     overcompletions.value.push(
-      ...toAdd.map((u) => ({ subject, chapter_reached: u.title, node_id: u.id }))
+      ...toAdd.map((u) => ({
+        subject,
+        chapter_reached: u.title,
+        node_id: u.id,
+      }))
     );
   }
   for (const u of toRemove) {
@@ -769,6 +803,10 @@ async function applyForwardPointer(idx: number) {
 async function confirmCorrection() {
   const node = correctionTarget.value;
   if (!node) return;
+  if (effectiveOcMode.value !== "chapter") {
+    correctionTarget.value = null;
+    return;
+  }
   const subject = activeSubject.value;
   const table = activeTable.value;
   if (!table) return;
@@ -810,6 +848,11 @@ function cancelCorrection() {
 /** 章节行点击入口：完成区之前 → 确认回退；完成区尾部 → 提示；之后 → 前向推进 */
 async function onUnitClick(node: ProgressNode) {
   if (savingProgress.value) return;
+  // 知识点粒度不参与章节顺序指针，走逐条勾选
+  if (effectiveOcMode.value !== "chapter") {
+    await toggleKnowledgePoint(activeSubject.value, node);
+    return;
+  }
   const idx = ocIndexOf(node);
   const tail = ocTailIdx.value;
   if (idx < 0) return;
@@ -850,7 +893,10 @@ function toggleOcExpand(chapterId: string) {
 }
 
 /** 章节内知识点统计：状态 ≥ 基础 或 本轮已勾选 记入已学 */
-function chapterKidStats(chapterId: string): { learned: number; total: number } {
+function chapterKidStats(chapterId: string): {
+  learned: number;
+  total: number;
+} {
   const kids = childrenOfChapter(chapterId);
   let learned = 0;
   for (const k of kids) {
@@ -879,7 +925,11 @@ async function toggleKnowledgePoint(subject: string, node: ProgressNode) {
     ocHint.value = `已撤销本次对「${node.title}」的计划外记录。`;
     return;
   }
-  overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
+  overcompletions.value.push({
+    subject,
+    chapter_reached: node.title,
+    node_id: node.id,
+  });
   await persistActiveTable(subject, (t) => {
     const n = t.nodes.find((x) => x.id === node.id);
     if (n && ocRankOf(n) < STATUS_RANK.basic) n.status = "basic";
@@ -898,13 +948,20 @@ function scrollToCurrentProgress() {
   if (u) scrollToUnit(u.id);
 }
 
-// 进入第 6 步 / 切换科目或进度表时：锁定快照并把进度锚点滚入视野
+// 进入第 6 步 / 切换科目、进度表或粒度时：锁定快照并把进度锚点滚入视野
+// （知识点粒度无顺序锚点，滚到列表首位即可）
 watch(
-  [step, activeSubject, () => activeTable.value?.id, hasOvercompletion],
+  [step, activeSubject, () => activeTable.value?.id, hasOvercompletion, effectiveOcMode],
   () => {
     if (step.value === 4 && hasOvercompletion.value && activeTable.value) {
       ensureOcSnapshot(activeSubject.value);
-      nextTick(scrollToCurrentProgress);
+      nextTick(() => {
+        if (effectiveOcMode.value === "chapter") scrollToCurrentProgress();
+        else {
+          const first = ocUnits.value[0];
+          if (first) scrollToUnit(first.id, "auto");
+        }
+      });
     }
   },
   { flush: "post" }
@@ -936,7 +993,11 @@ async function createChapter(subject: string) {
   await persistActiveTable(subject, (t) => {
     t.nodes.push(node);
   });
-  overcompletions.value.push({ subject, chapter_reached: node.title, node_id: node.id });
+  overcompletions.value.push({
+    subject,
+    chapter_reached: node.title,
+    node_id: node.id,
+  });
   newChapterTitle.value = "";
 }
 
@@ -958,7 +1019,11 @@ function statusLabel(s: string): string {
 }
 
 function feelingLabel(s: string): string {
-  const m: Record<string, string> = { smooth: "😊 很顺利", normal: "😐 一般", hard: "😣 比较困难" };
+  const m: Record<string, string> = {
+    smooth: "😊 很顺利",
+    normal: "😐 一般",
+    hard: "😣 比较困难",
+  };
   return m[s] ?? s;
 }
 
@@ -1447,7 +1512,12 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
             <History :size="14" />
             历史复盘
           </Button>
-          <div v-if="showHistoryDropdown" class="history-dropdown" @click.stop>
+          <div
+            v-if="showHistoryDropdown"
+            v-liquid-glass="{ strength: 0.08 }"
+            class="history-dropdown"
+            @click.stop
+          >
             <div class="dropdown-header">选择日期查看复盘</div>
             <div v-if="sortedReviewDates.length === 0" class="dropdown-empty">暂无复盘记录</div>
             <button
@@ -1565,7 +1635,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         <Card v-if="submitStepIndex >= 0 || regenerating" padding="lg" class="gate-card">
           <div class="gate-hero">
             <div class="gate-icon"><LoadingSpinner :size="40" /></div>
-            <h1 class="gate-title">{{ regenerating ? "正在调整后续计划…" : "正在提交复盘…" }}</h1>
+            <h1 class="gate-title">
+              {{ regenerating ? "正在调整后续计划…" : "正在提交复盘…" }}
+            </h1>
             <p class="gate-desc">请稍候，正在处理你的学习数据。</p>
             <div class="submit-steps">
               <div
@@ -1626,7 +1698,10 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
               <div
                 v-if="regenMessage"
                 class="regen-banner"
-                :class="{ 'regen-loading': regenerating, 'regen-error': regenFailed }"
+                :class="{
+                  'regen-loading': regenerating,
+                  'regen-error': regenFailed,
+                }"
               >
                 <AlertTriangle :size="18" v-if="regenerating" />
                 <CheckCircle2 :size="18" v-else-if="!regenFailed" />
@@ -1696,7 +1771,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                       / {{ existingReview.task_reviews.length }}
                     </template>
                     <template v-else>
-                      {{ existingReview.data.completed_tasks.filter((t) => t.completed).length }} /
+                      {{ existingReview.data.completed_tasks.filter((t) => t.completed).length }}
+                      /
                       {{ existingReview.data.completed_tasks.length }}
                     </template>
                   </span>
@@ -1758,7 +1834,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                       class="trr-chip actual"
                     >
                       <Clock :size="11" />
-                      实际 {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
+                      实际
+                      {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
                     </span>
                     <span v-if="tr.mastery" class="trr-chip mastery">
                       {{
@@ -1875,7 +1952,8 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
               <Smartphone :size="13" />
               <span
                 >已在滴答清单完成
-                {{ didaMatchedCount }} 项任务，已为你自动勾选；如需调整可直接点击。</span
+                {{ didaMatchedCount }}
+                项任务，已为你自动勾选；如需调整可直接点击。</span
               >
             </div>
             <div class="task-review-list">
@@ -1940,7 +2018,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                   :key="opt.value"
                   type="button"
                   class="blocker-chip"
-                  :class="{ active: (taskBlockers[task.id] ?? []).includes(opt.value) }"
+                  :class="{
+                    active: (taskBlockers[task.id] ?? []).includes(opt.value),
+                  }"
                   @click="toggleBlocker(task.id, opt.value)"
                 >
                   {{ opt.label }}
@@ -2062,7 +2142,10 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                   :key="s"
                   type="button"
                   class="oc-subject-chip"
-                  :class="{ active: activeSubject === s, disabled: !hasTable(s) }"
+                  :class="{
+                    active: activeSubject === s,
+                    disabled: !hasTable(s),
+                  }"
                   :disabled="!hasTable(s)"
                   :title="
                     hasTable(s) ? subjectLabel(s) : `${subjectLabel(s)}（该科目还没有进度表）`
@@ -2091,7 +2174,12 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                   <Button
                     variant="primary"
                     size="sm"
-                    @click="router.push({ path: '/progress', query: { subject: activeSubject } })"
+                    @click="
+                      router.push({
+                        path: '/progress',
+                        query: { subject: activeSubject },
+                      })
+                    "
                   >
                     <FolderOpen :size="14" /> 前往进度页创建
                   </Button>
@@ -2127,12 +2215,42 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                   >
                 </div>
 
+                <!-- 选择粒度切换：整章推进 / 逐条勾选知识点 -->
+                <div v-if="hasChapters && knowledgeNodes.length" class="oc-mode">
+                  <span class="oc-mode-label">选择粒度</span>
+                  <div class="oc-mode-group">
+                    <button
+                      type="button"
+                      class="oc-mode-btn"
+                      :class="{ active: effectiveOcMode === 'chapter' }"
+                      title="以章节为单位：点选实际到达的最新章节，其前未记录内容整段补记"
+                      @click="setOcMode('chapter')"
+                    >
+                      <FolderOpen :size="13" /> 按章节（整章推进）
+                    </button>
+                    <button
+                      type="button"
+                      class="oc-mode-btn"
+                      :class="{ active: effectiveOcMode === 'knowledge' }"
+                      title="以知识点为单位：全表平铺，可跨章节任意勾选本次学到的具体知识点"
+                      @click="setOcMode('knowledge')"
+                    >
+                      <CircleDot :size="13" /> 按知识点（逐条勾选）
+                    </button>
+                  </div>
+                  <span v-if="effectiveOcMode === 'knowledge'" class="oc-mode-hint">
+                    共
+                    {{ knowledgeNodes.length }}
+                    个知识点，可直接勾选，不受章节顺序限制
+                  </span>
+                </div>
+
                 <p v-if="!chapterNodes.length && !knowledgeNodes.length" class="oc-empty-hint">
                   该进度表还没有可点选的{{ hasChapters ? "章节" : "节点" }}，可在下方新建一个。
                 </p>
 
                 <!-- 进度指针：点击你实际到达的最新章节，其前未记录内容自动整段补记 -->
-                <div v-if="ocUnits.length" class="oc-progress-bar">
+                <div v-if="ocUnits.length && effectiveOcMode === 'chapter'" class="oc-progress-bar">
                   <div class="oc-progress-item">
                     <span class="oc-progress-label">目前进度</span>
                     <span v-if="ocTailUnit" class="oc-progress-name">{{ ocTailUnit.title }}</span>
@@ -2147,122 +2265,172 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
                 <div v-if="ocUnits.length" class="oc-section-desc">
                   <Info :size="13" />
-                  <span
-                    >在下方点选你本次<strong
-                      >实际到达的最新{{ hasChapters ? "章节" : "内容" }}</strong
-                    >即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。只学到某章中间的<strong>部分知识点</strong>时，展开该章逐条勾选即可，不会把整章记完。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span
+                  <span v-if="effectiveOcMode === 'chapter'"
+                    >在下方点选你本次<strong>实际到达的最新章节</strong>即可：从「目前进度」到所选章节之间未记录的内容会自动整段补记为本次计划外（状态推进到「基础」）。只学到某章中间的<strong>部分知识点</strong>时，切换到「按知识点」逐条勾选，或展开该章逐条勾选即可，不会把整章记完。点选「已学」区域内的章节，说明系统记录的进度<strong>快于</strong>实际进度，可确认后回退。</span
+                  >
+                  <span v-else
+                    >下方是该进度表的<strong>全部知识点</strong>（已按所属章节标注）：直接勾选你本次实际学到的条目即可，状态推进到「基础」。知识点粒度<strong>不改变</strong>章节顺序进度，适合「跨章节、零散地学了几个知识点」的情况；需要整章推进时，切回「按章节」。</span
                   >
                 </div>
 
-                <div v-if="ocUnits.length" ref="ocListRef" class="oc-node-list oc-pointer-list">
-                  <div v-for="(u, ui) in ocUnits" :key="u.id" class="oc-unit-block">
+                <div
+                  v-if="ocUnits.length"
+                  ref="ocListRef"
+                  class="oc-node-list"
+                  :class="effectiveOcMode === 'chapter' ? 'oc-pointer-list' : 'oc-knowledge-list'"
+                >
+                  <!-- 知识点粒度：全表知识点平铺，跨章节自由勾选 -->
+                  <template v-if="effectiveOcMode === 'knowledge'">
                     <div
-                      class="oc-node-row oc-pointer-row"
+                      v-for="k in ocUnits"
+                      :key="k.id"
+                      class="oc-node-row oc-knowledge-row"
                       :class="{
-                        checked: isChecked(activeSubject, u),
-                        learned: !isChecked(activeSubject, u) && ocIsLearned(u),
-                        cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
+                        checked: isChecked(activeSubject, k),
+                        learned: !isChecked(activeSubject, k) && ocIsLearned(k),
                       }"
-                      :data-uid="u.id"
+                      :data-uid="k.id"
                     >
                       <button
-                        v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
                         type="button"
-                        class="oc-expand"
-                        :class="{ open: isOcExpanded(u.id) }"
+                        class="oc-check"
+                        :class="{ active: isChecked(activeSubject, k) }"
                         :title="
-                          isOcExpanded(u.id)
-                            ? '收起本章知识点'
-                            : '展开本章知识点，可逐条勾选本次学到的具体知识点'
+                          isChecked(activeSubject, k)
+                            ? '撤销本次对该知识点的记录'
+                            : '记为本次学到的知识点（状态推进到「基础」）'
                         "
-                        @click="toggleOcExpand(u.id)"
+                        @click="toggleKnowledgePoint(activeSubject, k)"
                       >
-                        <ChevronRight :size="14" />
+                        <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
+                        <CheckCircle2 v-else-if="ocIsLearned(k)" :size="16" />
+                        <Circle v-else :size="16" />
                       </button>
-                      <span v-else class="oc-expand-spacer"></span>
-                      <button
-                        type="button"
-                        class="oc-pointer-main"
-                        :title="pointerRowHint(ui)"
-                        @click="onUnitClick(u)"
+                      <span class="oc-node-icon"><CircleDot :size="13" /></span>
+                      <span class="oc-node-title">{{ k.title }}</span>
+                      <span class="oc-chapter-tag">{{ chapterTitleOf(k) }}</span>
+                      <span v-if="isChecked(activeSubject, k)" class="oc-kid-count oc-tag-now"
+                        >本次</span
                       >
-                        <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
-                          <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
-                          <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
-                          <Circle v-else :size="17" />
-                        </span>
-                        <span class="oc-node-icon">
-                          <FolderOpen v-if="u.level === 'chapter'" :size="13" />
-                          <CircleDot v-else :size="13" />
-                        </span>
-                        <span class="oc-node-title">{{ u.title }}</span>
-                        <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now"
-                          >本次</span
-                        >
-                        <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned"
-                          >已学</span
-                        >
-                        <span
-                          v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
-                          class="oc-kid-count"
-                          :class="{
-                            'oc-partial':
-                              !isChecked(activeSubject, u) &&
-                              !ocIsLearned(u) &&
-                              chapterKidStats(u.id).learned > 0,
-                          }"
-                        >
-                          {{ chapterKidStats(u.id).learned }}/{{ chapterKidStats(u.id).total }}
-                          知识点
-                        </span>
-                      </button>
+                      <span v-else-if="ocIsLearned(k)" class="oc-kid-count oc-tag-learned"
+                        >已学</span
+                      >
                     </div>
+                  </template>
 
-                    <!-- 展开章节：逐个勾选本章内本次学到的具体知识点（不改变章节顺序进度指针） -->
-                    <div
-                      v-if="
-                        u.level === 'chapter' &&
-                        isOcExpanded(u.id) &&
-                        childrenOfChapter(u.id).length
-                      "
-                      class="oc-node-children"
-                    >
+                  <!-- 章节粒度：进度指针列表，可展开逐条勾选本章知识点 -->
+                  <template v-else>
+                    <div v-for="(u, ui) in ocUnits" :key="u.id" class="oc-unit-block">
                       <div
-                        v-for="k in childrenOfChapter(u.id)"
-                        :key="k.id"
-                        class="oc-node-row oc-knowledge-row"
-                        :class="{ checked: isChecked(activeSubject, k) }"
+                        class="oc-node-row oc-pointer-row"
+                        :class="{
+                          checked: isChecked(activeSubject, u),
+                          learned: !isChecked(activeSubject, u) && ocIsLearned(u),
+                          cur: ui === ocTailIdx || (ocTailIdx < 0 && ui === 0),
+                        }"
+                        :data-uid="u.id"
                       >
                         <button
+                          v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
                           type="button"
-                          class="oc-check"
-                          :class="{ active: isChecked(activeSubject, k) }"
+                          class="oc-expand"
+                          :class="{ open: isOcExpanded(u.id) }"
                           :title="
-                            isChecked(activeSubject, k)
-                              ? '撤销本次对该知识点的记录'
-                              : '记为本次学到的知识点（状态推进到「基础」）'
+                            isOcExpanded(u.id)
+                              ? '收起本章知识点'
+                              : '展开本章知识点，可逐条勾选本次学到的具体知识点'
                           "
-                          @click="toggleKnowledgePoint(activeSubject, k)"
+                          @click="toggleOcExpand(u.id)"
                         >
-                          <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
-                          <CheckCircle2 v-else-if="ocIsLearned(k)" :size="16" />
-                          <Circle v-else :size="16" />
+                          <ChevronRight :size="14" />
                         </button>
-                        <span class="oc-node-icon"><CircleDot :size="13" /></span>
-                        <span class="oc-node-title">{{ k.title }}</span>
-                        <span v-if="isChecked(activeSubject, k)" class="oc-kid-count oc-tag-now"
-                          >本次</span
+                        <span v-else class="oc-expand-spacer"></span>
+                        <button
+                          type="button"
+                          class="oc-pointer-main"
+                          :title="pointerRowHint(ui)"
+                          @click="onUnitClick(u)"
                         >
-                        <span v-else-if="ocIsLearned(k)" class="oc-kid-count oc-tag-learned"
-                          >已学</span
+                          <span class="oc-check" :class="{ active: isChecked(activeSubject, u) }">
+                            <CheckCircle2 v-if="isChecked(activeSubject, u)" :size="17" />
+                            <CheckCircle2 v-else-if="ocIsLearned(u)" :size="17" />
+                            <Circle v-else :size="17" />
+                          </span>
+                          <span class="oc-node-icon">
+                            <FolderOpen v-if="u.level === 'chapter'" :size="13" />
+                            <CircleDot v-else :size="13" />
+                          </span>
+                          <span class="oc-node-title">{{ u.title }}</span>
+                          <span v-if="isChecked(activeSubject, u)" class="oc-kid-count oc-tag-now"
+                            >本次</span
+                          >
+                          <span v-else-if="ocIsLearned(u)" class="oc-kid-count oc-tag-learned"
+                            >已学</span
+                          >
+                          <span
+                            v-if="u.level === 'chapter' && childrenOfChapter(u.id).length"
+                            class="oc-kid-count"
+                            :class="{
+                              'oc-partial':
+                                !isChecked(activeSubject, u) &&
+                                !ocIsLearned(u) &&
+                                chapterKidStats(u.id).learned > 0,
+                            }"
+                          >
+                            {{ chapterKidStats(u.id).learned }}/{{ chapterKidStats(u.id).total }}
+                            知识点
+                          </span>
+                        </button>
+                      </div>
+
+                      <!-- 展开章节：逐个勾选本章内本次学到的具体知识点（不改变章节顺序进度指针） -->
+                      <div
+                        v-if="
+                          u.level === 'chapter' &&
+                          isOcExpanded(u.id) &&
+                          childrenOfChapter(u.id).length
+                        "
+                        class="oc-node-children"
+                      >
+                        <div
+                          v-for="k in childrenOfChapter(u.id)"
+                          :key="k.id"
+                          class="oc-node-row oc-knowledge-row"
+                          :class="{ checked: isChecked(activeSubject, k) }"
                         >
+                          <button
+                            type="button"
+                            class="oc-check"
+                            :class="{ active: isChecked(activeSubject, k) }"
+                            :title="
+                              isChecked(activeSubject, k)
+                                ? '撤销本次对该知识点的记录'
+                                : '记为本次学到的知识点（状态推进到「基础」）'
+                            "
+                            @click="toggleKnowledgePoint(activeSubject, k)"
+                          >
+                            <CheckCircle2 v-if="isChecked(activeSubject, k)" :size="16" />
+                            <CheckCircle2 v-else-if="ocIsLearned(k)" :size="16" />
+                            <Circle v-else :size="16" />
+                          </button>
+                          <span class="oc-node-icon"><CircleDot :size="13" /></span>
+                          <span class="oc-node-title">{{ k.title }}</span>
+                          <span v-if="isChecked(activeSubject, k)" class="oc-kid-count oc-tag-now"
+                            >本次</span
+                          >
+                          <span v-else-if="ocIsLearned(k)" class="oc-kid-count oc-tag-learned"
+                            >已学</span
+                          >
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  </template>
                 </div>
 
-                <!-- 未挂靠章节的知识点：保留逐个勾选兜底（不参与章节顺序进度） -->
-                <template v-if="hasChapters && orphanKnowledge.length">
+                <!-- 未挂靠章节的知识点：保留逐个勾选兜底（章节粒度下单独展示，不参与章节顺序进度） -->
+                <template
+                  v-if="effectiveOcMode === 'chapter' && hasChapters && orphanKnowledge.length"
+                >
                   <div class="oc-group-title">未分组知识点（单独勾选，不影响章节顺序进度）</div>
                   <div class="oc-node-list">
                     <div
@@ -2335,7 +2503,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                     <Plus :size="14" /> 新建{{ hasChapters ? "章节" : "节点" }}
                   </Button>
                 </div>
-                <p v-if="newChapterError" class="oc-error">{{ newChapterError }}</p>
+                <p v-if="newChapterError" class="oc-error">
+                  {{ newChapterError }}
+                </p>
 
                 <!-- 历史未匹配条目兜底：可编辑，重新提交不丢数据 -->
                 <div v-if="unmatchedEntries.length" class="oc-unmatched">
@@ -2413,17 +2583,16 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 /* Date bar */
 .date-bar {
   position: sticky;
-  top: 0;
+  top: var(--space-2);
   z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  background: var(--bg-primary);
-  padding: var(--space-4) 0;
-  margin: 0 calc(-1 * var(--space-8));
-  padding-left: var(--space-8);
-  padding-right: var(--space-8);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: var(--space-3) var(--space-4);
   flex-wrap: wrap;
 }
 
@@ -3418,6 +3587,74 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   margin: 0;
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+}
+
+/* 选择粒度切换（整章推进 / 逐条勾选知识点） */
+.oc-mode {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+.oc-mode-label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.oc-mode-group {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-overlay);
+  border-radius: var(--radius-md);
+}
+.oc-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.oc-mode-btn:hover {
+  color: var(--text-primary);
+}
+.oc-mode-btn.active {
+  background: var(--bg-primary);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+.oc-mode-hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.oc-knowledge-list .oc-knowledge-row {
+  background: var(--bg-elevated);
+}
+.oc-knowledge-list .oc-knowledge-row .oc-node-title {
+  font-weight: var(--font-medium);
+}
+.oc-chapter-tag {
+  flex-shrink: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-overlay);
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
 }
 
 /* 章节 → 知识点 两级选择树 */

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Card from "@/components/ui/Card.vue";
+import Switch from "@/components/ui/Switch.vue";
 import { User } from "lucide-vue-next";
 import type { SettingsForm } from "../composables/useSettingsForm";
 
@@ -33,15 +34,7 @@ defineProps<{
             <span class="toggle-title">首页问候显示</span>
             <span class="toggle-desc">在工作台顶部显示时间问候与称呼</span>
           </div>
-          <button
-            class="toggle-switch"
-            :class="{ on: form.show_greeting }"
-            role="switch"
-            :aria-checked="form.show_greeting"
-            @click="form.show_greeting = !form.show_greeting"
-          >
-            <span class="toggle-thumb" />
-          </button>
+          <Switch v-model="form.show_greeting" label="首页问候显示" />
         </div>
       </div>
     </div>

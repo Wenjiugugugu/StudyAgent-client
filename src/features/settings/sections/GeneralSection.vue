@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import Card from "@/components/ui/Card.vue";
+import Switch from "@/components/ui/Switch.vue";
 import { PowerOff, HelpCircle, Minimize2, Power, Check } from "lucide-vue-next";
 import { useGeneralSettings } from "../composables/useGeneralSettings";
 
@@ -37,16 +38,13 @@ onMounted(() => {
         <span class="toggle-title">开机启动</span>
         <span class="toggle-desc">登录 Windows 后自动启动 StudyAgent</span>
       </div>
-      <button
-        class="toggle-switch"
-        :class="{ on: autostartEnabled }"
-        role="switch"
-        :aria-checked="autostartEnabled"
-        :disabled="autostartLoading || !isTauriEnv"
-        @click="toggleAutostart(!autostartEnabled)"
-      >
-        <span class="toggle-thumb" />
-      </button>
+      <Switch
+        :model-value="autostartEnabled"
+        label="开机启动"
+        :loading="autostartLoading"
+        :disabled="!isTauriEnv"
+        @change="toggleAutostart"
+      />
     </div>
 
     <!-- 关闭动作 -->

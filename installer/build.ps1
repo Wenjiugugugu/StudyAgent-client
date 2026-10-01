@@ -134,7 +134,12 @@ if (-not $SkipBuild) {
         } else {
             Write-Host '==> 未检测到 npm，使用现有 desktop/dist（如非最新请先构建前端）' -ForegroundColor Yellow
         }
-        $tauriArgs += @('--config', '{"build":{"beforeBuildCommand":""}}')
+        # PowerShell 5.1 调用原生 exe 时会剥掉参数内的双引号，直接传 JSON 会变成
+        # {build:{beforeBuildCommand:}} 导致 tauri 报「key must be a string」；
+        # 因此把覆盖配置写入临时文件，再按路径传给 --config。
+        $skipFrontendConfig = Join-Path $env:TEMP 'studyagent-tauri-skip-frontend.json'
+        Set-Content -Path $skipFrontendConfig -Value '{"build":{"beforeBuildCommand":""}}' -Encoding Ascii
+        $tauriArgs += @('--config', $skipFrontendConfig)
     }
 
     Write-Host '==> 构建 Tauri 应用（release，增量缓存）' -ForegroundColor Cyan

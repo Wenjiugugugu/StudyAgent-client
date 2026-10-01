@@ -45,6 +45,9 @@ pub struct GoalPlanData {
 /// 新建目标时 `book` 必填（与目标章节所属书本一致）；每个书最多一条，跨书允许多条并行推进。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Goal {
+    /// 当前剩余进度的倒排起算日。批量生成多天时共用起点，复盘后移到次日。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub planning_start: String,
     /// 唯一标识，如 "goal-math-1"
     pub id: String,
     /// 关联科目
@@ -62,7 +65,7 @@ pub struct Goal {
     /// 同一 (subject, book) 组合只允许一条目标；空串视为「整科一条」兼容旧数据。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub book: String,
-    /// 当前进度在顺序表中的位置（自动维护，由复盘/超进度推进）
+    /// 已完成到的位置；None 表示尚未完成首个知识点（由复盘/超进度推进）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_position: Option<usize>,
     /// 目标在顺序表中的位置
@@ -264,6 +267,7 @@ mod tests {
             },
             data: GoalPlanData {
                 goals: vec![Goal {
+                    planning_start: "2026-09-04".into(),
                     id: "goal-math-1".to_string(),
                     subject: SubjectKey::Math,
                     title: "9/20 前完成线性方程组".to_string(),

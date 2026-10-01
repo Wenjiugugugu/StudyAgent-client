@@ -42,6 +42,27 @@ fn sha256_bytes(content: &[u8]) -> String {
         .collect()
 }
 
+/// 备份配置时再次清空 API Key，兼容凭据库迁移失败后仍残留明文的旧 settings.json。
+fn sanitize_settings_for_backup(content: &[u8]) -> DataResult<Vec<u8>> {
+    let mut settings: serde_json::Value = serde_json::from_slice(content)
+        .map_err(|e| format!("解析 settings.json 以移除备份密钥失败: {}", e))?;
+    if let Some(providers) = settings
+        .get_mut("ai_providers")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for provider in providers {
+            if let Some(object) = provider.as_object_mut() {
+                object.insert(
+                    "api_key".to_string(),
+                    serde_json::Value::String(String::new()),
+                );
+            }
+        }
+    }
+    serde_json::to_vec_pretty(&settings)
+        .map_err(|e| format!("序列化已清理密钥的 settings.json 失败: {}", e))
+}
+
 fn is_allowed_backup_path(normalized: &str, include_logs: bool) -> bool {
     let top = normalized.split('/').next().unwrap_or("");
     PERSISTED_DATA_SUBDIRS.contains(&top) || include_logs && top == "logs"
@@ -130,6 +151,9 @@ pub fn export_backup(
             .map_err(|e| format!("读取文件失败 {:?}: {}", abs, e))?
             .read_to_end(&mut content)
             .map_err(|e| format!("读取文件失败 {:?}: {}", abs, e))?;
+        if rel_str == "config/settings.json" {
+            content = sanitize_settings_for_backup(&content)?;
+        }
         manifest_entries.push(BackupManifestEntry {
             path: rel_str.clone(),
             size: content.len() as u64,

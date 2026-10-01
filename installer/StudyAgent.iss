@@ -60,9 +60,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile=..\src-tauri\icons\icon.ico
 WizardStyle=modern
 WizardImageFile=assets\wizard.bmp
-; Inno 6 实际不渲染 WizardSmallImageFile 的 32-bit BMP alpha 通道
-; （把 BGRA 当 BGR 解析，透明区直接变黑底）。空值=不显示右上角小图。
-WizardSmallImageFile=
+; 使用白底 24-bit RGB 小图，避免 Inno 6 的 BMP alpha 黑底问题。
+WizardSmallImageFile=assets\wizard-small.bmp
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ; 与旧版 NSIS 一致：默认当前用户安装，不请求管理员权限

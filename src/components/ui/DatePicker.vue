@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { ChevronLeft, ChevronRight, Calendar } from "lucide-vue-next";
 
@@ -189,7 +190,7 @@ onUnmounted(() => document.removeEventListener("mousedown", handleClickOutside))
     </button>
 
     <transition name="dp-fade">
-      <div v-if="open" class="dp-panel">
+      <div v-if="open" v-liquid-glass="{ strength: 0.08 }" class="dp-panel">
         <div class="dp-header">
           <button type="button" class="dp-nav" @click="prevMonth">
             <ChevronLeft :size="16" />

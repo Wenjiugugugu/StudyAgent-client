@@ -4,7 +4,7 @@
 //! - **任务来源确定性**：给定某科目的生效区间，用 chapter_seq 顺序表
 //!   算出区间内每天「该推进到哪个知识点」，据此生成每日任务（不调 AI 决定内容）。
 //! - **任务估时由 AI 参与**：把当天的知识点交给 AI 细化为带估时的任务；
-//!   AI 失败时回退到用户设置的任务粒度（`AppSettings::standard_granularity()`）。
+//!   AI 失败时保留进度表或标题规则的知识点基准估时。
 //! - **复盘双轨重排**：复盘后按「当前进度 vs 目标差距」确定性重排截止日科目
 //!   的后续任务量（完成多→减少、完成少→增多、达标→提前退出）。
 //!
@@ -21,6 +21,247 @@ use crate::data::goal::{read_goals, save_goals, Goal};
 use crate::data::plan::PlanTask;
 use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
 use crate::data::{clean_ai_json, DataResult};
+
+/// 书本成员以节点归属为准，不能只用整科最大位置推进所有书。
+pub(crate) fn book_positions(
+    index: &crate::data::progress_tables::ProgressIndex,
+    subject: &str,
+    version: &str,
+    book: &str,
+) -> Option<Vec<usize>> {
+    use crate::data::progress_tables::{active_progress_table, NodeLevel};
+    let table = active_progress_table(index, subject)?;
+    let chapter = table
+        .nodes
+        .iter()
+        .find(|n| n.level == NodeLevel::Chapter && n.title == book)?;
+    let mut positions: Vec<usize> = table
+        .nodes
+        .iter()
+        .filter(|n| n.level == NodeLevel::Knowledge && n.parent_id.as_deref() == Some(&chapter.id))
+        .filter_map(|n| chapter_seq::position(subject, version, &n.title))
+        .collect();
+    if positions.is_empty() {
+        positions.extend(chapter_seq::position(subject, version, &chapter.title));
+    }
+    positions.sort_unstable();
+    positions.dedup();
+    (!positions.is_empty()).then_some(positions)
+}
+
+pub(crate) fn remaining_goal_points(
+    goal: &Goal,
+    version: &str,
+    index: &crate::data::progress_tables::ProgressIndex,
+) -> DataResult<Vec<(usize, String, f64)>> {
+    let target = goal.target_position.ok_or("目标未初始化 target_position")?;
+    let seq =
+        chapter_seq::syllabus_points(goal.subject.key(), version).ok_or("目标科目没有可用考纲")?;
+    if target >= seq.len() {
+        return Err("目标位置超出当前考纲，请重新选择目标知识点".into());
+    }
+    let first = match goal.current_position {
+        Some(position) => position.saturating_add(1),
+        None => chapter_seq::position(goal.subject.key(), version, &goal.start_chapter)
+            .or_else(|| {
+                book_positions(index, goal.subject.key(), version, &goal.book)
+                    .and_then(|p| p.first().copied())
+            })
+            .ok_or("无法确定目标起点，请选择起始知识点")?,
+    };
+    let members = if goal.book.is_empty() {
+        None
+    } else {
+        book_positions(index, goal.subject.key(), version, &goal.book)
+    };
+    let table = crate::data::progress_tables::active_progress_table(index, goal.subject.key());
+    if first > target {
+        return Ok(Vec::new());
+    }
+    Ok((first..=target)
+        .filter(|p| members.as_ref().is_none_or(|m| m.binary_search(p).is_ok()))
+        .map(|p| {
+            let title = seq[p].to_string();
+            let hours = table
+                .and_then(|t| {
+                    t.nodes
+                        .iter()
+                        .find(|n| n.title == title)
+                        .and_then(|n| n.estimated_hours)
+                })
+                .filter(|h| h.is_finite() && *h > 0.0)
+                .unwrap_or_else(|| {
+                    crate::core::estimated_time::estimate_knowledge_hours(
+                        goal.subject.key(),
+                        &title,
+                    )
+                });
+            (p, title, hours)
+        })
+        .collect())
+}
+
+pub(crate) fn calibrated_goal_points(
+    data_dir: &Path,
+    goal: &Goal,
+    version: &str,
+    index: &crate::data::progress_tables::ProgressIndex,
+) -> DataResult<Vec<(usize, String, f64)>> {
+    let mut points = remaining_goal_points(goal, version, index)?;
+    let adaptive = crate::core::adaptive_planner::read_adaptive_state(data_dir).unwrap_or_default();
+    let factor = adaptive
+        .subjects
+        .get(goal.subject.key())
+        .map(|s| s.estimation_factor)
+        .filter(|f| f.is_finite() && *f > 0.0)
+        .unwrap_or(1.0)
+        .clamp(0.8, 1.25);
+    for point in &mut points {
+        point.2 *= factor;
+    }
+    Ok(points)
+}
+
+/// 一次读取每周排除日期；休息日、未开课日期与零容量日期均不参与倒排。
+pub(crate) fn available_goal_days(
+    data_dir: &Path,
+    from: &str,
+    to: &str,
+    subject: &SubjectKey,
+) -> Vec<(String, f64)> {
+    use crate::core::date_utils::weekday_name;
+    let settings = crate::load_settings(data_dir);
+    let state = crate::data::state::read_state_or_default(data_dir);
+    let allocation = settings.subject_time_allocation();
+    let active_hours: f64 = SubjectKey::ALL
+        .iter()
+        .filter(|s| s.state(&state).active)
+        .map(|s| s.state(&state).weekly_hours.max(0.0))
+        .sum();
+    let share = allocation
+        .as_ref()
+        .map(|a| a.get(subject.key()).copied().unwrap_or(0.0) / 100.0)
+        .unwrap_or_else(|| {
+            if active_hours > 0.0 {
+                subject.state(&state).weekly_hours.max(0.0) / active_hours
+            } else {
+                1.0 / SubjectKey::ALL
+                    .iter()
+                    .filter(|s| s.state(&state).active)
+                    .count()
+                    .max(1) as f64
+            }
+        });
+    let capacity = settings.daily_target_hours().max(0.0) * share;
+    if to < from || !capacity.is_finite() || capacity <= 0.0 {
+        return Vec::new();
+    }
+    let rest = settings.rest_days();
+    let starts = settings.subject_start_dates();
+    let start = starts
+        .iter()
+        .find(|(k, _)| *k == subject.key())
+        .map(|(_, d)| d.as_str())
+        .unwrap_or("");
+    let mut weeks = HashMap::new();
+    let mut out = Vec::new();
+    let mut date = from.to_string();
+    for _ in 0..3660 {
+        let Ok(week) = crate::data::iso_week_string(&date) else {
+            break;
+        };
+        let excluded = weeks.entry(week.clone()).or_insert_with(|| {
+            crate::data::plan::read_week_plan(data_dir, &week)
+                .ok()
+                .map(|p| {
+                    p.data
+                        .excluded_days
+                        .into_iter()
+                        .map(|d| d.date)
+                        .collect::<std::collections::HashSet<_>>()
+                })
+                .unwrap_or_default()
+        });
+        if date.as_str() >= start
+            && weekday_name(&date).is_ok_and(|w| !rest.contains(&w))
+            && !excluded.contains(&date)
+        {
+            out.push((date.clone(), capacity));
+        }
+        if date == to {
+            break;
+        }
+        let Ok(next) = add_days(&date, 1) else { break };
+        date = next;
+    }
+    out
+}
+
+/// 按累计工时和累计容量的比例切分，保留考纲顺序及完整知识点的真实估时。
+fn weighted_schedule(
+    points: &[(usize, String, f64)],
+    days: &[(String, f64)],
+) -> Vec<(String, Vec<usize>)> {
+    let demand: f64 = points.iter().map(|p| p.2).sum();
+    let capacity: f64 = days.iter().map(|d| d.1).sum();
+    if demand <= 0.0 || capacity <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut position = 0;
+    let mut used = 0.0;
+    let mut elapsed_capacity = 0.0;
+    for (i, (date, hours)) in days.iter().enumerate() {
+        elapsed_capacity += hours;
+        let boundary = demand * elapsed_capacity / capacity;
+        let mut slice = Vec::new();
+        while position < points.len()
+            && (i + 1 == days.len() || used + points[position].2 / 2.0 <= boundary + 1e-9)
+        {
+            slice.push(points[position].0);
+            used += points[position].2;
+            position += 1;
+        }
+        if !slice.is_empty() {
+            out.push((date.clone(), slice));
+        }
+    }
+    out
+}
+
+/// 按截止日累计检查同科多书需求，共享同一份容量，不能给每本书重复计算整科预算。
+pub(crate) fn goal_capacity_warnings(data_dir: &Path, date: &str) -> Vec<String> {
+    let Ok(file) = read_goals(data_dir) else {
+        return Vec::new();
+    };
+    let state = crate::data::state::read_state_or_default(data_dir);
+    let index = crate::data::progress_tables::load_progress_index(data_dir);
+    let mut goals: Vec<_> = file
+        .data
+        .goals
+        .iter()
+        .filter(|g| g.active && g.deadline.as_str() >= date)
+        .collect();
+    goals.sort_by(|a, b| a.deadline.cmp(&b.deadline));
+    let mut demands = HashMap::<String, f64>::new();
+    let mut warnings = Vec::new();
+    for goal in goals {
+        let version = subject_version(&state, goal.subject.key());
+        let Ok(points) = calibrated_goal_points(data_dir, goal, &version, &index) else {
+            continue;
+        };
+        let demand = demands.entry(goal.subject.key().into()).or_default();
+        *demand += points.iter().map(|p| p.2).sum::<f64>();
+        let available: f64 = available_goal_days(data_dir, date, &goal.deadline, &goal.subject)
+            .iter()
+            .map(|d| d.1)
+            .sum();
+        if *demand > available + 1e-9 {
+            warnings.push(format!("{}截至 {} 的目标累计需要约 {:.1}h，可用约 {:.1}h，缺口约 {:.1}h；请调整截止日期或学习容量。", goal.subject.label(), goal.deadline, demand, available, *demand - available));
+        }
+    }
+    warnings
+}
 
 /// 去掉任务标题中的「（科目）」前缀，取回纯知识点名。
 ///
@@ -43,6 +284,7 @@ pub fn subject_version(state: &crate::data::state::StudyState, key: &str) -> Str
 ///
 /// 返回 `Vec<(date, Vec<usize>)>`：每个学习日对应的待推进知识点位置列表。
 /// `excluded_or_rest_days`：该区间内不可学习的具体日期（YY-MM-DD）集合。
+#[cfg(test)]
 fn backward_schedule(
     today: &str,
     deadline: &str,
@@ -107,7 +349,7 @@ fn backward_schedule(
 
 /// 为某科目当天生成任务（区间生效时的任务来源）。
 ///
-/// - 确定性取出当天应推进的知识点，生成任务（估时用标准粒度兜底；供同步 scheduler 使用）。
+/// - 按知识点工时与日容量确定当天的推进内容（供同步 scheduler 使用）。
 /// - 需要 AI 参与估时时，请使用 `plan_goal_tasks`（异步版）。
 pub fn plan_goal_tasks_sync(
     data_dir: &Path,
@@ -115,10 +357,6 @@ pub fn plan_goal_tasks_sync(
     date: &str,
     version: &str,
 ) -> DataResult<Vec<PlanTask>> {
-    let Some((start_pos, target_pos)) = goal.current_position.zip(goal.target_position) else {
-        return Err("目标未初始化 current_position/target_position".to_string());
-    };
-
     // 空区间短路：截止日缺失或早于 `date`（已过期）时，倒排区间为空。
     // 必须在这里返回，而不是依赖下游——下游的 `rest_days_as_dates` / `backward_schedule`
     // 都按「从 date 逐日推进到 deadline」实现，区间反向时会等待永远不成立的
@@ -128,13 +366,16 @@ pub fn plan_goal_tasks_sync(
     }
 
     // 把「周日」这类休息日名称转成区间 [date, deadline] 内的具体日期集合
-    let settings = crate::load_settings(data_dir);
-    // 单条任务估时兜底沿用用户设置的任务粒度（不再硬编码 1.5h）
-    let granularity =
-        crate::core::planning::pure::normalize_granularity(settings.standard_granularity());
-    let rest_date_set = rest_days_as_dates(&settings.rest_days(), date, &goal.deadline);
-
-    let schedule = backward_schedule(date, &goal.deadline, start_pos, target_pos, &rest_date_set);
+    let index = crate::data::progress_tables::load_progress_index(data_dir);
+    let knowledge_points = calibrated_goal_points(data_dir, goal, version, &index)?;
+    let start = if goal.planning_start.is_empty() {
+        date
+    } else {
+        &goal.planning_start
+    };
+    crate::core::date_utils::validate_date(start)?;
+    let days = available_goal_days(data_dir, start, &goal.deadline, &goal.subject);
+    let schedule = weighted_schedule(&knowledge_points, &days);
     let day_slice = schedule.iter().find(|(d, _)| d == date).map(|(_, s)| s);
     let Some(pos_slice) = day_slice else {
         // 该日期不在倒排区间内（无推进）
@@ -142,51 +383,53 @@ pub fn plan_goal_tasks_sync(
     };
 
     let subject = &goal.subject;
-    let knowledge: Vec<String> = pos_slice
+    let knowledge: Vec<(String, f64)> = pos_slice
         .iter()
         .filter_map(|&p| {
-            chapter_seq::syllabus_points(subject.key(), version)
-                .and_then(|seq| seq.get(p))
-                .map(|s| s.to_string())
+            knowledge_points
+                .iter()
+                .find(|point| point.0 == p)
+                .map(|point| (point.1.clone(), point.2))
         })
         .collect();
     if knowledge.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut tasks: Vec<PlanTask> = knowledge
+    let tasks: Vec<PlanTask> = knowledge
         .into_iter()
         .enumerate()
-        .map(|(i, kp)| PlanTask {
+        .map(|(i, (kp, hours))| PlanTask {
             id: format!("{}-{:02}", date, i + 1),
             subject: subject.clone(),
-            title: format!("（{}）{}", subject.label(), kp),
+            title: format!(
+                "（{}）{}{}{}",
+                subject.label(),
+                goal.book,
+                if goal.book.is_empty() { "" } else { "｜" },
+                kp
+            ),
             priority: TaskPriority::A,
-            estimated_hours: granularity,
+            estimated_hours: hours,
             goal: format!("推进至「{}」", kp),
             completion_criteria: vec![format!("完成 {} 的学习", kp)],
-            textbook: None,
+            textbook: (!goal.book.is_empty()).then(|| goal.book.clone()),
             style_tips: None,
             fallback_plan: None,
             status: TaskStatus::Pending,
             dida_task_id: None,
+            source: crate::data::state::TaskSource::Ai,
+            ai_reference: true,
         })
         .collect();
 
-    // 排序：大块头优先 > 标题
-    tasks.sort_by(|a, b| {
-        b.estimated_hours
-            .partial_cmp(&a.estimated_hours)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.title.cmp(&b.title))
-    });
     Ok(tasks)
 }
 
 /// 为某科目当天生成任务，并在任务来源确定后由 AI 参与估时。
 ///
 /// 流程：`plan_goal_tasks_sync` 确定今天推进的知识点 → AI 估算每条时长 → 叠加到任务上。
-/// AI 失败时保留标准粒度兜底。
+/// AI 失败时保留知识点基准估时。
 pub async fn plan_goal_tasks(
     data_dir: &Path,
     ai: &AiService,
@@ -209,18 +452,12 @@ pub async fn plan_goal_tasks(
             t.estimated_hours = *h;
         }
     }
-    tasks.sort_by(|a, b| {
-        b.estimated_hours
-            .partial_cmp(&a.estimated_hours)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.title.cmp(&b.title))
-    });
     Ok(tasks)
 }
 
 /// 用 AI 估算当天每个知识点的学习时长（小时）。
 ///
-/// AI 失败时返回空 map，调用方回退到标准粒度。
+/// AI 失败时返回空 map，调用方保留基准估时。
 async fn estimate_tasks_hours(
     data_dir: &Path,
     ai: &AiService,
@@ -237,7 +474,7 @@ async fn estimate_tasks_hours(
     let points = knowledge.join("、");
     let prompt = format!(
         "你是考研各科学习任务拆分与估时助手。请为以下「{}」科目的一小节学习知识点估算需要的学习时长（小时，取 0.5 的整数倍），\
-         每个知识点拆成一条任务。用户设置的任务粒度为 {:.2} 小时/条，单条估时请尽量贴近该粒度。\
+         按知识点的真实学习难度估算，不得为了满足预算而缩短估时。用户任务粒度为 {:.2} 小时，仅作为后续拆分参考。\
          知识点：{}\n\
          只返回 JSON 数组，每项 {json_example},不要输出其他内容。",
         subject.label(),
@@ -263,21 +500,18 @@ async fn estimate_tasks_hours(
     };
 
     let result = ai.chat(request).await;
-    let mut map = match result {
+    let map = match result {
         Ok(resp) => parse_estimate_json(&resp.content),
         Err(e) => {
             crate::data::write_ai_debug_log(
                 data_dir,
                 "goal_estimate_fallback",
-                &format!("AI 估时失败，回退标准粒度: {}", e),
+                &format!("AI 估时失败，保留知识点基准估时: {}", e),
             );
             HashMap::new()
         }
     };
-    // 确保每个知识点都有估值（兜底沿用用户设置的任务粒度）
-    for kp in knowledge {
-        map.entry(kp.clone()).or_insert(gran);
-    }
+    // 缺失项保留同步倒排使用的知识点估时，不能用任务粒度覆盖真实工作量。
     map
 }
 
@@ -299,8 +533,8 @@ fn parse_estimate_json(content: &str) -> HashMap<String, f64> {
     match serde_json::from_str::<Vec<Item>>(&candidate) {
         Ok(items) => items
             .into_iter()
-            .filter(|i| !i.knowledge.is_empty() && i.hours > 0.0)
-            .map(|i| (i.knowledge, (i.hours * 2.0).round() / 2.0))
+            .filter(|i| !i.knowledge.is_empty() && i.hours.is_finite() && i.hours > 0.0)
+            .map(|i| (i.knowledge, ((i.hours * 2.0).round() / 2.0).clamp(0.5, 4.0)))
             .collect(),
         Err(_) => HashMap::new(),
     }
@@ -429,6 +663,8 @@ pub fn replan_goals_after_review(
     let cap_days = crate::load_settings(data_dir).goal_extension_max_days();
     let mut did_change = false;
     let mut updated: HashMap<String, usize> = HashMap::new();
+    let index = crate::data::progress_tables::load_progress_index(data_dir);
+    let daily = crate::data::plan::read_daily_plan(data_dir, today).ok();
 
     for goal in file.data.goals.iter_mut() {
         let key = goal.subject.key();
@@ -438,6 +674,12 @@ pub fn replan_goals_after_review(
         if !goal.active && goal.status != "expired" {
             continue;
         }
+        if let Ok(next_day) = add_days(today, 1) {
+            if goal.planning_start.as_str() < next_day.as_str() {
+                goal.planning_start = next_day;
+                did_change = true;
+            }
+        }
         // 旧数据没有封顶基准：把当前（尚未被顺延过的）截止日作为基准。
         // 历史遗留的 expired 条目会丢掉原本的真实截止日，只能以现状为基准，可接受。
         if goal.extend_base_deadline.is_empty() && !goal.deadline.is_empty() {
@@ -445,18 +687,61 @@ pub fn replan_goals_after_review(
             did_change = true;
         }
 
+        let members = if goal.book.is_empty() {
+            None
+        } else {
+            book_positions(&index, key, &version, &goal.book)
+        };
+        let belongs = |position: usize, title: &str, task_id: Option<&str>| {
+            if goal.book.is_empty() {
+                return true;
+            }
+            if let Some(task) =
+                task_id.and_then(|id| daily.as_ref()?.data.tasks.iter().find(|t| t.id == id))
+            {
+                if let Some(book) = &task.textbook {
+                    if book != &goal.book {
+                        return false;
+                    }
+                }
+            }
+            members
+                .as_ref()
+                .map(|m| m.binary_search(&position).is_ok())
+                .unwrap_or_else(|| title.contains(&format!("{}｜", goal.book)))
+        };
+        let filtered_over: Vec<_> = overcompletion
+            .iter()
+            .filter(|oc| {
+                chapter_seq::position(key, &version, &oc.chapter_reached)
+                    .is_some_and(|p| belongs(p, &oc.chapter_reached, None))
+            })
+            .cloned()
+            .collect();
+        let filtered_tasks: Vec<_> = task_reviews
+            .iter()
+            .filter(|tr| {
+                chapter_seq::position(key, &version, &tr.title)
+                    .is_some_and(|p| belongs(p, &tr.title, Some(&tr.task_id)))
+            })
+            .cloned()
+            .collect();
         let new_pos =
-            actual_progress_position(&goal.subject, &version, overcompletion, task_reviews);
-        let base_pos = goal.current_position.unwrap_or(0);
-        let advanced_pos = new_pos.map(|p| p.max(base_pos)).unwrap_or(base_pos);
-        if advanced_pos > base_pos {
-            goal.current_position = Some(advanced_pos);
-            updated.insert(key.to_string(), advanced_pos);
+            actual_progress_position(&goal.subject, &version, &filtered_over, &filtered_tasks);
+        let advanced_pos = match (goal.current_position, new_pos) {
+            (Some(base), Some(next)) => Some(base.max(next)),
+            (base, next) => next.or(base),
+        };
+        if advanced_pos != goal.current_position {
+            goal.current_position = advanced_pos;
+            if let Some(p) = advanced_pos {
+                updated.insert(key.to_string(), p);
+            }
             did_change = true;
         }
 
         let target_pos = goal.target_position.unwrap_or(usize::MAX);
-        if advanced_pos >= target_pos {
+        if advanced_pos.is_some_and(|p| p >= target_pos) {
             // 达标：结束目标，回退默认安排
             goal.active = false;
             goal.status = "completed".to_string();
@@ -526,6 +811,7 @@ fn actual_progress_position(
 }
 
 /// 计算区间 [from, to] 内属于休息日（按中文名称，如"周日"）的所有具体日期。
+#[cfg(test)]
 fn rest_days_as_dates(rest_day_names: &[String], from: &str, to: &str) -> Vec<String> {
     if rest_day_names.is_empty() {
         return Vec::new();
@@ -868,5 +1154,180 @@ mod tests {
         // 不封顶 / 无基准 → 空串（调用方据此跳过封顶判定）
         assert!(goal_extension_cap_date("2026-09-18", 0).unwrap().is_empty());
         assert!(goal_extension_cap_date("", 30).unwrap().is_empty());
+    }
+
+    #[test]
+    fn first_syllabus_point_is_not_already_completed() {
+        let seq = chapter_seq::syllabus_points("math", "数二").unwrap();
+        let goal = Goal {
+            subject: SubjectKey::Math,
+            start_chapter: seq[0].into(),
+            target_position: Some(0),
+            current_position: None,
+            ..Default::default()
+        };
+        let points = remaining_goal_points(&goal, "数二", &Default::default()).unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].0, 0);
+        let schedule = weighted_schedule(&points, &[("2026-09-30".into(), 2.0)]);
+        assert_eq!(schedule[0].1, vec![0]);
+    }
+
+    #[test]
+    fn weighted_schedule_balances_hours_instead_of_point_counts() {
+        let points = vec![
+            (0, "难点".into(), 3.0),
+            (1, "概念".into(), 1.0),
+            (2, "定义".into(), 1.0),
+            (3, "性质".into(), 1.0),
+        ];
+        let days = vec![("2026-09-30".into(), 3.0), ("2026-10-01".into(), 3.0)];
+        let schedule = weighted_schedule(&points, &days);
+        assert_eq!(schedule[0].1, vec![0]);
+        assert_eq!(schedule[1].1, vec![1, 2, 3]);
+        assert!(weighted_schedule(&points, &[]).is_empty());
+    }
+
+    #[test]
+    fn review_progress_is_isolated_by_book_but_still_allows_jumps() {
+        use crate::data::progress_tables::*;
+        let dir = std::env::temp_dir().join(format!(
+            "sa_goal_isolation_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let seq = chapter_seq::syllabus_points("math", "数二").unwrap();
+        let mut state = crate::data::state::StudyState::default();
+        state.subjects.math.version = Some("数二".into());
+        let nodes = vec![
+            ProgressNode {
+                id: "a".into(),
+                title: "书甲".into(),
+                level: NodeLevel::Chapter,
+                ..Default::default()
+            },
+            ProgressNode {
+                id: "b".into(),
+                title: "书乙".into(),
+                level: NodeLevel::Chapter,
+                ..Default::default()
+            },
+            ProgressNode {
+                id: "a1".into(),
+                title: seq[1].into(),
+                parent_id: Some("a".into()),
+                level: NodeLevel::Knowledge,
+                ..Default::default()
+            },
+            ProgressNode {
+                id: "a3".into(),
+                title: seq[3].into(),
+                parent_id: Some("a".into()),
+                level: NodeLevel::Knowledge,
+                ..Default::default()
+            },
+            ProgressNode {
+                id: "b10".into(),
+                title: seq[10].into(),
+                parent_id: Some("b".into()),
+                level: NodeLevel::Knowledge,
+                ..Default::default()
+            },
+        ];
+        let index = ProgressIndex {
+            subjects: HashMap::from([(
+                "math".into(),
+                SubjectProgressSet {
+                    active_id: "t".into(),
+                    active_variant: "数二".into(),
+                    tables: vec![ProgressTable {
+                        id: "t".into(),
+                        variant: "数二".into(),
+                        nodes,
+                        ..Default::default()
+                    }],
+                },
+            )]),
+            ..Default::default()
+        };
+        save_progress_index(&dir, &index).unwrap();
+        let mut file = crate::data::goal::GoalPlanFile::default();
+        for (book, target) in [("书甲", 3), ("书乙", 10)] {
+            file.data.goals.push(Goal {
+                id: book.into(),
+                book: book.into(),
+                subject: SubjectKey::Math,
+                deadline: "2026-10-30".into(),
+                current_position: Some(0),
+                target_position: Some(target),
+                active: true,
+                status: "active".into(),
+                ..Default::default()
+            });
+        }
+        save_goals(&dir, &file).unwrap();
+        let review = crate::data::records::TaskReviewEntry {
+            subject: "math".into(),
+            title: seq[10].into(),
+            status: "completed".into(),
+            ..Default::default()
+        };
+        replan_goals_after_review(&dir, &state, &[], &[review], "2026-09-30");
+        let file = read_goals(&dir).unwrap();
+        assert_eq!(file.data.goals[0].current_position, Some(0));
+        assert!(file.data.goals[0].active);
+        assert_eq!(file.data.goals[1].current_position, Some(10));
+        assert_eq!(file.data.goals[1].status, "completed");
+        let jump = crate::data::records::TaskReviewEntry {
+            subject: "math".into(),
+            title: seq[3].into(),
+            status: "partial".into(),
+            ..Default::default()
+        };
+        replan_goals_after_review(&dir, &state, &[], &[jump], "2026-09-30");
+        assert_eq!(
+            read_goals(&dir).unwrap().data.goals[0].current_position,
+            Some(3)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn batch_goal_generation_uses_one_schedule_anchor() {
+        let dir = std::env::temp_dir().join(format!(
+            "sa_goal_anchor_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let goal = Goal {
+            subject: SubjectKey::Math,
+            planning_start: "2026-09-28".into(),
+            deadline: "2026-10-02".into(),
+            current_position: Some(0),
+            target_position: Some(8),
+            ..Default::default()
+        };
+        let mut titles = std::collections::HashSet::new();
+        for date in [
+            "2026-09-28",
+            "2026-09-29",
+            "2026-09-30",
+            "2026-10-01",
+            "2026-10-02",
+        ] {
+            for task in plan_goal_tasks_sync(&dir, &goal, date, "数二").unwrap() {
+                assert!(
+                    titles.insert(task.title),
+                    "批量生成不同日期不能重复派发同一知识点"
+                );
+            }
+        }
+        assert_eq!(titles.len(), 8);
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

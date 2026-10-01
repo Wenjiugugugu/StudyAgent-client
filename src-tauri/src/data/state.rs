@@ -164,6 +164,28 @@ pub enum TaskPriority {
     C,
 }
 
+/// 任务来源
+///
+/// - `Ai`：由 AI / 计划切分生成的常规任务（默认值，兼容无该字段的旧数据）
+/// - `Manual`：用户在「今日计划」中手动添加的任务
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSource {
+    #[default]
+    Ai,
+    Manual,
+}
+
+/// serde 默认值：true（旧数据无 `ai_reference` 字段时默认允许 AI 参考）
+pub fn default_true() -> bool {
+    true
+}
+
+/// `skip_serializing_if`：值为 true 时不写出该字段，保持旧文件格式干净
+pub fn is_true(v: &bool) -> bool {
+    *v
+}
+
 /// 风险等级
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -216,7 +238,7 @@ pub struct Subjects {
 }
 
 /// 单个学习任务（State.current_task.tasks 项）
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateTask {
     /// 任务 ID（与 PlanTask.id 对应，格式 YYYY-MM-DD-NN）
     /// 旧版 state 文件无此字段，反序列化时为 None，由 update_task_status 顺带补全
@@ -236,6 +258,29 @@ pub struct StateTask {
     /// 仅在启用 enable_time_tracking 时维护；旧 state 文件无此字段，反序列化为 0
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub accumulated_minutes: i64,
+    /// 任务来源（旧 state 文件无此字段，反序列化为 ai）
+    #[serde(default)]
+    pub source: TaskSource,
+    /// 是否允许 AI 参考此任务（false 时不会写入任何 AI 提示词）
+    /// 旧 state 文件无此字段，反序列化为 true
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub ai_reference: bool,
+}
+
+impl Default for StateTask {
+    fn default() -> Self {
+        Self {
+            task_id: None,
+            subject: String::new(),
+            task: String::new(),
+            priority: TaskPriority::default(),
+            status: TaskStatus::default(),
+            started_at: None,
+            accumulated_minutes: 0,
+            source: TaskSource::default(),
+            ai_reference: true,
+        }
+    }
 }
 
 /// 用于 skip_serializing_if：当值为 0 时不输出该字段，保持旧版 state 文件兼容

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vLiquidGlass } from "@/directives/liquidGlass";
 withDefaults(
   defineProps<{
     variant?: "primary" | "secondary" | "ghost" | "danger" | "soft";
@@ -19,6 +20,7 @@ withDefaults(
 
 <template>
   <button
+    v-liquid-glass
     class="ui-button"
     :class="[variant, size, { 'icon-only': icon, disabled, loading }]"
     :disabled="disabled || loading"

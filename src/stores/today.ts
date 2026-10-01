@@ -110,6 +110,29 @@ export const useTodayStore = defineStore("today", () => {
     }
   }
 
+  /** 手动添加任务（科目 + 具体内容 + 是否允许 AI 参考） */
+  async function addManualTask(
+    date: string,
+    subject: PlanTask["subject"],
+    title: string,
+    estimatedHours: number,
+    aiReference: boolean
+  ) {
+    plan.value = await api.addManualTask(date, subject, title, estimatedHours, aiReference);
+  }
+
+  /** 切换某条任务的「允许 AI 参考」开关 */
+  async function setTaskAiReference(taskId: string, allow: boolean) {
+    await api.setTaskAiReference(taskId, allow);
+    const task = allTasks.value.find((t) => t.id === taskId);
+    if (task) task.ai_reference = allow;
+  }
+
+  /** 删除手动添加的任务 */
+  async function removeManualTask(taskId: string) {
+    plan.value = await api.deleteManualTask(taskId);
+  }
+
   async function updateTaskStatus(taskId: string, status: PlanTask["status"]) {
     if (!plan.value) return;
     const task = allTasks.value.find((t) => t.id === taskId);
@@ -139,5 +162,8 @@ export const useTodayStore = defineStore("today", () => {
     loadByDate,
     generate,
     updateTaskStatus,
+    addManualTask,
+    setTaskAiReference,
+    removeManualTask,
   };
 });

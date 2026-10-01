@@ -365,6 +365,39 @@ export async function updateTaskStatus(taskId: string, status: string): Promise<
   });
 }
 
+// ── 手动任务（用户显式添加 · AI 参考开关） ──
+
+/**
+ * 手动添加一条任务到指定日期的日计划
+ *
+ * @param aiReference 是否允许 AI 参考该任务；false 时不会写入任何 AI 提示词
+ */
+export async function addManualTask(
+  date: string,
+  subject: import("@/types").SubjectKey,
+  title: string,
+  estimatedHours?: number,
+  aiReference?: boolean
+): Promise<DailyPlan> {
+  return invokeDirect<DailyPlan>("add_manual_task", {
+    date,
+    subject,
+    title,
+    estimatedHours: estimatedHours ?? null,
+    aiReference: aiReference ?? true,
+  });
+}
+
+/** 设置某条任务是否允许 AI 参考（false 时不写入任何 AI 提示词） */
+export async function setTaskAiReference(taskId: string, allow: boolean): Promise<void> {
+  return invokeDirect<void>("set_task_ai_reference", { taskId, allow });
+}
+
+/** 删除一条手动添加的任务（返回删除后的日计划） */
+export async function deleteManualTask(taskId: string): Promise<DailyPlan> {
+  return invokeDirect<DailyPlan>("delete_manual_task", { taskId });
+}
+
 /** 更新指定科目的教材信息（传空字符串或 null 清除） */
 export async function updateSubjectTextbook(
   subject: "math" | "english" | "politics" | "professional",
@@ -815,6 +848,25 @@ export function generateProgressTable(
  */
 export function builtinProgressTable(subject: string, variant: string): Promise<ProgressTable[]> {
   return invokeDirect<ProgressTable[]>("builtin_progress_table", { subject, variant });
+}
+
+export interface RefreshBuiltinResult {
+  tables_updated: number;
+  tables_added: number;
+  nodes_added: number;
+  nodes_preserved: number;
+  legacy_nodes_preserved: number;
+}
+
+/** 合并当前随包考纲到已有内置表，保留原有进度与节点引用。 */
+export function refreshBuiltinProgressTables(
+  subject: string,
+  variant: string
+): Promise<RefreshBuiltinResult> {
+  return invokeDirect<RefreshBuiltinResult>("refresh_builtin_progress_tables", {
+    subject,
+    variant,
+  });
 }
 
 /** 首次状态确认：根据 State 预估的各知识点状态条目 */

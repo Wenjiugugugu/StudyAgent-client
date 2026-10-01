@@ -58,7 +58,8 @@ const {
       </div>
       <p class="field-hint">
         数据目录存储学习计划、复盘、进度表与自适应状态。更改目录前请先导出备份，切换后再导入；
-        这样可以完整迁移所有已注册的数据目录。更改后立即生效，重启后保留。
+        这样可以迁移所有已注册的数据目录。AI API Key 和滴答 Token
+        保存在本机系统凭据库，需在新设备重新配置。 更改后立即生效，重启后保留。
       </p>
       <div v-if="dirChangeMsg" class="dir-change-msg" :class="{ error: dirChangeError }">
         <component :is="dirChangeError ? AlertCircle : CheckCircle" :size="14" />
@@ -93,6 +94,8 @@ const {
       </div>
       <p class="field-hint">
         导出会打包学习计划、复盘、状态、进度表、自适应规划、设置与教材数据，并写入逐文件完整性校验；
+        校验用于发现文件损坏，不验证备份来源。AI API Key 和滴答 Token
+        不包含在备份中，跨设备导入后需重新配置；
         导入会先验证备份，再自动保留当前数据目录，完成后需重启应用生效。
       </p>
       <div v-if="backupMsg" class="backup-msg" :class="{ error: backupError }">

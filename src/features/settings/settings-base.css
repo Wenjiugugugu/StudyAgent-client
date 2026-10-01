@@ -462,49 +462,6 @@
 }
 
 /* ── Toggle 开关 ── */
-.settings-view .toggle-switch {
-  position: relative;
-  display: inline-block;
-  width: 40px;
-  height: 24px;
-  flex-shrink: 0;
-}
-
-.settings-view .toggle-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.settings-view .toggle-slider {
-  position: absolute;
-  cursor: pointer;
-  inset: 0;
-  background: var(--text-quaternary);
-  border-radius: var(--radius-full);
-  transition: background var(--transition-fast);
-}
-
-.settings-view .toggle-slider::before {
-  content: "";
-  position: absolute;
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background: white;
-  border-radius: 50%;
-  transition: transform var(--transition-fast);
-}
-
-.settings-view .toggle-switch input:checked + .toggle-slider {
-  background: var(--color-success);
-}
-
-.settings-view .toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(16px);
-}
-
 /* ── 开关行（带文字说明） ── */
 .settings-view .toggle-row {
   display: flex;
@@ -884,48 +841,6 @@
 .settings-view .toggle-desc {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
-}
-
-.settings-view .toggle-switch {
-  position: relative;
-  width: 40px;
-  height: 22px;
-  border-radius: 11px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-primary);
-  cursor: pointer;
-  padding: 0;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast);
-  flex-shrink: 0;
-}
-
-.settings-view .toggle-switch.on {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.settings-view .toggle-thumb {
-  position: absolute;
-  top: 50%;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  transform: translateY(-50%);
-  transition: transform var(--transition-fast);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-.settings-view .toggle-switch.on .toggle-thumb {
-  transform: translateX(18px) translateY(-50%);
-}
-
-.settings-view .toggle-switch:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* ── 数据目录 ── */

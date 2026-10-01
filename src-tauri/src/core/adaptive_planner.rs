@@ -540,7 +540,12 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
                             .estimated_hours
                             .filter(|hours| *hours > 0.0)
                             .unwrap_or(planned);
-                        if estimated_for_ratio > 0.0 {
+                        // 部分/未完成任务的耗时不能与完整任务估时比较。
+                        if entry.status == "completed"
+                            && actual > 0.0
+                            && estimated_for_ratio.is_finite()
+                            && estimated_for_ratio > 0.0
+                        {
                             acc.estimated_for_ratio += estimated_for_ratio;
                             acc.actual_for_ratio += actual;
                             acc.valid_time_tasks += 1;
@@ -559,7 +564,12 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
                     if let Some(acc) = subject_acc.get_mut(&subject) {
                         acc.actual_hours += spent.hours.max(0.0);
                         if let Some(planned) = spent.planned_hours {
-                            if planned > 0.0 && spent.hours >= 0.0 {
+                            if r.task_reviews.is_empty()
+                                && records::review_completion_stats(r).4 >= 99.9
+                                && planned.is_finite()
+                                && planned > 0.0
+                                && spent.hours > 0.0
+                            {
                                 acc.estimated_for_ratio += planned;
                                 acc.actual_for_ratio += spent.hours;
                                 acc.valid_time_tasks += 1;
@@ -624,6 +634,9 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
     }
 
     // v2 三信号（近因加权窗口 / 趋势 / 连续达标 / 精力）写入分析结果。
+    // 决策使用跨周序列；当前周汇总统计仍保持原口径。
+    let (day_completion_rates, day_energies) =
+        recent_completion_samples(data_dir, &analysis.week_end)?;
     let v2_signals = crate::core::planning::pure::v2_signals(&day_completion_rates, &day_energies);
     analysis.daily_completion_rates = day_completion_rates;
     analysis.daily_energies = day_energies;
@@ -740,6 +753,101 @@ fn recent_median(state: &AdaptiveState) -> Option<f64> {
     }
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     Some(values[values.len() / 2])
+}
+
+/// 最多回看四周；超过七天无有效学习数据时重新开始，避免陈旧连续达标信号。
+fn recent_completion_samples(data_dir: &Path, end: &str) -> DataResult<(Vec<f64>, Vec<f64>)> {
+    let settings = crate::load_settings(data_dir);
+    let rest = settings.rest_days();
+    let mut weeks = HashMap::new();
+    let mut rates = Vec::new();
+    let mut energies = Vec::new();
+    let mut last_date: Option<String> = None;
+    for offset in -27..=0 {
+        let date = crate::core::date_utils::add_days(end, offset)?;
+        let week = iso_week_string(&date)?;
+        let excluded = weeks.entry(week.clone()).or_insert_with(|| {
+            plan::read_week_plan(data_dir, &week)
+                .ok()
+                .map(|p| {
+                    p.data
+                        .excluded_days
+                        .into_iter()
+                        .map(|d| d.date)
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default()
+        });
+        if excluded.contains(&date) || rest.contains(&crate::core::date_utils::weekday_name(&date)?)
+        {
+            continue;
+        }
+        let (Ok(daily), Ok(review)) = (
+            plan::read_daily_plan_with_merged_status(data_dir, &date),
+            records::read_review(data_dir, &date),
+        ) else {
+            continue;
+        };
+        if is_external(&review) {
+            continue;
+        }
+        let hours: f64 = daily
+            .data
+            .tasks
+            .iter()
+            .map(|t| t.estimated_hours.max(0.0))
+            .sum();
+        if hours <= 0.0 {
+            continue;
+        }
+        if last_date
+            .as_ref()
+            .is_some_and(|last| crate::core::date_utils::day_diff(last, &date) > 7)
+        {
+            rates.clear();
+            energies.clear();
+        }
+        let completed = if review.task_reviews.is_empty() {
+            hours * records::review_completion_stats(&review).4 / 100.0
+        } else {
+            let entries: HashMap<_, _> = review
+                .task_reviews
+                .iter()
+                .map(|e| (e.task_id.as_str(), e))
+                .collect();
+            daily
+                .data
+                .tasks
+                .iter()
+                .map(|t| {
+                    t.estimated_hours.max(0.0)
+                        * entries
+                            .get(t.id.as_str())
+                            .map(|e| task_completion(e))
+                            .unwrap_or(0.0)
+                })
+                .sum()
+        };
+        rates.push((completed / hours).clamp(0.0, 1.0) * 100.0);
+        energies.push(if (1..=5).contains(&review.data.energy_level) {
+            review.data.energy_level as f64
+        } else {
+            0.0
+        });
+        last_date = Some(date);
+    }
+    if last_date
+        .as_ref()
+        .is_some_and(|last| crate::core::date_utils::day_diff(last, end) > 7)
+    {
+        rates.clear();
+        energies.clear();
+    }
+    Ok((rates, energies))
+}
+
+fn estimation_learning_rate(samples: f64) -> f64 {
+    (0.25 / (1.0 + 0.4 * samples.max(0.0))).clamp(0.08, 0.25)
 }
 
 fn robust_capacity_observation(observation: f64, state: &AdaptiveState) -> (f64, bool) {
@@ -1022,7 +1130,7 @@ pub fn prepare_next_week(
     //
     // 升级为更稳健的学习：
     // - 更新目标先按本周样本量向 1 收缩（样本少不轻信单周比值），避免一周异常带偏长期系数；
-    // - 变学习率：样本积累越多步长越小（alpha = 0.25 / (1 + 0.4×样本数)），前期快收敛、后期更稳定；
+    // - 变学习率：样本积累越多步长越小（alpha = max(0.08, 0.25 / (1 + 0.4×样本数))），前期快收敛、后期更稳定；
     // - 单周比值本身在 analyze_week 已 clamp 到 [0.6, 1.8]。
     let mut estimation_reasons = Vec::new();
     for subject_analysis in &analysis.subjects {
@@ -1041,7 +1149,7 @@ pub fn prepare_next_week(
         // 更新目标：按样本量向 1 收缩（低样本时更保守）
         let target = 1.0 + (ratio - 1.0) * sample_weight;
         // 变学习率：样本越多步长越小
-        let alpha = 0.25 / (1.0 + 0.4 * entry.estimation_samples);
+        let alpha = estimation_learning_rate(entry.estimation_samples);
         let old_factor = entry.estimation_factor;
         entry.estimation_factor = clamp(
             entry.estimation_factor + alpha * (target - entry.estimation_factor),
@@ -1457,5 +1565,109 @@ mod tests {
         let sum: f64 = result.values().sum();
         assert!((sum - 1.0).abs() < 1e-9);
         assert!((result["math"] - 0.5).abs() <= 0.05 + 1e-9);
+    }
+
+    fn audit_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "sa_adaptive_{}_{}",
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+    fn save_sample(dir: &Path, date: &str, partial: bool) {
+        use crate::data::plan::{DailyPlanFile, PlanTask};
+        let mut daily = DailyPlanFile::default();
+        daily.meta.date = date.into();
+        daily.data.tasks.push(PlanTask {
+            id: format!("{}-01", date),
+            subject: crate::data::state::SubjectKey::Math,
+            title: "知识点".into(),
+            estimated_hours: 1.0,
+            ..Default::default()
+        });
+        let mut review = ReviewFile::default();
+        review.meta.date = date.into();
+        review.data.energy_level = 4;
+        review.task_reviews.push(TaskReviewEntry {
+            task_id: format!("{}-01", date),
+            subject: "math".into(),
+            status: "completed".into(),
+            estimated_hours: Some(1.0),
+            actual_minutes: Some(120),
+            ..Default::default()
+        });
+        if partial {
+            daily.data.tasks.push(PlanTask {
+                id: format!("{}-02", date),
+                subject: crate::data::state::SubjectKey::Math,
+                estimated_hours: 10.0,
+                ..Default::default()
+            });
+            review.task_reviews.push(TaskReviewEntry {
+                task_id: format!("{}-02", date),
+                subject: "math".into(),
+                status: "partial".into(),
+                completion: 0.1,
+                estimated_hours: Some(10.0),
+                actual_minutes: Some(10),
+                ..Default::default()
+            });
+        }
+        plan::save_daily_plan(dir, &daily).unwrap();
+        records::save_review(dir, &review).unwrap();
+    }
+    #[test]
+    fn completion_streak_crosses_week_boundary_and_expires() {
+        let dir = audit_dir("streak");
+        for date in [
+            "2026-09-21",
+            "2026-09-22",
+            "2026-09-23",
+            "2026-09-24",
+            "2026-09-25",
+            "2026-09-26",
+            "2026-09-28",
+            "2026-09-29",
+            "2026-09-30",
+        ] {
+            save_sample(&dir, date, false);
+        }
+        let analysis = analyze_week(&dir, "2026-09-28").unwrap();
+        assert_eq!(analysis.completion_streak_days, 9);
+        assert_eq!(
+            crate::core::planning::pure::v2_decide(&crate::core::planning::pure::v2_signals(
+                &analysis.daily_completion_rates,
+                &analysis.daily_energies
+            ))
+            .rule,
+            "A1_1.15"
+        );
+        assert!(recent_completion_samples(&dir, "2026-10-09")
+            .unwrap()
+            .0
+            .is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn partial_task_time_does_not_make_full_task_estimates_shorter() {
+        let dir = audit_dir("time");
+        for date in ["2026-09-28", "2026-09-29", "2026-09-30"] {
+            save_sample(&dir, date, true);
+        }
+        let analysis = analyze_week(&dir, "2026-09-28").unwrap();
+        let math = analysis
+            .subjects
+            .iter()
+            .find(|s| s.subject == "math")
+            .unwrap();
+        assert_eq!(math.valid_time_tasks, 3);
+        assert_eq!(math.time_ratio, Some(1.8));
+        assert!(math.actual_hours > 6.0, "部分任务仍计入真实学习容量");
+        assert_eq!(estimation_learning_rate(0.0), 0.25);
+        assert_eq!(estimation_learning_rate(1000.0), 0.08);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

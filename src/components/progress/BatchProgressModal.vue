@@ -370,7 +370,7 @@ const summary = computed(() => {
             <div v-if="isDerivedMaster(s.key, t)" class="master-note">
               <Badge variant="success">总表</Badge>
               <span class="master-name">{{ t.name }}</span>
-              <span class="master-tip">将根据各教材进度自动更新（无需手动填写）</span>
+              <span class="master-tip">将根据各教材进度自动更新（此处无需手动填写）</span>
             </div>
 
             <template v-else>
@@ -465,7 +465,7 @@ const summary = computed(() => {
     </div>
 
     <template #footer>
-      <span class="foot-note">总专业课进度表会自动随各教材更新</span>
+      <span class="foot-note">教材进度会同步总表；在进度表中调整总表也会同步关联教材</span>
       <Button variant="ghost" size="sm" :disabled="applying" @click="emitClose">取消</Button>
       <Button variant="primary" size="sm" :loading="applying" @click="apply">应用</Button>
     </template>

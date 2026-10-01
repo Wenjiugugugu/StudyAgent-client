@@ -11,6 +11,9 @@ export type TaskStatus = "pending" | "in_progress" | "done" | "abandoned";
 
 export type TaskPriority = "A" | "B" | "C";
 
+/** 任务来源：ai（AI/计划生成，默认） / manual（用户手动添加） */
+export type TaskSource = "ai" | "manual";
+
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
 export type RiskSubject = SubjectKey | "overall";
@@ -30,6 +33,10 @@ export interface StateTask {
   /** 累计已计时分钟数（不含当前正在进行中的时段）
    * 仅在启用 enable_time_tracking 时维护；旧 state 文件无此字段 */
   accumulated_minutes?: number;
+  /** 任务来源；旧 state 文件无此字段，视为 ai */
+  source?: TaskSource;
+  /** 是否允许 AI 参考此任务；旧 state 文件无此字段，视为 true */
+  ai_reference?: boolean;
 }
 
 /** 风险项（State.risks.items 项） */
