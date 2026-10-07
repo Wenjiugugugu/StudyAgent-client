@@ -36,8 +36,12 @@ import EmptyState from "@/components/ui/EmptyState.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
+import KnowledgePointPicker from "@/components/plan/KnowledgePointPicker.vue";
+import TaskKnowledgeEditor from "@/components/plan/TaskKnowledgeEditor.vue";
+import type { KnowledgePointRef } from "@/types";
 import WeekPlanGenerateModal from "@/components/plan/WeekPlanGenerateModal.vue";
 import {
+  Link2,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -549,6 +553,12 @@ async function toggleTaskDone(row: TaskRow) {
 
 const SUBJECT_KEYS: SubjectKey[] = ["math", "english", "politics", "professional"];
 
+const editingKnowledgeTask = ref<import("@/types").PlanTask | null>(null);
+const newTaskPoints = ref<KnowledgePointRef[]>([]);
+function onKnowledgeSaved(plan: import("@/types").DailyPlan) {
+  todayStore.plan = plan;
+}
+
 const showAddTask = ref(false);
 const adding = ref(false);
 const addError = ref("");
@@ -561,9 +571,11 @@ const newTask = ref<{
 
 function onSubjectChange(v: string | number | null) {
   newTask.value.subject = String(v) as SubjectKey;
+  newTaskPoints.value = [];
 }
 
 function openAddTask() {
+  newTaskPoints.value = [];
   newTask.value = { subject: "math", title: "", hours: 1, aiReference: true };
   addError.value = "";
   showAddTask.value = true;
@@ -584,7 +596,8 @@ async function submitAddTask() {
       newTask.value.subject,
       title,
       Number.isFinite(newTask.value.hours) ? Math.max(0, newTask.value.hours) : 0,
-      newTask.value.aiReference
+      newTask.value.aiReference,
+      newTaskPoints.value.length ? newTaskPoints.value : undefined
     );
     // 新任务需要计时状态（可能为空），并刷新分组与统计
     await loadTaskTimers();
@@ -1072,6 +1085,16 @@ onUnmounted(() => {
 
                   <div class="row-actions">
                     <button
+                      v-if="canModifyTasks"
+                      class="row-action"
+                      type="button"
+                      title="关联或修正知识点"
+                      :aria-label="`${row.task.title} — 关联知识点`"
+                      @click="editingKnowledgeTask = row.task"
+                    >
+                      <Link2 :size="13" />
+                    </button>
+                    <button
                       class="row-action"
                       :class="{ off: !row.aiVisible }"
                       type="button"
@@ -1168,6 +1191,11 @@ onUnmounted(() => {
     </template>
 
     <!-- 手动添加任务：科目 + 具体内容 + 是否允许 AI 参考 -->
+    <TaskKnowledgeEditor
+      :task="editingKnowledgeTask"
+      @close="editingKnowledgeTask = null"
+      @saved="onKnowledgeSaved"
+    />
     <Modal :open="showAddTask" title="添加任务" :width="440" @close="closeAddTask">
       <div class="add-form">
         <div class="form-row">
@@ -1210,6 +1238,10 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <details class="form-row">
+          <summary>关联知识点（可选）</summary>
+          <KnowledgePointPicker v-model="newTaskPoints" :subject="newTask.subject" />
+        </details>
         <div class="ai-toggle">
           <Checkbox v-model="newTask.aiReference" />
           <div class="ai-toggle-text" @click="newTask.aiReference = !newTask.aiReference">

@@ -377,7 +377,8 @@ export async function addManualTask(
   subject: import("@/types").SubjectKey,
   title: string,
   estimatedHours?: number,
-  aiReference?: boolean
+  aiReference?: boolean,
+  knowledgePoints?: import("@/types").KnowledgePointRef[]
 ): Promise<DailyPlan> {
   return invokeDirect<DailyPlan>("add_manual_task", {
     date,
@@ -385,7 +386,16 @@ export async function addManualTask(
     title,
     estimatedHours: estimatedHours ?? null,
     aiReference: aiReference ?? true,
+    knowledgePoints: knowledgePoints ?? null,
   });
+}
+
+/** 修正任务关联，空数组表示取消关联。 */
+export async function setTaskKnowledgePoints(
+  taskId: string,
+  points: import("@/types").KnowledgePointRef[]
+): Promise<DailyPlan> {
+  return invokeDirect<DailyPlan>("set_task_knowledge_points", { taskId, points });
 }
 
 /** 设置某条任务是否允许 AI 参考（false 时不写入任何 AI 提示词） */

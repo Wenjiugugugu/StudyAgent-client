@@ -172,8 +172,20 @@ pub struct DaySubjectAllocation {
     pub task_templates: Vec<TaskTemplate>,
 }
 
+/// 稳定的知识点关联；title 是历史展示与重排使用的快照。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgePointRef {
+    pub table_id: String,
+    pub node_id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskTemplate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_from_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_points: Option<Vec<KnowledgePointRef>>,
     pub title: String,
     #[serde(default)]
     pub priority: TaskPriority,
@@ -240,6 +252,11 @@ pub struct DailyPlanData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_from_task_id: Option<String>,
+    /// None 为旧任务/未识别任务，Some([]) 为用户明确取消关联。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_points: Option<Vec<KnowledgePointRef>>,
     pub id: String,
     pub subject: SubjectKey,
     pub title: String,
@@ -270,6 +287,8 @@ pub struct PlanTask {
 impl Default for PlanTask {
     fn default() -> Self {
         Self {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: String::new(),
             subject: SubjectKey::default(),
             title: String::new(),
@@ -988,6 +1007,8 @@ mod tests {
                 strategy: "上午数学，下午专业课，晚上英语".to_string(),
                 tasks: vec![
                     PlanTask {
+                        knowledge_points: None,
+                        remaining_from_task_id: None,
                         id: "2026-07-25-01".to_string(),
                         subject: SubjectKey::Math,
                         title: "启动线代第一章：行列式".to_string(),
@@ -1004,6 +1025,8 @@ mod tests {
                         ai_reference: true,
                     },
                     PlanTask {
+                        knowledge_points: None,
+                        remaining_from_task_id: None,
                         id: "2026-07-25-02".to_string(),
                         subject: SubjectKey::English,
                         title: "阅读真题第10篇 + 单词复习".to_string(),
@@ -1098,6 +1121,8 @@ mod tests {
                         hours: 2.0,
                         focus: "行列式".to_string(),
                         task_templates: vec![TaskTemplate {
+                            knowledge_points: None,
+                            remaining_from_task_id: None,
                             title: "行列式定义".to_string(),
                             priority: TaskPriority::A,
                             estimated_hours: 2.0,
@@ -1125,6 +1150,8 @@ mod tests {
     /// 构造测试用 PlanTask
     fn make_plan_task(id: &str, title: &str) -> PlanTask {
         PlanTask {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: id.to_string(),
             subject: SubjectKey::Math,
             title: title.to_string(),

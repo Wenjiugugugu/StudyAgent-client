@@ -100,6 +100,8 @@ export type ReviewRecord = ReviewFile;
 
 /** 任务复盘条目 */
 export interface TaskReviewEntry {
+  knowledge_points?: import("./plan").KnowledgePointRef[];
+  completed_knowledge_points?: import("./plan").KnowledgePointRef[];
   task_id: string;
   /** completed | partial | incomplete | abandoned */
   status: string;

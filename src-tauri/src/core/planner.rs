@@ -505,6 +505,30 @@ impl<'a> Planner<'a> {
         // 同时刷新学科占比快照：本次重排已按当前占比生成剩余天数，
         // 供下次复盘检测占比是否再次变动。
         week_plan.meta.subject_time_allocation_snapshot = settings.subject_time_allocation();
+        let progress_index = crate::data::progress_tables::load_progress_index(data_dir);
+        let scheduling_entries = crate::core::task_progress::scheduling_entries(
+            &progress_index,
+            &review.task_reviews,
+            &review.overcompletion,
+        );
+        crate::core::task_progress::remove_completed_ranges(
+            &crate::data::progress_tables::load_progress_index(data_dir),
+            &mut week_plan,
+            &scheduling_entries,
+            &regen_dates,
+        );
+        crate::core::task_progress::ensure_remaining_ranges(
+            &mut week_plan,
+            &scheduling_entries,
+            &regen_dates,
+            crate::data::plan::read_daily_plan(data_dir, review_date)
+                .ok()
+                .as_ref(),
+        );
+        crate::core::task_progress::bind_week(
+            &crate::data::progress_tables::load_progress_index(data_dir),
+            &mut week_plan,
+        );
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
         log::info!("周计划剩余天数已更新, 影响日期: {:?}", regen_dates);
         crate::data::write_ai_debug_log(
@@ -809,6 +833,10 @@ impl<'a> Planner<'a> {
             daily_task_floor,
             standard_granularity,
             Some(&regen_dates),
+        );
+        crate::core::task_progress::bind_week(
+            &crate::data::progress_tables::load_progress_index(data_dir),
+            &mut week_plan,
         );
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
         log::info!("周计划已更新（排除日重排）, 影响日期: {:?}", regen_dates);
@@ -1172,6 +1200,10 @@ impl<'a> Planner<'a> {
         // 4. 保存周计划 JSON
         // 记录本周计划生成时使用的学科占比快照（复盘重排用它检测占比变动）
         week_plan.meta.subject_time_allocation_snapshot = settings.subject_time_allocation();
+        crate::core::task_progress::bind_week(
+            &crate::data::progress_tables::load_progress_index(data_dir),
+            &mut week_plan,
+        );
         crate::data::plan::save_week_plan(data_dir, &week_plan)?;
 
         // 4.1 保存原始周计划副本（用于一周结束后对比原计划与现计划的任务进度）
@@ -2489,7 +2521,10 @@ END_PREVIOUS_OUTPUT>>>
                 } else {
                     tr.blockers.join("、")
                 };
-                let title = if tr.title.is_empty() {
+                let remaining = crate::core::task_progress::remaining_title(tr);
+                let title = if tr.status == "partial" {
+                    remaining.as_str()
+                } else if tr.title.is_empty() {
                     "(未命名)"
                 } else {
                     &tr.title
@@ -2549,7 +2584,9 @@ END_PREVIOUS_OUTPUT>>>
                 };
                 prompt.push_str(&format!(
                     "- {}「{}」: {}\n",
-                    subj_label, tr.title, status_label
+                    subj_label,
+                    crate::core::task_progress::remaining_title(tr),
+                    status_label
                 ));
             }
             prompt.push_str("\n规则：\n1. 未完成任务应尽快安排在剩余天数的开头几天，但**仅限位于用户实际进度起点之后**的任务；\n2. 若某项未完成任务位于用户实际进度起点**之前**（即用户尚未学到那一步，被实际进度声明覆盖），则不重复安排，改排起点之后的后续章节；\n3. 不得跳过用户实际进度之后的未完成任务直接学更新的内容；\n4. 部分完成的任务继续推进剩余部分，不重复已学内容。\n");
@@ -3843,6 +3880,21 @@ fn normalize_allocations(
                 if let Some(last) = merged.last_mut() {
                     last.title = format!("{} + {}", t.title, last.title);
                     last.estimated_hours += t.estimated_hours;
+                    last.knowledge_points = match (last.knowledge_points.take(), t.knowledge_points)
+                    {
+                        (Some(mut a), Some(b)) => {
+                            for point in b {
+                                if !a
+                                    .iter()
+                                    .any(|p| crate::core::task_progress::same_point(p, &point))
+                                {
+                                    a.push(point);
+                                }
+                            }
+                            Some(a)
+                        }
+                        _ => None,
+                    };
                     continue;
                 }
             }
@@ -3933,7 +3985,7 @@ fn normalize_allocation_granularity(
     let mut out: Vec<crate::data::plan::TaskTemplate> = Vec::new();
     for (t, k) in templates.drain(..).zip(parts) {
         let k = k.max(1);
-        if k == 1 {
+        if k == 1 || t.knowledge_points.is_some() {
             out.push(t);
             continue;
         }
@@ -4016,6 +4068,9 @@ fn split_task_by_atomicity(
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
+        return vec![t];
+    }
+    if t.knowledge_points.is_some() {
         return vec![t];
     }
     let each = hours / parts.len() as f64;
@@ -4291,7 +4346,10 @@ fn uncompleted_tasks_fallback(
     review: &crate::data::records::ReviewFile,
     regen_dates: &[String],
 ) -> bool {
-    let unfinished: Vec<(crate::data::state::SubjectKey, String)> = review
+    let unfinished: Vec<(
+        crate::data::state::SubjectKey,
+        crate::data::plan::TaskTemplate,
+    )> = review
         .task_reviews
         .iter()
         .filter(|tr| tr.status == "incomplete" || tr.status == "partial")
@@ -4303,12 +4361,7 @@ fn uncompleted_tasks_fallback(
                 "professional" => crate::data::state::SubjectKey::Professional,
                 _ => crate::data::state::SubjectKey::Math,
             };
-            let title = if tr.title.is_empty() {
-                "未完成任务".to_string()
-            } else {
-                tr.title.clone()
-            };
-            (subject, title)
+            (subject, crate::core::task_progress::remaining_template(tr))
         })
         .collect();
 
@@ -4319,7 +4372,7 @@ fn uncompleted_tasks_fallback(
     // 游标：定位重排范围内下一个有效学习日（非休息日/排除日）在 regen_dates 的索引
     let mut cursor: Option<usize> = None;
     let mut placed_any = false;
-    for (subject, title) in unfinished {
+    for (subject, template) in unfinished {
         let idx = loop {
             let i = cursor.unwrap_or(0);
             if i >= regen_dates.len() {
@@ -4341,11 +4394,6 @@ fn uncompleted_tasks_fallback(
         let date = regen_dates[i].clone();
 
         if let Some(day) = week_plan.data.days.iter_mut().find(|d| d.date == date) {
-            let template = crate::data::plan::TaskTemplate {
-                title,
-                estimated_hours: 0.5,
-                ..Default::default()
-            };
             // 放入该日对应科目 allocation 开头；uknown 科目不存在则新建
             let alloc = match day
                 .subject_allocations
@@ -4881,6 +4929,8 @@ mod tests {
         let mut r = crate::data::records::ReviewFile::default();
         r.meta.date = "2026-08-03".to_string();
         r.task_reviews = vec![crate::data::records::TaskReviewEntry {
+            knowledge_points: None,
+            completed_knowledge_points: None,
             task_id: "t1".to_string(),
             status: "completed".to_string(),
             completion: 1.0,
@@ -4912,6 +4962,8 @@ mod tests {
         let mut r = crate::data::records::ReviewFile::default();
         r.meta.date = "2026-08-03".to_string();
         r.task_reviews = vec![crate::data::records::TaskReviewEntry {
+            knowledge_points: None,
+            completed_knowledge_points: None,
             task_id: "t1".to_string(),
             status: "completed".to_string(),
             completion: 1.0,

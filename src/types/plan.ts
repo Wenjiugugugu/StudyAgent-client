@@ -30,7 +30,15 @@ export interface PlanRisk {
 }
 
 /** 任务模板（Week Plan 中使用） */
+export interface KnowledgePointRef {
+  table_id: string;
+  node_id: string;
+  title: string;
+}
+
 export interface TaskTemplate {
+  remaining_from_task_id?: string;
+  knowledge_points?: KnowledgePointRef[];
   title: string;
   priority: TaskPriority;
   estimated_hours: number;
@@ -190,6 +198,8 @@ export interface WeekPlanFile {
 
 /** 单个计划任务（日计划中使用） */
 export interface PlanTask {
+  remaining_from_task_id?: string;
+  knowledge_points?: KnowledgePointRef[];
   id: string;
   subject: SubjectKey;
   title: string;

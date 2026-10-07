@@ -588,6 +588,7 @@ pub async fn add_manual_task(
     title: String,
     estimated_hours: Option<f64>,
     ai_reference: Option<bool>,
+    knowledge_points: Option<Vec<crate::data::plan::KnowledgePointRef>>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<DailyPlanFile, String> {
     crate::data::validate_date(&date)?;
@@ -611,8 +612,20 @@ pub async fn add_manual_task(
     let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)
         .unwrap_or_else(|_| empty_daily_plan(&date));
 
+    let index = crate::data::progress_tables::load_progress_index(&data_dir);
+    let knowledge_points = match knowledge_points {
+        Some(points) if points.is_empty() => Some(Vec::new()),
+        Some(points) => Some(crate::core::task_progress::validate_points(
+            &index,
+            subject_key.key(),
+            &points,
+        )?),
+        None => crate::core::progress_sync::infer_task_points(&index, subject_key.key(), &title),
+    };
     let task_id = crate::data::plan::next_task_id(&date, &plan.data.tasks);
     plan.data.tasks.push(PlanTask {
+        remaining_from_task_id: None,
+        knowledge_points,
         id: task_id,
         subject: subject_key,
         title,
@@ -646,6 +659,41 @@ pub async fn add_manual_task(
         allow_ai
     );
 
+    crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
+}
+
+/// 修正任务的知识点关联；空数组明确取消自动匹配，不改学习状态。
+#[tauri::command]
+pub async fn set_task_knowledge_points(
+    task_id: String,
+    points: Vec<crate::data::plan::KnowledgePointRef>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<DailyPlanFile, String> {
+    let date = crate::data::task_id_date_prefix(&task_id)
+        .ok_or("无效的任务 ID")?
+        .to_string();
+    crate::data::validate_date(&date)?;
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _guard = io_lock.lock().await;
+    // 已提交复盘的关联是历史快照，避免事后改变完成范围。
+    if crate::data::records::read_review(&data_dir, &date).is_ok() {
+        return Err("这一天已提交复盘，不能再修改任务关联".into());
+    }
+    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)?;
+    let task = plan
+        .data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == task_id)
+        .ok_or("未找到任务")?;
+    let index = crate::data::progress_tables::load_progress_index(&data_dir);
+    task.knowledge_points = Some(if points.is_empty() {
+        Vec::new()
+    } else {
+        crate::core::task_progress::validate_points(&index, task.subject.key(), &points)?
+    });
+    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
 }
 

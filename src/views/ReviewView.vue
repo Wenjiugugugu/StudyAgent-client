@@ -12,6 +12,8 @@ import {
   getWeekStart,
 } from "@/utils/date";
 import * as api from "@/api";
+import TaskKnowledgeEditor from "@/components/plan/TaskKnowledgeEditor.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import { Badge, Button, Card, EmptyState, LoadingSpinner } from "@/components/ui";
 import {
   CheckCircle2,
@@ -35,6 +37,9 @@ import {
   CircleDot,
 } from "lucide-vue-next";
 import type {
+  KnowledgePointRef,
+  PlanTask,
+  DailyPlan,
   TaskReviewEntry,
   DailyReviewInput,
   ReviewRecord,
@@ -281,6 +286,53 @@ const allTasks = computed(() => todayStore.allTasks);
 
 // Step 1: task completion (read from state, initialized from task.status)
 const taskCompleted = ref<Record<string, boolean>>({});
+const taskCompletedPoints = ref<Record<string, KnowledgePointRef[]>>({});
+const taskCompletionTouched = ref<Record<string, boolean>>({});
+const partialTaskOpen = ref<Record<string, boolean>>({});
+const editingKnowledgeTask = ref<PlanTask | null>(null);
+function samePoint(a: KnowledgePointRef, b: KnowledgePointRef) {
+  return a.table_id === b.table_id && a.node_id === b.node_id;
+}
+function completedPoints(task: PlanTask): KnowledgePointRef[] {
+  return taskCompleted.value[task.id]
+    ? (task.knowledge_points ?? [])
+    : (taskCompletedPoints.value[task.id] ?? []);
+}
+function toggleTaskComplete(task: PlanTask) {
+  taskCompletionTouched.value[task.id] = true;
+  taskCompleted.value[task.id] = !taskCompleted.value[task.id];
+  taskCompletedPoints.value[task.id] = taskCompleted.value[task.id]
+    ? [...(task.knowledge_points ?? [])]
+    : [];
+  partialTaskOpen.value[task.id] = false;
+}
+function toggleCompletedPoint(task: PlanTask, point: KnowledgePointRef) {
+  taskCompletionTouched.value[task.id] = true;
+  const previous = completedPoints(task);
+  const next = previous.some((p) => samePoint(p, point))
+    ? previous.filter((p) => !samePoint(p, point))
+    : [...previous, point];
+  taskCompletedPoints.value[task.id] = next;
+  taskCompleted.value[task.id] =
+    next.length === (task.knowledge_points?.length ?? 0) && next.length > 0;
+}
+function onKnowledgeSaved(plan: DailyPlan) {
+  const taskId = editingKnowledgeTask.value?.id;
+  todayStore.plan = plan;
+  if (taskId) {
+    taskCompletionTouched.value[taskId] = true;
+    taskCompletedPoints.value[taskId] = [];
+    taskCompleted.value[taskId] = false;
+  }
+}
+function reviewStatus(task: PlanTask) {
+  return taskCompleted.value[task.id]
+    ? "completed"
+    : completedPoints(task).length
+      ? "partial"
+      : "incomplete";
+}
+
 // 滴答清单回读命中数：手机端已勾选完成、在复盘页自动标记的任务数量
 const didaMatchedCount = ref(0);
 
@@ -1068,7 +1120,7 @@ async function loadDidaCompleted() {
     if (!titles.length) return;
     let matched = 0;
     for (const task of allTasks.value) {
-      if (titles.includes(task.title)) {
+      if (titles.includes(task.title) && !taskCompletionTouched.value[task.id]) {
         taskCompleted.value[task.id] = true;
         matched++;
       }
@@ -1085,6 +1137,7 @@ function initFromReview(review: ReviewRecord) {
   if (review.task_reviews?.length) {
     for (const tr of review.task_reviews) {
       taskCompleted.value[tr.task_id] = tr.status === "completed";
+      taskCompletedPoints.value[tr.task_id] = [...(tr.completed_knowledge_points ?? [])];
       if (tr.blockers?.length) taskBlockers.value[tr.task_id] = [...tr.blockers];
       if (tr.blocker_note) blockerNotes.value[tr.task_id] = tr.blocker_note;
     }
@@ -1117,6 +1170,9 @@ function resetForm() {
   step.value = 0;
   quickMode.value = false;
   taskCompleted.value = {};
+  taskCompletedPoints.value = {};
+  taskCompletionTouched.value = {};
+  partialTaskOpen.value = {};
   taskBlockers.value = {};
   blockerNotes.value = {};
   overallFeeling.value = "normal";
@@ -1189,8 +1245,14 @@ async function doSubmit() {
   try {
     const taskReviews: TaskReviewEntry[] = allTasks.value.map((t) => ({
       task_id: t.id,
-      status: taskCompleted.value[t.id] ? "completed" : "incomplete",
-      completion: taskCompleted.value[t.id] ? 1.0 : 0.0,
+      status: reviewStatus(t),
+      completion: taskCompleted.value[t.id]
+        ? 1
+        : t.knowledge_points?.length
+          ? completedPoints(t).length / t.knowledge_points.length
+          : 0,
+      knowledge_points: t.knowledge_points,
+      completed_knowledge_points: t.knowledge_points !== undefined ? completedPoints(t) : undefined,
       // 掌握程度不再由复盘采集（该职责已由进度表承担）：字段留空，兼容历史记录
       mastery: "",
       blockers: taskBlockers.value[t.id] || [],
@@ -1481,6 +1543,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 </script>
 
 <template>
+  <TaskKnowledgeEditor
+    :task="editingKnowledgeTask"
+    @close="editingKnowledgeTask = null"
+    @saved="onKnowledgeSaved"
+  />
   <div class="review-view">
     <!-- Date navigation bar -->
     <div class="date-bar">
@@ -1765,10 +1832,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                   <span class="summary-label">完成率</span>
                   <span class="summary-value">
                     <template v-if="existingReview.task_reviews?.length">
-                      {{
-                        existingReview.task_reviews.filter((t) => t.status === "completed").length
-                      }}
-                      / {{ existingReview.task_reviews.length }}
+                      {{ Math.round(existingReview.data?.completion?.completion_rate ?? 0) }}%
+                      <small
+                        >（整项完成
+                        {{
+                          existingReview.task_reviews.filter((t) => t.status === "completed")
+                            .length
+                        }}/{{ existingReview.task_reviews.length }}）</small
+                      >
                     </template>
                     <template v-else>
                       {{ existingReview.data.completed_tasks.filter((t) => t.completed).length }}
@@ -1818,6 +1889,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                           subjectLabel(findTaskSubject(tr.task_id, tr))
                         }}</span>
                         <span class="trr-status">{{ statusLabel(tr.status) }}</span>
+                        <span v-if="tr.completed_knowledge_points?.length" class="trr-status"
+                          >已学完：{{
+                            tr.completed_knowledge_points.map((p) => p.title).join("、")
+                          }}</span
+                        >
                       </div>
                     </div>
                   </div>
@@ -1986,17 +2062,49 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                     </Badge>
                   </div>
                   <span class="tri-title">{{ task.title }}</span>
+                  <button type="button" class="knowledge-link" @click="editingKnowledgeTask = task">
+                    {{
+                      task.knowledge_points?.length
+                        ? `关联 ${task.knowledge_points.length} 个知识点 · 修正`
+                        : "关联知识点"
+                    }}
+                  </button>
+                  <details
+                    v-if="task.knowledge_points?.length"
+                    class="partial-points"
+                    :open="partialTaskOpen[task.id]"
+                    @toggle="partialTaskOpen[task.id] = ($event.target as HTMLDetailsElement).open"
+                  >
+                    <summary>
+                      部分完成 · {{ completedPoints(task).length }}/{{
+                        task.knowledge_points.length
+                      }}
+                      个知识点
+                    </summary>
+                    <p>勾选已经学完的内容，后续只安排剩余部分。</p>
+                    <label
+                      v-for="point in task.knowledge_points"
+                      :key="`${point.table_id}/${point.node_id}`"
+                      class="partial-point"
+                    >
+                      <Checkbox
+                        :checked="completedPoints(task).some((p) => samePoint(p, point))"
+                        @change="toggleCompletedPoint(task, point)"
+                      />
+                      <span>{{ point.title }}</span>
+                    </label>
+                  </details>
                 </div>
                 <button
                   type="button"
                   class="check-btn"
                   :class="{ checked: taskCompleted[task.id] }"
                   :aria-pressed="taskCompleted[task.id]"
-                  @click="taskCompleted[task.id] = !taskCompleted[task.id]"
+                  @click="toggleTaskComplete(task)"
                 >
                   <CheckCircle2 v-if="taskCompleted[task.id]" :size="18" />
                   <Circle v-else :size="18" />
-                  {{ taskCompleted[task.id] ? "已完成" : "未完成" }}
+                  {{ statusLabel(reviewStatus(task)) }}
                 </button>
               </div>
             </div>
@@ -2571,6 +2679,36 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 </template>
 
 <style scoped>
+.knowledge-link {
+  margin-top: 4px;
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.partial-points {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.partial-points summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.partial-points p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.partial-point {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  cursor: pointer;
+}
+
 .review-view {
   max-width: 720px;
   margin: 0 auto;
