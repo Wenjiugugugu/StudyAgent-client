@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PlanAdjustmentPanel from "@/components/plan/PlanAdjustmentPanel.vue";
 import { vLiquidGlass } from "@/directives/liquidGlass";
 import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -46,6 +47,7 @@ import type {
   ProgressNodeStatus,
 } from "@/types";
 
+const adjustmentPanel = ref<InstanceType<typeof PlanAdjustmentPanel> | null>(null);
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
 const route = useRoute();
@@ -139,7 +141,7 @@ interface SubmitStep {
 }
 const SUBMIT_STEPS: SubmitStep[] = [
   { key: "analyzing", label: "正在保存复盘" },
-  { key: "adjusting", label: "正在调整" },
+  { key: "adjusting", label: "生成调整预览" },
   { key: "syncing", label: "正在同步滴答" },
 ];
 /** 无需 AI 调整后续计划时的默认步骤（「正在调整」按需插入） */
@@ -1232,10 +1234,12 @@ async function doSubmit() {
 
     // 收尾：清理滴答中过往未完成任务
     await advanceSubmitStep(ensureSubmitStep("syncing"));
-    try {
-      await api.cleanupDidaStale();
-    } catch (e) {
-      console.error("清理滴答过往任务失败:", e);
+    if (!result.needs_regeneration) {
+      try {
+        await api.cleanupDidaStale();
+      } catch (e) {
+        console.error("清理滴答过往任务失败:", e);
+      }
     }
     // 全部完成，关闭进度卡片
     setSubmitStep(-1);
@@ -1270,7 +1274,7 @@ async function executeRegeneration() {
   }
   regenFailed.value = false;
   regenerating.value = true;
-  regenMessage.value = "正在调整后续计划，请勿关闭应用…";
+  regenMessage.value = "正在生成调整预览，现有计划保持不变…";
   saveRegenStatus({
     date: selectedDate.value,
     regenerating: true,
@@ -1281,23 +1285,12 @@ async function executeRegeneration() {
   });
   try {
     const regenResult = await api.regenerateRemainingDays(selectedDate.value);
-    if (regenResult.used_fallback) {
-      // AI 调用失败，但兜底安排了未完成任务：告知用户并提供重新生成按钮
-      regenFailed.value = true;
-      regenMessage.value =
-        "AI 调整后续计划失败，已自动按未完成任务做了兜底安排。可点击「重新生成」再次尝试让 AI 调整。";
-    } else if (regenResult.regenerated) {
-      regenMessage.value = `已调整后续 ${regenResult.affected_dates.length} 天的计划安排`;
-    } else {
-      regenMessage.value = "本次复盘无需调整后续计划。";
-    }
-    // 保存逐日变更明细（悬停查看具体修改了哪些内容）
-    regenChanges.value = regenResult.changes ?? [];
-    // 一致性校验：声明了计划外进度的科目未在计划中生效时，追加警告提示
-    if (regenResult.consistency_warnings?.length) {
-      regenMessage.value += `\n${regenResult.consistency_warnings.join("\n")}`;
-      regenFailed.value = true;
-    }
+    adjustmentPanel.value?.showPreview(regenResult);
+    regenMessage.value =
+      regenResult.affected_dates.length || regenResult.goals.length
+        ? "后续计划的调整预览已生成，确认应用后才会生效。"
+        : "本次复盘无需调整后续计划。";
+    regenChanges.value = [];
   } catch (e) {
     console.error("调整后续计划失败:", e);
     const detail = e instanceof Error ? e.message : String(e);
@@ -1541,6 +1534,15 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       </div>
     </div>
 
+    <PlanAdjustmentPanel
+      ref="adjustmentPanel"
+      @changed="
+        loadReviewData();
+        todayStore.loadToday();
+      "
+      @discarded="regenMessage = '已放弃预览，后续计划保持原样。'"
+    />
+
     <!-- Loading -->
     <transition :name="dateTransitionName" mode="out-in">
       <div :key="selectedDate" class="review-content">
@@ -1636,7 +1638,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           <div class="gate-hero">
             <div class="gate-icon"><LoadingSpinner :size="40" /></div>
             <h1 class="gate-title">
-              {{ regenerating ? "正在调整后续计划…" : "正在提交复盘…" }}
+              {{ regenerating ? "正在生成调整预览…" : "正在提交复盘…" }}
             </h1>
             <p class="gate-desc">请稍候，正在处理你的学习数据。</p>
             <div class="submit-steps">
@@ -1708,6 +1710,13 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                 <AlertTriangle :size="18" v-else />
                 <span>{{ regenMessage }}</span>
                 <!-- 变更明细：常态化展示调整提示，鼠标悬停查看具体修改了哪些内容 -->
+                <Button
+                  v-if="!regenerating && !regenFailed"
+                  variant="ghost"
+                  size="sm"
+                  @click="retryRegeneration"
+                  >重新生成调整预览</Button
+                >
                 <div v-if="regenChanges.length && !regenerating" class="regen-details-trigger">
                   <Info :size="13" />
                   <span>悬停查看变更</span>

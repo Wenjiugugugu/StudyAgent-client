@@ -4,6 +4,7 @@
 
 export * from "./state";
 export * from "./plan";
+export * from "./adjustment";
 export * from "./goal";
 export * from "./review";
 export * from "./ai";

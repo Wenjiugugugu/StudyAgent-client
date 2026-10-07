@@ -17,6 +17,7 @@ pub mod dashboard;
 pub mod date_utils;
 pub mod estimated_time;
 pub mod goal_planner;
+pub mod plan_adjustment;
 pub mod planner;
 pub mod planning;
 pub mod professional;

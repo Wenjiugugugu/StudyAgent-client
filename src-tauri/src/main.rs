@@ -102,6 +102,13 @@ fn main() {
         .setup(|app| {
             log::info!("Tauri 应用已启动");
 
+            let recovery_dir = studyagent_desktop_lib::get_data_dir(
+                app.state::<std::sync::Mutex<studyagent_desktop_lib::AppState>>()
+                    .inner(),
+            )?;
+            studyagent_desktop_lib::core::plan_adjustment::recover(&recovery_dir)
+                .map_err(std::io::Error::other)?;
+
             // 升级后先合并新版随包考纲，再让计划与进度页面读取数据。
             if let Err(error) = list_progress_tables(
                 app.state::<std::sync::Mutex<studyagent_desktop_lib::AppState>>(),
@@ -242,6 +249,12 @@ fn main() {
             generate_review,
             submit_review,
             regenerate_remaining_days,
+            get_plan_adjustment,
+            update_plan_adjustment_kept,
+            discard_plan_adjustment,
+            apply_plan_adjustment,
+            undo_plan_adjustment,
+            retry_plan_adjustment_sync,
             // Briefing
             get_briefing,
             regenerate_briefing,

@@ -37,6 +37,8 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
 import WeekPlanGenerateModal from "@/components/plan/WeekPlanGenerateModal.vue";
+import PlanAdjustmentPanel from "@/components/plan/PlanAdjustmentPanel.vue";
+import ExcludedDayAdjustment from "@/components/plan/ExcludedDayAdjustment.vue";
 import {
   ChevronLeft,
   ChevronRight,
@@ -58,6 +60,7 @@ import {
 import type { PlanTask, SubjectKey, ExcludedReasonType, Goal } from "@/types";
 
 const todayStore = useTodayStore();
+const adjustmentPanel = ref<InstanceType<typeof PlanAdjustmentPanel> | null>(null);
 const settingsStore = useSettingsStore();
 const route = useRoute();
 const router = useRouter();
@@ -804,6 +807,10 @@ onUnmounted(() => {
 
 <template>
   <div class="today-view">
+    <div class="adjustment-entry">
+      <ExcludedDayAdjustment @preview="adjustmentPanel?.showPreview($event)" />
+    </div>
+    <PlanAdjustmentPanel ref="adjustmentPanel" @changed="loadPlan" />
     <!-- Loading -->
     <LoadingSpinner v-if="todayStore.loading && !plan" :size="32" label="加载计划…" />
 
