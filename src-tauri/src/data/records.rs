@@ -128,6 +128,11 @@ pub struct ReviewCompletion {
 /// 任务复盘条目（新版 Review 的核心数据）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskReviewEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_points: Option<Vec<super::plan::KnowledgePointRef>>,
+    /// None 表示旧记录；Some([]) 表示确认未完成任何知识点。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_knowledge_points: Option<Vec<super::plan::KnowledgePointRef>>,
     pub task_id: String,
     /// completed | partial | incomplete | abandoned
     pub status: String,
@@ -273,9 +278,18 @@ pub fn review_completion_stats(review: &ReviewFile) -> (i32, i32, i32, i32, f64)
             (a_total, a_done)
         };
         let total = ca_total + b_total;
-        let done = ca_done + b_done;
+        let completed_fraction: f64 = review
+            .task_reviews
+            .iter()
+            .filter(|tr| a_total + b_total == 0 || tr.priority == "A" || tr.priority == "B")
+            .map(|tr| match tr.status.as_str() {
+                "completed" => 1.0,
+                "partial" if tr.completion.is_finite() => tr.completion.clamp(0.0, 1.0),
+                _ => 0.0,
+            })
+            .sum();
         let rate = if total > 0 {
-            (done as f64 / total as f64) * 100.0
+            (completed_fraction / total as f64) * 100.0
         } else {
             0.0
         };
@@ -389,6 +403,8 @@ pub fn backfill_default_reviews(data_dir: &Path, cutoff_date: &str) -> DataResul
                     TaskStatus::Pending | TaskStatus::InProgress => ("incomplete", 0.0),
                 };
                 TaskReviewEntry {
+                    knowledge_points: None,
+                    completed_knowledge_points: None,
                     task_id: task.id.clone(),
                     status: status.to_string(),
                     completion,

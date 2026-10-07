@@ -227,6 +227,7 @@ fn main() {
             // Plan — 手动任务（用户显式添加 / AI 参考开关 / 删除）
             add_manual_task,
             set_task_ai_reference,
+            set_task_knowledge_points,
             delete_manual_task,
             // Goal（目标与截止日规划区间）
             list_goals,

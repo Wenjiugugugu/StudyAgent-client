@@ -116,9 +116,17 @@ export const useTodayStore = defineStore("today", () => {
     subject: PlanTask["subject"],
     title: string,
     estimatedHours: number,
-    aiReference: boolean
+    aiReference: boolean,
+    knowledgePoints?: import("@/types").KnowledgePointRef[]
   ) {
-    plan.value = await api.addManualTask(date, subject, title, estimatedHours, aiReference);
+    plan.value = await api.addManualTask(
+      date,
+      subject,
+      title,
+      estimatedHours,
+      aiReference,
+      knowledgePoints
+    );
   }
 
   /** 切换某条任务的「允许 AI 参考」开关 */

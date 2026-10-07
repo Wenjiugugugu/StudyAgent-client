@@ -23,6 +23,7 @@ pub mod professional;
 pub mod progress_sync;
 pub mod review;
 pub mod scheduler;
+pub mod task_progress;
 pub mod user_model;
 
 pub use analytics::*;

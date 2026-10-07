@@ -184,10 +184,11 @@ fn strip_subject_prefix(title: &str) -> String {
 pub struct ReviewSyncTask {
     pub subject: String,
     pub title: String,
-    /// 今日是否完成（completed / partial 均视为完成）
+    /// completed / partial 均参与同步；部分完成只同步明确勾选范围。
     pub completed: bool,
     /// 掌握程度：mastered / basic / weak / 空
     pub mastery: String,
+    pub completed_knowledge_points: Option<Vec<crate::data::plan::KnowledgePointRef>>,
 }
 
 /// 在指定科目的进度表中，把匹配到任务标题的知识点升级为目标状态。
@@ -234,6 +235,43 @@ fn apply_task_to_subject(
         return 0;
     }
 
+    let selected = matching_indices(table, &task_title);
+    let mut changed = 0;
+    for (i, node) in table.nodes.iter_mut().enumerate() {
+        if node.level != NodeLevel::Knowledge {
+            continue;
+        }
+        if !selected.contains(&i) {
+            continue;
+        }
+        // 复盘反馈困难时，次日计划里的任务可能是第一次接触的新知识点。
+        // 只有已经达到「基础」的节点才进入强化；待学/学习中节点先标为学习中，
+        // 避免仅因当天整体感受或其他知识点薄弱就跳过首次学习阶段。
+        let node_target = if target == NodeStatus::Reinforcing
+            && matches!(node.status, NodeStatus::Pending | NodeStatus::Learning)
+        {
+            NodeStatus::Learning
+        } else {
+            target
+        };
+        let new_s = node.status.max_with(node_target);
+        if new_s != node.status {
+            node.status = new_s;
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        table.updated_at = now_string();
+    }
+    let changed_variant = table.variant.clone();
+    let changed_name = table.name.clone();
+    if changed > 0 && subject == "professional" {
+        changed += sync_professional_table_change(index, &changed_variant, &changed_name);
+    }
+    changed
+}
+
+fn matching_indices(table: &ProgressTable, task_title: &str) -> HashSet<usize> {
     // 先解析显式书/章节限定，再评分。确切标题可命中多个并列知识点；
     // 模糊召回只接受唯一且显著领先的候选，不能把全部相似节点一起升级。
     let h = norm(&task_title);
@@ -299,45 +337,48 @@ fn apply_task_to_subject(
             .collect();
         selected.retain(|i| !ambiguous.contains(i));
     }
-    let mut changed = 0;
-    for (i, node) in table.nodes.iter_mut().enumerate() {
-        if node.level != NodeLevel::Knowledge {
-            continue;
-        }
-        if !selected.contains(&i) {
-            continue;
-        }
-        // 复盘反馈困难时，次日计划里的任务可能是第一次接触的新知识点。
-        // 只有已经达到「基础」的节点才进入强化；待学/学习中节点先标为学习中，
-        // 避免仅因当天整体感受或其他知识点薄弱就跳过首次学习阶段。
-        let node_target = if target == NodeStatus::Reinforcing
-            && matches!(node.status, NodeStatus::Pending | NodeStatus::Learning)
-        {
-            NodeStatus::Learning
-        } else {
-            target
-        };
-        let new_s = node.status.max_with(node_target);
-        if new_s != node.status {
-            node.status = new_s;
-            changed += 1;
-        }
-    }
-    if changed > 0 {
-        table.updated_at = now_string();
-    }
-    let changed_variant = table.variant.clone();
-    let changed_name = table.name.clone();
-    if changed > 0 && subject == "professional" {
-        changed += sync_professional_table_change(index, &changed_variant, &changed_name);
-    }
-    changed
+    selected
+}
+
+/// 新任务沿用经过歧义检查的匹配规则，保存稳定编号。
+pub fn infer_task_points(
+    index: &ProgressIndex,
+    subject: &str,
+    title: &str,
+) -> Option<Vec<crate::data::plan::KnowledgePointRef>> {
+    let table = crate::data::progress_tables::active_progress_table(index, subject)?;
+    let title = strip_subject_prefix(title);
+    let exact: Vec<_> = table
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.level == NodeLevel::Knowledge && norm(&n.title) == norm(&title))
+        .map(|(i, _)| i)
+        .collect();
+    let selected = if exact.len() == 1 {
+        exact.into_iter().collect()
+    } else if exact.len() > 1 {
+        HashSet::new()
+    } else {
+        matching_indices(table, &title)
+    };
+    let points: Vec<_> = table
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| selected.contains(i))
+        .map(|(_, n)| crate::data::plan::KnowledgePointRef {
+            table_id: table.id.clone(),
+            node_id: n.id.clone(),
+            title: n.title.clone(),
+        })
+        .collect();
+    (!points.is_empty()).then_some(points)
 }
 
 /// 复盘提交后同步进度表：
 /// - 今日完成的任务 → 对应知识点推进为「基础」（复盘不再采集掌握程度，见下）；
-/// - 次日计划的每个任务 → 对应知识点预置为「学习中」；今日反馈困难或存在薄弱点时预置为「强化中」。
-///   全部只升不降。
+/// - 生成次日计划不改变学习状态；已完成节点只升不降。
 ///
 /// 说明：2026-09-16 起复盘的「掌握情况」步骤已移除，「强化中 / 掌握」不再由复盘写入，
 /// 改由用户在进度表内手动推进，避免一次快速复盘就把知识点拉满到「掌握」。
@@ -345,18 +386,20 @@ fn apply_task_to_subject(
 pub fn sync_review_to_progress(
     data_dir: &Path,
     tasks: &[ReviewSyncTask],
-    feeling: &str,
-    tomorrow_plan: Option<&DailyPlanFile>,
+    _feeling: &str,
+    _tomorrow_plan: Option<&DailyPlanFile>,
 ) -> Result<usize, String> {
     let mut index = load_progress_index(data_dir);
     let mut changed = 0usize;
 
-    let has_weak = tasks.iter().any(|t| t.completed && t.mastery == "weak");
-    let hard = feeling.trim() == "hard";
-
     // 今日已完成 → 基础（学完一遍即「基础」，是否「强化中/掌握」由进度表内手动推进）
     for t in tasks {
         if !t.completed {
+            continue;
+        }
+        if let Some(points) = &t.completed_knowledge_points {
+            changed +=
+                crate::core::task_progress::apply_completed_points(&mut index, &t.subject, points);
             continue;
         }
         changed += apply_task_to_subject(
@@ -365,18 +408,6 @@ pub fn sync_review_to_progress(
             &t.title,
             NodeStatus::Basic,
         );
-    }
-
-    // 次日计划 → 学习中 / 强化中
-    if let Some(plan) = tomorrow_plan {
-        let target = if hard || has_weak {
-            NodeStatus::Reinforcing
-        } else {
-            NodeStatus::Learning
-        };
-        for task in &plan.data.tasks {
-            changed += apply_task_to_subject(&mut index, task.subject.key(), &task.title, target);
-        }
     }
 
     if changed > 0 {

@@ -107,7 +107,10 @@ pub async fn submit_review(
     if !dida_completed_titles.is_empty() {
         // 1) 已上报但状态非 completed 的 → 升级为完成（滴答勾选优先）
         for tr in payload.task_reviews.iter_mut() {
-            if tr.status == "completed" || tr.title.trim().is_empty() {
+            if tr.completed_knowledge_points.is_some()
+                || tr.status == "completed"
+                || tr.title.trim().is_empty()
+            {
                 continue;
             }
             if dida_completed_titles.iter().any(|t| t == &tr.title) {
@@ -131,6 +134,8 @@ pub async fn submit_review(
                 payload
                     .task_reviews
                     .push(crate::data::records::TaskReviewEntry {
+                        knowledge_points: None,
+                        completed_knowledge_points: None,
                         task_id: t.id.clone(),
                         status: "completed".to_string(),
                         completion: 1.0,
@@ -150,6 +155,16 @@ pub async fn submit_review(
         }
     }
 
+    // 用户在复盘确认的范围优先于外部清单；以计划关联校验并归一化。
+    if let Ok(plan) = crate::data::plan::read_daily_plan(&data_dir, &payload.date) {
+        let index = crate::data::progress_tables::load_progress_index(&data_dir);
+        for entry in &mut payload.task_reviews {
+            if let Some(task) = plan.data.tasks.iter().find(|t| t.id == entry.task_id) {
+                crate::core::task_progress::normalize_review(&index, task, entry)?;
+            }
+        }
+    }
+
     // 聚合实际学习时长（分钟 → 小时），写入 data.total_hours
     // 供分析页/历史计划/周期对比读取，避免 actual_hours 恒为 0
     let total_actual_minutes: i64 = payload
@@ -161,47 +176,11 @@ pub async fn submit_review(
 
     // 从 task_reviews 聚合 completion 数据
     // 供 briefing / dashboard / planner 等直接读取 data.completion 的代码路径使用
-    let mut a_total = 0i32;
-    let mut a_done = 0i32;
-    let mut b_total = 0i32;
-    let mut b_done = 0i32;
-    let mut all_total = 0i32;
-    let mut all_done = 0i32;
-    for tr in &payload.task_reviews {
-        all_total += 1;
-        let is_done = tr.status == "completed";
-        if is_done {
-            all_done += 1;
-        }
-        match tr.priority.as_str() {
-            "A" => {
-                a_total += 1;
-                if is_done {
-                    a_done += 1;
-                }
-            }
-            "B" => {
-                b_total += 1;
-                if is_done {
-                    b_done += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    // 无 A/B 级任务时，将全部任务计入 A 级字段（保证 completion_rate 正确）
-    let (ca_total, ca_done) = if a_total + b_total == 0 && all_total > 0 {
-        (all_total, all_done)
-    } else {
-        (a_total, a_done)
-    };
-    let comp_total = ca_total + b_total;
-    let comp_done = ca_done + b_done;
-    let completion_rate = if comp_total > 0 {
-        (comp_done as f64 / comp_total as f64) * 100.0
-    } else {
-        0.0
-    };
+    let (ca_total, ca_done, b_total, b_done, completion_rate) =
+        crate::data::records::review_completion_stats(&crate::data::records::ReviewFile {
+            task_reviews: payload.task_reviews.clone(),
+            ..Default::default()
+        });
 
     // 构建 ReviewFile
     let now = crate::data::now_string();
@@ -286,7 +265,8 @@ pub async fn submit_review(
                     .tasks
                     .iter()
                     .find(|t| t.task_id.as_deref() == Some(&tr.task_id))
-                    .map(|t| t.subject.clone());
+                    .map(|t| t.subject.clone())
+                    .or_else(|| (!tr.subject.is_empty()).then(|| tr.subject.clone()));
 
                 let task_label = state
                     .current_task
@@ -294,7 +274,7 @@ pub async fn submit_review(
                     .iter()
                     .find(|t| t.task_id.as_deref() == Some(&tr.task_id))
                     .map(|t| t.task.clone())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| tr.title.clone());
 
                 if let Some(sk) = subj_key {
                     let mastery_label = match tr.mastery.as_str() {
@@ -303,7 +283,17 @@ pub async fn submit_review(
                         "weak" => "（需巩固）",
                         _ => "",
                     };
-                    updates.push((sk, task_label, mastery_label.to_string()));
+                    if let Some(points) = &tr.completed_knowledge_points {
+                        for point in points {
+                            updates.push((
+                                sk.clone(),
+                                point.title.clone(),
+                                mastery_label.to_string(),
+                            ));
+                        }
+                    } else {
+                        updates.push((sk, task_label, mastery_label.to_string()));
+                    }
                 }
             }
         }
@@ -377,6 +367,7 @@ pub async fn submit_review(
                 title: tr.title.clone(),
                 completed: tr.status == "completed" || tr.status == "partial",
                 mastery: tr.mastery.clone(),
+                completed_knowledge_points: tr.completed_knowledge_points.clone(),
             })
             .collect();
         match crate::core::progress_sync::sync_review_to_progress(

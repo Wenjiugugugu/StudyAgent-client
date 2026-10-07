@@ -495,6 +495,8 @@ mod tests {
 
     fn plan_task(id: &str) -> PlanTask {
         PlanTask {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: id.to_string(),
             subject: SubjectKey::Math,
             title: "t".to_string(),

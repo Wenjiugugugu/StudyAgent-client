@@ -1049,6 +1049,8 @@ mod tests {
         priority: TaskPriority,
     ) -> crate::data::plan::PlanTask {
         crate::data::plan::PlanTask {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: format!("{}-{:02}", date, idx),
             subject: SubjectKey::Math,
             title: title.to_string(),
