@@ -1,11 +1,12 @@
 import { createRouter, createWebHistory } from "vue-router";
 import type { RouteRecordRaw } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
+import { resolveStartupPage } from "@/utils/startupPage";
 
 const routes: RouteRecordRaw[] = [
   {
     path: "/",
-    redirect: "/dashboard",
+    component: () => import("@/views/DashboardView.vue"),
   },
   {
     path: "/onboarding",
@@ -115,6 +116,10 @@ router.beforeEach(async (to) => {
 
   if (!settingsStore.onboardingCompleted) {
     return { path: "/onboarding" };
+  }
+
+  if (to.path === "/") {
+    return { path: resolveStartupPage(settingsStore.settings?.startup_page) };
   }
 
   return true;

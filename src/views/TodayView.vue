@@ -37,6 +37,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
 import WeekPlanGenerateModal from "@/components/plan/WeekPlanGenerateModal.vue";
+import LowEnergyModal from "@/components/plan/LowEnergyModal.vue";
 import {
   ChevronLeft,
   ChevronRight,
@@ -58,6 +59,11 @@ import {
 import type { PlanTask, SubjectKey, ExcludedReasonType, Goal } from "@/types";
 
 const todayStore = useTodayStore();
+const showLowEnergy = ref(false);
+async function onLowEnergyApplied() {
+  showLowEnergy.value = false;
+  await loadPlan();
+}
 const settingsStore = useSettingsStore();
 const route = useRoute();
 const router = useRouter();
@@ -972,6 +978,14 @@ onUnmounted(() => {
             <h2 class="list-title">今日任务</h2>
             <div class="list-head-actions">
               <button
+                v-if="isToday && tasks.length"
+                class="text-btn muted"
+                type="button"
+                @click="showLowEnergy = true"
+              >
+                今天精力不够
+              </button>
+              <button
                 v-if="canModifyTasks"
                 class="text-btn"
                 type="button"
@@ -992,6 +1006,11 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <details v-if="plan?.data?.deferred_tasks?.length" class="deferred-notice">
+            <summary>{{ plan.data.deferred_tasks.length }} 项任务待后续安排</summary>
+            <p>完整内容已保留，生成后续日计划时会继续安排。</p>
+            <p v-for="task in plan.data.deferred_tasks" :key="task.id">{{ task.title }}</p>
+          </details>
           <EmptyState
             v-if="groups.length === 0"
             title="今日暂无任务"
@@ -1168,6 +1187,11 @@ onUnmounted(() => {
     </template>
 
     <!-- 手动添加任务：科目 + 具体内容 + 是否允许 AI 参考 -->
+    <LowEnergyModal
+      :open="showLowEnergy"
+      @close="showLowEnergy = false"
+      @applied="onLowEnergyApplied"
+    />
     <Modal :open="showAddTask" title="添加任务" :width="440" @close="closeAddTask">
       <div class="add-form">
         <div class="form-row">
@@ -1245,6 +1269,16 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.deferred-notice {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--divider-color);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+.deferred-notice summary {
+  cursor: pointer;
+}
 /* ════════ 页面骨架：桌面端优先，充分利用横向空间 ════════ */
 .today-view {
   padding: 0 var(--space-8) var(--space-10);

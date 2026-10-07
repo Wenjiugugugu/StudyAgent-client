@@ -104,6 +104,9 @@ pub struct AppSettings {
     /// 主题（默认 "light"）
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// 旧配置保持工作台；前端只接受已知页面路径。
+    #[serde(default = "default_startup_page")]
+    pub startup_page: String,
     /// 视觉模式（默认 "standard"）
     #[serde(default = "default_visual_mode")]
     pub visual_mode: String,
@@ -390,6 +393,7 @@ impl Default for AppSettings {
             ai_providers: Vec::new(),
             mcp_servers: Vec::new(),
             theme: default_theme(),
+            startup_page: default_startup_page(),
             visual_mode: default_visual_mode(),
             sidebar_style: default_sidebar_style(),
             language: default_language(),
@@ -453,6 +457,10 @@ pub fn get_default_data_dir() -> PathBuf {
         exe_dir.join("data")
     );
     exe_dir.join("data")
+}
+
+fn default_startup_page() -> String {
+    "/dashboard".to_string()
 }
 
 fn default_theme() -> String {
