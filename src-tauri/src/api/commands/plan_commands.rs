@@ -10,6 +10,7 @@ use crate::ai::service::AiService;
 use crate::core::analytics::{build_analytics, AnalyticsRange, AnalyticsSummary};
 use crate::core::briefing::{yesterday_of, BriefingAgent};
 use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
+use crate::core::plan_adjustment::{self, AdjustmentOutcome, AdjustmentPreview, AdjustmentStatus};
 use crate::core::planner::Planner;
 use crate::core::review::ReviewAgent;
 use crate::core::user_model::UserModelService;
@@ -448,6 +449,7 @@ pub async fn generate_week_plan(
 /// 周中新增排除日并重排剩余天数（AI 驱动）
 ///
 /// 在用户于周计划页点击"今天及之后"的日期标记为排除日时调用。
+/// 在独立副本中生成新增排除日的调整预览，确认应用前不写计划或同步滴答。
 /// AI 会根据新增的排除日重新生成本周剩余天数的 subject_allocations，
 /// 把原本安排在排除日的任务量分摊到剩余学习日。
 ///
@@ -457,14 +459,13 @@ pub async fn add_excluded_day_and_regenerate(
     week_start: String,
     excluded_day: ExcludedDay,
     state: State<'_, Mutex<AppState>>,
-) -> Result<RegenerateResult, String> {
+) -> Result<AdjustmentPreview, String> {
     crate::data::validate_date(&week_start)?;
     crate::data::validate_date(&excluded_day.date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
-    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    // 捕获输入和保存预览时短暂加锁，AI 生成期间允许继续学习。
     let io_lock = crate::get_io_lock(state.inner())?;
-    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -474,28 +475,20 @@ pub async fn add_excluded_day_and_regenerate(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates, used_fallback) = planner
-        .regenerate_after_exclusion(&data_dir, &week_start, excluded_day)
-        .await?;
-
-    // 同步滴答：对重排影响的日期后台按日对账（H1：不阻塞主流程）
-    let io_lock = crate::get_io_lock(state.inner())?;
-    crate::sync::dida::spawn_reconcile_days(io_lock, data_dir, affected_dates.clone());
-
-    Ok(RegenerateResult {
-        regenerated,
-        affected_dates,
-        used_fallback,
-        // 排除日重排不涉及计划外进度，一致性警告为空
-        consistency_warnings: Vec::new(),
-        // 排除日重排暂不提供逐日变更明细
-        changes: Vec::new(),
-    })
+    plan_adjustment::generate(
+        &data_dir,
+        &planner,
+        "exclusion",
+        &week_start,
+        Some(excluded_day),
+        Some(&io_lock),
+    )
+    .await
 }
 
 /// 复盘后重新生成本周剩余天数计划（AI 驱动）
 ///
-/// 在 submit_review 返回 needs_regeneration=true 后由前端调用。
+/// 在 submit_review 返回 needs_regeneration=true 后由前端调用，仅生成候选预览。
 /// AI 会根据复盘结果重新生成本周剩余天数的 subject_allocations，
 /// 并在今天是剩余天数之一时重新生成今日日计划。
 ///
@@ -504,13 +497,12 @@ pub async fn add_excluded_day_and_regenerate(
 pub async fn regenerate_remaining_days(
     review_date: String,
     state: State<'_, Mutex<AppState>>,
-) -> Result<RegenerateResult, String> {
+) -> Result<AdjustmentPreview, String> {
     crate::data::validate_date(&review_date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
-    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    // 捕获输入和保存预览时短暂加锁，AI 生成期间允许继续学习。
     let io_lock = crate::get_io_lock(state.inner())?;
-    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -520,24 +512,127 @@ pub async fn regenerate_remaining_days(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates, used_fallback, consistency_warnings, changes) = planner
-        .regenerate_remaining_days_after_review(&data_dir, &review_date)
-        .await?;
+    plan_adjustment::generate(
+        &data_dir,
+        &planner,
+        "review",
+        &review_date,
+        None,
+        Some(&io_lock),
+    )
+    .await
+}
 
-    // 同步滴答：对重排影响的日期按日对账（失败仅记录）
-    for d in &affected_dates {
-        if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, d).await {
-            log::warn!("[dida] 复盘重排后同步 {} 失败: {}", d, e);
+#[tauri::command]
+pub async fn get_plan_adjustment(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentStatus, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    plan_adjustment::status(&dir)
+}
+
+#[tauri::command]
+pub async fn update_plan_adjustment_kept(
+    id: String,
+    keys: Vec<String>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentPreview, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    plan_adjustment::update_kept(&dir, &id, keys)
+}
+
+#[tauri::command]
+pub async fn discard_plan_adjustment(
+    id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    plan_adjustment::discard(&dir, &id)
+}
+
+async fn sync_adjustment(
+    dir: &std::path::Path,
+    dates: Vec<String>,
+    mut warnings: Vec<String>,
+) -> AdjustmentOutcome {
+    let mut pending = false;
+    // 与现有后台对账相同，每批最多三天并行；不同日期只写各自的计划文件。
+    for chunk in dates.chunks(3) {
+        let mut set = tokio::task::JoinSet::new();
+        for date in chunk {
+            let date = date.clone();
+            let dir = dir.to_path_buf();
+            set.spawn(async move {
+                let result = crate::sync::dida::reconcile_day(&dir, &date).await;
+                (date, result)
+            });
+        }
+        while let Some(result) = set.join_next().await {
+            match result {
+                Ok((date, Err(e))) => {
+                    pending = true;
+                    warnings.push(format!(
+                        "{date} 的本地安排已保存，滴答同步失败：{e}。可点击“重试同步滴答”。"
+                    ));
+                }
+                Err(e) => {
+                    pending = true;
+                    warnings.push(format!(
+                        "本地安排已保存，滴答同步中断：{e}。可点击“重试同步滴答”。"
+                    ));
+                }
+                _ => {}
+            }
         }
     }
+    if let Err(e) = plan_adjustment::record_sync_result(dir, warnings.clone(), pending) {
+        warnings.push(format!("本地安排已保存，但同步状态未能保存：{e}"));
+    }
+    AdjustmentOutcome {
+        affected_dates: dates,
+        warnings,
+    }
+}
 
-    Ok(RegenerateResult {
-        regenerated,
-        affected_dates,
-        used_fallback,
-        consistency_warnings,
-        changes,
-    })
+#[tauri::command]
+pub async fn apply_plan_adjustment(
+    id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentOutcome, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    let dates = plan_adjustment::apply(&dir, &id)?;
+    Ok(sync_adjustment(&dir, dates, Vec::new()).await)
+}
+
+#[tauri::command]
+pub async fn undo_plan_adjustment(
+    id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentOutcome, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    let (dates, warnings) = plan_adjustment::undo(&dir, &id)?;
+    Ok(sync_adjustment(&dir, dates, warnings).await)
+}
+
+#[tauri::command]
+pub async fn retry_plan_adjustment_sync(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentOutcome, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    let dates = plan_adjustment::latest_dates(&dir)?;
+    Ok(sync_adjustment(&dir, dates, Vec::new()).await)
 }
 
 // ============================================================================

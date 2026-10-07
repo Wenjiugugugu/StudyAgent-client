@@ -544,8 +544,8 @@ export async function submitReview(
 /** 复盘后重新生成本周剩余天数计划（AI 驱动） */
 export async function regenerateRemainingDays(
   reviewDate: string
-): Promise<import("@/types").RegenerateResult> {
-  return aiInvoke<import("@/types").RegenerateResult>({
+): Promise<import("@/types").AdjustmentPreview> {
+  return aiInvoke<import("@/types").AdjustmentPreview>({
     command: "regenerate_remaining_days",
     label: `复盘后重排剩余计划 ${reviewDate}`,
     args: { reviewDate },
@@ -559,8 +559,8 @@ export async function regenerateRemainingDays(
 export async function addExcludedDayAndRegenerate(
   weekStart: string,
   excludedDay: import("@/types").ExcludedDay
-): Promise<import("@/types").RegenerateResult> {
-  return aiInvoke<import("@/types").RegenerateResult>({
+): Promise<import("@/types").AdjustmentPreview> {
+  return aiInvoke<import("@/types").AdjustmentPreview>({
     command: "add_excluded_day_and_regenerate",
     label: `周中排除日并重排 ${excludedDay.date}`,
     args: { weekStart, excludedDay },
@@ -571,6 +571,44 @@ export async function addExcludedDayAndRegenerate(
 }
 
 // ── Briefing ──
+
+export async function getPlanAdjustment(): Promise<import("@/types").AdjustmentStatus> {
+  if (!isTauri())
+    return {
+      preview: null,
+      undo_id: null,
+      undo_created_at: null,
+      applied_preview: null,
+      warnings: [],
+      sync_pending: false,
+    };
+  return invokeDirect("get_plan_adjustment");
+}
+
+export async function updatePlanAdjustmentKept(
+  id: string,
+  keys: string[]
+): Promise<import("@/types").AdjustmentPreview> {
+  return invokeDirect("update_plan_adjustment_kept", { id, keys });
+}
+
+export async function discardPlanAdjustment(id: string): Promise<void> {
+  return invokeDirect("discard_plan_adjustment", { id });
+}
+
+export async function applyPlanAdjustment(
+  id: string
+): Promise<import("@/types").AdjustmentOutcome> {
+  return invokeDirect("apply_plan_adjustment", { id });
+}
+
+export async function undoPlanAdjustment(id: string): Promise<import("@/types").AdjustmentOutcome> {
+  return invokeDirect("undo_plan_adjustment", { id });
+}
+
+export async function retryPlanAdjustmentSync(): Promise<import("@/types").AdjustmentOutcome> {
+  return invokeDirect("retry_plan_adjustment_sync");
+}
 
 /** 获取指定日期的每日简报（含状态判断字段） */
 export async function getBriefing(date: string): Promise<GetBriefingResult> {

@@ -353,6 +353,7 @@ impl<'a> Planner<'a> {
             .await
         {
             Ok(days) if !days.is_empty() => days,
+            Err(e) if e.contains(crate::ai::provider::REQUEST_CANCELLED) => return Err(e),
             other => {
                 let reason = match other {
                     Ok(_) => "AI 未返回 days 数组".to_string(),
@@ -465,6 +466,9 @@ impl<'a> Planner<'a> {
                         );
                     }
                     Err(e) => {
+                        if e.contains(crate::ai::provider::REQUEST_CANCELLED) {
+                            return Err(e);
+                        }
                         log::warn!("[AI-DEBUG] 进度校正重排失败: {}", e);
                         crate::data::write_ai_debug_log(
                             data_dir,
@@ -781,6 +785,7 @@ impl<'a> Planner<'a> {
         let mut used_fallback = false;
         let updated_days = match parse_result {
             Ok(days) if !days.is_empty() => days,
+            Err(e) if e.contains(crate::ai::provider::REQUEST_CANCELLED) => return Err(e),
             other => {
                 let reason = match other {
                     Ok(_) => "AI 未返回 days 数组".to_string(),
@@ -1313,14 +1318,14 @@ impl<'a> Planner<'a> {
                 match crate::data::plan::clear_daily_plan(data_dir, date) {
                     Ok(true) => log::info!("{}: 已清空旧日计划（排除日/休息日）", date),
                     Ok(false) => {}
-                    Err(e) => log::warn!("清空 {} 旧日计划失败: {}", date, e),
+                    Err(e) => return Err(format!("清空 {date} 旧日计划失败：{e}")),
                 }
                 continue;
             }
             match DailyScheduler::generate_daily_plan(data_dir, date, date == &today) {
                 Ok(plan) => {
                     if let Err(e) = crate::data::plan::save_daily_plan(data_dir, &plan) {
-                        log::warn!("保存 {} 日计划失败: {}", date, e);
+                        return Err(format!("保存 {date} 日计划失败：{e}"));
                     } else {
                         log::info!("{}: 已重新生成 {} 的日计划", tag, date);
                         // 对今天额外执行温和同步
@@ -1332,7 +1337,7 @@ impl<'a> Planner<'a> {
                     }
                 }
                 Err(e) => {
-                    log::warn!("重新生成 {} 日计划失败: {}", date, e);
+                    return Err(format!("重新生成 {date} 日计划失败：{e}"));
                 }
             }
         }
