@@ -17,6 +17,7 @@ import type {
 const defaultSettings: AppSettings = {
   data_directory: "",
   theme: "light",
+  startup_page: "/dashboard",
   visual_mode: "standard",
   sidebar_style: "full",
   language: "zh-CN",
@@ -106,6 +107,7 @@ export const useSettingsStore = defineStore("settings", () => {
           backendSettings.data_directory ||
           defaultSettings.data_directory,
         theme: backendSettings.theme || defaultSettings.theme,
+        startup_page: backendSettings.startup_page || defaultSettings.startup_page,
         visual_mode: backendSettings.visual_mode || defaultSettings.visual_mode,
         sidebar_style: backendSettings.sidebar_style || defaultSettings.sidebar_style,
         language: backendSettings.language || defaultSettings.language,

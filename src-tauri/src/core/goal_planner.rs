@@ -1368,7 +1368,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            actual_progress_position(&SubjectKey::Math, "数二", &[], &[entry.clone()]),
+            actual_progress_position(&SubjectKey::Math, "数二", &[], std::slice::from_ref(&entry)),
             Some(3)
         );
         let declared = crate::data::records::OvercompletionEntry {

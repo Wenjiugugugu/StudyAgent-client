@@ -1,6 +1,68 @@
 use super::*;
 use crate::data::{SubjectKey, TaskSource};
 
+#[test]
+fn adjustment_keeps_knowledge_links_in_week_and_daily_plans() {
+    let (_workspace, mut draft) = setup();
+    let choice = draft
+        .preview
+        .tasks
+        .iter_mut()
+        .find(|t| !t.task.is_manual())
+        .unwrap();
+    choice.task.knowledge_points = Some(vec![data::plan::KnowledgePointRef {
+        table_id: "math".into(),
+        node_id: "limit".into(),
+        title: "极限".into(),
+    }]);
+    choice.task.remaining_from_task_id = Some("previous-task".into());
+    let expected = choice.task.clone();
+    draft.preview.kept_keys.push(choice.key.clone());
+    project(&mut draft).unwrap();
+    let day_file = draft
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("_day.json"))
+        .unwrap();
+    let daily: DailyPlanFile = serde_json::from_str(day_file.after.as_ref().unwrap()).unwrap();
+    let retained = daily
+        .data
+        .tasks
+        .iter()
+        .find(|t| t.id == expected.id)
+        .unwrap();
+    assert_eq!(retained.knowledge_points, expected.knowledge_points);
+    assert_eq!(
+        retained.remaining_from_task_id,
+        expected.remaining_from_task_id
+    );
+    let week_file = draft
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("_week.json"))
+        .unwrap();
+    let week: data::WeekPlanFile = serde_json::from_str(week_file.after.as_ref().unwrap()).unwrap();
+    let template = week
+        .data
+        .days
+        .iter()
+        .find(|d| d.date == draft.today)
+        .unwrap()
+        .subject_allocations
+        .iter()
+        .flat_map(|a| &a.task_templates)
+        .find(|t| t.title == expected.title)
+        .unwrap();
+    assert_eq!(template.knowledge_points, expected.knowledge_points);
+    assert_eq!(
+        template.remaining_from_task_id,
+        expected.remaining_from_task_id
+    );
+    let mut different = expected.clone();
+    different.knowledge_points = Some(Vec::new());
+    assert!(!same_task(&expected, &different));
+}
+
 fn task(date: &str, seq: u32, title: &str, hours: f64) -> PlanTask {
     PlanTask {
         id: format!("{date}-{seq:02}"),
@@ -11,8 +73,10 @@ fn task(date: &str, seq: u32, title: &str, hours: f64) -> PlanTask {
     }
 }
 fn day(date: &str, tasks: Vec<PlanTask>) -> DailyPlanFile {
-    let mut p = DailyPlanFile::default();
-    p.version = "1.0.0".into();
+    let mut p = DailyPlanFile {
+        version: "1.0.0".into(),
+        ..Default::default()
+    };
     p.meta.date = date.into();
     p.data.tasks = tasks;
     data::recalc_totals(&mut p.data);
@@ -55,7 +119,7 @@ fn setup() -> (Workspace, Draft) {
     data::save_state(dir, &state).unwrap();
     data::resync_plan_to_state(dir, &today, &old).unwrap();
     let generated = day(&today, vec![task(&today, 1, "新任务", 0.5)]);
-    let tasks = task_choices(dir, &[today.clone()]).unwrap();
+    let tasks = task_choices(dir, std::slice::from_ref(&today)).unwrap();
     let mut draft = Draft {
         preview: AdjustmentPreview {
             id: "test-adjustment".into(),

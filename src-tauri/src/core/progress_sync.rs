@@ -274,7 +274,7 @@ fn apply_task_to_subject(
 fn matching_indices(table: &ProgressTable, task_title: &str) -> HashSet<usize> {
     // 先解析显式书/章节限定，再评分。确切标题可命中多个并列知识点；
     // 模糊召回只接受唯一且显著领先的候选，不能把全部相似节点一起升级。
-    let h = norm(&task_title);
+    let h = norm(task_title);
     let chapter_id = table
         .nodes
         .iter()
@@ -291,7 +291,7 @@ fn matching_indices(table: &ProgressTable, task_title: &str) -> HashSet<usize> {
                 .as_ref()
                 .is_none_or(|id| n.parent_id.as_ref() == Some(id))
         })
-        .filter(|(_, n)| node_matches(n, &n.phase, &task_title))
+        .filter(|(_, n)| node_matches(n, &n.phase, task_title))
         .map(|(i, n)| {
             let t = norm(&n.title);
             let c = norm(&n.phase);

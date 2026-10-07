@@ -5,6 +5,24 @@
  */
 
 import { invokeWithFallback, invokeDirect, isTauri } from "./tauri";
+
+export interface EnergyPreview {
+  plan: import("@/types").DailyPlanFile;
+  protected_ids: string[];
+  snapshot: string;
+  goals: import("@/types").Goal[];
+}
+
+export function previewLowEnergy(): Promise<EnergyPreview> {
+  return invokeDirect("preview_low_energy");
+}
+
+export function applyLowEnergy(
+  taskIds: string[],
+  snapshot: string
+): Promise<import("@/types").DailyPlanFile> {
+  return invokeDirect("apply_low_energy", { taskIds, snapshot });
+}
 import { todayString } from "@/utils/date";
 import {
   mockState,

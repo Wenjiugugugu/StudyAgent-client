@@ -225,7 +225,12 @@ impl Drop for Workspace {
 }
 
 fn same_task(a: &PlanTask, b: &PlanTask) -> bool {
-    a.subject == b.subject && a.title == b.title && a.textbook == b.textbook && a.source == b.source
+    a.subject == b.subject
+        && a.title == b.title
+        && a.textbook == b.textbook
+        && a.source == b.source
+        && a.knowledge_points == b.knowledge_points
+        && a.remaining_from_task_id == b.remaining_from_task_id
 }
 fn live_plan(dir: &Path, date: &str) -> DataResult<Option<DailyPlanFile>> {
     if !data::daily_plan_path(dir, date).exists() {
@@ -406,8 +411,10 @@ pub async fn generate(
                 {
                     return Err(format!("{date} 的候选计划未完整生成，请重试：{e}"));
                 }
-                let mut empty = DailyPlanFile::default();
-                empty.version = "1.0.0".into();
+                let mut empty = DailyPlanFile {
+                    version: "1.0.0".into(),
+                    ..Default::default()
+                };
                 empty.meta.date = date.clone();
                 empty.meta.r#type = "daily_plan".into();
                 empty.meta.generated_at = data::now_string();
@@ -592,6 +599,8 @@ fn project(draft: &mut Draft) -> DataResult<()> {
         kept_templates.push((
             choice.clone(),
             data::TaskTemplate {
+                knowledge_points: choice.task.knowledge_points.clone(),
+                remaining_from_task_id: choice.task.remaining_from_task_id.clone(),
                 title: choice.task.title.clone(),
                 priority: choice.task.priority.clone(),
                 estimated_hours: choice.task.estimated_hours,
@@ -856,6 +865,9 @@ fn task_content(task: &PlanTask) -> String {
     parts.extend(task.completion_criteria.clone());
     if let Some(book) = &task.textbook {
         parts.push(book.clone());
+    }
+    if let Some(points) = &task.knowledge_points {
+        parts.extend(points.iter().map(|point| point.title.clone()));
     }
     parts.join("；")
 }

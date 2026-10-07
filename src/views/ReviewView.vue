@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import PlanAdjustmentPanel from "@/components/plan/PlanAdjustmentPanel.vue";
+import { reviewTaskMinutes } from "@/utils/reviewTime";
 import { vLiquidGlass } from "@/directives/liquidGlass";
 import { ref, computed, onMounted, watch, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -132,7 +133,7 @@ async function checkSelectedDateExcluded() {
 // ── State ──
 const step = ref(0);
 const totalSteps = 5;
-const quickMode = ref(false);
+const quickMode = ref(true);
 const submitting = ref(false);
 const loading = ref(true);
 
@@ -1170,7 +1171,7 @@ function initFromReview(review: ReviewRecord) {
 
 function resetForm() {
   step.value = 0;
-  quickMode.value = false;
+  quickMode.value = true;
   taskCompleted.value = {};
   taskCompletedPoints.value = {};
   taskCompletionTouched.value = {};
@@ -1245,6 +1246,7 @@ async function doSubmit() {
   submitSteps.value = buildSubmitSteps(DEFAULT_SUBMIT_STEP_KEYS);
   setSubmitStep(0); // 正在保存复盘
   try {
+    await loadTaskActualMinutes();
     const taskReviews: TaskReviewEntry[] = allTasks.value.map((t) => ({
       task_id: t.id,
       status: reviewStatus(t),
@@ -1265,7 +1267,7 @@ async function doSubmit() {
       // 仅在启用「记录学习时长」时持久化估时与实际用时
       estimated_hours:
         timeTrackingEnabled.value && t.estimated_hours > 0 ? t.estimated_hours : undefined,
-      actual_minutes: timeTrackingEnabled.value ? (taskActualMinutes.value[t.id] ?? 0) : undefined,
+      actual_minutes: taskActualMinutes.value[t.id],
     }));
 
     const dailyReview: DailyReviewInput = {
@@ -1393,40 +1395,14 @@ async function retryRegeneration() {
 
 // ── Data loading ──
 async function loadTaskActualMinutes() {
-  if (!timeTrackingEnabled.value) {
-    taskActualMinutes.value = {};
-    return;
-  }
-  try {
-    const map: Record<string, number> = {};
-    if (selectedDate.value === todayDate) {
-      const state = await api.getState();
-      for (const st of state.current_task?.tasks ?? []) {
-        if (!st.task_id) continue;
-        let total = st.accumulated_minutes ?? 0;
-        // 若任务正在计时，加上当前进行中的时段
-        if (st.started_at) {
-          const start = new Date(st.started_at).getTime();
-          const now = Date.now();
-          if (!isNaN(start) && now > start) {
-            total += Math.floor((now - start) / 60000);
-          }
-        }
-        map[st.task_id] = total;
-      }
-    } else {
-      // State 只保留当前日；历史日从带 task_id 的 Focus 会话恢复任务用时。
-      const sessions = await api.getFocusSessions(selectedDate.value);
-      for (const session of sessions) {
-        if (session.status !== "completed" || !session.task_id) continue;
-        if (session.type !== "focus" && session.type !== "stopwatch") continue;
-        map[session.task_id] = (map[session.task_id] ?? 0) + Math.max(0, session.duration_minutes);
-      }
-    }
-    taskActualMinutes.value = map;
-  } catch {
-    taskActualMinutes.value = {};
-  }
+  const date = selectedDate.value;
+  const [sessions, state] = await Promise.allSettled([api.getFocusSessions(date), api.getState()]);
+  if (date !== selectedDate.value) return;
+  taskActualMinutes.value = reviewTaskMinutes(
+    date,
+    sessions.status === "fulfilled" ? sessions.value : [],
+    state.status === "fulfilled" ? state.value : undefined
+  );
 }
 
 async function loadReviewData() {
@@ -1485,7 +1461,7 @@ async function loadReviewData() {
     if (!submitted.value) {
       initFromState();
       if (canFillReview.value) {
-        loadDidaCompleted();
+        await loadDidaCompleted();
       }
     }
   } finally {
@@ -1914,10 +1890,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                       <Clock :size="11" />
                       估时 {{ formatHours(taskEstimatedHours(tr.task_id, tr)) }}
                     </span>
-                    <span
-                      v-if="timeTrackingEnabled && taskActualFromReview(tr.task_id, tr) > 0"
-                      class="trr-chip actual"
-                    >
+                    <span v-if="tr.actual_minutes !== undefined" class="trr-chip actual">
                       <Clock :size="11" />
                       实际
                       {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
@@ -1999,13 +1972,13 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
         </template>
 
         <!-- Steps (fill review) -->
-        <template v-else-if="canFillReview">
+        <template v-else-if="canFillReview && plan">
           <div class="backfill-banner" v-if="isYesterday">
             <AlertTriangle :size="14" />
             <span>补复盘模式：为昨天（{{ selectedDate }}）补录复盘</span>
           </div>
 
-          <div class="step-bar">
+          <div v-if="!quickMode" class="step-bar">
             <div class="step-dots">
               <span
                 v-for="i in totalSteps"
@@ -2029,9 +2002,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
           <!-- Step 1: Task Completion -->
           <Card v-if="step === 0" padding="lg" class="step-card">
-            <h2 class="step-title">任务完成情况</h2>
+            <h2 class="step-title">{{ quickMode ? "确认今天的学习记录" : "任务完成情况" }}</h2>
             <p class="step-desc">
-              勾选{{ isYesterday ? "昨天" : "今天" }}已完成的任务（自动读取 State 中的完成状态）
+              已带入完成情况和学习时长。情况无误可直接保存，有变化时再修改或补充。
             </p>
             <div v-if="didaMatchedCount > 0" class="dida-sync-note">
               <Smartphone :size="13" />
@@ -2061,14 +2034,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                       <Clock :size="12" />
                       ≈{{ formatHours(task.estimated_hours) }}
                     </Badge>
-                    <Badge
-                      v-if="timeTrackingEnabled && (taskActualMinutes[task.id] ?? 0) > 0"
-                      variant="info"
-                      size="sm"
-                    >
+                    <Badge v-if="taskActualMinutes[task.id] !== undefined" variant="info" size="sm">
                       <Clock :size="12" />
                       {{ formatMinutes(taskActualMinutes[task.id] ?? 0) }}
                     </Badge>
+                    <span v-else class="field-hint">学习时长未记录</span>
                   </div>
                   <span class="tri-title">{{ task.title }}</span>
                   <button type="button" class="knowledge-link" @click="editingKnowledgeTask = task">
@@ -2664,22 +2634,45 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
           <!-- Navigation -->
           <div class="step-nav">
-            <Button v-if="step > 0" variant="ghost" @click="goPrev"
-              ><ArrowLeft :size="16" /> 上一步</Button
-            >
-            <div class="nav-right">
+            <template v-if="quickMode && step === 0">
               <Button
-                v-if="step < totalSteps - 1"
-                variant="primary"
-                :disabled="!canNext()"
-                @click="goNext"
+                variant="ghost"
+                @click="
+                  quickMode = false;
+                  step = incompleteTasks.length ? 1 : 2;
+                "
+                >补充困难或感受</Button
               >
-                下一步 <ArrowRight :size="16" />
-              </Button>
-              <Button v-else variant="primary" @click="doSubmit" :loading="submitting">
-                <Sparkles :size="16" /> 提交复盘
-              </Button>
-            </div>
+              <Button
+                variant="ghost"
+                @click="
+                  quickMode = false;
+                  step = 4;
+                "
+                >补充计划外学习</Button
+              >
+              <Button variant="primary" :loading="submitting" @click="doSubmit"
+                >情况无误，保存复盘</Button
+              >
+            </template>
+            <template v-else>
+              <Button v-if="step > 0" variant="ghost" @click="goPrev"
+                ><ArrowLeft :size="16" /> 上一步</Button
+              >
+              <div class="nav-right">
+                <Button
+                  v-if="step < totalSteps - 1"
+                  variant="primary"
+                  :disabled="!canNext()"
+                  @click="goNext"
+                >
+                  下一步 <ArrowRight :size="16" />
+                </Button>
+                <Button v-else variant="primary" @click="doSubmit" :loading="submitting">
+                  <Sparkles :size="16" /> 提交复盘
+                </Button>
+              </div>
+            </template>
           </div>
         </template>
       </div>

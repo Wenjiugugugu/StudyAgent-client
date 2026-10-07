@@ -236,6 +236,8 @@ fn main() {
             set_task_ai_reference,
             set_task_knowledge_points,
             delete_manual_task,
+            preview_low_energy,
+            apply_low_energy,
             // Goal（目标与截止日规划区间）
             list_goals,
             create_goal,
