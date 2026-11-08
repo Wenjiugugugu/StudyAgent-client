@@ -31,9 +31,9 @@ async-trait = "0.1"
 tokio-stream = "0.1"
 base64 = "0.23"
 sha2 = "0.11"
-parking_lot = "0.12"
+parking_lot = "0.13"
 chrono = "0.4"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 keyring = { version = "4.1", features = ["windows-native-keyring-store"] }
 
 [features]
