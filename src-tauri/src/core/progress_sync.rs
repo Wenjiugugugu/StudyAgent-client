@@ -142,11 +142,7 @@ pub fn node_matches(node: &ProgressNode, chapter_title: &str, haystack: &str) ->
     }
 
     // 3) 相似度召回（标题需足够长，避免短名靠偶然 gram 命中）
-    if t.chars().count() >= 5 && bigram_overlap(&h, &t) >= BIGRAM_RECALL_THRESHOLD {
-        return true;
-    }
-
-    false
+    t.chars().count() >= 5 && bigram_overlap(&h, &t) >= BIGRAM_RECALL_THRESHOLD
 }
 
 /// 去掉任务标题开头的学科前缀（如「数学｜」「英语：」），提高匹配命中率
