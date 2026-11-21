@@ -20,6 +20,15 @@ try {
   if ($result -and $result.ok) {
     $checkedRoot = [System.IO.Path]::GetFullPath($smokeRoot)
     if (-not $checkedRoot.StartsWith($smokeTempBase, [StringComparison]::OrdinalIgnoreCase) -or $checkedRoot -eq $smokeTempBase) { throw "Unsafe cleanup target" }
-    Remove-Item -LiteralPath $checkedRoot -Recurse -Force
+    # WebView may briefly retain cache handles after the app exits.
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+      try {
+        Remove-Item -LiteralPath $checkedRoot -Recurse -Force
+        break
+      } catch [System.IO.IOException] {
+        if ($attempt -eq 10) { throw }
+        Start-Sleep -Seconds 2
+      }
+    }
   }
 }
