@@ -2,6 +2,11 @@
 import { onMounted } from "vue";
 import Card from "@/components/ui/Card.vue";
 import Switch from "@/components/ui/Switch.vue";
+import Select from "@/components/ui/Select.vue";
+import { startupPages } from "@/utils/startupPage";
+import type { SettingsForm } from "../composables/useSettingsForm";
+
+defineProps<{ form: SettingsForm }>();
 import { PowerOff, HelpCircle, Minimize2, Power, Check } from "lucide-vue-next";
 import { useGeneralSettings } from "../composables/useGeneralSettings";
 
@@ -30,6 +35,16 @@ onMounted(() => {
         <PowerOff :size="18" />
         <span>通用</span>
       </div>
+    </div>
+
+    <div class="form-field">
+      <label class="form-label">打开应用时进入</label>
+      <Select v-model="form.startup_page" aria-label="启动页面">
+        <option v-for="page in startupPages" :key="page.value" :value="page.value">
+          {{ page.label }}
+        </option>
+      </Select>
+      <p class="field-hint">保存后，下次打开应用时生效。</p>
     </div>
 
     <!-- 开机启动 -->

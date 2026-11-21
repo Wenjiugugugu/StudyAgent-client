@@ -403,41 +403,58 @@ export const useFocusStore = defineStore("focus", () => {
   }
 
   // ── 会话记录 / 统计 ──
-  async function recordSession(
+  const pendingSessionWrites = new Set<Promise<void>>();
+  const failedSessions: api.FocusSession[] = [];
+
+  function recordSession(
     type: api.FocusSessionType,
     minutes: number,
     status: api.FocusSessionStatus,
     startedAt: number | null = null
   ) {
-    if (
-      (type === "focus" || type === "stopwatch") &&
-      status === "completed" &&
-      linkedTaskId.value
-    ) {
+    const pending = saveSession(type, minutes, status, startedAt);
+    pendingSessionWrites.add(pending);
+    void pending.finally(() => pendingSessionWrites.delete(pending));
+    return pending;
+  }
+
+  async function saveSession(
+    type: api.FocusSessionType,
+    minutes: number,
+    status: api.FocusSessionStatus,
+    startedAt: number | null = null
+  ) {
+    const taskId = type === "focus" || type === "stopwatch" ? linkedTaskId.value || null : null;
+    const nowMs = Date.now();
+    const started = startedAt ?? sessionStartedAt.value ?? nowMs - minutes * 60_000;
+    let taskMinutesRecorded = false;
+    if ((type === "focus" || type === "stopwatch") && status === "completed" && taskId) {
       try {
-        await api.focusAddMinutes(linkedTaskId.value, minutes);
+        await api.focusAddMinutes(taskId, minutes);
+        taskMinutesRecorded = true;
       } catch (e) {
         console.warn("[Focus] 关联任务累加专注分钟失败:", e);
       }
     }
-    const nowMs = Date.now();
-    const started = startedAt ?? sessionStartedAt.value ?? nowMs - minutes * 60_000;
+    const session: api.FocusSession = {
+      id: `${type}_${nowMs}`,
+      type,
+      // 用上海本地时间落盘（后端按字符串前 10 位取日期），避免凌晨被 UTC 挪到前一天
+      started_at: formatLocalIso(new Date(started)),
+      ended_at: formatLocalIso(new Date(nowMs)),
+      duration_minutes: minutes,
+      // M16：空串视为未关联任务，写入 null；正计时完成同样关联任务
+      task_id: taskId,
+      task_minutes_recorded: taskMinutesRecorded,
+      status,
+    };
     try {
-      await api.recordFocusSession({
-        id: `${type}_${nowMs}`,
-        type,
-        // 用上海本地时间落盘（后端按字符串前 10 位取日期），避免凌晨被 UTC 挪到前一天
-        started_at: formatLocalIso(new Date(started)),
-        ended_at: formatLocalIso(new Date(nowMs)),
-        duration_minutes: minutes,
-        // M16：空串视为未关联任务，写入 null；正计时完成同样关联任务
-        task_id: type === "focus" || type === "stopwatch" ? linkedTaskId.value || null : null,
-        status,
-      });
+      await api.recordFocusSession(session);
       await refreshTodayStats();
       // M8：完成番茄后同步刷新近 7 天统计，避免页面停留期间数据陈旧
       await refreshWeekSessions();
     } catch (e) {
+      failedSessions.push(session);
       console.warn("[Focus] 记录专注会话失败:", e);
     }
   }
@@ -479,7 +496,7 @@ export const useFocusStore = defineStore("focus", () => {
     totalSec: number;
   }
 
-  function persistState() {
+  function persistState(strict = false) {
     try {
       const s: FocusTimerState = {
         mode: mode.value,
@@ -494,8 +511,8 @@ export const useFocusStore = defineStore("focus", () => {
         totalSec: totalSec.value,
       };
       localStorage.setItem(STATE_KEY, JSON.stringify(s));
-    } catch {
-      /* 忽略 */
+    } catch (error) {
+      if (strict) throw error;
     }
   }
 
@@ -512,8 +529,21 @@ export const useFocusStore = defineStore("focus", () => {
       roundCount,
       totalSec,
     ],
-    persistState
+    () => persistState()
   );
+
+  async function prepareForUpdate() {
+    if (isRunning.value) togglePause();
+    await Promise.all([...pendingSessionWrites]);
+    while (failedSessions.length) {
+      await api.recordFocusSession(failedSessions[0]);
+      failedSessions.shift();
+    }
+    // 强制保存并透传错误，不能用常规监听中的静默失败退出应用。
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config.value));
+    localStorage.setItem(LINKED_TASK_KEY, linkedTaskId.value ?? "");
+    persistState(true);
+  }
 
   function restoreState() {
     try {
@@ -641,5 +671,6 @@ export const useFocusStore = defineStore("focus", () => {
     endRound,
     finishStopwatch,
     loadStats,
+    prepareForUpdate,
   };
 });

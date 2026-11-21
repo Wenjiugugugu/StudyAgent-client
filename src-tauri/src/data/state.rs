@@ -39,20 +39,19 @@ fn deserialize_option_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Err
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::Deserialize;
-    let v = toml::Value::deserialize(deserializer)?;
-    match v {
-        toml::Value::Integer(i) => Ok(Some(i as f64)),
-        toml::Value::Float(f) => Ok(Some(f)),
-        toml::Value::String(s) => {
-            if s.is_empty() || s == "未记录" {
-                Ok(None)
-            } else {
-                s.parse::<f64>().map(Some).map_err(|e| {
-                    serde::de::Error::custom(format!("无法将 '{}' 转换为 f64: {}", s, e))
-                })
-            }
-        }
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("无效时长数值")),
+        serde_json::Value::String(text) if text.is_empty() || text == "未记录" => Ok(None),
+        serde_json::Value::String(text) => text
+            .parse::<f64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
         _ => Ok(None),
     }
 }
@@ -479,6 +478,15 @@ pub fn read_state_or_default(data_dir: &Path) -> StudyState {
     }
 }
 
+/// 写入路径只允许初始化不存在的文件，不能用默认值覆盖损坏的学习记录。
+pub fn read_state_or_new(data_dir: &Path) -> DataResult<StudyState> {
+    match std::fs::metadata(data_dir.join(STATE_DIR).join(STATE_FILE_NAME)) {
+        Ok(_) => read_state(data_dir),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StudyState::default()),
+        Err(e) => Err(format!("无法检查学习状态文件: {}", e)),
+    }
+}
+
 /// 将 `StudyState` 序列化为 TOML 文本
 pub fn write_state_toml(state: &StudyState) -> DataResult<String> {
     toml::to_string_pretty(state).map_err(|e| format!("序列化 State TOML 失败: {}", e))
@@ -497,7 +505,7 @@ pub fn save_state(data_dir: &Path, state: &StudyState) -> DataResult<()> {
     let full_content = format!("{}{}", header, toml_content);
 
     // 备份旧文件（若存在）到 .bak，供损坏时恢复
-    if state_path.exists() {
+    if state_path.exists() && read_state(data_dir).is_ok() {
         if let Err(e) = std::fs::copy(&state_path, state_path.with_extension("state.bak")) {
             log::warn!("备份 State 文件失败: {}", e);
         }
@@ -526,11 +534,11 @@ pub fn update_task_status_by_id(
     }
 
     // 第二轮：回退到按索引匹配，并补全 task_id
-    if task_index < state.current_task.tasks.len() {
+    if task_index < state.current_task.tasks.len()
+        && state.current_task.tasks[task_index].task_id.is_none()
+    {
         let task = &mut state.current_task.tasks[task_index];
-        if task.task_id.is_none() {
-            task.task_id = Some(task_id.to_string());
-        }
+        task.task_id = Some(task_id.to_string());
         task.status = new_status;
         return Ok(());
     }

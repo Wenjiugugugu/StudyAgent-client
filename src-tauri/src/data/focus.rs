@@ -1,4 +1,4 @@
-﻿//! Focus（番茄钟）数据层 — 读取/写入 `focus/YYYY-MM-DD_focus.json`
+//! Focus（番茄钟）数据层 — 读取/写入 `focus/YYYY-MM-DD_focus.json`
 //!
 //! 记录一次专注会话（学习/休息/长休息），供专注页展示今日统计与历史记录。
 //! 沿用结构化 JSON 契约：{ version, meta, sessions: [...] }。
@@ -49,6 +49,9 @@ pub struct FocusSession {
     pub duration_minutes: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// 该会话是否已经累加到任务计时；None 兼容旧记录。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_minutes_recorded: Option<bool>,
     pub status: FocusSessionStatus,
 }
 
@@ -117,6 +120,19 @@ pub fn append_focus_session(data_dir: &Path, session: FocusSession) -> DataResul
         .map_err(|_| format!("专注会话 ended_at 日期格式不合法: {}", date_prefix))?;
     let date = date_prefix.to_string();
     let mut day = read_focus_day(data_dir, &date)?;
+    // 更新前重试失败的保存时，同一会话只能落盘一次。
+    if let Some(existing) = day
+        .sessions
+        .iter()
+        .find(|existing| existing.id == session.id)
+    {
+        if serde_json::to_value(existing).map_err(|error| error.to_string())?
+            == serde_json::to_value(&session).map_err(|error| error.to_string())?
+        {
+            return Ok(());
+        }
+        return Err("专注会话编号冲突，请保留原记录后检查".to_string());
+    }
     day.sessions.push(session);
     let path = focus_day_path(data_dir, &date);
     if let Some(parent) = path.parent() {
@@ -221,7 +237,14 @@ pub fn link_focus_session(
     ) {
         return Err("仅学习 / 正计时会话可关联任务，休息会话不可关联".to_string());
     }
+    if session.task_id.as_deref() == Some(task_id) {
+        return Ok(0);
+    }
+    if session.task_id.is_some() {
+        return Err("该专注记录已关联任务，不能重复关联".into());
+    }
     session.task_id = Some(task_id.to_string());
+    session.task_minutes_recorded = Some(true);
     let minutes = session.duration_minutes.max(0);
     let _ = session;
     let path = focus_day_path(data_dir, date);
@@ -280,6 +303,7 @@ mod tests {
             ended_at: ended_at.to_string(),
             duration_minutes: 25,
             task_id: Some("task-1".to_string()),
+            task_minutes_recorded: None,
             status: FocusSessionStatus::Completed,
         }
     }
@@ -304,6 +328,34 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_link_records_credit_and_retries_do_not_duplicate_minutes() {
+        let dir = tmp_dir("interrupted_link");
+        let mut session = sample_session("f1", "2026-08-19T01:25:00Z");
+        session.task_id = None;
+        session.status = FocusSessionStatus::Interrupted;
+        session.duration_minutes = 5;
+        append_focus_session(&dir, session).unwrap();
+        assert_eq!(
+            link_focus_session(&dir, "2026-08-19", "f1", "task-1").unwrap(),
+            5
+        );
+        assert_eq!(
+            link_focus_session(&dir, "2026-08-19", "f1", "task-1").unwrap(),
+            0
+        );
+        assert!(link_focus_session(&dir, "2026-08-19", "f1", "task-2").is_err());
+        let sessions = list_focus_sessions(&dir, "2026-08-19").unwrap();
+        assert_eq!(sessions[0].task_minutes_recorded, Some(true));
+        let mut old = serde_json::to_value(&sessions[0]).unwrap();
+        old.as_object_mut().unwrap().remove("task_minutes_recorded");
+        assert!(serde_json::from_value::<FocusSession>(old)
+            .unwrap()
+            .task_minutes_recorded
+            .is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn test_focus_day_stats() {
         let dir = tmp_dir("stats");
         // 2 个完成番茄 + 1 个打断番茄 + 1 个休息
@@ -318,6 +370,7 @@ mod tests {
                 ended_at: "2026-08-19T03:10:00Z".to_string(),
                 duration_minutes: 10,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Interrupted,
             },
         )
@@ -331,6 +384,7 @@ mod tests {
                 ended_at: "2026-08-19T01:30:00Z".to_string(),
                 duration_minutes: 5,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -365,6 +419,7 @@ mod tests {
                 ended_at: "2026-08-19T01:25:00Z".to_string(),
                 duration_minutes: 25,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -379,6 +434,7 @@ mod tests {
                 ended_at: "2026-08-19T01:30:00Z".to_string(),
                 duration_minutes: 5,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -413,6 +469,7 @@ mod tests {
                 ended_at: "2026-08-19T02:30:00Z".to_string(),
                 duration_minutes: 30,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -427,6 +484,7 @@ mod tests {
                 ended_at: "2026-08-19T03:12:00Z".to_string(),
                 duration_minutes: 12,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -441,6 +499,7 @@ mod tests {
                 ended_at: "2026-08-19T04:05:00Z".to_string(),
                 duration_minutes: 5,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Interrupted,
             },
         )
@@ -455,6 +514,7 @@ mod tests {
                 ended_at: "2026-08-19T02:35:00Z".to_string(),
                 duration_minutes: 5,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -463,5 +523,21 @@ mod tests {
         // 30（未关联番茄）+ 12（未关联正计时）
         assert_eq!(day_unlinked_focus_minutes(&dir, "2026-08-19"), 42);
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn retrying_the_same_focus_record_does_not_duplicate_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent-focus-retry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let session = sample_session("retry-session", "2026-10-12T10:00:00+08:00");
+        append_focus_session(&dir, session.clone()).unwrap();
+        append_focus_session(&dir, session).unwrap();
+        assert_eq!(list_focus_sessions(&dir, "2026-10-12").unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

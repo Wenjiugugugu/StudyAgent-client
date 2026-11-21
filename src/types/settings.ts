@@ -17,6 +17,8 @@ export type SidebarStyle = "full" | "floating";
 
 /** 应用设置 */
 export interface AppSettings {
+  /** 打开应用时进入的页面，旧配置默认工作台 */
+  startup_page?: string;
   /** 数据目录路径 */
   data_directory: string;
   /** 主题模式 */

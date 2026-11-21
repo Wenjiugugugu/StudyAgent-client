@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
+use crate::ai::provider::{AgentType, ChatRequest};
 use crate::ai::service::AiService;
 use crate::core::chapter_seq;
 use crate::core::date_utils::{add_days, day_diff, deadline_active_on};
@@ -400,6 +400,16 @@ pub fn plan_goal_tasks_sync(
         .into_iter()
         .enumerate()
         .map(|(i, (kp, hours))| PlanTask {
+            remaining_from_task_id: None,
+            knowledge_points: crate::core::progress_sync::infer_task_points(
+                &index,
+                subject.key(),
+                &if goal.book.is_empty() {
+                    kp.clone()
+                } else {
+                    format!("{}｜{}", goal.book, kp)
+                },
+            ),
             id: format!("{}-{:02}", date, i + 1),
             subject: subject.clone(),
             title: format!(
@@ -480,14 +490,10 @@ async fn estimate_tasks_hours(
         subject.label(),
         gran,
         points,
-        json_example = r#"{"knowledge":"知识点原文","hours":数字}"#,
+        json_example = r#"{"knowledge":"知识点原文","hours":1.5}"#,
     );
     let request = ChatRequest {
-        messages: vec![ChatMessage {
-            role: MessageRole::User,
-            content: prompt,
-            ..Default::default()
-        }],
+        messages: crate::ai::task_prompts::messages(crate::ai::task_prompts::ESTIMATE, prompt),
         agent: Some(AgentType::Planner),
         temperature: Some(0.2),
         timeout_override: Some(60),
@@ -721,8 +727,14 @@ pub fn replan_goals_after_review(
         let filtered_tasks: Vec<_> = task_reviews
             .iter()
             .filter(|tr| {
-                chapter_seq::position(key, &version, &tr.title)
-                    .is_some_and(|p| belongs(p, &tr.title, Some(&tr.task_id)))
+                let titles: Vec<&str> = match &tr.completed_knowledge_points {
+                    Some(points) => points.iter().map(|p| p.title.as_str()).collect(),
+                    None => vec![tr.title.as_str()],
+                };
+                titles.iter().any(|title| {
+                    chapter_seq::position(key, &version, title)
+                        .is_some_and(|p| belongs(p, title, Some(&tr.task_id)))
+                })
             })
             .cloned()
             .collect();
@@ -803,8 +815,14 @@ fn actual_progress_position(
         if tr.status != "completed" && tr.status != "partial" {
             continue;
         }
-        if let Some(p) = chapter_seq::position(key, version, &tr.title) {
-            max_pos = Some(max_pos.map_or(p, |m| m.max(p)));
+        let titles: Vec<&str> = match &tr.completed_knowledge_points {
+            Some(points) => points.iter().map(|p| p.title.as_str()).collect(),
+            None => vec![tr.title.as_str()],
+        };
+        for title in titles {
+            if let Some(p) = chapter_seq::position(key, version, title) {
+                max_pos = Some(max_pos.map_or(p, |m| m.max(p)));
+            }
         }
     }
     max_pos
@@ -1329,5 +1347,34 @@ mod tests {
         if dir.exists() {
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn partial_goal_progress_uses_confirmed_points_and_keeps_furthest_jumps() {
+        let seq = chapter_seq::syllabus_points("math", "数二").unwrap();
+        let entry = crate::data::records::TaskReviewEntry {
+            subject: "math".into(),
+            title: seq[8].into(),
+            status: "partial".into(),
+            completed_knowledge_points: Some(vec![crate::data::plan::KnowledgePointRef {
+                table_id: "t".into(),
+                node_id: "n3".into(),
+                title: seq[3].into(),
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(
+            actual_progress_position(&SubjectKey::Math, "数二", &[], std::slice::from_ref(&entry)),
+            Some(3)
+        );
+        let declared = crate::data::records::OvercompletionEntry {
+            subject: "math".into(),
+            chapter_reached: seq[6].into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            actual_progress_position(&SubjectKey::Math, "数二", &[declared], &[entry]),
+            Some(6)
+        );
     }
 }

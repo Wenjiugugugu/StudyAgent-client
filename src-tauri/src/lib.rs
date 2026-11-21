@@ -104,6 +104,9 @@ pub struct AppSettings {
     /// 主题（默认 "light"）
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// 旧配置保持工作台；前端只接受已知页面路径。
+    #[serde(default = "default_startup_page")]
+    pub startup_page: String,
     /// 视觉模式（默认 "standard"）
     #[serde(default = "default_visual_mode")]
     pub visual_mode: String,
@@ -390,6 +393,7 @@ impl Default for AppSettings {
             ai_providers: Vec::new(),
             mcp_servers: Vec::new(),
             theme: default_theme(),
+            startup_page: default_startup_page(),
             visual_mode: default_visual_mode(),
             sidebar_style: default_sidebar_style(),
             language: default_language(),
@@ -453,6 +457,10 @@ pub fn get_default_data_dir() -> PathBuf {
         exe_dir.join("data")
     );
     exe_dir.join("data")
+}
+
+fn default_startup_page() -> String {
+    "/dashboard".to_string()
 }
 
 fn default_theme() -> String {
@@ -613,6 +621,37 @@ pub fn save_settings_file(data_dir: &Path, settings: &AppSettings) -> Result<(),
     Ok(())
 }
 
+/// 同时保存实际目录配置与固定启动入口的目录指针，连续切换后仍能正确重启。
+pub fn save_data_directory_change(
+    startup_dir: &Path,
+    new_dir: &Path,
+    settings: &AppSettings,
+) -> Result<(), String> {
+    validate_settings_file(startup_dir)?;
+    let mut new_settings = settings.clone();
+    new_settings.data_dir = new_dir.to_string_lossy().into_owned();
+    save_settings_file(new_dir, &new_settings)?;
+    if startup_dir != new_dir {
+        let mut startup_settings = load_settings(startup_dir);
+        startup_settings.data_dir = new_settings.data_dir;
+        save_settings_file(startup_dir, &startup_settings)?;
+    }
+    Ok(())
+}
+
+fn load_startup_settings(data_dir: PathBuf) -> (PathBuf, AppSettings) {
+    let settings = load_settings(&data_dir);
+    let custom = PathBuf::from(settings.data_dir.trim_end_matches(['/', '\\']));
+    if !custom.as_os_str().is_empty() && custom.is_dir() && custom != data_dir {
+        ensure_data_directories(&custom);
+        let mut settings = load_settings(&custom);
+        settings.data_dir = custom.to_string_lossy().into_owned();
+        (custom, settings)
+    } else {
+        (data_dir, settings)
+    }
+}
+
 // ============================================================================
 // AppState 初始化
 // ============================================================================
@@ -642,22 +681,7 @@ pub fn init_app_state(data_dir: PathBuf) -> Mutex<AppState> {
 
     // 加载 settings（若用户在 settings.json 中指定了自定义 data_dir 且目录存在，
     // load_settings 会保留该值；此处需要据此切换实际使用的数据目录）
-    let settings = load_settings(&data_dir);
-    let effective_data_dir = {
-        let custom = settings.data_dir.trim_end_matches(['/', '\\']);
-        if !custom.is_empty()
-            && std::path::Path::new(custom).is_dir()
-            && std::path::Path::new(custom) != data_dir.as_path()
-        {
-            let custom_path = PathBuf::from(custom);
-            log::info!("切换到用户自定义数据目录: {:?}", custom_path);
-            // 确保新目录的子结构存在
-            ensure_data_directories(&custom_path);
-            custom_path
-        } else {
-            data_dir
-        }
-    };
+    let (effective_data_dir, settings) = load_startup_settings(data_dir);
 
     // 创建 AI Service
     let ai_service = Arc::new(AiService::from_configs(

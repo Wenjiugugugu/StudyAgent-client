@@ -13,11 +13,14 @@
 
 use std::path::Path;
 
-use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
+use crate::ai::provider::{AgentType, ChatRequest};
 use crate::ai::service::AiService;
-use crate::core::date_utils::{now_string, today_string};
+#[cfg(test)]
+use crate::core::date_utils::now_string;
+use crate::core::date_utils::today_string;
 use crate::data::records::ReviewFile;
-use crate::data::state::{SubjectKey, TaskPriority, TaskStatus};
+#[cfg(test)]
+use crate::data::state::{SubjectKey, TaskPriority};
 use crate::data::{clean_ai_json, DataResult};
 
 /// Review Agent — 复盘生成器
@@ -57,13 +60,11 @@ impl<'a> ReviewAgent<'a> {
             ));
         }
 
-        // 1. 读取今日计划与状态
-        let plan = crate::data::plan::read_daily_plan_with_merged_status(data_dir, date).ok();
-        let state = crate::data::state::read_state_or_default(data_dir);
-
-        // 2. 构建复盘 prompt
-        // 注意：不在此处修改任务状态。任务状态由 `submit_review` 根据用户输入更新。
-        let prompt = self.build_review_prompt(plan.as_ref(), &state, date, dida_completed);
+        super::review_sync::ensure_ready(data_dir)?;
+        let state = crate::data::state::read_state_or_new(data_dir)?;
+        let mut review_file = factual_review(data_dir, date, &state, dida_completed)?;
+        let prompt_facts = visible_review_facts(data_dir, date, &review_file)?;
+        let prompt = format!("根据以下已确认的复盘事实生成简短中文摘要。精力 0 表示未记录，空 time_spent 表示没有已确认用时。仅输出 {{\"view\":\"摘要\"}}。\n<review_facts date=\"{}\">\n{}\n</review_facts>", date, serde_json::to_string(&prompt_facts).map_err(|e| e.to_string())?);
         crate::data::write_ai_debug_log(
             data_dir,
             "review_prompt_ready",
@@ -76,11 +77,7 @@ impl<'a> ReviewAgent<'a> {
 
         // 4. 调用 AI Service
         let request = ChatRequest {
-            messages: vec![ChatMessage {
-                role: MessageRole::User,
-                content: prompt,
-                ..Default::default()
-            }],
+            messages: crate::ai::task_prompts::messages(crate::ai::task_prompts::REVIEW, prompt),
             agent: Some(AgentType::Reviewer),
             temperature: Some(0.5),
             // 复盘 JSON 生成可能较慢，覆盖 Provider 默认 timeout 至 300s
@@ -120,9 +117,15 @@ impl<'a> ReviewAgent<'a> {
             ),
         );
 
-        // 5. 解析并填充 ReviewFile
-        let review_file = parse_review_json(&response.content, date, plan.as_ref())?;
-
+        let output: serde_json::Value = serde_json::from_str(&clean_ai_json(&response.content))
+            .map_err(|e| format!("复盘摘要格式无效: {}", e))?;
+        review_file.view = Some(
+            output
+                .get("view")
+                .and_then(|v| v.as_str())
+                .ok_or("复盘摘要缺少 view 字符串")?
+                .to_string(),
+        );
         // 6. 保存 JSON
         crate::data::records::save_review(data_dir, &review_file)?;
         crate::data::write_ai_debug_log(
@@ -133,190 +136,134 @@ impl<'a> ReviewAgent<'a> {
 
         Ok(review_file)
     }
-
-    /// 构建复盘 prompt
-    fn build_review_prompt(
-        &self,
-        plan: Option<&crate::data::plan::DailyPlanFile>,
-        state: &crate::data::state::StudyState,
-        date: &str,
-        dida_completed: &[String],
-    ) -> String {
-        let mut prompt = String::new();
-        prompt.push_str(&format!("请为 {} 生成学习复盘记录。\n\n", date));
-
-        // 今日计划
-        if let Some(plan) = plan {
-            prompt.push_str("## 今日计划\n");
-            prompt.push_str(&format!(
-                "- 总时长: {:.1}h\n- 总任务数: {}\n- 目标: {}\n- 策略: {}\n\n",
-                plan.data.total_hours, plan.data.total_tasks, plan.data.target, plan.data.strategy
-            ));
-
-            // 用户关闭「允许 AI 参考」的任务不进入提示词
-            let ai_tasks: Vec<&crate::data::plan::PlanTask> =
-                plan.data.tasks.iter().filter(|t| t.ai_visible()).collect();
-            if !ai_tasks.is_empty() {
-                prompt.push_str("### 任务列表\n");
-                for task in ai_tasks {
-                    let status_str = match task.status {
-                        TaskStatus::Done => "已完成",
-                        TaskStatus::Abandoned => "已放弃",
-                        TaskStatus::InProgress => "进行中",
-                        TaskStatus::Pending => "未开始",
-                    };
-                    prompt.push_str(&format!(
-                        "- [{}] {}（{:?}，优先级 {:?}，预估 {:.1}h）\n  目标: {}\n  完成标准: {}\n",
-                        status_str,
-                        task.title,
-                        task.subject,
-                        task.priority,
-                        task.estimated_hours,
-                        task.goal,
-                        task.completion_criteria.join("；")
-                    ));
-                }
-                prompt.push('\n');
-            }
-        } else {
-            prompt.push_str(
-                "## 今日计划\n今日无计划文件。请根据 State 中的 current_task 生成复盘。\n\n",
-            );
-            prompt.push_str(&format!(
-                "### State 中的当前任务\n- 日期: {}\n- 重点: {}\n- 预估总时长: {:.1}h\n",
-                state.current_task.date,
-                state.current_task.focus,
-                state.current_task.total_hours.unwrap_or(0.0)
-            ));
-            for task in state.current_task.tasks.iter().filter(|t| t.ai_reference) {
-                prompt.push_str(&format!(
-                    "  - [{:?}] {} ({:?}) - {:?}\n",
-                    task.priority, task.subject, task.task, task.status
-                ));
-            }
-            prompt.push('\n');
-        }
-
-        // 滴答清单确认完成（以滴答勾选为准，用户在手机端勾选也会进入这里）
-        // 用户关闭「允许 AI 参考」的任务即使在滴答侧完成，也不写入提示词
-        let hidden_titles: std::collections::HashSet<&str> = plan
-            .map(|p| {
-                p.data
-                    .tasks
-                    .iter()
-                    .filter(|t| !t.ai_visible())
-                    .map(|t| t.title.as_str())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let dida_visible: Vec<&String> = dida_completed
-            .iter()
-            .filter(|t| !hidden_titles.contains(t.as_str()))
-            .collect();
-        if !dida_visible.is_empty() {
-            prompt.push_str("## 滴答确认完成（来自滴答清单同步）\n");
-            prompt.push_str("以下任务在滴答清单中已被标记为完成（可能在本应用外勾选），复盘时请按已完成处理：\n");
-            for t in dida_visible {
-                prompt.push_str(&format!("- {}\n", t));
-            }
-            prompt.push('\n');
-        }
-
-        // 全局进度
-        prompt.push_str("## 全局进度\n");
-        prompt.push_str(&format!(
-            "- 总学习天数: {}\n- 连续学习天数: {}\n- 上次学习日期: {}\n- 总练习题数: {}\n\n",
-            state.progress.total_study_days,
-            state.progress.streak_days,
-            state.progress.last_study_date,
-            state.progress.total_practice_questions
-        ));
-
-        // 输出要求
-        prompt.push_str("## 输出要求\n");
-        prompt.push_str(
-            r#"请直接输出一个合法的 JSON 对象（不要包裹 ```json 代码块），严格符合以下结构：
-
-{
-  "version": "1.0.0",
-  "meta": {
-    "date": "YYYY-MM-DD",
-    "type": "review",
-    "plan_ref": "plan/YYYY-MM-DD_day.json",
-    "generated_at": "YYYY-MM-DDTHH:mm"
-  },
-  "data": {
-    "completed_tasks": [
-      {
-        "task_id": "2026-07-25-01（可选）",
-        "subject": "math",
-        "title": "任务标题",
-        "priority": "A",
-        "completed": true,
-        "completion_time": "10:30（可选）",
-        "note": "可选备注"
-      }
-    ],
-    "unplanned_tasks": [
-      {
-        "subject": "english",
-        "title": "计划外任务标题",
-        "hours": 0.5,
-        "note": "可选"
-      }
-    ],
-    "difficulties": [
-      {
-        "description": "困难描述",
-        "root_cause": "可选根因",
-        "resolution": "可选解决方式"
-      }
-    ],
-    "time_spent": [
-      {
-        "subject": "math",
-        "hours": 2.0,
-        "planned_hours": 2.0
-      }
-    ],
-    "total_hours": 2.0,
-    "completion": {
-      "priority_a_total": 1,
-      "priority_a_done": 1,
-      "priority_b_total": 0,
-      "priority_b_done": 0,
-      "completion_rate": 100.0
-    },
-    "energy_level": 4,
-    "external_interference": "无",
-    "key_achievements": ["关键成果1"],
-    "next_steps": ["下一步行动1"]
-  },
-  "view": "用于人类阅读的 Markdown 摘要（可选，可为空字符串）"
 }
 
-重要约束：
-1. 必须包含 data 和 view 两个字段；view 仅用于展示，不会被程序解析。
-2. 复盘原则：只记录事实，不做分析、不评判、不给策略建议。
-3. subject 字段只能是 "math" / "english" / "politics" / "professional"。
-4. 任务已不再分级（Priority A/B 已废弃），输入中的 priority 字段仅作兼容保留，不区分优先级。
-5. completed 字段必须如实反映计划任务的完成状态。
-6. completion_rate 使用 0-100 之间的数值。
-7. energy_level 使用 1-5 之间的整数。
-"#,
-        );
+fn visible_review_facts(dir: &Path, date: &str, review: &ReviewFile) -> DataResult<ReviewFile> {
+    let mut visible = review.clone();
+    let hidden = match std::fs::metadata(crate::data::daily_plan_path(dir, date)) {
+        Ok(_) => crate::data::read_daily_plan(dir, date)?
+            .data
+            .tasks
+            .into_iter()
+            .filter(|t| !t.ai_visible())
+            .map(|t| t.id)
+            .collect::<std::collections::HashSet<_>>(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+        Err(e) => return Err(e.to_string()),
+    };
+    visible
+        .data
+        .completed_tasks
+        .retain(|t| t.task_id.as_ref().is_none_or(|id| !hidden.contains(id)));
+    visible
+        .task_reviews
+        .retain(|t| !hidden.contains(&t.task_id));
+    visible.view = None;
+    Ok(visible)
+}
 
-        prompt
+fn factual_review(
+    dir: &Path,
+    date: &str,
+    state: &crate::data::StudyState,
+    dida_completed: &[String],
+) -> DataResult<ReviewFile> {
+    let path = crate::data::records::review_file_path(dir, date);
+    match std::fs::metadata(path) {
+        Ok(_) => return crate::data::records::read_review(dir, date),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
     }
-
-    /// 检查今日是否需要复盘
-    pub fn needs_review(data_dir: &Path) -> bool {
-        let today = today_string();
-        !crate::data::records::review_file_path(data_dir, &today).exists()
+    let plan = match std::fs::metadata(crate::data::plan::daily_plan_path(dir, date)) {
+        Ok(_) => Some(crate::data::read_daily_plan(dir, date)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut review = ReviewFile {
+        version: "1.0.0".into(),
+        meta: crate::data::records::ReviewMeta {
+            date: date.into(),
+            r#type: "review".into(),
+            plan_ref: format!("plan/{}_day.json", date),
+            generated_at: crate::data::now_string(),
+            default_marked: false,
+        },
+        ..Default::default()
+    };
+    if let Some(plan) = plan {
+        for task in plan.data.tasks {
+            let current = (state.current_task.date == date)
+                .then(|| {
+                    state
+                        .current_task
+                        .tasks
+                        .iter()
+                        .find(|t| t.task_id.as_deref() == Some(&task.id))
+                })
+                .flatten();
+            let done = current.is_some_and(|t| t.status == crate::data::TaskStatus::Done)
+                || task.status == crate::data::TaskStatus::Done
+                || dida_completed.contains(&task.title);
+            let minutes = current
+                .filter(|t| t.accumulated_minutes > 0)
+                .map(|t| t.accumulated_minutes);
+            if let Some(minutes) = minutes {
+                if let Some(row) = review
+                    .data
+                    .time_spent
+                    .iter_mut()
+                    .find(|r| r.subject == task.subject)
+                {
+                    row.hours += minutes as f64 / 60.0;
+                } else {
+                    review
+                        .data
+                        .time_spent
+                        .push(crate::data::records::ReviewTimeSpent {
+                            subject: task.subject.clone(),
+                            hours: minutes as f64 / 60.0,
+                            planned_hours: None,
+                        });
+                }
+            }
+            review
+                .data
+                .completed_tasks
+                .push(crate::data::records::ReviewCompletedTask {
+                    task_id: Some(task.id),
+                    subject: task.subject,
+                    title: task.title,
+                    priority: task.priority,
+                    completed: done,
+                    completion_time: None,
+                    note: None,
+                });
+        }
     }
+    review.data.total_hours = review.data.time_spent.iter().map(|r| r.hours).sum();
+    let all = review.data.completed_tasks.len() as i32;
+    let done = review
+        .data
+        .completed_tasks
+        .iter()
+        .filter(|t| t.completed)
+        .count() as i32;
+    review.data.completion = crate::data::records::ReviewCompletion {
+        priority_a_total: all,
+        priority_a_done: done,
+        priority_b_total: 0,
+        priority_b_done: 0,
+        completion_rate: if all > 0 {
+            done as f64 / all as f64 * 100.0
+        } else {
+            0.0
+        },
+    };
+    Ok(review)
 }
 
 /// 从 AI 响应中提取并解析复盘 JSON
+#[cfg(test)]
 fn parse_review_json(
     content: &str,
     date: &str,
@@ -441,5 +388,32 @@ mod tests {
         assert_eq!(review.meta.date, "2026-07-25");
         assert_eq!(review.data.completed_tasks.len(), 1);
         assert_eq!(review.data.completion.completion_rate, 100.0);
+    }
+    #[test]
+    fn existing_confirmed_review_is_preserved_and_unknown_energy_is_not_inferred() {
+        let dir = std::env::temp_dir().join(crate::data::new_progress_id("review-facts", "test"));
+        let date = crate::data::today_string();
+        let state = crate::data::StudyState::default();
+        let unknown = factual_review(&dir, &date, &state, &[]).unwrap();
+        assert_eq!(unknown.data.energy_level, 0);
+        assert!(unknown.data.time_spent.is_empty());
+        let mut confirmed = unknown;
+        confirmed.data.energy_level = 5;
+        confirmed.data.total_hours = 2.5;
+        confirmed
+            .actual_study
+            .push(crate::data::study_direction::ActualStudyEntry {
+                subject: "math".into(),
+                content: "用户确认的内容".into(),
+                ..Default::default()
+            });
+        crate::data::save_review(&dir, &confirmed).unwrap();
+        let after =
+            factual_review(&dir, &date, &state, &["模型不得当成新事实的标题".into()]).unwrap();
+        assert_eq!(
+            serde_json::to_value(&confirmed).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

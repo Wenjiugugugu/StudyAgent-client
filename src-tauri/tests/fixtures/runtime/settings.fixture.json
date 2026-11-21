@@ -1,0 +1,9 @@
+{
+  "study_schedule": {
+    "daily_target_hours": 2,
+    "rest_days": [
+      "周日"
+    ],
+    "standard_task_hours": 1.5
+  }
+}

@@ -1,7 +1,22 @@
 <script setup lang="ts">
+import PlanAdjustmentPanel from "@/components/plan/PlanAdjustmentPanel.vue";
+import ActualStudyEditor from "@/components/review/ActualStudyEditor.vue";
+import StudyDirectionPanel from "@/components/review/StudyDirectionPanel.vue";
+import { actualStudyError } from "@/utils/actualStudy";
+import { reviewTaskMinutes } from "@/utils/reviewTime";
 import { vLiquidGlass } from "@/directives/liquidGlass";
-import { ref, computed, onMounted, watch, nextTick } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue";
+import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
+import { useReviewSync } from "@/composables/useReviewSync";
+import { createReviewNavigation } from "@/utils/reviewNavigation";
+import { createReviewDraftQueue } from "@/utils/reviewDraftQueue";
+import { registerUpdatePreparation, waitForIdle } from "@/utils/updatePreparation";
+import {
+  reviewTaskSignatures,
+  matchingDraftTasks,
+  isReviewDraftForm,
+  type ReviewDraftForm,
+} from "@/utils/reviewDraft";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
 import {
@@ -12,6 +27,8 @@ import {
   getWeekStart,
 } from "@/utils/date";
 import * as api from "@/api";
+import TaskKnowledgeEditor from "@/components/plan/TaskKnowledgeEditor.vue";
+import Checkbox from "@/components/ui/Checkbox.vue";
 import { Badge, Button, Card, EmptyState, LoadingSpinner } from "@/components/ui";
 import {
   CheckCircle2,
@@ -35,6 +52,9 @@ import {
   CircleDot,
 } from "lucide-vue-next";
 import type {
+  KnowledgePointRef,
+  PlanTask,
+  DailyPlan,
   TaskReviewEntry,
   DailyReviewInput,
   ReviewRecord,
@@ -44,8 +64,10 @@ import type {
   ProgressTable,
   ProgressNode,
   ProgressNodeStatus,
+  ActualStudyEntry,
 } from "@/types";
 
+const adjustmentPanel = ref<InstanceType<typeof PlanAdjustmentPanel> | null>(null);
 const todayStore = useTodayStore();
 const settingsStore = useSettingsStore();
 const route = useRoute();
@@ -55,6 +77,8 @@ const router = useRouter();
 const selectedDate = ref<string>(todayString());
 const todayDate = todayString();
 const yesterdayDate = computed(() => yesterdayString());
+// 未能读取计划列表时保持未知，不把读取失败当成「今日无计划」。
+const todayHasPlan = ref<boolean | null>(null);
 
 // 已有复盘的日期列表（用于跳转）
 const reviewDates = ref<string[]>([]);
@@ -62,13 +86,19 @@ const reviewDates = ref<string[]>([]);
 // 日期切换方向：用于过渡动画（prev=向右滑入，next=向左滑入）
 const dateTransitionName = ref("date-slide-left");
 
-function setDate(date: string, direction: "prev" | "next" | "jump" = "jump") {
-  if (date === selectedDate.value) return;
-  dateTransitionName.value = direction === "prev" ? "date-slide-right" : "date-slide-left";
-  selectedDate.value = date;
-  // 同步 URL query
-  router.replace({ name: "review", query: { date } });
-}
+const setDate = createReviewNavigation({
+  currentDate: () => selectedDate.value,
+  busy: () => loading.value || submitting.value || regenerating.value,
+  saveDraft: () => saveCurrentDraft(),
+  commit: (date, direction) => {
+    dateTransitionName.value = direction === "prev" ? "date-slide-right" : "date-slide-left";
+    selectedDate.value = date;
+    void router.replace({ name: "review", query: { date } });
+  },
+  onError: (error) => {
+    draftMessage.value = `草稿保存失败，暂未切换日期：${String(error)}`;
+  },
+});
 
 function goPrevDay() {
   setDate(prevDateString(selectedDate.value), "prev");
@@ -125,7 +155,7 @@ async function checkSelectedDateExcluded() {
 // ── State ──
 const step = ref(0);
 const totalSteps = 5;
-const quickMode = ref(false);
+const quickMode = ref(true);
 const submitting = ref(false);
 const loading = ref(true);
 
@@ -139,7 +169,7 @@ interface SubmitStep {
 }
 const SUBMIT_STEPS: SubmitStep[] = [
   { key: "analyzing", label: "正在保存复盘" },
-  { key: "adjusting", label: "正在调整" },
+  { key: "adjusting", label: "生成调整预览" },
   { key: "syncing", label: "正在同步滴答" },
 ];
 /** 无需 AI 调整后续计划时的默认步骤（「正在调整」按需插入） */
@@ -186,6 +216,29 @@ function ensureSubmitStep(key: string): number {
 }
 const existingReview = ref<ReviewRecord | null>(null);
 const submitted = ref(false);
+const actualStudy = ref<ActualStudyEntry[]>([]);
+const submitError = ref("");
+const reviewSyncController = useReviewSync(
+  () => selectedDate.value,
+  (message) => {
+    submitError.value = message;
+  }
+);
+const {
+  status: reviewSync,
+  retrying: retryingReviewSync,
+  retry: retrySavedReviewSync,
+} = reviewSyncController;
+const actualError = computed(() => actualStudyError(actualStudy.value));
+const directionRefresh = ref(0);
+
+async function onDirectionChanged() {
+  directionRefresh.value++;
+  if (submitted.value && isToday.value) {
+    await executeRegeneration();
+    setSubmitStep(-1);
+  }
+}
 
 // 重排状态：复盘提交后若需要 AI 重新生成剩余天数计划
 // 使用 sessionStorage 持久化，避免切页再回来时丢失提示
@@ -255,9 +308,12 @@ const beforeStartTimeToday = computed(() => {
 });
 
 // ── 补复盘条件 ──
-// 仅允许对「昨天」补复盘，且昨天没有复盘 + 当前时间在今天的学习开始时间之前
+// 仅允许对昨天补复盘；今日无日计划时，不受学习开始时间限制。
+const withinBackfillWindow = computed(
+  () => beforeStartTimeToday.value || todayHasPlan.value === false
+);
 const canBackfill = computed(
-  () => isYesterday.value && !existingReview.value && beforeStartTimeToday.value
+  () => isYesterday.value && !existingReview.value && withinBackfillWindow.value
 );
 
 // 是否允许填写复盘表单
@@ -281,6 +337,53 @@ const allTasks = computed(() => todayStore.allTasks);
 
 // Step 1: task completion (read from state, initialized from task.status)
 const taskCompleted = ref<Record<string, boolean>>({});
+const taskCompletedPoints = ref<Record<string, KnowledgePointRef[]>>({});
+const taskCompletionTouched = ref<Record<string, boolean>>({});
+const partialTaskOpen = ref<Record<string, boolean>>({});
+const editingKnowledgeTask = ref<PlanTask | null>(null);
+function samePoint(a: KnowledgePointRef, b: KnowledgePointRef) {
+  return a.table_id === b.table_id && a.node_id === b.node_id;
+}
+function completedPoints(task: PlanTask): KnowledgePointRef[] {
+  return taskCompleted.value[task.id]
+    ? (task.knowledge_points ?? [])
+    : (taskCompletedPoints.value[task.id] ?? []);
+}
+function toggleTaskComplete(task: PlanTask) {
+  taskCompletionTouched.value[task.id] = true;
+  taskCompleted.value[task.id] = !taskCompleted.value[task.id];
+  taskCompletedPoints.value[task.id] = taskCompleted.value[task.id]
+    ? [...(task.knowledge_points ?? [])]
+    : [];
+  partialTaskOpen.value[task.id] = false;
+}
+function toggleCompletedPoint(task: PlanTask, point: KnowledgePointRef) {
+  taskCompletionTouched.value[task.id] = true;
+  const previous = completedPoints(task);
+  const next = previous.some((p) => samePoint(p, point))
+    ? previous.filter((p) => !samePoint(p, point))
+    : [...previous, point];
+  taskCompletedPoints.value[task.id] = next;
+  taskCompleted.value[task.id] =
+    next.length === (task.knowledge_points?.length ?? 0) && next.length > 0;
+}
+function onKnowledgeSaved(plan: DailyPlan) {
+  const taskId = editingKnowledgeTask.value?.id;
+  todayStore.plan = plan;
+  if (taskId) {
+    taskCompletionTouched.value[taskId] = true;
+    taskCompletedPoints.value[taskId] = [];
+    taskCompleted.value[taskId] = false;
+  }
+}
+function reviewStatus(task: PlanTask) {
+  return taskCompleted.value[task.id]
+    ? "completed"
+    : completedPoints(task).length
+      ? "partial"
+      : "incomplete";
+}
+
 // 滴答清单回读命中数：手机端已勾选完成、在复盘页自动标记的任务数量
 const didaMatchedCount = ref(0);
 
@@ -344,6 +447,7 @@ const doneTasks = computed(() => {
 
 // ── Labels ──
 const blockerOptions = [
+  { value: "study_changed", label: "实际改学了其他内容" },
   { value: "time", label: "时间不足" },
   { value: "understanding", label: "理解困难" },
   { value: "practice", label: "练习不足" },
@@ -1068,7 +1172,7 @@ async function loadDidaCompleted() {
     if (!titles.length) return;
     let matched = 0;
     for (const task of allTasks.value) {
-      if (titles.includes(task.title)) {
+      if (titles.includes(task.title) && !taskCompletionTouched.value[task.id]) {
         taskCompleted.value[task.id] = true;
         matched++;
       }
@@ -1085,6 +1189,7 @@ function initFromReview(review: ReviewRecord) {
   if (review.task_reviews?.length) {
     for (const tr of review.task_reviews) {
       taskCompleted.value[tr.task_id] = tr.status === "completed";
+      taskCompletedPoints.value[tr.task_id] = [...(tr.completed_knowledge_points ?? [])];
       if (tr.blockers?.length) taskBlockers.value[tr.task_id] = [...tr.blockers];
       if (tr.blocker_note) blockerNotes.value[tr.task_id] = tr.blocker_note;
     }
@@ -1114,9 +1219,14 @@ function initFromReview(review: ReviewRecord) {
 }
 
 function resetForm() {
+  actualStudy.value = [];
+  submitError.value = "";
   step.value = 0;
-  quickMode.value = false;
+  quickMode.value = true;
   taskCompleted.value = {};
+  taskCompletedPoints.value = {};
+  taskCompletionTouched.value = {};
+  partialTaskOpen.value = {};
   taskBlockers.value = {};
   blockerNotes.value = {};
   overallFeeling.value = "normal";
@@ -1134,12 +1244,136 @@ function resetForm() {
   ocTail.value = {};
 }
 
+const draftMessage = ref("");
+const regenerationInFlight = ref(false);
+let loadedReviewDate = "";
+let draftLoadFailed = false;
+const draftQueue = createReviewDraftQueue<api.ReviewDraft<ReviewDraftForm>>(api.saveReviewDraft);
+
+function captureDraft(): ReviewDraftForm {
+  return JSON.parse(
+    JSON.stringify({
+      taskSignatures: reviewTaskSignatures(allTasks.value),
+      taskCompleted: taskCompleted.value,
+      taskCompletedPoints: taskCompletedPoints.value,
+      taskCompletionTouched: taskCompletionTouched.value,
+      taskBlockers: taskBlockers.value,
+      blockerNotes: blockerNotes.value,
+      overallFeeling: overallFeeling.value,
+      mainDifficulty: mainDifficulty.value,
+      workloadFeedback: workloadFeedback.value,
+      externalInterference: externalInterference.value,
+      actualStudy: actualStudy.value,
+      hasOvercompletion: hasOvercompletion.value,
+      overcompletions: overcompletions.value,
+      step: step.value,
+      quickMode: quickMode.value,
+      activeSubject: activeSubject.value,
+      viewTableIds: viewTableIds.value,
+      ocOrig: ocOrig.value,
+      ocTail: ocTail.value,
+    })
+  );
+}
+
+async function saveCurrentDraft(forUpdate = false) {
+  draftQueue.cancel();
+  if (draftLoadFailed) {
+    if (forUpdate) throw new Error("已有复盘草稿未能读取，请先检查草稿文件");
+    return;
+  }
+  if (!loadedReviewDate || loading.value || submitted.value || !plan.value) {
+    await draftQueue.drain();
+    return;
+  }
+  if (plan.value.meta.date !== loadedReviewDate)
+    throw new Error("复盘日期与当前任务不一致，请刷新复盘后再保存");
+  const draft: api.ReviewDraft<ReviewDraftForm> = {
+    version: 1,
+    date: loadedReviewDate,
+    form: captureDraft(),
+  };
+  await draftQueue.save(draft);
+}
+
+async function restoreDraft() {
+  try {
+    const draft = await api.getReviewDraft<ReviewDraftForm>(selectedDate.value);
+    if (!draft) return;
+    const form = draft.form;
+    if (!isReviewDraftForm(form)) throw new Error("复盘草稿字段不完整或格式不兼容");
+    const matching = matchingDraftTasks(form, allTasks.value);
+    for (const id of matching) {
+      taskCompleted.value[id] = form.taskCompleted[id] ?? false;
+      taskCompletedPoints.value[id] = form.taskCompletedPoints[id] ?? [];
+      taskCompletionTouched.value[id] = form.taskCompletionTouched[id] ?? true;
+    }
+    taskBlockers.value = form.taskBlockers;
+    blockerNotes.value = form.blockerNotes;
+    overallFeeling.value = form.overallFeeling;
+    mainDifficulty.value = form.mainDifficulty;
+    workloadFeedback.value = form.workloadFeedback;
+    externalInterference.value = form.externalInterference;
+    actualStudy.value = form.actualStudy;
+    hasOvercompletion.value = form.hasOvercompletion;
+    overcompletions.value = form.overcompletions;
+    step.value = form.step;
+    quickMode.value = form.quickMode;
+    activeSubject.value = form.activeSubject;
+    viewTableIds.value = form.viewTableIds;
+    ocOrig.value = form.ocOrig;
+    ocTail.value = form.ocTail;
+    draftMessage.value =
+      matching.length === Object.keys(form.taskSignatures).length
+        ? "已恢复未提交的复盘草稿。"
+        : "已恢复复盘文字草稿，部分任务内容已变化，请重新核对任务选择。";
+  } catch (error) {
+    draftLoadFailed = true;
+    draftMessage.value = `读取复盘草稿失败，原草稿将保留：${String(error)}`;
+  }
+}
+
+watch(
+  captureDraft,
+  () => {
+    if (loading.value || submitted.value || !loadedReviewDate || draftLoadFailed) return;
+    draftQueue.cancel();
+    draftQueue.schedule(() => {
+      void saveCurrentDraft().catch((error) => {
+        draftMessage.value = `草稿保存失败：${String(error)}`;
+      });
+    }, 600);
+  },
+  { deep: true }
+);
+
+const unregisterUpdatePreparation = registerUpdatePreparation(async () => {
+  await waitForIdle(
+    () => loading.value || submitting.value || regenerationInFlight.value || savingProgress.value
+  );
+  await saveCurrentDraft(true);
+});
+onBeforeRouteLeave(async () => {
+  try {
+    await saveCurrentDraft();
+    return true;
+  } catch (error) {
+    draftMessage.value = `草稿保存失败，暂未离开页面：${String(error)}`;
+    return false;
+  }
+});
+onBeforeUnmount(() => {
+  reviewSyncController.dispose();
+  draftQueue.dispose();
+  unregisterUpdatePreparation();
+});
+
 // ── Navigation ──
 // 步骤顺序：0 完成情况 → 1 未完成原因（可跳过）→ 2 整体感受 → 3 最大困难 → 4 计划外学习
 function canNext(): boolean {
   switch (step.value) {
     case 0:
-      return allTasks.value.length > 0;
+      return allTasks.value.length > 0 && !actualError.value;
     case 2:
       return !!overallFeeling.value;
     default:
@@ -1182,15 +1416,27 @@ function goPrev() {
 
 // ── Submit ──
 async function doSubmit() {
+  if (actualError.value) {
+    submitError.value = actualError.value;
+    return;
+  }
+  submitError.value = "";
   submitting.value = true;
   // 动态步骤：保存复盘 →（可能）调整后续计划 → 同步滴答
   submitSteps.value = buildSubmitSteps(DEFAULT_SUBMIT_STEP_KEYS);
   setSubmitStep(0); // 正在保存复盘
   try {
+    await loadTaskActualMinutes();
     const taskReviews: TaskReviewEntry[] = allTasks.value.map((t) => ({
       task_id: t.id,
-      status: taskCompleted.value[t.id] ? "completed" : "incomplete",
-      completion: taskCompleted.value[t.id] ? 1.0 : 0.0,
+      status: reviewStatus(t),
+      completion: taskCompleted.value[t.id]
+        ? 1
+        : t.knowledge_points?.length
+          ? completedPoints(t).length / t.knowledge_points.length
+          : 0,
+      knowledge_points: t.knowledge_points,
+      completed_knowledge_points: t.knowledge_points !== undefined ? completedPoints(t) : undefined,
       // 掌握程度不再由复盘采集（该职责已由进度表承担）：字段留空，兼容历史记录
       mastery: "",
       blockers: taskBlockers.value[t.id] || [],
@@ -1201,7 +1447,7 @@ async function doSubmit() {
       // 仅在启用「记录学习时长」时持久化估时与实际用时
       estimated_hours:
         timeTrackingEnabled.value && t.estimated_hours > 0 ? t.estimated_hours : undefined,
-      actual_minutes: timeTrackingEnabled.value ? (taskActualMinutes.value[t.id] ?? 0) : undefined,
+      actual_minutes: taskActualMinutes.value[t.id],
     }));
 
     const dailyReview: DailyReviewInput = {
@@ -1221,9 +1467,23 @@ async function doSubmit() {
       task_reviews: taskReviews,
       daily_review: dailyReview,
       overcompletion: validOvercompletions.length > 0 ? validOvercompletions : undefined,
+      actual_study: actualStudy.value.map((entry) => ({ ...entry, content: entry.content.trim() })),
     });
     submitted.value = true;
+    draftQueue.cancel();
+    await draftQueue.drain().catch(() => {});
+    await api.deleteReviewDraft(selectedDate.value).catch((error) => {
+      draftMessage.value = `复盘已保存，旧草稿清理失败：${String(error)}`;
+    });
+    directionRefresh.value++;
 
+    reviewSyncController.record(result);
+    if (result.sync_status === "pending") {
+      setSubmitStep(-1);
+      await loadReviewData();
+      await loadReviewDates();
+      return;
+    }
     // 若需要 AI 重排剩余天数，插入「正在调整」步骤并执行
     if (result.needs_regeneration) {
       await advanceSubmitStep(ensureSubmitStep("adjusting"));
@@ -1232,10 +1492,12 @@ async function doSubmit() {
 
     // 收尾：清理滴答中过往未完成任务
     await advanceSubmitStep(ensureSubmitStep("syncing"));
-    try {
-      await api.cleanupDidaStale();
-    } catch (e) {
-      console.error("清理滴答过往任务失败:", e);
+    if (!result.needs_regeneration) {
+      try {
+        await api.cleanupDidaStale();
+      } catch (e) {
+        console.error("清理滴答过往任务失败:", e);
+      }
     }
     // 全部完成，关闭进度卡片
     setSubmitStep(-1);
@@ -1246,6 +1508,7 @@ async function doSubmit() {
     await loadReviewDates();
   } catch (e) {
     console.error("提交复盘失败:", e);
+    submitError.value = e instanceof Error ? e.message : String(e);
   } finally {
     submitting.value = false;
     setSubmitStep(-1);
@@ -1264,13 +1527,14 @@ async function cancelRegeneration() {
 
 /** 执行 AI 重排剩余天数（doSubmit 和 retry 共用） */
 async function executeRegeneration() {
+  regenerationInFlight.value = true;
   // 已在「正在调整」步骤时不重复切换：否则会重置该步的最短展示计时
   if (submitSteps.value[submitStepIndex.value]?.key !== "adjusting") {
     setSubmitStep(ensureSubmitStep("adjusting")); // 正在调整
   }
   regenFailed.value = false;
   regenerating.value = true;
-  regenMessage.value = "正在调整后续计划，请勿关闭应用…";
+  regenMessage.value = "正在生成调整预览，现有计划保持不变…";
   saveRegenStatus({
     date: selectedDate.value,
     regenerating: true,
@@ -1281,23 +1545,12 @@ async function executeRegeneration() {
   });
   try {
     const regenResult = await api.regenerateRemainingDays(selectedDate.value);
-    if (regenResult.used_fallback) {
-      // AI 调用失败，但兜底安排了未完成任务：告知用户并提供重新生成按钮
-      regenFailed.value = true;
-      regenMessage.value =
-        "AI 调整后续计划失败，已自动按未完成任务做了兜底安排。可点击「重新生成」再次尝试让 AI 调整。";
-    } else if (regenResult.regenerated) {
-      regenMessage.value = `已调整后续 ${regenResult.affected_dates.length} 天的计划安排`;
-    } else {
-      regenMessage.value = "本次复盘无需调整后续计划。";
-    }
-    // 保存逐日变更明细（悬停查看具体修改了哪些内容）
-    regenChanges.value = regenResult.changes ?? [];
-    // 一致性校验：声明了计划外进度的科目未在计划中生效时，追加警告提示
-    if (regenResult.consistency_warnings?.length) {
-      regenMessage.value += `\n${regenResult.consistency_warnings.join("\n")}`;
-      regenFailed.value = true;
-    }
+    adjustmentPanel.value?.showPreview(regenResult);
+    regenMessage.value =
+      regenResult.affected_dates.length || regenResult.goals.length
+        ? "后续计划的调整预览已生成，确认应用后才会生效。"
+        : "本次复盘无需调整后续计划。";
+    regenChanges.value = [];
   } catch (e) {
     console.error("调整后续计划失败:", e);
     const detail = e instanceof Error ? e.message : String(e);
@@ -1306,6 +1559,7 @@ async function executeRegeneration() {
     regenChanges.value = [];
   } finally {
     regenerating.value = false;
+    regenerationInFlight.value = false;
     if (regenMessage.value) {
       saveRegenStatus({
         date: selectedDate.value,
@@ -1338,44 +1592,22 @@ async function retryRegeneration() {
 
 // ── Data loading ──
 async function loadTaskActualMinutes() {
-  if (!timeTrackingEnabled.value) {
-    taskActualMinutes.value = {};
-    return;
-  }
-  try {
-    const map: Record<string, number> = {};
-    if (selectedDate.value === todayDate) {
-      const state = await api.getState();
-      for (const st of state.current_task?.tasks ?? []) {
-        if (!st.task_id) continue;
-        let total = st.accumulated_minutes ?? 0;
-        // 若任务正在计时，加上当前进行中的时段
-        if (st.started_at) {
-          const start = new Date(st.started_at).getTime();
-          const now = Date.now();
-          if (!isNaN(start) && now > start) {
-            total += Math.floor((now - start) / 60000);
-          }
-        }
-        map[st.task_id] = total;
-      }
-    } else {
-      // State 只保留当前日；历史日从带 task_id 的 Focus 会话恢复任务用时。
-      const sessions = await api.getFocusSessions(selectedDate.value);
-      for (const session of sessions) {
-        if (session.status !== "completed" || !session.task_id) continue;
-        if (session.type !== "focus" && session.type !== "stopwatch") continue;
-        map[session.task_id] = (map[session.task_id] ?? 0) + Math.max(0, session.duration_minutes);
-      }
-    }
-    taskActualMinutes.value = map;
-  } catch {
-    taskActualMinutes.value = {};
-  }
+  const date = selectedDate.value;
+  const [sessions, state] = await Promise.allSettled([api.getFocusSessions(date), api.getState()]);
+  if (date !== selectedDate.value) return;
+  taskActualMinutes.value = reviewTaskMinutes(
+    date,
+    sessions.status === "fulfilled" ? sessions.value : [],
+    state.status === "fulfilled" ? state.value : undefined
+  );
 }
 
 async function loadReviewData() {
   loading.value = true;
+  void reviewSyncController.load();
+  loadedReviewDate = "";
+  draftLoadFailed = false;
+  draftMessage.value = "";
   resetForm();
   existingReview.value = null;
   submitted.value = false;
@@ -1403,6 +1635,7 @@ async function loadReviewData() {
   }
 
   try {
+    await loadTodayPlanStatus();
     // 加载选中日期的计划（用于显示任务列表）
     await todayStore.loadByDate(selectedDate.value);
     // 加载各科进度表（计划外学习章节选择数据源）
@@ -1430,11 +1663,24 @@ async function loadReviewData() {
     if (!submitted.value) {
       initFromState();
       if (canFillReview.value) {
-        loadDidaCompleted();
+        await loadDidaCompleted();
       }
+      if (plan.value) await restoreDraft();
+    } else {
+      await api.deleteReviewDraft(selectedDate.value).catch(() => {});
     }
+    loadedReviewDate = selectedDate.value;
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadTodayPlanStatus() {
+  todayHasPlan.value = null;
+  try {
+    todayHasPlan.value = (await api.listPlanDates()).includes(todayDate);
+  } catch (error) {
+    console.error("读取今日日计划状态失败", error);
   }
 }
 
@@ -1454,7 +1700,9 @@ function jumpToReviewDate(date: string) {
 }
 
 // ── Watch date changes ──
+let initializingDate = true;
 watch(selectedDate, () => {
+  if (initializingDate) return;
   loadReviewData();
 });
 
@@ -1463,15 +1711,17 @@ function initDateFromQuery() {
   const q = route.query.date;
   if (typeof q === "string" && /^\d{4}-\d{2}-\d{2}$/.test(q)) {
     selectedDate.value = q;
-  } else if (beforeStartTimeToday.value) {
-    // 次日凌晨（今天学习开始前）打开复盘：默认进入前一天日期进行复盘。
-    // 复盘对象是「刚结束的那一天」，此时今天的学习尚未开始，不应默认到第二天。
+  } else if (withinBackfillWindow.value) {
+    // 学习开始前或今日尚无计划时，默认进入昨天的补复盘页面。
     selectedDate.value = yesterdayDate.value;
   }
 }
 
 onMounted(async () => {
+  await loadTodayPlanStatus();
   initDateFromQuery();
+  await nextTick();
+  initializingDate = false;
   await Promise.all([loadReviewData(), loadReviewDates()]);
 });
 
@@ -1482,6 +1732,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
 <template>
   <div class="review-view">
+    <TaskKnowledgeEditor
+      :task="editingKnowledgeTask"
+      @close="editingKnowledgeTask = null"
+      @saved="onKnowledgeSaved"
+    />
     <!-- Date navigation bar -->
     <div class="date-bar">
       <div class="date-nav">
@@ -1541,10 +1796,41 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
       </div>
     </div>
 
+    <PlanAdjustmentPanel
+      ref="adjustmentPanel"
+      @changed="
+        loadReviewData();
+        todayStore.loadToday();
+      "
+      @discarded="regenMessage = '已放弃预览，后续计划保持原样。'"
+    />
+
+    <StudyDirectionPanel
+      v-if="isToday && !loading"
+      :refresh-key="`${selectedDate}:${directionRefresh}`"
+      :disabled="submitting || regenerating"
+      @changed="onDirectionChanged"
+    />
+    <p v-if="submitError" class="submit-error" role="alert">{{ submitError }}</p>
+    <div v-if="reviewSync?.sync_status === 'pending'" class="submit-error" role="status">
+      <p>复盘已保存，进度同步尚未完成。处理完成后才能调整计划。</p>
+      <p v-for="warning in reviewSync.warnings" :key="warning">{{ warning }}</p>
+      <button type="button" :disabled="retryingReviewSync" @click="retrySavedReviewSync">
+        {{ retryingReviewSync ? "正在同步…" : "重试同步" }}
+      </button>
+    </div>
+    <p v-if="draftMessage" class="draft-message" role="status">{{ draftMessage }}</p>
+
     <!-- Loading -->
     <transition :name="dateTransitionName" mode="out-in">
       <div :key="selectedDate" class="review-content">
         <div v-if="loading" class="loading-msg">加载中…</div>
+
+        <Card v-else-if="draftLoadFailed" padding="lg" class="gate-card">
+          <h1 class="gate-title">无法读取复盘草稿</h1>
+          <p class="gate-desc">原草稿文件已保留，请先导出备份并检查，避免覆盖未提交的内容。</p>
+          <Button variant="secondary" @click="router.push('/settings')">前往设置</Button>
+        </Card>
 
         <!-- Future date -->
         <Card v-else-if="isFuture" padding="lg" class="gate-card">
@@ -1606,17 +1892,27 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           </template>
         </EmptyState>
 
-        <!-- Yesterday without review and past start_time (cannot backfill) -->
+        <!-- 昨日无复盘且补录窗口关闭 -->
         <Card
-          v-else-if="isYesterday && !existingReview && !beforeStartTimeToday"
+          v-else-if="isYesterday && !existingReview && !withinBackfillWindow"
           padding="lg"
           class="gate-card"
         >
           <div class="gate-hero">
             <div class="gate-icon"><AlertTriangle :size="40" /></div>
             <h1 class="gate-title">无法补复盘</h1>
-            <p class="gate-desc">昨天未进行复盘，但今日学习已开始。</p>
-            <p class="gate-hint">补复盘仅可在今日学习开始时间（{{ startTime }}）之前进行。</p>
+            <p class="gate-desc">
+              {{
+                todayHasPlan === null
+                  ? "暂时无法确认今日是否已有计划，请刷新后重试。"
+                  : "昨天未进行复盘，但今日已有计划且已到学习开始时间。"
+              }}
+            </p>
+            <p class="gate-hint">
+              今日已有计划时，补复盘仅可在学习开始时间（{{
+                startTime
+              }}）之前进行；今日无计划时可继续补复盘。
+            </p>
           </div>
         </Card>
 
@@ -1636,7 +1932,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
           <div class="gate-hero">
             <div class="gate-icon"><LoadingSpinner :size="40" /></div>
             <h1 class="gate-title">
-              {{ regenerating ? "正在调整后续计划…" : "正在提交复盘…" }}
+              {{ regenerating ? "正在生成调整预览…" : "正在提交复盘…" }}
             </h1>
             <p class="gate-desc">请稍候，正在处理你的学习数据。</p>
             <div class="submit-steps">
@@ -1708,6 +2004,13 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                 <AlertTriangle :size="18" v-else />
                 <span>{{ regenMessage }}</span>
                 <!-- 变更明细：常态化展示调整提示，鼠标悬停查看具体修改了哪些内容 -->
+                <Button
+                  v-if="!regenerating && !regenFailed"
+                  variant="ghost"
+                  size="sm"
+                  @click="retryRegeneration"
+                  >重新生成调整预览</Button
+                >
                 <div v-if="regenChanges.length && !regenerating" class="regen-details-trigger">
                   <Info :size="13" />
                   <span>悬停查看变更</span>
@@ -1765,10 +2068,14 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                   <span class="summary-label">完成率</span>
                   <span class="summary-value">
                     <template v-if="existingReview.task_reviews?.length">
-                      {{
-                        existingReview.task_reviews.filter((t) => t.status === "completed").length
-                      }}
-                      / {{ existingReview.task_reviews.length }}
+                      {{ Math.round(existingReview.data?.completion?.completion_rate ?? 0) }}%
+                      <small
+                        >（整项完成
+                        {{
+                          existingReview.task_reviews.filter((t) => t.status === "completed")
+                            .length
+                        }}/{{ existingReview.task_reviews.length }}）</small
+                      >
                     </template>
                     <template v-else>
                       {{ existingReview.data.completed_tasks.filter((t) => t.completed).length }}
@@ -1818,6 +2125,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                           subjectLabel(findTaskSubject(tr.task_id, tr))
                         }}</span>
                         <span class="trr-status">{{ statusLabel(tr.status) }}</span>
+                        <span v-if="tr.completed_knowledge_points?.length" class="trr-status"
+                          >已学完：{{
+                            tr.completed_knowledge_points.map((p) => p.title).join("、")
+                          }}</span
+                        >
                       </div>
                     </div>
                   </div>
@@ -1829,10 +2141,7 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                       <Clock :size="11" />
                       估时 {{ formatHours(taskEstimatedHours(tr.task_id, tr)) }}
                     </span>
-                    <span
-                      v-if="timeTrackingEnabled && taskActualFromReview(tr.task_id, tr) > 0"
-                      class="trr-chip actual"
-                    >
+                    <span v-if="tr.actual_minutes !== undefined" class="trr-chip actual">
                       <Clock :size="11" />
                       实际
                       {{ formatMinutes(taskActualFromReview(tr.task_id, tr)) }}
@@ -1908,19 +2217,44 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                 </div>
               </div>
 
-              <p class="done-hint">复盘数据将在下一次 Planner 中自动生效。</p>
+              <div v-if="existingReview.actual_study?.length" class="task-reviews-list">
+                <div class="task-reviews-title">实际学习内容与方向</div>
+                <div
+                  v-for="(entry, index) in existingReview.actual_study"
+                  :key="index"
+                  class="actual-study-record"
+                >
+                  <strong
+                    >{{ subjectLabel(entry.subject) }} ·
+                    {{
+                      entry.scope === "ongoing"
+                        ? "后续按此方向安排"
+                        : entry.scope === "end"
+                          ? "结束方向"
+                          : "仅记录当天"
+                    }}</strong
+                  >
+                  <p>{{ entry.content }}</p>
+                  <small v-if="entry.knowledge_points?.length"
+                    >关联：{{ entry.knowledge_points.map((p) => p.title).join("、") }}</small
+                  >
+                </div>
+              </div>
+              <p class="done-hint">
+                复盘数据将在下一次 Planner 中自动生效，后续计划调整需确认预览后应用。
+              </p>
             </div>
           </Card>
         </template>
 
         <!-- Steps (fill review) -->
-        <template v-else-if="canFillReview">
+        <template v-else-if="canFillReview && plan">
           <div class="backfill-banner" v-if="isYesterday">
             <AlertTriangle :size="14" />
             <span>补复盘模式：为昨天（{{ selectedDate }}）补录复盘</span>
           </div>
 
-          <div class="step-bar">
+          <div v-if="!quickMode" class="step-bar">
             <div class="step-dots">
               <span
                 v-for="i in totalSteps"
@@ -1944,9 +2278,9 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
           <!-- Step 1: Task Completion -->
           <Card v-if="step === 0" padding="lg" class="step-card">
-            <h2 class="step-title">任务完成情况</h2>
+            <h2 class="step-title">{{ quickMode ? "确认今天的学习记录" : "任务完成情况" }}</h2>
             <p class="step-desc">
-              勾选{{ isYesterday ? "昨天" : "今天" }}已完成的任务（自动读取 State 中的完成状态）
+              已带入完成情况和学习时长。情况无误可直接保存，有变化时再修改或补充。
             </p>
             <div v-if="didaMatchedCount > 0" class="dida-sync-note">
               <Smartphone :size="13" />
@@ -1976,29 +2310,77 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
                       <Clock :size="12" />
                       ≈{{ formatHours(task.estimated_hours) }}
                     </Badge>
-                    <Badge
-                      v-if="timeTrackingEnabled && (taskActualMinutes[task.id] ?? 0) > 0"
-                      variant="info"
-                      size="sm"
-                    >
+                    <Badge v-if="taskActualMinutes[task.id] !== undefined" variant="info" size="sm">
                       <Clock :size="12" />
                       {{ formatMinutes(taskActualMinutes[task.id] ?? 0) }}
                     </Badge>
+                    <span v-else class="field-hint">学习时长未记录</span>
                   </div>
                   <span class="tri-title">{{ task.title }}</span>
+                  <button type="button" class="knowledge-link" @click="editingKnowledgeTask = task">
+                    {{
+                      task.knowledge_points?.length
+                        ? `关联 ${task.knowledge_points.length} 个知识点 · 修正`
+                        : "关联知识点"
+                    }}
+                  </button>
+                  <details
+                    v-if="task.knowledge_points?.length"
+                    class="partial-points"
+                    :open="partialTaskOpen[task.id]"
+                    @toggle="partialTaskOpen[task.id] = ($event.target as HTMLDetailsElement).open"
+                  >
+                    <summary>
+                      部分完成 · {{ completedPoints(task).length }}/{{
+                        task.knowledge_points.length
+                      }}
+                      个知识点
+                    </summary>
+                    <p>勾选已经学完的内容，后续只安排剩余部分。</p>
+                    <label
+                      v-for="point in task.knowledge_points"
+                      :key="`${point.table_id}/${point.node_id}`"
+                      class="partial-point"
+                    >
+                      <Checkbox
+                        :checked="completedPoints(task).some((p) => samePoint(p, point))"
+                        @change="toggleCompletedPoint(task, point)"
+                      />
+                      <span>{{ point.title }}</span>
+                    </label>
+                  </details>
                 </div>
                 <button
                   type="button"
                   class="check-btn"
                   :class="{ checked: taskCompleted[task.id] }"
                   :aria-pressed="taskCompleted[task.id]"
-                  @click="taskCompleted[task.id] = !taskCompleted[task.id]"
+                  @click="toggleTaskComplete(task)"
                 >
                   <CheckCircle2 v-if="taskCompleted[task.id]" :size="18" />
                   <Circle v-else :size="18" />
-                  {{ taskCompleted[task.id] ? "已完成" : "未完成" }}
+                  {{ statusLabel(reviewStatus(task)) }}
                 </button>
               </div>
+            </div>
+          </Card>
+
+          <Card v-show="step === 0" padding="lg" class="step-card">
+            <h2 class="step-title">我实际正在学什么（可选）</h2>
+            <p class="step-desc">
+              实际安排与 AI 计划差得较多时，在这里说明当前内容和接下来的顺序。只填文字也能生效。
+            </p>
+            <ActualStudyEditor v-model="actualStudy" :disabled="submitting" />
+            <div v-if="actualStudy.length && incompleteTasks.length" class="actual-changed-tasks">
+              <p class="step-desc">原计划里，哪些任务是因为改学其他内容而没有完成？</p>
+              <label v-for="task in incompleteTasks" :key="task.id" class="actual-changed-task">
+                <Checkbox
+                  :checked="taskBlockers[task.id]?.includes('study_changed') ?? false"
+                  :disabled="submitting"
+                  @change="toggleBlocker(task.id, 'study_changed')"
+                />
+                <span>{{ task.title }}</span>
+              </label>
             </div>
           </Card>
 
@@ -2547,22 +2929,55 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 
           <!-- Navigation -->
           <div class="step-nav">
-            <Button v-if="step > 0" variant="ghost" @click="goPrev"
-              ><ArrowLeft :size="16" /> 上一步</Button
-            >
-            <div class="nav-right">
+            <template v-if="quickMode && step === 0">
               <Button
-                v-if="step < totalSteps - 1"
-                variant="primary"
-                :disabled="!canNext()"
-                @click="goNext"
+                variant="ghost"
+                @click="
+                  quickMode = false;
+                  step = incompleteTasks.length ? 1 : 2;
+                "
+                >补充困难或感受</Button
               >
-                下一步 <ArrowRight :size="16" />
-              </Button>
-              <Button v-else variant="primary" @click="doSubmit" :loading="submitting">
-                <Sparkles :size="16" /> 提交复盘
-              </Button>
-            </div>
+              <Button
+                variant="ghost"
+                @click="
+                  quickMode = false;
+                  step = 4;
+                "
+                >补充计划外学习</Button
+              >
+              <Button
+                variant="primary"
+                :loading="submitting"
+                :disabled="!!actualError"
+                @click="doSubmit"
+                >情况无误，保存复盘</Button
+              >
+            </template>
+            <template v-else>
+              <Button v-if="step > 0" variant="ghost" @click="goPrev"
+                ><ArrowLeft :size="16" /> 上一步</Button
+              >
+              <div class="nav-right">
+                <Button
+                  v-if="step < totalSteps - 1"
+                  variant="primary"
+                  :disabled="!canNext()"
+                  @click="goNext"
+                >
+                  下一步 <ArrowRight :size="16" />
+                </Button>
+                <Button
+                  v-else
+                  variant="primary"
+                  @click="doSubmit"
+                  :loading="submitting"
+                  :disabled="!!actualError"
+                >
+                  <Sparkles :size="16" /> 提交复盘
+                </Button>
+              </div>
+            </template>
           </div>
         </template>
       </div>
@@ -2571,6 +2986,62 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
 </template>
 
 <style scoped>
+.submit-error {
+  color: var(--color-danger, #dc2626);
+  margin: 12px 0;
+}
+.actual-study-record {
+  padding: 12px 0;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.actual-study-record p {
+  white-space: pre-wrap;
+  margin: 6px 0;
+}
+.actual-study-record small {
+  color: var(--text-secondary);
+}
+.actual-changed-tasks {
+  margin-top: 16px;
+}
+.actual-changed-task {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  font-size: 14px;
+}
+.knowledge-link {
+  margin-top: 4px;
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.partial-points {
+  margin-top: 8px;
+  font-size: 13px;
+}
+.partial-points summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.partial-points p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.partial-point {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  cursor: pointer;
+}
+
 .review-view {
   max-width: 720px;
   margin: 0 auto;
@@ -2578,6 +3049,11 @@ const sortedReviewDates = computed(() => [...reviewDates.value].reverse());
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+.draft-message {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  margin: 8px 0;
 }
 
 /* Date bar */

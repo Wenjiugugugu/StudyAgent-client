@@ -13,6 +13,7 @@ import type { StudyState, SubjectKey } from "@/types/state";
 
 /** 主表单结构（与 settingsStore.settings 对应字段同构） */
 export interface SettingsForm {
+  startup_page: string;
   user_name: string;
   show_greeting: boolean;
   target_score: number;
@@ -195,6 +196,7 @@ export function useSettingsForm() {
     const s = settingsStore.settings;
     if (!s) return;
     form.value = {
+      startup_page: s.startup_page || "/dashboard",
       user_name: s.user_name ?? "",
       show_greeting: s.show_greeting ?? true,
       target_score: s.target_score ?? 0,
@@ -254,6 +256,7 @@ export function useSettingsForm() {
     saving.value = true;
     try {
       const s = settingsStore.settings;
+      s.startup_page = form.value.startup_page;
       s.user_name = form.value.user_name;
       s.show_greeting = form.value.show_greeting;
       s.target_score = form.value.target_score;

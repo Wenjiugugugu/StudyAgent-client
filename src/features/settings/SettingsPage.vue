@@ -134,7 +134,7 @@ watch(
 
       <div class="settings-content">
         <PersonalInfoSection :form="form" />
-        <GeneralSection />
+        <GeneralSection :form="form" />
         <AppearanceSection />
         <GoalsSection :form="form" />
         <ScheduleSection

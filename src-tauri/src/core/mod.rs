@@ -17,12 +17,14 @@ pub mod dashboard;
 pub mod date_utils;
 pub mod estimated_time;
 pub mod goal_planner;
+pub mod plan_adjustment;
 pub mod planner;
 pub mod planning;
 pub mod professional;
 pub mod progress_sync;
 pub mod review;
 pub mod scheduler;
+pub mod task_progress;
 pub mod user_model;
 
 pub use analytics::*;
@@ -32,3 +34,9 @@ pub use planner::*;
 pub use review::*;
 pub use scheduler::*;
 pub use user_model::*;
+
+pub mod review_sync;
+
+pub(crate) mod update_support;
+
+pub(crate) mod textbook_support;

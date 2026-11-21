@@ -10,6 +10,7 @@ export const useAnalyticsStore = defineStore("analytics", () => {
   const currentRange = ref<AnalyticsRange>("last_30_days");
   // 是否在分析中排除休息日和特殊情况排除日（默认开启）
   const excludeExemptDates = ref(true);
+  let requestId = 0;
 
   const learningTrend = computed(() => summary.value?.learning_trend ?? null);
   const reviewQuality = computed(() => summary.value?.review_quality ?? null);
@@ -19,16 +20,18 @@ export const useAnalyticsStore = defineStore("analytics", () => {
     range: AnalyticsRange = currentRange.value,
     exclude: boolean = excludeExemptDates.value
   ) {
+    const id = ++requestId;
     loading.value = true;
     error.value = null;
     currentRange.value = range;
     excludeExemptDates.value = exclude;
     try {
-      summary.value = await api.getAnalytics(range, exclude);
+      const result = await api.getAnalytics(range, exclude);
+      if (id === requestId) summary.value = result;
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e);
+      if (id === requestId) error.value = e instanceof Error ? e.message : String(e);
     } finally {
-      loading.value = false;
+      if (id === requestId) loading.value = false;
     }
   }
 

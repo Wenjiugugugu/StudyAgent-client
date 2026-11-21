@@ -102,7 +102,13 @@ pub async fn update_task_status(
         .tasks
         .iter()
         .find(|t| t.task_id.as_deref() == Some(&task_id))
-        .or_else(|| study_state.current_task.tasks.get(task_index))
+        .or_else(|| {
+            study_state
+                .current_task
+                .tasks
+                .get(task_index)
+                .filter(|t| t.task_id.is_none())
+        })
         .map(|t| t.subject.clone());
 
     // 更新任务状态
@@ -134,7 +140,13 @@ pub async fn update_task_status(
                 .tasks
                 .iter()
                 .find(|t| t.task_id.as_deref() == Some(&task_id))
-                .or_else(|| study_state.current_task.tasks.get(task_index))
+                .or_else(|| {
+                    study_state
+                        .current_task
+                        .tasks
+                        .get(task_index)
+                        .filter(|t| t.task_id.is_none())
+                })
                 .map(|t| t.task.clone())
                 .unwrap_or_default();
 

@@ -12,19 +12,30 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::core::goal_planner::subject_version;
-use crate::data::goal::{goal_of_subject_book, read_goals, save_goals, Goal, GoalPlanFile};
+use crate::data::goal::{goal_of_subject_book, read_goals, save_goals, Goal};
 use crate::data::plan::PlanTask;
 use crate::data::progress_tables::load_progress_index;
-use crate::data::state::{read_state_or_default, SubjectKey};
+use crate::data::state::SubjectKey;
 use crate::{get_data_dir, get_data_dir_and_ai, AppState};
 
 /// 列出全部目标区间。
 ///
 /// 前端调用: `invoke('list_goals')`
 #[tauri::command]
-pub async fn list_goals(state: State<'_, Mutex<AppState>>) -> Result<GoalPlanFile, String> {
+pub async fn list_goals(state: State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
-    read_goals(&data_dir)
+    let file = read_goals(&data_dir)?;
+    let mut dto = serde_json::to_value(&file).map_err(|e| e.to_string())?;
+    dto["data"]["goals"] = file
+        .data
+        .goals
+        .iter()
+        .map(crate::data::revision::with_revision)
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
+    Ok(dto)
 }
 
 /// 创建一条目标区间。
@@ -49,8 +60,10 @@ pub async fn create_goal(
     start_chapter: Option<String>,
     book: Option<String>,
     state: State<'_, Mutex<AppState>>,
-) -> Result<Goal, String> {
+) -> Result<serde_json::Value, String> {
     crate::data::validate_date(&deadline)?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
 
     let book_trimmed = book.unwrap_or_default().trim().to_string();
@@ -59,7 +72,8 @@ pub async fn create_goal(
     }
 
     let key = subject.key();
-    let state_data = read_state_or_default(&data_dir);
+    crate::data::progress_tables::read_progress_index(&data_dir)?;
+    let state_data = crate::data::state::read_state_or_new(&data_dir)?;
     let version = subject_version(&state_data, key);
     let target_position = crate::core::chapter_seq::position(key, &version, &target_chapter)
         .ok_or_else(|| format!("未能在地图中考纲顺序表中定位目标章节「{}」", target_chapter))?;
@@ -154,7 +168,7 @@ pub async fn create_goal(
     file.data.goals.push(goal.clone());
     file.meta.generated_at = crate::data::now_string();
     save_goals(&data_dir, &file)?;
-    Ok(goal)
+    crate::data::revision::with_revision(&goal)
 }
 
 /// 某书/板块在 chapter_seq 顺序表中的位置区间 `[min, max]`（含端点）。
@@ -252,8 +266,9 @@ fn slugify_book(book: &str) -> String {
 #[tauri::command]
 pub async fn update_goal(
     mut goal: Goal,
+    expected_revision: Option<String>,
     state: State<'_, Mutex<AppState>>,
-) -> Result<Goal, String> {
+) -> Result<serde_json::Value, String> {
     if !goal.deadline.is_empty() {
         crate::data::validate_date(&goal.deadline)?;
     }
@@ -266,6 +281,8 @@ pub async fn update_goal(
         );
     }
 
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
     let mut file = read_goals(&data_dir)?;
     let pos = file
@@ -275,9 +292,12 @@ pub async fn update_goal(
         .position(|g| g.id == goal.id)
         .ok_or_else(|| format!("目标 {} 不存在", goal.id))?;
 
+    crate::data::revision::check_revision(&file.data.goals[pos], expected_revision.as_deref())?;
+
     // 位置重新校验：目标章节必须命中考纲顺序表
     let key = goal.subject.key();
-    let state_data = read_state_or_default(&data_dir);
+    crate::data::progress_tables::read_progress_index(&data_dir)?;
+    let state_data = crate::data::state::read_state_or_new(&data_dir)?;
     let version = subject_version(&state_data, key);
     let target_position = crate::core::chapter_seq::position(key, &version, &goal.target_chapter)
         .ok_or_else(|| {
@@ -372,16 +392,29 @@ pub async fn update_goal(
     file.data.goals[pos] = goal.clone();
     file.meta.generated_at = crate::data::now_string();
     save_goals(&data_dir, &file)?;
-    Ok(goal)
+    crate::data::revision::with_revision(&goal)
 }
 
 /// 删除一条目标区间。
 ///
 /// 前端调用: `invoke('delete_goal', { goalId })`
 #[tauri::command]
-pub async fn delete_goal(goal_id: String, state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+pub async fn delete_goal(
+    goal_id: String,
+    expected_revision: Option<String>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
     let mut file = read_goals(&data_dir)?;
+    let existing = file
+        .data
+        .goals
+        .iter()
+        .find(|g| g.id == goal_id)
+        .ok_or("目标不存在")?;
+    crate::data::revision::check_revision(existing, expected_revision.as_deref())?;
     let before = file.data.goals.len();
     file.data.goals.retain(|g| g.id != goal_id);
     if file.data.goals.len() == before {
@@ -406,7 +439,9 @@ pub async fn generate_goal_plan(
     crate::data::validate_date(&date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
-    let state_data = read_state_or_default(&data_dir);
+    crate::core::review_sync::ensure_ready(&data_dir)?;
+    crate::data::progress_tables::read_progress_index(&data_dir)?;
+    let state_data = crate::data::state::read_state_or_new(&data_dir)?;
     let key = subject.key();
     let version = subject_version(&state_data, key);
 
@@ -495,6 +530,8 @@ mod tests {
 
     fn plan_task(id: &str) -> PlanTask {
         PlanTask {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: id.to_string(),
             subject: SubjectKey::Math,
             title: "t".to_string(),

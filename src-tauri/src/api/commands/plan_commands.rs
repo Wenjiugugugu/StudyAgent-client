@@ -10,6 +10,7 @@ use crate::ai::service::AiService;
 use crate::core::analytics::{build_analytics, AnalyticsRange, AnalyticsSummary};
 use crate::core::briefing::{yesterday_of, BriefingAgent};
 use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
+use crate::core::plan_adjustment::{self, AdjustmentOutcome, AdjustmentPreview, AdjustmentStatus};
 use crate::core::planner::Planner;
 use crate::core::review::ReviewAgent;
 use crate::core::user_model::UserModelService;
@@ -30,11 +31,20 @@ use crate::{
 
 use super::legacy::*;
 
-/// 自动补记默认复盘的截止日。今日学习开始前仍允许补昨天的复盘；开始后，
-/// 昨天进入默认标记。更早的缺失记录始终可以补记。
+/// 今日有日计划且已到学习开始时间后，昨天才进入默认标记。
+/// 今日尚无日计划时保留昨天的补复盘窗口；更早的缺失记录仍正常补记。
 fn default_review_cutoff(data_dir: &std::path::Path) -> Result<String, String> {
     let today = crate::data::today_string();
-    let yesterday = crate::data::add_days(&today, -1)?;
+    let now_hm = chrono::Local::now().format("%H:%M").to_string();
+    default_review_cutoff_at(data_dir, &today, &now_hm)
+}
+
+fn default_review_cutoff_at(
+    data_dir: &std::path::Path,
+    today: &str,
+    now_hm: &str,
+) -> Result<String, String> {
+    let yesterday = crate::data::add_days(today, -1)?;
     let settings = crate::load_settings(data_dir);
     let start_time = settings
         .study_schedule
@@ -47,8 +57,10 @@ fn default_review_cutoff(data_dir: &std::path::Path) -> Result<String, String> {
                 && parts[1].parse::<u8>().is_ok_and(|minute| minute < 60)
         })
         .unwrap_or("09:00");
-    let now_hm = chrono::Local::now().format("%H:%M").to_string();
-    if now_hm.as_str() < start_time {
+    let today_plan_exists = crate::data::plan::daily_plan_path(data_dir, today)
+        .try_exists()
+        .map_err(|error| format!("检查今日日计划失败: {error}"))?;
+    if now_hm < start_time || !today_plan_exists {
         crate::data::add_days(&yesterday, -1)
     } else {
         Ok(yesterday)
@@ -62,6 +74,69 @@ fn backfill_due_default_reviews(data_dir: &std::path::Path) -> Result<(), String
         log::info!("已生成系统默认复盘: {}", created.join(", "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod backfill_window_tests {
+    use super::*;
+
+    #[test]
+    fn missing_today_plan_preserves_yesterday_until_a_plan_exists_after_start() {
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent-backfill-window-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let today = "2026-10-12"; // 周一：尚未生成新一周计划
+        for date in ["2026-10-10", "2026-10-11"] {
+            let plan = DailyPlanFile {
+                meta: crate::data::plan::DailyPlanMeta {
+                    date: date.to_string(),
+                    ..Default::default()
+                },
+                data: crate::data::plan::DailyPlanData {
+                    tasks: vec![PlanTask {
+                        id: format!("{date}-01"),
+                        title: "学习任务".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            crate::data::plan::save_daily_plan(&dir, &plan).unwrap();
+        }
+
+        let cutoff = default_review_cutoff_at(&dir, today, "12:00").unwrap();
+        assert_eq!(cutoff, "2026-10-10");
+        let created = crate::data::records::backfill_default_reviews(&dir, &cutoff).unwrap();
+        assert_eq!(created, vec!["2026-10-10"]);
+        assert!(!crate::data::records::review_file_path(&dir, "2026-10-11").exists());
+
+        let mut today_plan = crate::data::plan::read_daily_plan(&dir, "2026-10-11").unwrap();
+        today_plan.meta.date = today.to_string();
+        crate::data::plan::save_daily_plan(&dir, &today_plan).unwrap();
+        // 已有日计划但未到开始时间，仍保留补复盘窗口。
+        assert_eq!(
+            default_review_cutoff_at(&dir, today, "08:59").unwrap(),
+            "2026-10-10"
+        );
+        // 到达开始时间后才恢复原规则，自动补记昨天。
+        let cutoff = default_review_cutoff_at(&dir, today, "09:00").unwrap();
+        assert_eq!(cutoff, "2026-10-11");
+        let created = crate::data::records::backfill_default_reviews(&dir, &cutoff).unwrap();
+        assert_eq!(created, vec!["2026-10-11"]);
+        assert!(
+            crate::data::records::read_review(&dir, "2026-10-11")
+                .unwrap()
+                .meta
+                .default_marked
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 /// 读取今日计划
@@ -448,6 +523,7 @@ pub async fn generate_week_plan(
 /// 周中新增排除日并重排剩余天数（AI 驱动）
 ///
 /// 在用户于周计划页点击"今天及之后"的日期标记为排除日时调用。
+/// 在独立副本中生成新增排除日的调整预览，确认应用前不写计划或同步滴答。
 /// AI 会根据新增的排除日重新生成本周剩余天数的 subject_allocations，
 /// 把原本安排在排除日的任务量分摊到剩余学习日。
 ///
@@ -457,14 +533,13 @@ pub async fn add_excluded_day_and_regenerate(
     week_start: String,
     excluded_day: ExcludedDay,
     state: State<'_, Mutex<AppState>>,
-) -> Result<RegenerateResult, String> {
+) -> Result<AdjustmentPreview, String> {
     crate::data::validate_date(&week_start)?;
     crate::data::validate_date(&excluded_day.date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
-    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    // 捕获输入和保存预览时短暂加锁，AI 生成期间允许继续学习。
     let io_lock = crate::get_io_lock(state.inner())?;
-    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -474,28 +549,20 @@ pub async fn add_excluded_day_and_regenerate(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates, used_fallback) = planner
-        .regenerate_after_exclusion(&data_dir, &week_start, excluded_day)
-        .await?;
-
-    // 同步滴答：对重排影响的日期后台按日对账（H1：不阻塞主流程）
-    let io_lock = crate::get_io_lock(state.inner())?;
-    crate::sync::dida::spawn_reconcile_days(io_lock, data_dir, affected_dates.clone());
-
-    Ok(RegenerateResult {
-        regenerated,
-        affected_dates,
-        used_fallback,
-        // 排除日重排不涉及计划外进度，一致性警告为空
-        consistency_warnings: Vec::new(),
-        // 排除日重排暂不提供逐日变更明细
-        changes: Vec::new(),
-    })
+    plan_adjustment::generate(
+        &data_dir,
+        &planner,
+        "exclusion",
+        &week_start,
+        Some(excluded_day),
+        Some(&io_lock),
+    )
+    .await
 }
 
 /// 复盘后重新生成本周剩余天数计划（AI 驱动）
 ///
-/// 在 submit_review 返回 needs_regeneration=true 后由前端调用。
+/// 在 submit_review 返回 needs_regeneration=true 后由前端调用，仅生成候选预览。
 /// AI 会根据复盘结果重新生成本周剩余天数的 subject_allocations，
 /// 并在今天是剩余天数之一时重新生成今日日计划。
 ///
@@ -504,13 +571,12 @@ pub async fn add_excluded_day_and_regenerate(
 pub async fn regenerate_remaining_days(
     review_date: String,
     state: State<'_, Mutex<AppState>>,
-) -> Result<RegenerateResult, String> {
+) -> Result<AdjustmentPreview, String> {
     crate::data::validate_date(&review_date)?;
     let (data_dir, ai_service) = get_data_dir_and_ai(state.inner())?;
 
-    // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 plan/state 写入
+    // 捕获输入和保存预览时短暂加锁，AI 生成期间允许继续学习。
     let io_lock = crate::get_io_lock(state.inner())?;
-    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -520,24 +586,127 @@ pub async fn regenerate_remaining_days(
     }
 
     let planner = Planner::new(&ai_service);
-    let (regenerated, affected_dates, used_fallback, consistency_warnings, changes) = planner
-        .regenerate_remaining_days_after_review(&data_dir, &review_date)
-        .await?;
+    plan_adjustment::generate(
+        &data_dir,
+        &planner,
+        "review",
+        &review_date,
+        None,
+        Some(&io_lock),
+    )
+    .await
+}
 
-    // 同步滴答：对重排影响的日期按日对账（失败仅记录）
-    for d in &affected_dates {
-        if let Err(e) = crate::sync::dida::reconcile_day(&data_dir, d).await {
-            log::warn!("[dida] 复盘重排后同步 {} 失败: {}", d, e);
+#[tauri::command]
+pub async fn get_plan_adjustment(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentStatus, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    plan_adjustment::status(&dir)
+}
+
+#[tauri::command]
+pub async fn update_plan_adjustment_kept(
+    id: String,
+    keys: Vec<String>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentPreview, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    plan_adjustment::update_kept(&dir, &id, keys)
+}
+
+#[tauri::command]
+pub async fn discard_plan_adjustment(
+    id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    plan_adjustment::discard(&dir, &id)
+}
+
+async fn sync_adjustment(
+    dir: &std::path::Path,
+    dates: Vec<String>,
+    mut warnings: Vec<String>,
+) -> AdjustmentOutcome {
+    let mut pending = false;
+    // 与现有后台对账相同，每批最多三天并行；不同日期只写各自的计划文件。
+    for chunk in dates.chunks(3) {
+        let mut set = tokio::task::JoinSet::new();
+        for date in chunk {
+            let date = date.clone();
+            let dir = dir.to_path_buf();
+            set.spawn(async move {
+                let result = crate::sync::dida::reconcile_day(&dir, &date).await;
+                (date, result)
+            });
+        }
+        while let Some(result) = set.join_next().await {
+            match result {
+                Ok((date, Err(e))) => {
+                    pending = true;
+                    warnings.push(format!(
+                        "{date} 的本地安排已保存，滴答同步失败：{e}。可点击“重试同步滴答”。"
+                    ));
+                }
+                Err(e) => {
+                    pending = true;
+                    warnings.push(format!(
+                        "本地安排已保存，滴答同步中断：{e}。可点击“重试同步滴答”。"
+                    ));
+                }
+                _ => {}
+            }
         }
     }
+    if let Err(e) = plan_adjustment::record_sync_result(dir, warnings.clone(), pending) {
+        warnings.push(format!("本地安排已保存，但同步状态未能保存：{e}"));
+    }
+    AdjustmentOutcome {
+        affected_dates: dates,
+        warnings,
+    }
+}
 
-    Ok(RegenerateResult {
-        regenerated,
-        affected_dates,
-        used_fallback,
-        consistency_warnings,
-        changes,
-    })
+#[tauri::command]
+pub async fn apply_plan_adjustment(
+    id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentOutcome, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    let dates = plan_adjustment::apply(&dir, &id)?;
+    Ok(sync_adjustment(&dir, dates, Vec::new()).await)
+}
+
+#[tauri::command]
+pub async fn undo_plan_adjustment(
+    id: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentOutcome, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    let (dates, warnings) = plan_adjustment::undo(&dir, &id)?;
+    Ok(sync_adjustment(&dir, dates, warnings).await)
+}
+
+#[tauri::command]
+pub async fn retry_plan_adjustment_sync(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<AdjustmentOutcome, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    let dates = plan_adjustment::latest_dates(&dir)?;
+    Ok(sync_adjustment(&dir, dates, Vec::new()).await)
 }
 
 // ============================================================================
@@ -588,6 +757,7 @@ pub async fn add_manual_task(
     title: String,
     estimated_hours: Option<f64>,
     ai_reference: Option<bool>,
+    knowledge_points: Option<Vec<crate::data::plan::KnowledgePointRef>>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<DailyPlanFile, String> {
     crate::data::validate_date(&date)?;
@@ -608,11 +778,27 @@ pub async fn add_manual_task(
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
 
-    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)
-        .unwrap_or_else(|_| empty_daily_plan(&date));
+    crate::data::state::read_state_or_new(&data_dir)?;
+    let mut plan = match std::fs::metadata(crate::data::plan::daily_plan_path(&data_dir, &date)) {
+        Ok(_) => crate::data::plan::read_daily_plan(&data_dir, &date)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => empty_daily_plan(&date),
+        Err(e) => return Err(format!("无法检查日计划: {}", e)),
+    };
 
+    let index = crate::data::progress_tables::read_progress_index(&data_dir)?;
+    let knowledge_points = match knowledge_points {
+        Some(points) if points.is_empty() => Some(Vec::new()),
+        Some(points) => Some(crate::core::task_progress::validate_points(
+            &index,
+            subject_key.key(),
+            &points,
+        )?),
+        None => crate::core::progress_sync::infer_task_points(&index, subject_key.key(), &title),
+    };
     let task_id = crate::data::plan::next_task_id(&date, &plan.data.tasks);
     plan.data.tasks.push(PlanTask {
+        remaining_from_task_id: None,
+        knowledge_points,
         id: task_id,
         subject: subject_key,
         title,
@@ -630,9 +816,7 @@ pub async fn add_manual_task(
     });
 
     crate::data::plan::recalc_totals(&mut plan.data);
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
-    // 任务需同时存在于 State 中，否则勾选完成 / 计时会「找不到任务」
-    crate::data::plan::resync_plan_to_state(&data_dir, &date, &plan)?;
+    crate::data::plan::save_manual_plan_and_state(&data_dir, &plan)?;
 
     log::info!(
         "已手动添加任务: {} [{}] {}（AI 参考: {}）",
@@ -646,6 +830,41 @@ pub async fn add_manual_task(
         allow_ai
     );
 
+    crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
+}
+
+/// 修正任务的知识点关联；空数组明确取消自动匹配，不改学习状态。
+#[tauri::command]
+pub async fn set_task_knowledge_points(
+    task_id: String,
+    points: Vec<crate::data::plan::KnowledgePointRef>,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<DailyPlanFile, String> {
+    let date = crate::data::task_id_date_prefix(&task_id)
+        .ok_or("无效的任务 ID")?
+        .to_string();
+    crate::data::validate_date(&date)?;
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _guard = io_lock.lock().await;
+    // 已提交复盘的关联是历史快照，避免事后改变完成范围。
+    if crate::data::records::read_review(&data_dir, &date).is_ok() {
+        return Err("这一天已提交复盘，不能再修改任务关联".into());
+    }
+    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)?;
+    let task = plan
+        .data
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == task_id)
+        .ok_or("未找到任务")?;
+    let index = crate::data::progress_tables::read_progress_index(&data_dir)?;
+    task.knowledge_points = Some(if points.is_empty() {
+        Vec::new()
+    } else {
+        crate::core::task_progress::validate_points(&index, task.subject.key(), &points)?
+    });
+    crate::data::plan::save_manual_plan_and_state(&data_dir, &plan)?;
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
 }
 
@@ -677,8 +896,7 @@ pub async fn set_task_ai_reference(
         .ok_or_else(|| format!("未找到任务: {}", task_id))?;
     task.ai_reference = allow;
 
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
-    crate::data::plan::resync_plan_to_state(&data_dir, &date, &plan)?;
+    crate::data::plan::save_manual_plan_and_state(&data_dir, &plan)?;
     log::info!("任务 AI 参考已更新: {} -> {}", task_id, allow);
     Ok(())
 }
@@ -713,8 +931,7 @@ pub async fn delete_manual_task(
 
     plan.data.tasks.retain(|t| t.id != task_id);
     crate::data::plan::recalc_totals(&mut plan.data);
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
-    crate::data::plan::remove_task_from_state(&data_dir, &task_id)?;
+    crate::data::plan::write_manual_plan_and_state(&data_dir, &plan)?;
 
     log::info!("已删除手动任务: {}", task_id);
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)

@@ -1,7 +1,7 @@
-//! 运行时冒烟测试：用 `demo-data/` 的**真实数据**驱动核心链路。
+//! 运行时冒烟测试：用仓库内虚构固定数据驱动真实核心链路。
 //!
 //! 与 `src` 内的单元测试分工不同：单元测试用构造数据穷举算法分支，
-//! 这里验证「真实输入 → 真实产出」的完整性——真实周计划能否排出日计划、
+//! 这里验证「真实输入 → 真实产出」的完整性——固定周计划能否排出日计划、
 //! 已完成内容过滤是否生效、多科任务在预算约束下是否都被保留、
 //! 目标倒排是否覆盖用户选中的起始章。
 //!
@@ -19,52 +19,12 @@ use studyagent_desktop_lib::data::state::{read_state_or_default, SubjectKey};
 
 const SMOKE_DATE: &str = "2026-07-28";
 
-/// demo-data 的查找顺序（两者都试，取先存在的）：
-///   1. `desktop/demo-data` —— 已迁入仓库根，整套开发都在 desktop 下进行
-///   2. `D:\StudyAgent\demo-data` —— 历史位置（仓库之外），向后兼容
-///
-/// 目录已 gitignore，故在 CI 或他人 clone 上仍不存在，缺失时跳过而不是失败。
+/// 仓库内虚构固定样本，CI 与本地都必须执行。
 fn demo_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR = desktop/src-tauri
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let in_repo = manifest.join("../../demo-data"); // desktop/demo-data
-    let legacy = manifest.join("../../../demo-data"); // D:\StudyAgent\demo-data
-    if in_repo.exists() {
-        in_repo
-    } else {
-        legacy
-    }
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/runtime")
 }
 
-/// demo-data 目录缺失时跳过用例（本地开发数据，CI 上没有）
-macro_rules! require_demo_data {
-    () => {
-        if !demo_dir().exists() {
-            eprintln!(
-                "跳过 {}：未找到 demo-data（{:?}）",
-                module_path!(),
-                demo_dir()
-            );
-            return;
-        }
-    };
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let src = entry.path();
-        let dst = to.join(entry.file_name());
-        if src.is_dir() {
-            copy_dir(&src, &dst);
-        } else {
-            std::fs::copy(&src, &dst).unwrap();
-        }
-    }
-}
-
-/// 把 demo-data 复制到临时目录再跑（`generate_daily_plan` 会写文件，不能污染源数据）
+/// 把固定样本复制到临时目录再跑（`generate_daily_plan` 会写文件，不能污染源数据）
 fn tmp_demo_copy(tag: &str) -> PathBuf {
     let dst = std::env::temp_dir().join(format!(
         "studyagent_smoke_{}_{}",
@@ -74,7 +34,25 @@ fn tmp_demo_copy(tag: &str) -> PathBuf {
             .unwrap()
             .as_millis()
     ));
-    copy_dir(&demo_dir(), &dst);
+    let fixtures = demo_dir();
+    std::fs::create_dir_all(dst.join("state")).unwrap();
+    std::fs::create_dir_all(dst.join("plan")).unwrap();
+    std::fs::create_dir_all(dst.join("config")).unwrap();
+    std::fs::copy(
+        fixtures.join("state.fixture.toml"),
+        dst.join("state/current.state"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("week.fixture.json"),
+        dst.join("plan/2026-W31_week.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("settings.fixture.json"),
+        dst.join("config/settings.json"),
+    )
+    .unwrap();
     dst
 }
 
@@ -107,11 +85,10 @@ fn clear_completed(state_path: &Path) {
 /// 真实数据：过滤已完成内容 + 任务 ID 唯一 + 真实工时与容量告警一致
 #[test]
 fn demo_data_daily_plan_filters_completed_and_fits_budget() {
-    require_demo_data!();
     let dir = tmp_demo_copy("daily");
 
     let plan = DailyScheduler::generate_daily_plan(&dir, SMOKE_DATE, false)
-        .expect("真实周计划应能生成日计划");
+        .expect("固定周计划应能生成日计划");
     assert!(!plan.data.tasks.is_empty(), "真实数据应产出任务");
     assert!(plan.data.total_hours > 0.0, "总时长应大于 0");
 
@@ -176,10 +153,9 @@ fn demo_data_daily_plan_filters_completed_and_fits_budget() {
 }
 
 /// 清空已完成记录后：多科任务应全部保留（每科保底 1 条），
-/// 且总时长超预算时保留真实估时并告警（M3 护栏的真实数据验证）
+/// 且总时长超预算时保留真实估时并告警（M3 护栏的固定数据验证）
 #[test]
 fn demo_data_daily_plan_keeps_all_subjects_when_nothing_completed() {
-    require_demo_data!();
     let dir = tmp_demo_copy("daily_clear");
     clear_completed(&dir.join("state").join("current.state"));
 
@@ -221,12 +197,11 @@ fn demo_data_daily_plan_keeps_all_subjects_when_nothing_completed() {
 /// 必须让用户选中的起始章在第一个学习日就被安排
 #[test]
 fn goal_backward_schedule_includes_start_chapter_on_first_day() {
-    require_demo_data!();
     let dir = tmp_demo_copy("goal");
 
     let state = read_state_or_default(&dir);
     let version = state.subjects.math.version.clone().unwrap_or_default();
-    assert!(!version.is_empty(), "demo-data 数学应有版本（数二）");
+    assert!(!version.is_empty(), "固定样本数学应有版本（数二）");
 
     let points = studyagent_desktop_lib::core::chapter_seq::syllabus_points("math", &version)
         .expect("内置数学顺序表应存在");

@@ -25,6 +25,7 @@ import {
   Target,
 } from "lucide-vue-next";
 import { useAppVersion } from "@/version";
+import UpdateIndicator from "@/components/UpdateIndicator.vue";
 
 const { theme, toggleTheme } = useTheme();
 const settingsStore = useSettingsStore();
@@ -530,6 +531,8 @@ function onPlanClick() {
         >
           <span>Beta {{ version }}</span>
         </router-link>
+
+        <UpdateIndicator />
 
         <button
           type="button"

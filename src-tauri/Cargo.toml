@@ -1,6 +1,6 @@
 [package]
 name = "studyagent-desktop"
-version = "0.8.0"
+version = "0.8.2"
 description = "StudyAgent Learning Workspace"
 authors = ["StudyAgent"]
 edition = "2021"
@@ -43,6 +43,8 @@ keyring = { version = "4.1", features = ["windows-native-keyring-store"] }
 # `tauri dev` 会自动加 `--no-default-features` 并剔除本特性，不影响开发热重载。
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# 正常发布不启用隔离桌面验证。
+desktop-smoke = []
 
 [profile.dev]
 debug = 1

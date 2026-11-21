@@ -408,6 +408,81 @@ pub async fn download_update(
 /// 启动下载好的安装包并退出当前应用。
 /// Windows 上使用 DETACHED_PROCESS 让子进程独立运行。
 #[tauri::command]
+pub async fn prepare_update_timers(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    pause_update_timers(&data_dir)
+}
+
+fn pause_update_timers(data_dir: &std::path::Path) -> Result<(), String> {
+    let mut study_state = crate::data::state::read_state_or_new(data_dir)?;
+    let ids: Vec<String> = study_state
+        .current_task
+        .tasks
+        .iter()
+        .filter(|task| task.started_at.is_some())
+        .map(|task| {
+            task.task_id
+                .clone()
+                .ok_or_else(|| "运行中的任务缺少编号，无法安全暂停".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if ids.is_empty() {
+        return Ok(());
+    }
+    for id in ids {
+        crate::data::state::pause_task_timer(&mut study_state, &id)?;
+    }
+    crate::data::state::save_state(data_dir, &study_state)
+}
+
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+
+    #[test]
+    fn update_pauses_all_running_tasks_once_and_preserves_corrupt_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent-update-timers-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        pause_update_timers(&dir).unwrap();
+        assert!(!dir.exists());
+        let mut state = StudyState::default();
+        state.current_task.tasks = vec![crate::data::state::StateTask {
+            task_id: Some("task-1".to_string()),
+            accumulated_minutes: 7,
+            started_at: Some((chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339()),
+            ..Default::default()
+        }];
+        crate::data::state::save_state(&dir, &state).unwrap();
+        pause_update_timers(&dir).unwrap();
+        let state = crate::data::state::read_state(&dir).unwrap();
+        assert_eq!(state.current_task.tasks[0].accumulated_minutes, 12);
+        assert!(state.current_task.tasks[0].started_at.is_none());
+        pause_update_timers(&dir).unwrap();
+        assert_eq!(
+            crate::data::state::read_state(&dir)
+                .unwrap()
+                .current_task
+                .tasks[0]
+                .accumulated_minutes,
+            12
+        );
+        let path = dir.join("state").join("current.state");
+        std::fs::write(&path, "broken state").unwrap();
+        assert!(pause_update_timers(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "broken state");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tauri::command]
 pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<(), String> {
     let path = std::path::Path::new(&file_path);
     if !path.is_file() {
@@ -423,7 +498,8 @@ pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<
     let expected = verified_updates()
         .lock()
         .map_err(|_| "更新校验状态不可用".to_string())?
-        .remove(&canonical)
+        .get(&canonical)
+        .cloned()
         .ok_or_else(|| "安装包未通过本次运行的完整性校验，请重新下载".to_string())?;
     let actual = sha256_hex(&canonical)?;
     if actual != expected {
@@ -475,6 +551,9 @@ pub async fn install_update(file_path: String, app: tauri::AppHandle) -> Result<
     }
 
     log::info!("[Update] 安装程序已启动，应用退出");
+    if let Ok(mut verified) = verified_updates().lock() {
+        verified.remove(&canonical);
+    }
     app.exit(0);
     Ok(())
 }

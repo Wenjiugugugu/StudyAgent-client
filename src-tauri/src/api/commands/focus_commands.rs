@@ -174,13 +174,38 @@ pub async fn link_focus_session(
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
 
-    let minutes = crate::data::focus::link_focus_session(&data_dir, &date, &session_id, &task_id)?;
-
     // 绑定后把该段沉浸分钟累加到关联任务，使其计入具体任务的学习时长；
     // 该会话此后带 task_id，不再被「未关联专注」口径重复统计。
     let mut study_state = crate::data::state::read_state(&data_dir)?;
+    let original_state = study_state.clone();
+    let sessions = crate::data::focus::list_focus_sessions(&data_dir, &date)?;
+    let session = sessions
+        .iter()
+        .find(|s| s.id == session_id)
+        .ok_or("未找到专注会话")?;
+    if !matches!(
+        session.r#type,
+        crate::data::focus::FocusSessionType::Focus
+            | crate::data::focus::FocusSessionType::Stopwatch
+    ) {
+        return Err("仅学习 / 正计时会话可关联任务，休息会话不可关联".into());
+    }
+    if session.task_id.as_deref() == Some(task_id.as_str()) {
+        return Ok(());
+    }
+    if session.task_id.is_some() {
+        return Err("该专注记录已关联任务，不能重复关联".into());
+    }
+    let minutes = session.duration_minutes.max(0);
     crate::data::state::add_accumulated_minutes(&mut study_state, &task_id, minutes)?;
     crate::data::state::save_state(&data_dir, &study_state)?;
+    if let Err(error) =
+        crate::data::focus::link_focus_session(&data_dir, &date, &session_id, &task_id)
+    {
+        crate::data::state::save_state(&data_dir, &original_state)
+            .map_err(|rollback| format!("关联失败：{error}；恢复任务计时失败：{rollback}"))?;
+        return Err(error);
+    }
 
     log::info!(
         "番茄钟：会话 {} 关联任务 {}，累加 {} 分钟",

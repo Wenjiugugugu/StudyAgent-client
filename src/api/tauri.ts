@@ -1,3 +1,5 @@
+import { trackDesktopRequest } from "@/utils/updatePreparation";
+
 /**
  * StudyAgent — Tauri Invoke Wrapper
  * 提供 Tauri/Mock 双模式：Tauri 环境调用 Rust 后端，浏览器环境回退 Mock 数据
@@ -27,8 +29,9 @@ export async function invoke<T = unknown>(
     );
   }
 
-  const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
-  return tauriInvoke<T>(command, args);
+  return trackDesktopRequest(
+    import("@tauri-apps/api/core").then(({ invoke: tauriInvoke }) => tauriInvoke<T>(command, args))
+  );
 }
 
 /**

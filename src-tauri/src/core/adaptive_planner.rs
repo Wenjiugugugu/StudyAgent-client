@@ -420,6 +420,11 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
         let is_excluded_day = excluded_days.contains(date);
         let review = records::read_review(data_dir, date).ok();
         let review_external = review.as_ref().map(is_external).unwrap_or(false);
+        let changed_study = review.as_ref().is_some_and(|r| {
+            r.task_reviews
+                .iter()
+                .any(|e| e.status != "completed" && e.blockers.iter().any(|b| b == "study_changed"))
+        });
         let external_day = is_excluded_day || review_external;
         if external_day {
             analysis.external_day_count += 1;
@@ -436,7 +441,7 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
         }
         analysis.planned_total_hours += planned_day_hours;
         analysis.planned_task_count += daily.data.tasks.len() as i32;
-        if !external_day && !rest_days.contains(date) {
+        if !external_day && !changed_study && !rest_days.contains(date) {
             analysis.eligible_planned_hours += planned_day_hours;
             analysis.eligible_task_count += daily.data.tasks.len() as i32;
         }
@@ -478,7 +483,7 @@ pub fn analyze_week(data_dir: &Path, week_start: &str) -> DataResult<WeekPlannin
 
         // 外部异常日仍保留在 raw actual_total_hours 中用于展示，但不参与
         // 完成率、容量、学科估时或任务量反馈的学习，避免污染长期状态。
-        if external_day {
+        if external_day || changed_study {
             continue;
         }
 
@@ -788,7 +793,12 @@ fn recent_completion_samples(data_dir: &Path, end: &str) -> DataResult<(Vec<f64>
         ) else {
             continue;
         };
-        if is_external(&review) {
+        if is_external(&review)
+            || review
+                .task_reviews
+                .iter()
+                .any(|e| e.status != "completed" && e.blockers.iter().any(|b| b == "study_changed"))
+        {
             continue;
         }
         let hours: f64 = daily
@@ -1618,6 +1628,21 @@ mod tests {
         }
         plan::save_daily_plan(dir, &daily).unwrap();
         records::save_review(dir, &review).unwrap();
+    }
+    #[test]
+    fn changing_study_content_does_not_lower_capacity_or_completion_signals() {
+        let dir = audit_dir("study_change");
+        let date = "2026-09-28";
+        save_sample(&dir, date, false);
+        let mut review = records::read_review(&dir, date).unwrap();
+        review.task_reviews[0].status = "incomplete".into();
+        review.task_reviews[0].blockers = vec!["study_changed".into()];
+        records::save_review(&dir, &review).unwrap();
+        let analysis = analyze_week(&dir, date).unwrap();
+        assert_eq!(analysis.eligible_planned_hours, 0.0);
+        assert_eq!(analysis.actual_total_hours, 2.0);
+        assert!(recent_completion_samples(&dir, date).unwrap().0.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn completion_streak_crosses_week_boundary_and_expires() {

@@ -1,15 +1,10 @@
 <script setup lang="ts">
 /**
- * 工作台 — 发现新版本弹窗
+ * 全局强制更新提示
  *
- * 由原 DashboardView 中的更新弹窗拆分而来：展示新版本信息、选择安装包、
- * 下载进度与安装操作，全部状态来自 updateStore。
- *
- * 强制更新模式（当前版本被远端策略禁用）：弹窗不可关闭，仅可"立即更新"
- * 或"退出应用"，普通更新的"3 天后再提醒"与"查看详情"按钮隐藏。
+ * 当前版本被禁用时在任意页面展示，下载及安装自动进行，失败后允许重试。
  */
 import { computed } from "vue";
-import { useRouter } from "vue-router";
 import { useUpdateStore } from "@/stores/update";
 import * as api from "@/api";
 import Modal from "@/components/ui/Modal.vue";
@@ -18,7 +13,6 @@ import ProgressBar from "@/components/ui/ProgressBar.vue";
 import MarkdownText from "@/components/MarkdownText.vue";
 import { Package, Download, HardDriveDownload, AlertTriangle, LogOut } from "lucide-vue-next";
 
-const router = useRouter();
 const updateStore = useUpdateStore();
 
 const forceUpdate = computed(() => updateStore.forceUpdate);
@@ -41,6 +35,9 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
         <AlertTriangle :size="16" />
         <span>{{ forceReason || "当前版本存在已知问题，必须更新到最新版本后才能继续使用。" }}</span>
       </div>
+      <p v-if="forceUpdate" class="update-modal-tip">
+        更新包将自动下载，校验通过后保存复盘草稿、暂停计时并安装更新。
+      </p>
 
       <p class="update-modal-version">
         新版本：<strong>v{{ updateStore.updateResult.latest_version }}</strong>
@@ -65,6 +62,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
             v-for="asset in updateStore.updateResult.assets"
             :key="asset.download_url"
             class="update-asset-btn"
+            :disabled="updateStore.busy || !!updateStore.downloadedFilePath"
             :class="{ active: updateStore.selectedAsset?.download_url === asset.download_url }"
             @click="updateStore.selectedAsset = asset"
           >
@@ -79,9 +77,17 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
           v-if="updateStore.downloadState === 'downloading' && updateStore.downloadProgress"
           class="update-download-progress"
         >
-          <ProgressBar :value="updateStore.downloadProgress.percent || 0" :max="100" />
+          <ProgressBar
+            v-if="updateStore.downloadProgress.total > 0"
+            :value="updateStore.downloadProgress.percent || 0"
+            :max="100"
+          />
           <span class="update-progress-text">
-            {{ updateStore.downloadProgress.percent?.toFixed(0) ?? 0 }}%
+            {{
+              updateStore.downloadProgress.total > 0
+                ? `${updateStore.downloadProgress.percent.toFixed(0)}%`
+                : "正在下载…"
+            }}
           </span>
         </div>
 
@@ -92,23 +98,14 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
     </div>
 
     <template #footer>
-      <!-- 非强制：3 天后再提醒（写入静默标记） -->
-      <Button v-if="!forceUpdate" variant="ghost" size="sm" @click="updateStore.dismissUpdate()">
-        3 天后再提醒
-      </Button>
-
-      <!-- 非强制：查看详情（跳转设置页，不写入静默标记） -->
+      <!-- 强制：退出应用（唯一不更新的出口） -->
       <Button
-        v-if="!forceUpdate"
+        v-if="forceUpdate"
         variant="ghost"
         size="sm"
-        @click="router.push('/settings#settings-update')"
+        :disabled="updateStore.installing"
+        @click="api.quitApp()"
       >
-        查看详情
-      </Button>
-
-      <!-- 强制：退出应用（唯一不更新的出口） -->
-      <Button v-if="forceUpdate" variant="ghost" size="sm" @click="api.quitApp()">
         <LogOut :size="13" />
         退出应用
       </Button>
@@ -121,7 +118,7 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
         @click="updateStore.handleDownload()"
       >
         <Download :size="13" />
-        <span>下载安装包</span>
+        <span>{{ updateStore.downloadedFilePath ? "重试安装" : "重试下载" }}</span>
       </Button>
 
       <Button
@@ -143,6 +140,10 @@ const forceReason = computed(() => updateStore.updateResult?.force_update_reason
       >
         <span>下载中…</span>
       </Button>
+
+      <Button v-if="updateStore.preparing" variant="secondary" size="sm" disabled
+        ><span>正在等待当前操作并保存现场…</span></Button
+      >
 
       <Button
         v-if="updateStore.downloadState === 'installing'"

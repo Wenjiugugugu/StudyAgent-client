@@ -35,6 +35,28 @@ impl<'a> BriefingAgent<'a> {
         Self { ai_service }
     }
 
+    pub async fn generate_guarded(
+        &self,
+        data_dir: &Path,
+        target_date: &str,
+        review_date: &str,
+        source: &str,
+        io_lock: &std::sync::Arc<tokio::sync::Mutex<()>>,
+    ) -> DataResult<BriefingFile> {
+        let (workspace, revision) = {
+            let _guard = io_lock.lock().await;
+            super::review_sync::ensure_ready(data_dir)?;
+            super::plan_adjustment::snapshot(data_dir)?
+        };
+        let briefing = self
+            .generate_briefing(&workspace.0, target_date, review_date, source)
+            .await?;
+        let _guard = io_lock.lock().await;
+        super::plan_adjustment::verify_snapshot(data_dir, &revision)?;
+        crate::data::briefing::save_briefing(data_dir, &briefing)?;
+        Ok(briefing)
+    }
+
     /// 生成每日简报
     ///
     /// - `target_date`: 简报对应的日期（通常为次日或今日）
@@ -89,7 +111,7 @@ impl<'a> BriefingAgent<'a> {
         let progress_index = crate::data::progress_tables::load_progress_index(data_dir);
 
         // 5. 构建简报 prompt
-        let prompt = self.build_briefing_prompt(
+        let mut prompt = self.build_briefing_prompt(
             &state,
             yesterday_review.as_ref(),
             target_plan.as_ref().map(|f| &f.data),
@@ -98,6 +120,14 @@ impl<'a> BriefingAgent<'a> {
             &settings,
             &progress_index,
         );
+        prompt.push_str(&crate::data::study_direction::prompt_block(
+            data_dir,
+            target_date,
+        )?);
+        if let Some(review) = &yesterday_review {
+            prompt.push_str(&crate::data::study_direction::actual_study_block(review));
+        }
+        prompt.push_str("\n学习方向是后续排程意图；若今日计划还未确认调整，明确区分当前计划与学习意图，不可宣称已完成计划切换。\n");
 
         crate::data::write_ai_debug_log(
             data_dir,

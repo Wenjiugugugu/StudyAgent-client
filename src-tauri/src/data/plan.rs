@@ -54,6 +54,9 @@ pub struct WeekPlanFile {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WeekPlanMeta {
+    /// 任务生成时使用的学习方向版本。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub study_direction_revision: String,
     pub week_start: String,
     pub week_end: String,
     pub week_number: i32,
@@ -172,8 +175,20 @@ pub struct DaySubjectAllocation {
     pub task_templates: Vec<TaskTemplate>,
 }
 
+/// 稳定的知识点关联；title 是历史展示与重排使用的快照。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KnowledgePointRef {
+    pub table_id: String,
+    pub node_id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskTemplate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_from_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_points: Option<Vec<KnowledgePointRef>>,
     pub title: String,
     #[serde(default)]
     pub priority: TaskPriority,
@@ -240,6 +255,11 @@ pub struct DailyPlanData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_from_task_id: Option<String>,
+    /// None 为旧任务/未识别任务，Some([]) 为用户明确取消关联。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_points: Option<Vec<KnowledgePointRef>>,
     pub id: String,
     pub subject: SubjectKey,
     pub title: String,
@@ -270,6 +290,8 @@ pub struct PlanTask {
 impl Default for PlanTask {
     fn default() -> Self {
         Self {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: String::new(),
             subject: SubjectKey::default(),
             title: String::new(),
@@ -437,8 +459,12 @@ pub fn clear_daily_plan(data_dir: &Path, date: &str) -> DataResult<bool> {
 /// 避免 AI 重新生成计划、切分日计划、排除日重排等路径覆盖用户显式添加的任务。
 pub fn save_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> {
     let mut plan = plan.clone();
-    preserve_manual_tasks_from_disk(data_dir, &mut plan);
-    let plan = &plan;
+    preserve_manual_tasks_from_disk(data_dir, &mut plan)?;
+    write_daily_plan(data_dir, &plan)
+}
+
+/// 精确保存用户确认的任务列表，供显式删除使用。
+pub fn write_daily_plan(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> {
     let path = daily_plan_path(data_dir, &plan.meta.date);
     if let Some(parent) = path.parent() {
         if !parent.exists() {
@@ -485,30 +511,36 @@ pub fn next_task_id(date: &str, tasks: &[PlanTask]) -> String {
 ///
 /// 规则：
 /// - 只回补 `source == manual` 的任务；
-/// - 与目标 plan 中已有任务「id 相同」或「同为手动且科目+标题相同」视为同一任务，跳过；
-/// - id 已被 AI 任务占用时重新分配序号，牺牲对账历史以保住任务本身。
-fn preserve_manual_tasks_from_disk(data_dir: &Path, plan: &mut DailyPlanFile) {
-    let Ok(existing) = read_daily_plan(data_dir, &plan.meta.date) else {
-        return;
-    };
+/// - id 已被新 AI 任务占用时给 AI 任务新编号，保留手动任务的计时与对账历史。
+fn preserve_manual_tasks_from_disk(data_dir: &Path, plan: &mut DailyPlanFile) -> DataResult<()> {
+    match std::fs::metadata(daily_plan_path(data_dir, &plan.meta.date)) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("无法检查原日计划: {}", e)),
+        Ok(_) => {}
+    }
+    let existing = read_daily_plan(data_dir, &plan.meta.date)?;
     let mut changed = false;
+    let mut reserved = plan.data.tasks.clone();
+    reserved.extend(existing.data.tasks.clone());
     for old in existing.data.tasks.into_iter().filter(|t| t.is_manual()) {
         let duplicated = plan.data.tasks.iter().any(|t| {
-            t.id == old.id || (t.is_manual() && t.subject == old.subject && t.title == old.title)
+            t.is_manual() && (t.id == old.id || (t.subject == old.subject && t.title == old.title))
         });
         if duplicated {
             continue;
         }
-        let mut task = old;
-        if plan.data.tasks.iter().any(|t| t.id == task.id) {
-            task.id = next_task_id(&plan.meta.date, &plan.data.tasks);
+        if let Some(collision) = plan.data.tasks.iter_mut().find(|t| t.id == old.id) {
+            collision.id = next_task_id(&plan.meta.date, &reserved);
+            collision.dida_task_id = None;
+            reserved.push(collision.clone());
         }
-        plan.data.tasks.push(task);
+        plan.data.tasks.push(old);
         changed = true;
     }
     if changed {
         recalc_totals(&mut plan.data);
     }
+    Ok(())
 }
 
 /// 以日计划的 tasks 为准重建 `state.current_task`（保留已有的计时/完成状态）
@@ -516,10 +548,13 @@ fn preserve_manual_tasks_from_disk(data_dir: &Path, plan: &mut DailyPlanFile) {
 /// 用于手动添加/删除任务后，让 State 与日计划保持一致：
 /// 任务是 `update_task_status` / 计时命令的匹配依据，不同步会导致找不到任务。
 /// 仅当目标日期就是 State 当前记录的日期，或目标日期为今天时才写入（历史日期不动 State）。
-pub fn resync_plan_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
-    let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+fn merge_plan_into_state(
+    mut state: crate::data::state::StudyState,
+    date: &str,
+    plan: &DailyPlanFile,
+) -> crate::data::state::StudyState {
     if state.current_task.date != date && date != crate::data::today_string() {
-        return Ok(());
+        return state;
     }
 
     use std::collections::HashMap;
@@ -536,7 +571,9 @@ pub fn resync_plan_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -
         .tasks
         .iter()
         .map(|t| {
-            let prev = previous.get(&t.id);
+            let prev = previous
+                .get(&t.id)
+                .filter(|p| p.task == t.title && p.subject == t.subject.key());
             crate::data::state::StateTask {
                 task_id: Some(t.id.clone()),
                 subject: format!("{:?}", t.subject).to_lowercase(),
@@ -567,12 +604,63 @@ pub fn resync_plan_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -
         note: String::new(),
     };
 
+    state
+}
+
+pub fn resync_plan_to_state(data_dir: &Path, date: &str, plan: &DailyPlanFile) -> DataResult<()> {
+    let state = merge_plan_into_state(crate::data::state::read_state_or_new(data_dir)?, date, plan);
     crate::data::state::save_state(data_dir, &state)
+}
+
+/// 手动任务的计划与状态一起提交，失败后可从日志恢复。
+pub fn save_manual_plan_and_state(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> {
+    commit_manual_plan_and_state(data_dir, plan, true)
+}
+/// 用户明确删除时精确提交，不回补已删除的手动任务。
+pub fn write_manual_plan_and_state(data_dir: &Path, plan: &DailyPlanFile) -> DataResult<()> {
+    commit_manual_plan_and_state(data_dir, plan, false)
+}
+fn commit_manual_plan_and_state(
+    data_dir: &Path,
+    plan: &DailyPlanFile,
+    preserve: bool,
+) -> DataResult<()> {
+    super::transaction::recover(data_dir)?;
+    let mut plan = plan.clone();
+    if preserve {
+        preserve_manual_tasks_from_disk(data_dir, &mut plan)?;
+    } else {
+        read_daily_plan(data_dir, &plan.meta.date)?;
+    }
+    let state = merge_plan_into_state(
+        crate::data::state::read_state_or_new(data_dir)?,
+        &plan.meta.date,
+        &plan,
+    );
+    let plan_path = daily_plan_path(data_dir, &plan.meta.date);
+    let relative = plan_path
+        .strip_prefix(data_dir)
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into_owned();
+    super::transaction::commit(
+        data_dir,
+        vec![
+            (
+                relative,
+                serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?,
+            ),
+            (
+                "state/current.state".into(),
+                crate::data::state::write_state_toml(&state)?,
+            ),
+        ],
+    )
 }
 
 /// 从 `state.current_task.tasks` 中移除指定任务（删除手动任务时调用）
 pub fn remove_task_from_state(data_dir: &Path, task_id: &str) -> DataResult<()> {
-    let mut state = crate::data::state::read_state(data_dir).unwrap_or_default();
+    let mut state = crate::data::state::read_state_or_new(data_dir)?;
     let before = state.current_task.tasks.len();
     state
         .current_task
@@ -670,9 +758,7 @@ pub fn read_daily_plan_with_merged_status(
             || state_has_no_tasks_for_date(data_dir, date)
             || state_missing_plan_task_ids(data_dir, date, &plan))
     {
-        if let Err(e) = resync_plan_to_state(data_dir, date, &plan) {
-            log::warn!("自动同步 plan 任务到 state 失败: {}", e);
-        }
+        resync_plan_to_state(data_dir, date, &plan)?;
     }
 
     Ok(plan)
@@ -965,6 +1051,59 @@ pub fn read_week_daily_plans(data_dir: &Path, week_start: &str) -> DataResult<Ve
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manual_tasks_survive_id_collisions_and_explicit_deletion_stays_deleted() {
+        let dir = std::env::temp_dir().join(format!(
+            "sa_manual_audit_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let date = "2026-10-07";
+        let mut plan = super::DailyPlanFile::default();
+        plan.meta.date = date.into();
+        let mut manual = make_plan_task("2026-10-07-01", "手动内容");
+        manual.source = crate::data::state::TaskSource::Manual;
+        plan.data.tasks.push(manual);
+        super::save_daily_plan(&dir, &plan).unwrap();
+        let mut state = crate::data::state::StudyState::default();
+        state.current_task.date = date.into();
+        state
+            .current_task
+            .tasks
+            .push(crate::data::state::StateTask {
+                task_id: Some("2026-10-07-01".into()),
+                subject: "math".into(),
+                task: "手动内容".into(),
+                status: TaskStatus::Done,
+                accumulated_minutes: 17,
+                ..Default::default()
+            });
+        crate::data::state::save_state(&dir, &state).unwrap();
+        plan.data.tasks = vec![make_plan_task("2026-10-07-01", "AI 新内容")];
+        super::save_daily_plan(&dir, &plan).unwrap();
+        let mut restored = super::read_daily_plan(&dir, date).unwrap();
+        assert_eq!(restored.data.tasks.len(), 2);
+        assert_ne!(restored.data.tasks[0].id, restored.data.tasks[1].id);
+        assert!(restored.data.tasks[1].is_manual());
+        assert_eq!(restored.data.tasks[1].id, "2026-10-07-01");
+        super::resync_plan_to_state(&dir, date, &restored).unwrap();
+        let state = crate::data::state::read_state(&dir).unwrap();
+        assert_eq!(state.current_task.tasks[0].accumulated_minutes, 0);
+        assert_eq!(state.current_task.tasks[0].status, TaskStatus::Pending);
+        assert_eq!(state.current_task.tasks[1].accumulated_minutes, 17);
+        assert_eq!(state.current_task.tasks[1].status, TaskStatus::Done);
+        restored.data.tasks.retain(|t| !t.is_manual());
+        super::recalc_totals(&mut restored.data);
+        super::write_daily_plan(&dir, &restored).unwrap();
+        let deleted = super::read_daily_plan(&dir, date).unwrap();
+        assert_eq!(deleted.data.tasks.len(), 1);
+        assert_eq!(deleted.data.total_tasks, 1);
+        super::save_daily_plan(&dir, &deleted).unwrap();
+        assert_eq!(
+            super::read_daily_plan(&dir, date).unwrap().data.tasks.len(),
+            1
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     use super::*;
 
     fn sample_daily_plan() -> DailyPlanFile {
@@ -988,6 +1127,8 @@ mod tests {
                 strategy: "上午数学，下午专业课，晚上英语".to_string(),
                 tasks: vec![
                     PlanTask {
+                        knowledge_points: None,
+                        remaining_from_task_id: None,
                         id: "2026-07-25-01".to_string(),
                         subject: SubjectKey::Math,
                         title: "启动线代第一章：行列式".to_string(),
@@ -1004,6 +1145,8 @@ mod tests {
                         ai_reference: true,
                     },
                     PlanTask {
+                        knowledge_points: None,
+                        remaining_from_task_id: None,
                         id: "2026-07-25-02".to_string(),
                         subject: SubjectKey::English,
                         title: "阅读真题第10篇 + 单词复习".to_string(),
@@ -1073,6 +1216,7 @@ mod tests {
                 week_number: 30,
                 generated_at: "2026-07-20T04:00".to_string(),
                 subject_time_allocation_snapshot: None,
+                study_direction_revision: String::new(),
                 based_on: BasedOn {
                     state: "state/current.state".to_string(),
                     user_model: "assets/user_model/_index.md".to_string(),
@@ -1098,6 +1242,8 @@ mod tests {
                         hours: 2.0,
                         focus: "行列式".to_string(),
                         task_templates: vec![TaskTemplate {
+                            knowledge_points: None,
+                            remaining_from_task_id: None,
                             title: "行列式定义".to_string(),
                             priority: TaskPriority::A,
                             estimated_hours: 2.0,
@@ -1125,6 +1271,8 @@ mod tests {
     /// 构造测试用 PlanTask
     fn make_plan_task(id: &str, title: &str) -> PlanTask {
         PlanTask {
+            knowledge_points: None,
+            remaining_from_task_id: None,
             id: id.to_string(),
             subject: SubjectKey::Math,
             title: title.to_string(),

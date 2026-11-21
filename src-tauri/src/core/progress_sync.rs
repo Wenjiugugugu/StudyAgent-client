@@ -142,11 +142,7 @@ pub fn node_matches(node: &ProgressNode, chapter_title: &str, haystack: &str) ->
     }
 
     // 3) 相似度召回（标题需足够长，避免短名靠偶然 gram 命中）
-    if t.chars().count() >= 5 && bigram_overlap(&h, &t) >= BIGRAM_RECALL_THRESHOLD {
-        return true;
-    }
-
-    false
+    t.chars().count() >= 5 && bigram_overlap(&h, &t) >= BIGRAM_RECALL_THRESHOLD
 }
 
 /// 去掉任务标题开头的学科前缀（如「数学｜」「英语：」），提高匹配命中率
@@ -184,10 +180,11 @@ fn strip_subject_prefix(title: &str) -> String {
 pub struct ReviewSyncTask {
     pub subject: String,
     pub title: String,
-    /// 今日是否完成（completed / partial 均视为完成）
+    /// completed / partial 均参与同步；部分完成只同步明确勾选范围。
     pub completed: bool,
     /// 掌握程度：mastered / basic / weak / 空
     pub mastery: String,
+    pub completed_knowledge_points: Option<Vec<crate::data::plan::KnowledgePointRef>>,
 }
 
 /// 在指定科目的进度表中，把匹配到任务标题的知识点升级为目标状态。
@@ -234,9 +231,46 @@ fn apply_task_to_subject(
         return 0;
     }
 
+    let selected = matching_indices(table, &task_title);
+    let mut changed = 0;
+    for (i, node) in table.nodes.iter_mut().enumerate() {
+        if node.level != NodeLevel::Knowledge {
+            continue;
+        }
+        if !selected.contains(&i) {
+            continue;
+        }
+        // 复盘反馈困难时，次日计划里的任务可能是第一次接触的新知识点。
+        // 只有已经达到「基础」的节点才进入强化；待学/学习中节点先标为学习中，
+        // 避免仅因当天整体感受或其他知识点薄弱就跳过首次学习阶段。
+        let node_target = if target == NodeStatus::Reinforcing
+            && matches!(node.status, NodeStatus::Pending | NodeStatus::Learning)
+        {
+            NodeStatus::Learning
+        } else {
+            target
+        };
+        let new_s = node.status.max_with(node_target);
+        if new_s != node.status {
+            node.status = new_s;
+            changed += 1;
+        }
+    }
+    if changed > 0 {
+        table.updated_at = now_string();
+    }
+    let changed_variant = table.variant.clone();
+    let changed_name = table.name.clone();
+    if changed > 0 && subject == "professional" {
+        changed += sync_professional_table_change(index, &changed_variant, &changed_name);
+    }
+    changed
+}
+
+fn matching_indices(table: &ProgressTable, task_title: &str) -> HashSet<usize> {
     // 先解析显式书/章节限定，再评分。确切标题可命中多个并列知识点；
     // 模糊召回只接受唯一且显著领先的候选，不能把全部相似节点一起升级。
-    let h = norm(&task_title);
+    let h = norm(task_title);
     let chapter_id = table
         .nodes
         .iter()
@@ -253,7 +287,7 @@ fn apply_task_to_subject(
                 .as_ref()
                 .is_none_or(|id| n.parent_id.as_ref() == Some(id))
         })
-        .filter(|(_, n)| node_matches(n, &n.phase, &task_title))
+        .filter(|(_, n)| node_matches(n, &n.phase, task_title))
         .map(|(i, n)| {
             let t = norm(&n.title);
             let c = norm(&n.phase);
@@ -299,45 +333,168 @@ fn apply_task_to_subject(
             .collect();
         selected.retain(|i| !ambiguous.contains(i));
     }
-    let mut changed = 0;
-    for (i, node) in table.nodes.iter_mut().enumerate() {
-        if node.level != NodeLevel::Knowledge {
-            continue;
+    selected
+}
+
+/// 新任务沿用经过歧义检查的匹配规则，保存稳定编号。
+pub fn infer_task_points(
+    index: &ProgressIndex,
+    subject: &str,
+    title: &str,
+) -> Option<Vec<crate::data::plan::KnowledgePointRef>> {
+    let table = crate::data::progress_tables::active_progress_table(index, subject)?;
+    if subject == "professional" {
+        if let Some(points) = professional_task_points(index, table, title) {
+            return Some(points);
         }
-        if !selected.contains(&i) {
-            continue;
-        }
-        // 复盘反馈困难时，次日计划里的任务可能是第一次接触的新知识点。
-        // 只有已经达到「基础」的节点才进入强化；待学/学习中节点先标为学习中，
-        // 避免仅因当天整体感受或其他知识点薄弱就跳过首次学习阶段。
-        let node_target = if target == NodeStatus::Reinforcing
-            && matches!(node.status, NodeStatus::Pending | NodeStatus::Learning)
-        {
-            NodeStatus::Learning
+    }
+    let title = strip_subject_prefix(title);
+    let exact: Vec<_> = table
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.level == NodeLevel::Knowledge && norm(&n.title) == norm(&title))
+        .map(|(i, _)| i)
+        .collect();
+    let selected = if exact.len() == 1 {
+        exact.into_iter().collect()
+    } else if exact.len() > 1 {
+        HashSet::new()
+    } else {
+        matching_indices(table, &title)
+    };
+    let points: Vec<_> = table
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| selected.contains(i))
+        .map(|(_, n)| crate::data::plan::KnowledgePointRef {
+            table_id: table.id.clone(),
+            node_id: n.id.clone(),
+            title: n.title.clone(),
+        })
+        .collect();
+    (!points.is_empty()).then_some(points)
+}
+
+/// 专业课总表与同方案教材表共同参与关联；先限定板块，避免跨教材同名误匹配。
+fn professional_task_points(
+    index: &ProgressIndex,
+    active: &ProgressTable,
+    title: &str,
+) -> Option<Vec<crate::data::plan::KnowledgePointRef>> {
+    let set = index.subjects.get("professional")?;
+    let modules = [
+        ("数据结构", "数据结构", "数据结构"),
+        ("计算机组成原理", "计组", "计算机组成原理"),
+        ("操作系统", "操作系统", "计算机操作系统"),
+        ("计算机网络", "计网", "计算机网络"),
+    ];
+    let named: Vec<_> = modules
+        .iter()
+        .filter(|(name, alias, _)| {
+            title.contains(name)
+                || title.contains(alias)
+                || active.nodes.iter().any(|n| {
+                    n.phase == *name
+                        && n.level == NodeLevel::Knowledge
+                        && n.title.split(['（', '(']).next().is_some_and(|anchor| {
+                            anchor.chars().count() >= 3 && title.contains(anchor)
+                        })
+                })
+        })
+        .collect();
+    // 活跃表本身就是教材时允许省略板块名；总表则只接受唯一的教材候选。
+    let candidates: Vec<_> = set
+        .tables
+        .iter()
+        .filter(|t| {
+            t.variant == active.variant
+                && t.name.contains("教材：")
+                && (named.is_empty() || named.iter().any(|(_, _, book)| t.name.contains(book)))
+        })
+        .collect();
+    let mut hits = Vec::new();
+    for book in &candidates {
+        let exact_topics: HashSet<_> = book
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.level == NodeLevel::Knowledge
+                    && n.title.split(['（', '(']).next().is_some_and(|stem| {
+                        stem.split(['与', '、'])
+                            .any(|topic| topic.chars().count() >= 4 && title.contains(topic))
+                    })
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let detail = title.rsplit_once('：').map_or(title, |(_, detail)| detail);
+        let mut selected = if exact_topics.is_empty() {
+            matching_indices(book, detail)
         } else {
-            target
+            exact_topics
         };
-        let new_s = node.status.max_with(node_target);
-        if new_s != node.status {
-            node.status = new_s;
-            changed += 1;
+        let ambiguous: HashSet<_> = selected
+            .iter()
+            .copied()
+            .filter(|i| {
+                selected.iter().any(|j| {
+                    i != j
+                        && norm(&book.nodes[*i].title) == norm(&book.nodes[*j].title)
+                        && book.nodes[*i].parent_id != book.nodes[*j].parent_id
+                })
+            })
+            .collect();
+        selected.retain(|i| !ambiguous.contains(i));
+        let points: Vec<_> = book
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, n)| n.level == NodeLevel::Knowledge && selected.contains(i))
+            .map(|(_, n)| crate::data::plan::KnowledgePointRef {
+                table_id: book.id.clone(),
+                node_id: n.id.clone(),
+                title: n.title.clone(),
+            })
+            .collect();
+        if !points.is_empty() {
+            hits.push(points);
         }
     }
-    if changed > 0 {
-        table.updated_at = now_string();
+    if hits.len() == 1 {
+        return hits.pop();
     }
-    let changed_variant = table.variant.clone();
-    let changed_name = table.name.clone();
-    if changed > 0 && subject == "professional" {
-        changed += sync_professional_table_change(index, &changed_variant, &changed_name);
+    if named.len() != 1 {
+        return None;
     }
-    changed
+    // 整章/整科综合任务按明确范围关联，不把模糊相似标题强行绑定到任意小节。
+    let module = named[0].0;
+    let coarse: Vec<_> = active
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.level == NodeLevel::Knowledge
+                && n.phase == module
+                && (title.contains("全科")
+                    || title.contains("综合")
+                    || title.contains("汇总")
+                    || n.title.split(['（', '(']).next().is_some_and(|anchor| {
+                        anchor.chars().count() >= 3 && title.contains(anchor)
+                    }))
+        })
+        .map(|n| crate::data::plan::KnowledgePointRef {
+            table_id: active.id.clone(),
+            node_id: n.id.clone(),
+            title: n.title.clone(),
+        })
+        .collect();
+    (!coarse.is_empty()).then_some(coarse)
 }
 
 /// 复盘提交后同步进度表：
 /// - 今日完成的任务 → 对应知识点推进为「基础」（复盘不再采集掌握程度，见下）；
-/// - 次日计划的每个任务 → 对应知识点预置为「学习中」；今日反馈困难或存在薄弱点时预置为「强化中」。
-///   全部只升不降。
+/// - 生成次日计划不改变学习状态；已完成节点只升不降。
 ///
 /// 说明：2026-09-16 起复盘的「掌握情况」步骤已移除，「强化中 / 掌握」不再由复盘写入，
 /// 改由用户在进度表内手动推进，避免一次快速复盘就把知识点拉满到「掌握」。
@@ -345,44 +502,39 @@ fn apply_task_to_subject(
 pub fn sync_review_to_progress(
     data_dir: &Path,
     tasks: &[ReviewSyncTask],
-    feeling: &str,
-    tomorrow_plan: Option<&DailyPlanFile>,
+    _feeling: &str,
+    _tomorrow_plan: Option<&DailyPlanFile>,
 ) -> Result<usize, String> {
-    let mut index = load_progress_index(data_dir);
-    let mut changed = 0usize;
+    let mut index = crate::data::progress_tables::read_progress_index(data_dir)?;
+    let changed = apply_review_tasks(&mut index, tasks);
+    if changed > 0 {
+        save_progress_index(data_dir, &index)?;
+    }
+    Ok(changed)
+}
 
-    let has_weak = tasks.iter().any(|t| t.completed && t.mastery == "weak");
-    let hard = feeling.trim() == "hard";
+pub(crate) fn apply_review_tasks(index: &mut ProgressIndex, tasks: &[ReviewSyncTask]) -> usize {
+    let mut changed = 0usize;
 
     // 今日已完成 → 基础（学完一遍即「基础」，是否「强化中/掌握」由进度表内手动推进）
     for t in tasks {
         if !t.completed {
             continue;
         }
+        if let Some(points) = &t.completed_knowledge_points {
+            changed +=
+                crate::core::task_progress::apply_completed_points(index, &t.subject, points);
+            continue;
+        }
         changed += apply_task_to_subject(
-            &mut index,
+            index,
             &progress_subject_key(&t.subject),
             &t.title,
             NodeStatus::Basic,
         );
     }
 
-    // 次日计划 → 学习中 / 强化中
-    if let Some(plan) = tomorrow_plan {
-        let target = if hard || has_weak {
-            NodeStatus::Reinforcing
-        } else {
-            NodeStatus::Learning
-        };
-        for task in &plan.data.tasks {
-            changed += apply_task_to_subject(&mut index, task.subject.key(), &task.title, target);
-        }
-    }
-
-    if changed > 0 {
-        save_progress_index(data_dir, &index)?;
-    }
-    Ok(changed)
+    changed
 }
 
 /// 首次打开时的状态预估条目
@@ -491,7 +643,7 @@ pub fn apply_estimated_statuses(
     subject: &str,
     changes: &[StatusChange],
 ) -> Result<usize, String> {
-    let mut index = load_progress_index(data_dir);
+    let mut index = crate::data::progress_tables::read_progress_index(data_dir)?;
     let mut changed = 0usize;
     let mut changed_tables: Vec<(String, String)> = Vec::new();
     if let Some(set) = index.subjects.get_mut(subject) {
@@ -574,7 +726,7 @@ pub fn apply_batch_round(
     data_dir: &Path,
     updates: &[BatchRoundUpdate],
 ) -> Result<BatchRoundResult, String> {
-    let mut index = load_progress_index(data_dir);
+    let mut index = crate::data::progress_tables::read_progress_index(data_dir)?;
     let mut tables_updated = 0usize;
     let mut nodes_changed = 0usize;
 

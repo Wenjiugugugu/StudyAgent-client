@@ -140,7 +140,10 @@ pub fn active_table_basics_done(
 /// 当某科启用进度表的知识点全部达到「基础」及以上时，将 State 中该科阶段从
 /// `foundation` 自动提升为 `strengthen`。只做单向提升，不覆盖用户已设置的冲刺、
 /// 模考或完成阶段。
-fn promote_completed_subject_phases(data_dir: &Path, index: &ProgressIndex) -> DataResult<usize> {
+pub(crate) fn promote_completed_subject_phases(
+    data_dir: &Path,
+    index: &ProgressIndex,
+) -> DataResult<usize> {
     use crate::data::state::{
         read_state, save_state, StudyPhase, SubjectKey, STATE_DIR, STATE_FILE_NAME,
     };
@@ -288,34 +291,32 @@ pub fn progress_index_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PROGRESS_DIR).join(PROGRESS_INDEX_FILE)
 }
 
-/// 加载索引；文件缺失或解析失败时返回空索引。
-/// 加载后自动修复历史脏数据：旧版 `new_progress_id` 缺少递增序号，同一毫秒内生成的
-/// 中文章节节点 id 全部相同，导致知识点 parent_id 全部指向同一个章节，界面上每个
-/// 板块都串成同一份知识点。这里检测重复 id 并重建节点 id 与 parent_id 关联。
-pub fn load_progress_index(data_dir: &Path) -> ProgressIndex {
+/// 严格且无副作用的读取；只允许不存在的索引初始化为空。
+pub fn read_progress_index(data_dir: &Path) -> DataResult<ProgressIndex> {
     let path = progress_index_path(data_dir);
-    if !path.exists() {
-        return ProgressIndex::default();
-    }
-    let mut idx = match std::fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str::<ProgressIndex>(&content) {
-            Ok(idx) => idx,
-            Err(e) => {
-                log::warn!("解析进度表索引失败 {:?}: {}", path, e);
-                ProgressIndex::default()
-            }
-        },
-        Err(e) => {
-            log::warn!("读取进度表索引失败 {:?}: {}", path, e);
-            ProgressIndex::default()
-        }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ProgressIndex::default()),
+        Err(e) => return Err(format!("读取进度表索引失败 {:?}: {}", path, e)),
     };
-    if repair_progress_index(&mut idx) {
-        if let Err(e) = save_progress_index(data_dir, &idx) {
-            log::warn!("修复进度表重复 id 后保存失败 {:?}: {}", path, e);
-        }
+    serde_json::from_str(&content).map_err(|e| format!("解析进度表索引失败 {:?}: {}", path, e))
+}
+
+/// 展示路径可以降级为空，但绝不在读取时回写文件。
+pub fn load_progress_index(data_dir: &Path) -> ProgressIndex {
+    read_progress_index(data_dir).unwrap_or_else(|e| {
+        log::warn!("{}", e);
+        ProgressIndex::default()
+    })
+}
+
+/// 在持有应用 IO 锁的迁移入口显式修复历史重复 ID。
+pub fn repair_progress_index_on_disk(data_dir: &Path) -> DataResult<ProgressIndex> {
+    let mut index = read_progress_index(data_dir)?;
+    if repair_progress_index(&mut index) {
+        save_progress_index(data_dir, &index)?;
     }
-    idx
+    Ok(index)
 }
 
 /// 修复索引中所有表的重复节点 id。返回 true 表示有修复发生。

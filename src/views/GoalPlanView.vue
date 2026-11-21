@@ -40,6 +40,7 @@ const error = ref("");
 const goals = ref<Goal[]>([]);
 
 const editingId = ref<string | null>(null);
+const editingRevision = ref<string>();
 const formSubject = ref<SubjectKey>("math");
 const formTitle = ref("");
 const formDeadline = ref("");
@@ -212,6 +213,7 @@ function progressOf(g: Goal): number {
 
 function startEdit(g: Goal) {
   editingId.value = g.id;
+  editingRevision.value = g.revision;
   formSubject.value = g.subject;
   formTitle.value = g.title;
   formDeadline.value = g.deadline;
@@ -256,6 +258,7 @@ async function save() {
       }
       await api.updateGoal({
         ...existing,
+        revision: editingRevision.value,
         subject: formSubject.value,
         title: formTitle.value.trim(),
         deadline: formDeadline.value,
@@ -285,7 +288,7 @@ async function save() {
 async function remove(g: Goal) {
   if (!window.confirm(`确定删除「${g.title}」？该科目将从截止日模式回退到按学习时长安排。`)) return;
   try {
-    await api.deleteGoal(g.id);
+    await api.deleteGoal(g.id, g.revision);
     if (editingId.value === g.id) resetForm();
     await reload();
   } catch (e) {

@@ -18,6 +18,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
+import { taskTimerPauseVersion } from "@/utils/updatePreparation";
 import * as api from "@/api";
 import {
   todayString,
@@ -36,8 +37,15 @@ import EmptyState from "@/components/ui/EmptyState.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
+import KnowledgePointPicker from "@/components/plan/KnowledgePointPicker.vue";
+import TaskKnowledgeEditor from "@/components/plan/TaskKnowledgeEditor.vue";
+import type { KnowledgePointRef } from "@/types";
 import WeekPlanGenerateModal from "@/components/plan/WeekPlanGenerateModal.vue";
+import PlanAdjustmentPanel from "@/components/plan/PlanAdjustmentPanel.vue";
+import ExcludedDayAdjustment from "@/components/plan/ExcludedDayAdjustment.vue";
+import LowEnergyModal from "@/components/plan/LowEnergyModal.vue";
 import {
+  Link2,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -58,6 +66,12 @@ import {
 import type { PlanTask, SubjectKey, ExcludedReasonType, Goal } from "@/types";
 
 const todayStore = useTodayStore();
+const adjustmentPanel = ref<InstanceType<typeof PlanAdjustmentPanel> | null>(null);
+const showLowEnergy = ref(false);
+async function onLowEnergyApplied() {
+  showLowEnergy.value = false;
+  await loadPlan();
+}
 const settingsStore = useSettingsStore();
 const route = useRoute();
 const router = useRouter();
@@ -245,6 +259,7 @@ async function loadTaskTimers() {
     console.warn("加载任务计时状态失败", e);
   }
 }
+watch(taskTimerPauseVersion, loadTaskTimers);
 
 // ── 操作失败提示（计时 / 生成等即时动作，与 todayStore.error 的计划加载错误分开）──
 const actionError = ref("");
@@ -549,6 +564,12 @@ async function toggleTaskDone(row: TaskRow) {
 
 const SUBJECT_KEYS: SubjectKey[] = ["math", "english", "politics", "professional"];
 
+const editingKnowledgeTask = ref<import("@/types").PlanTask | null>(null);
+const newTaskPoints = ref<KnowledgePointRef[]>([]);
+function onKnowledgeSaved(plan: import("@/types").DailyPlan) {
+  todayStore.plan = plan;
+}
+
 const showAddTask = ref(false);
 const adding = ref(false);
 const addError = ref("");
@@ -561,9 +582,11 @@ const newTask = ref<{
 
 function onSubjectChange(v: string | number | null) {
   newTask.value.subject = String(v) as SubjectKey;
+  newTaskPoints.value = [];
 }
 
 function openAddTask() {
+  newTaskPoints.value = [];
   newTask.value = { subject: "math", title: "", hours: 1, aiReference: true };
   addError.value = "";
   showAddTask.value = true;
@@ -584,7 +607,8 @@ async function submitAddTask() {
       newTask.value.subject,
       title,
       Number.isFinite(newTask.value.hours) ? Math.max(0, newTask.value.hours) : 0,
-      newTask.value.aiReference
+      newTask.value.aiReference,
+      newTaskPoints.value.length ? newTaskPoints.value : undefined
     );
     // 新任务需要计时状态（可能为空），并刷新分组与统计
     await loadTaskTimers();
@@ -804,6 +828,10 @@ onUnmounted(() => {
 
 <template>
   <div class="today-view">
+    <div class="adjustment-entry">
+      <ExcludedDayAdjustment @preview="adjustmentPanel?.showPreview($event)" />
+    </div>
+    <PlanAdjustmentPanel ref="adjustmentPanel" @changed="loadPlan" />
     <!-- Loading -->
     <LoadingSpinner v-if="todayStore.loading && !plan" :size="32" label="加载计划…" />
 
@@ -972,6 +1000,14 @@ onUnmounted(() => {
             <h2 class="list-title">今日任务</h2>
             <div class="list-head-actions">
               <button
+                v-if="isToday && tasks.length"
+                class="text-btn muted"
+                type="button"
+                @click="showLowEnergy = true"
+              >
+                今天精力不够
+              </button>
+              <button
                 v-if="canModifyTasks"
                 class="text-btn"
                 type="button"
@@ -992,6 +1028,11 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <details v-if="plan?.data?.deferred_tasks?.length" class="deferred-notice">
+            <summary>{{ plan.data.deferred_tasks.length }} 项任务待后续安排</summary>
+            <p>完整内容已保留，生成后续日计划时会继续安排。</p>
+            <p v-for="task in plan.data.deferred_tasks" :key="task.id">{{ task.title }}</p>
+          </details>
           <EmptyState
             v-if="groups.length === 0"
             title="今日暂无任务"
@@ -1071,6 +1112,16 @@ onUnmounted(() => {
                   </div>
 
                   <div class="row-actions">
+                    <button
+                      v-if="canModifyTasks"
+                      class="row-action"
+                      type="button"
+                      title="关联或修正知识点"
+                      :aria-label="`${row.task.title} — 关联知识点`"
+                      @click="editingKnowledgeTask = row.task"
+                    >
+                      <Link2 :size="13" />
+                    </button>
                     <button
                       class="row-action"
                       :class="{ off: !row.aiVisible }"
@@ -1168,6 +1219,16 @@ onUnmounted(() => {
     </template>
 
     <!-- 手动添加任务：科目 + 具体内容 + 是否允许 AI 参考 -->
+    <TaskKnowledgeEditor
+      :task="editingKnowledgeTask"
+      @close="editingKnowledgeTask = null"
+      @saved="onKnowledgeSaved"
+    />
+    <LowEnergyModal
+      :open="showLowEnergy"
+      @close="showLowEnergy = false"
+      @applied="onLowEnergyApplied"
+    />
     <Modal :open="showAddTask" title="添加任务" :width="440" @close="closeAddTask">
       <div class="add-form">
         <div class="form-row">
@@ -1210,13 +1271,17 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="ai-toggle">
+        <details class="form-row">
+          <summary>关联知识点（可选）</summary>
+          <KnowledgePointPicker v-model="newTaskPoints" :subject="newTask.subject" />
+        </details>
+        <label class="ai-toggle">
           <Checkbox v-model="newTask.aiReference" />
-          <div class="ai-toggle-text" @click="newTask.aiReference = !newTask.aiReference">
+          <span class="ai-toggle-text">
             <span class="ai-toggle-title">允许 AI 参考此任务</span>
             <small>关闭后，该任务不会出现在任何发送给 AI 的内容中（简报、复盘、周计划等）。</small>
-          </div>
-        </div>
+          </span>
+        </label>
 
         <p v-if="addError" class="form-error">{{ addError }}</p>
       </div>
@@ -1245,6 +1310,16 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.deferred-notice {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--divider-color);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+.deferred-notice summary {
+  cursor: pointer;
+}
 /* ════════ 页面骨架：桌面端优先，充分利用横向空间 ════════ */
 .today-view {
   padding: 0 var(--space-8) var(--space-10);
