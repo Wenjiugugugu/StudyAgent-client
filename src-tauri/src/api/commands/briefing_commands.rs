@@ -140,7 +140,6 @@ pub async fn regenerate_briefing(
 
     // H1 并发保护：覆盖 AI 生成 + 写回全程，串行化 records/briefing 写入
     let io_lock = crate::get_io_lock(state.inner())?;
-    let _io_guard = io_lock.lock().await;
 
     if !ai_service.has_provider() {
         return Err(
@@ -165,7 +164,7 @@ pub async fn regenerate_briefing(
 
     let agent = BriefingAgent::new(&ai_service);
     agent
-        .generate_briefing(&data_dir, &date, &yesterday, "manual")
+        .generate_guarded(&data_dir, &date, &yesterday, "manual", &io_lock)
         .await
 }
 

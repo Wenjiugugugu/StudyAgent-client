@@ -79,6 +79,8 @@ export interface ReviewData {
 
 /** 复盘文件（完整 JSON） */
 export interface ReviewFile {
+  /** 当天实际学习与持续方向，独立于完成进度。 */
+  actual_study?: ActualStudyEntry[];
   version: string;
   meta: ReviewMeta;
   data: ReviewData;
@@ -155,6 +157,7 @@ export interface OvercompletionEntry {
 
 /** 提交复盘请求 */
 export interface SubmitReviewPayload {
+  actual_study?: ActualStudyEntry[];
   date: string;
   task_reviews: TaskReviewEntry[];
   daily_review: DailyReviewInput;
@@ -162,8 +165,30 @@ export interface SubmitReviewPayload {
   overcompletion?: OvercompletionEntry[];
 }
 
+export interface ActualStudyEntry {
+  subject: SubjectKey;
+  content: string;
+  scope: "today" | "ongoing" | "end";
+  knowledge_points?: import("./plan").KnowledgePointRef[];
+}
+
+export interface CurrentStudyDirection {
+  subject: SubjectKey;
+  content: string;
+  knowledge_points: import("./plan").KnowledgePointRef[];
+  source_date: string;
+  updated_at: string;
+}
+
+export interface ReviewSyncStatus {
+  review_revision: string;
+  sync_status: "complete" | "pending";
+  pending_steps: string[];
+  warnings: string[];
+}
+
 /** 提交复盘的返回结果 */
-export interface SubmitReviewResult {
+export interface SubmitReviewResult extends ReviewSyncStatus {
   /** 是否需要调用 AI 重新生成本周剩余天数计划 */
   needs_regeneration: boolean;
   /** 触发重排的原因（用于前端展示） */

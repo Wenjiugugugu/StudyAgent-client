@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="UTF-8"><title>侧边栏位移验证</title></head>
+  <body>
+    <div id="app"></div>
+    <pre id="motion-results" style="position:fixed;bottom:8px;right:8px;z-index:9999;max-width:460px;background:#202b3b;color:white;font-size:11px;padding:8px;pointer-events:none">等待收展采样</pre>
+    <script type="module">
+      let run = 0;
+      const results = document.querySelector('#motion-results');
+      document.addEventListener('click', (event) => {
+        if (!event.target.closest('.collapse-toggle')) return;
+        const id = ++run;
+        const started = performance.now();
+        const samples = [];
+        const measure = () => {
+          const body = document.querySelector('.content-body');
+          const page = body.firstElementChild;
+          samples.push({ t: performance.now() - started, x: page.getBoundingClientRect().left,
+            shell: document.querySelector('.sidebar').getBoundingClientRect().width });
+        };
+        measure();
+        const tick = () => {
+          if (id !== run) return;
+          measure();
+          if (performance.now() - started < 450) requestAnimationFrame(tick);
+          else {
+            const start = samples[0].x;
+            const end = samples.at(-1).x;
+            const sign = Math.sign(end - start);
+            const reverse = samples.slice(1).reduce((max, sample, i) =>
+              Math.max(max, -sign * (sample.x - samples[i].x)), 0);
+            const overshoot = Math.max(0, ...samples.map(s => Math.max(
+              Math.min(start, end) - s.x, s.x - Math.max(start, end))));
+            results.textContent = JSON.stringify({ samples: samples.length, start, end,
+              reverse, overshoot, maxFrameMs: Math.max(...samples.slice(2).map((s,i) => s.t - samples[i+1].t)),
+              settled: getComputedStyle(document.querySelector('.main-content')).position === 'static' });
+          }
+        };
+        requestAnimationFrame(tick);
+      }, true);
+      await import('/src/main.ts');
+    </script>
+  </body>
+</html>

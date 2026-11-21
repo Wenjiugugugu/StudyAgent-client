@@ -1,0 +1,16 @@
+[meta]
+last_updated = "2026-07-27T09:00:00"
+target_school = "虚构测试学校"
+target_major = "虚构测试专业"
+exam_date = "2026-12-20"
+[subjects.math]
+active = true
+version = "数二"
+completed = ["虚构数学已完成任务"]
+[subjects.english]
+active = true
+version = "英一"
+[subjects.professional]
+active = true
+[progress]
+total_study_days = 42

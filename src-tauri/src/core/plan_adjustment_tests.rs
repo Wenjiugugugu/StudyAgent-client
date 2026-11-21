@@ -2,6 +2,96 @@ use super::*;
 use crate::data::{SubjectKey, TaskSource};
 
 #[test]
+fn ai_usage_updates_do_not_invalidate_adjustment_preview() {
+    let (workspace, draft) = setup();
+    let dir = &workspace.0;
+    let before = inputs(dir).unwrap();
+    let usage_path = dir.join("state/ai_usage_log.json");
+    // 首次 AI 调用创建统计文件，后续调用再追加；都不能使预览过期。
+    for usage in ["[]", r#"[{"agent":"planner","total_tokens":123}]"#] {
+        data::atomic_write(&usage_path, usage).unwrap();
+        assert_eq!(before, inputs(dir).unwrap());
+        assert_eq!(draft.fingerprint, fingerprint(&inputs(dir).unwrap()));
+    }
+    apply(dir, &draft.preview.id).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(usage_path).unwrap(),
+        r#"[{"agent":"planner","total_tokens":123}]"#
+    );
+}
+
+#[test]
+fn learning_inputs_still_invalidate_adjustment_preview() {
+    for input_path in [
+        "state/current.state",
+        "records/2026-10-09_review.json",
+        "records/study-directions.json",
+        "config/settings.json",
+        "progress_tables/math.json",
+    ] {
+        let (workspace, draft) = setup();
+        let dir = &workspace.0;
+        data::atomic_write(&dir.join(input_path), "{}").unwrap();
+        assert_ne!(
+            draft.fingerprint,
+            fingerprint(&inputs(dir).unwrap()),
+            "{input_path}"
+        );
+        assert!(apply(dir, &draft.preview.id).is_err(), "{input_path}");
+    }
+}
+
+#[test]
+fn pending_timer_tasks_are_required_and_survive_undo() {
+    let (workspace, mut draft) = setup();
+    let dir = &workspace.0;
+    let mut state = data::read_state(dir).unwrap();
+    state.current_task.tasks[0].accumulated_minutes = 12;
+    state.current_task.tasks[0].started_at = Some(data::now_string());
+    data::save_state(dir, &state).unwrap();
+    let choices = task_choices(dir, std::slice::from_ref(&draft.today)).unwrap();
+    assert!(
+        choices
+            .iter()
+            .find(|t| t.task.title == "旧任务")
+            .unwrap()
+            .required
+    );
+    draft.preview.kept_keys = choices
+        .iter()
+        .filter(|t| t.required)
+        .map(|t| t.key.clone())
+        .collect();
+    draft.preview.tasks = choices;
+    project(&mut draft).unwrap();
+    // 新任务应用后，仅开始计时，不手动改变 Pending 状态。
+    draft.fingerprint = fingerprint(&inputs(dir).unwrap());
+    save(dir, DRAFT, &draft).unwrap();
+    apply(dir, &draft.preview.id).unwrap();
+    let mut state = data::read_state(dir).unwrap();
+    let learned = state
+        .current_task
+        .tasks
+        .iter_mut()
+        .find(|t| t.task == "新任务")
+        .unwrap();
+    assert_eq!(learned.status, TaskStatus::Pending);
+    learned.accumulated_minutes = 17;
+    learned.started_at = Some(data::now_string());
+    data::save_state(dir, &state).unwrap();
+    undo(dir, &draft.preview.id).unwrap();
+    let state = data::read_state(dir).unwrap();
+    let retained = state
+        .current_task
+        .tasks
+        .iter()
+        .find(|t| t.task == "新任务")
+        .unwrap();
+    assert_eq!(retained.accumulated_minutes, 17);
+    assert!(retained.started_at.is_some());
+}
+
+#[test]
 fn adjustment_keeps_knowledge_links_in_week_and_daily_plans() {
     let (_workspace, mut draft) = setup();
     let choice = draft
@@ -551,4 +641,35 @@ async fn review_generation_keeps_official_progress_and_plans_unchanged() {
         .unwrap();
     assert_eq!(before, inputs(dir).unwrap());
     assert!(!preview.days.is_empty());
+}
+
+#[tokio::test]
+async fn failed_direction_replanning_keeps_official_data_and_does_not_offer_old_tasks() {
+    let (workspace, _) = setup();
+    let dir = &workspace.0;
+    let review_date = data::get_week_start(&data::today_string()).unwrap();
+    let mut review = data::ReviewFile::default();
+    review.meta.date = review_date.clone();
+    review.meta.generated_at = data::study_direction::timestamp();
+    review
+        .actual_study
+        .push(data::study_direction::ActualStudyEntry {
+            subject: "math".into(),
+            content: "先学线代强化，再继续高数强化".into(),
+            scope: data::study_direction::StudyScope::Ongoing,
+            ..Default::default()
+        });
+    data::save_review(dir, &review).unwrap();
+    let before = inputs(dir).unwrap();
+    let ai = crate::ai::service::AiService::new();
+    let planner = Planner::new(&ai);
+    let previous_preview = read_optional(&dir.join(DRAFT)).unwrap();
+    let result = generate(dir, &planner, "review", &review_date, None, None).await;
+    assert!(result.unwrap_err().contains("复盘和学习方向已保存"));
+    assert_eq!(before, inputs(dir).unwrap());
+    assert_eq!(read_optional(&dir.join(DRAFT)).unwrap(), previous_preview);
+    assert_eq!(
+        data::study_direction::current_directions(dir, &data::today_string()).unwrap()[0].content,
+        "先学线代强化，再继续高数强化"
+    );
 }

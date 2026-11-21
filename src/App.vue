@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref } from "vue";
+import { computed, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settings";
 import { useUpdateStore } from "@/stores/update";
@@ -13,7 +13,9 @@ import {
   weekdayName,
   getWeekStart,
 } from "@/utils/date";
+import { desktopSmokeMode, runDesktopSmoke } from "@/utils/desktopSmoke";
 import AppLayout from "@/layouts/AppLayout.vue";
+import UpdateModal from "@/features/dashboard/components/UpdateModal.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Button from "@/components/ui/Button.vue";
 import Checkbox from "@/components/ui/Checkbox.vue";
@@ -75,7 +77,7 @@ async function listenCloseEvents() {
     const { listen } = await import("@tauri-apps/api/event");
     closeUnlisten = await listen("close-requested", () => {
       // 强制更新模式下阻止窗口关闭，保持更新弹窗常驻
-      if (updateStore.forceUpdate) return;
+      if (updateStore.forceUpdate || updateStore.installing) return;
       closeDialogVisible.value = true;
     });
     trayMinimizeUnlisten = await listen("window-minimized-to-tray", () => {
@@ -149,6 +151,12 @@ async function checkStartupUpdate() {
     console.error("[Update] 启动更新检查失败:", e);
   }
 }
+watch(
+  () => settingsStore.onboardingCompleted,
+  (ready) => {
+    if (ready) void checkStartupUpdate();
+  }
+);
 
 // ── 更新日志弹窗（首次启动新版本时显示） ──
 const changelogVisible = ref(false);
@@ -195,6 +203,15 @@ async function checkChangelog() {
 function closeChangelog() {
   changelogVisible.value = false;
 }
+watch(
+  () => updateStore.forceUpdate || updateStore.installing,
+  (blocked) => {
+    if (blocked) {
+      closeDialogVisible.value = false;
+      changelogVisible.value = false;
+    }
+  }
+);
 
 // ── 每日学习提醒（开始/结束/复盘时间到点通知） ──
 let reminderInterval: number | undefined;
@@ -284,6 +301,10 @@ async function showNotification(title: string, body: string) {
 }
 
 onMounted(async () => {
+  if (desktopSmokeMode) {
+    await runDesktopSmoke();
+    return;
+  }
   await settingsStore.load();
 
   // 引导状态检查：未完成则跳转引导页
@@ -306,6 +327,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  updateStore.stopAutomaticChecks();
   closeUnlisten?.();
   trayMinimizeUnlisten?.();
   if (reminderInterval !== undefined) {
@@ -316,11 +338,32 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <router-view v-if="isStandalone" />
-  <AppLayout v-else />
+  <div v-if="desktopSmokeMode" data-desktop-smoke>正在检查桌面启动与数据读写…</div>
+  <div v-else style="display: contents" :inert="updateStore.preparing || updateStore.installing">
+    <router-view v-if="isStandalone" />
+    <AppLayout v-else />
+  </div>
+
+  <UpdateModal />
+  <Modal
+    :open="updateStore.installing && !updateStore.forceUpdate"
+    title="正在准备更新"
+    :show-close="false"
+    :close-on-overlay="false"
+    :close-on-esc="false"
+  >
+    <p>
+      {{
+        updateStore.preparing
+          ? "正在等待当前操作完成、保存复盘草稿并暂停计时…"
+          : "正在安装更新，应用即将退出并重启…"
+      }}
+    </p>
+  </Modal>
 
   <!-- 关闭窗口询问对话框 -->
   <Modal
+    class="close-confirm-modal"
     :open="closeDialogVisible"
     :title="'关闭窗口'"
     :close-on-overlay="false"
@@ -390,6 +433,11 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* ── 关闭对话框 ── */
+:root:not([data-theme="dark"]) .close-confirm-modal :deep(.modal-dialog) {
+  --text-secondary: color-mix(in srgb, var(--text-primary) 78%, var(--bg-primary));
+  --text-tertiary: var(--text-secondary);
+}
+
 .close-dialog-body {
   display: flex;
   flex-direction: column;
@@ -435,6 +483,11 @@ onBeforeUnmount(() => {
 .close-action-card:hover {
   border-color: var(--accent);
   background: var(--accent-subtle);
+}
+
+:root:not([data-theme="dark"]) .close-action-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .close-action-card.danger:hover {
@@ -486,6 +539,31 @@ onBeforeUnmount(() => {
   font-size: var(--text-xs);
   color: var(--text-secondary);
   cursor: pointer;
+}
+
+:root:not([data-theme="dark"]) .close-remember :deep(.checkbox-box) {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  border-color: color-mix(in srgb, var(--text-primary) 35%, transparent);
+}
+
+:root:not([data-theme="dark"]) .close-remember :deep(.checkbox.checked .checkbox-box) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+:root:not([data-theme="dark"]) .close-action-card {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  border-color: color-mix(in srgb, var(--text-primary) 12%, transparent);
+}
+
+:root:not([data-theme="dark"]) .close-action-card:hover {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+:root:not([data-theme="dark"]) .close-action-card.danger:hover {
+  background: var(--color-danger-subtle, rgba(255, 59, 48, 0.08));
+  border-color: var(--color-danger, #ff3b30);
 }
 
 /* ── 更新日志弹窗 ── */

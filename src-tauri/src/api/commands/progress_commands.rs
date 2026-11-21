@@ -9,15 +9,13 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
+use crate::ai::provider::{AgentType, ChatRequest};
 use crate::data::{
-    load_progress_index, new_progress_id, now_string, progress_index_path, save_progress_index,
+    new_progress_id, now_string, progress_index_path, read_progress_index, save_progress_index,
     NodeLevel, NodeStatus, ProgressIndex, ProgressNode, ProgressTable, SubjectProgressSet,
     TableOrigin,
 };
 use crate::{get_data_dir, get_data_dir_and_ai, AppState};
-
-static BUILTIN_REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
 /// 校验学科 key（与教材导入一致的宽松规则：字母/数字/连字符/下划线）
 fn validate_subject(subject: &str) -> Result<(), String> {
@@ -52,13 +50,16 @@ fn ensure_node_ids(table: &mut ProgressTable) {
 /// 列出全部进度表索引（含每科的启用表 id 与所有表）
 /// 前端调用: `invoke('list_progress_tables')`
 #[tauri::command]
-pub fn list_progress_tables(state: State<'_, Mutex<AppState>>) -> Result<ProgressIndex, String> {
-    let _refresh_guard = BUILTIN_REFRESH_LOCK.lock().map_err(|e| e.to_string())?;
+pub async fn list_progress_tables(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
     ensure_index_readable(&data_dir)?;
-    let index = load_progress_index(&data_dir);
+    let index = crate::data::progress_tables::repair_progress_index_on_disk(&data_dir)?;
     if index.builtin_revision == env!("CARGO_PKG_VERSION") {
-        return Ok(index);
+        return progress_index_dto(&index);
     }
     let variants: Vec<(String, String)> = index
         .subjects
@@ -75,10 +76,23 @@ pub fn list_progress_tables(state: State<'_, Mutex<AppState>>) -> Result<Progres
     for (subject, variant) in variants {
         refresh_builtin_progress_tables_inner(subject, variant, state.clone())?;
     }
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
     index.builtin_revision = env!("CARGO_PKG_VERSION").to_string();
     save_progress_index(&data_dir, &index)?;
-    Ok(index)
+    progress_index_dto(&index)
+}
+
+fn progress_index_dto(index: &ProgressIndex) -> Result<serde_json::Value, String> {
+    let mut dto = serde_json::to_value(index).map_err(|e| e.to_string())?;
+    for (subject, set) in &index.subjects {
+        let tables = set
+            .tables
+            .iter()
+            .map(crate::data::revision::with_revision)
+            .collect::<Result<Vec<_>, _>>()?;
+        dto["subjects"][subject]["tables"] = tables.into();
+    }
+    Ok(dto)
 }
 
 /// 新增或更新某科的一份进度表
@@ -88,13 +102,14 @@ pub fn list_progress_tables(state: State<'_, Mutex<AppState>>) -> Result<Progres
 /// - 表 id 为空视为「新建」，否则为更新。
 /// 前端调用: `invoke('save_progress_table', { subject, variant, table, makeActive })`
 #[tauri::command]
-pub fn save_progress_table(
+pub async fn save_progress_table(
     subject: String,
     variant: String,
     mut table: ProgressTable,
     make_active: bool,
+    expected_revision: Option<String>,
     state: State<'_, Mutex<AppState>>,
-) -> Result<ProgressTable, String> {
+) -> Result<serde_json::Value, String> {
     validate_subject(&subject)?;
     if table.name.trim().is_empty() {
         return Err("进度表名称不能为空".to_string());
@@ -104,11 +119,21 @@ pub fn save_progress_table(
     } else if !variant.is_empty() {
         table.variant = variant.clone();
     }
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
 
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
     let set = subject_set(&mut index, &subject);
 
+    if !table.id.is_empty() {
+        let existing = set
+            .tables
+            .iter()
+            .find(|t| t.id == table.id)
+            .ok_or("进度表已被删除")?;
+        crate::data::revision::check_revision(existing, expected_revision.as_deref())?;
+    }
     let now = now_string();
     let is_new = table.id.is_empty();
     let new_id = if is_new {
@@ -173,21 +198,30 @@ pub fn save_progress_table(
     }
 
     save_progress_index(&data_dir, &index)?;
-    Ok(table)
+    crate::data::revision::with_revision(&table)
 }
 
 /// 删除某科的一份进度表；若删除的是启用表，自动启用剩余的第一份。
 /// 前端调用: `invoke('delete_progress_table', { subject, id })`
 #[tauri::command]
-pub fn delete_progress_table(
+pub async fn delete_progress_table(
     subject: String,
     id: String,
+    expected_revision: Option<String>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     validate_subject(&subject)?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
 
+    let existing = index
+        .subjects
+        .get(&subject)
+        .and_then(|set| set.tables.iter().find(|t| t.id == id))
+        .ok_or("进度表不存在")?;
+    crate::data::revision::check_revision(existing, expected_revision.as_deref())?;
     let removed = {
         let set = index.subjects.get_mut(&subject);
         match set {
@@ -214,16 +248,31 @@ pub fn delete_progress_table(
 /// - `variant` 为空时删除该科所有内置表。
 /// 前端调用: `invoke('delete_builtin_progress_tables', { subject, variant })`
 #[tauri::command]
-pub fn delete_builtin_progress_tables(
+pub async fn delete_builtin_progress_tables(
     subject: String,
     variant: String,
+    expected_revisions: Option<HashMap<String, String>>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<usize, String> {
     validate_subject(&subject)?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
 
     let set = subject_set(&mut index, &subject);
+    for table in set.tables.iter().filter(|t| {
+        t.origin == TableOrigin::Builtin
+            && (variant.trim().is_empty() || t.variant == variant.trim())
+    }) {
+        crate::data::revision::check_revision(
+            table,
+            expected_revisions
+                .as_ref()
+                .and_then(|revisions| revisions.get(&table.id))
+                .map(String::as_str),
+        )?;
+    }
     let before = set.tables.len();
     let active_id = set.active_id.clone();
 
@@ -267,12 +316,13 @@ pub struct RefreshBuiltinResult {
 /// 用当前随包考纲更新内置表。整份索引只保存一次；旧节点无法匹配时保留在表内，
 /// 避免考纲改名或删除条目时丢失状态、备注与历史引用。
 #[tauri::command]
-pub fn refresh_builtin_progress_tables(
+pub async fn refresh_builtin_progress_tables(
     subject: String,
     variant: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<RefreshBuiltinResult, String> {
-    let _refresh_guard = BUILTIN_REFRESH_LOCK.lock().map_err(|e| e.to_string())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     refresh_builtin_progress_tables_inner(subject, variant, state)
 }
 
@@ -288,7 +338,7 @@ fn refresh_builtin_progress_tables_inner(
     }
     let data_dir = get_data_dir(state.inner())?;
     ensure_index_readable(&data_dir)?;
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
     let set = subject_set(&mut index, &subject);
     let mut result = RefreshBuiltinResult {
         tables_updated: 0,
@@ -484,14 +534,16 @@ mod builtin_refresh_tests {
 /// 设定某科启用哪份进度表（同一时刻每科仅一份启用，并同步启用方案为该表所属方案）
 /// 前端调用: `invoke('set_active_progress_table', { subject, id })`
 #[tauri::command]
-pub fn set_active_progress_table(
+pub async fn set_active_progress_table(
     subject: String,
     id: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     validate_subject(&subject)?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
 
     let variant = {
         let set = subject_set(&mut index, &subject);
@@ -514,7 +566,7 @@ pub fn set_active_progress_table(
 /// 新增若该方案尚无任何表，则只设置启用方案（前端随后可生成/新建该方案的表）。
 /// 前端调用: `invoke('set_active_progress_variant', { subject, variant })`
 #[tauri::command]
-pub fn set_active_progress_variant(
+pub async fn set_active_progress_variant(
     subject: String,
     variant: String,
     state: State<'_, Mutex<AppState>>,
@@ -523,8 +575,10 @@ pub fn set_active_progress_variant(
     if variant.trim().is_empty() {
         return Err("考纲方案不能为空".to_string());
     }
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
-    let mut index = load_progress_index(&data_dir);
+    let mut index = read_progress_index(&data_dir)?;
     let set = subject_set(&mut index, &subject);
     set.active_variant = variant.clone();
     // active_id 对齐：优先该方案当前启用表，否则取该方案第一张表
@@ -561,12 +615,14 @@ pub fn estimate_progress_from_state(
 /// 批量应用用户在「首次状态确认」弹窗中勾选的结果（只升不降）。
 /// 前端调用: `invoke('apply_progress_statuses', { subject, changes })`
 #[tauri::command]
-pub fn apply_progress_statuses(
+pub async fn apply_progress_statuses(
     subject: String,
     changes: Vec<crate::core::progress_sync::StatusChange>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<usize, String> {
     validate_subject(&subject)?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
     crate::core::progress_sync::apply_estimated_statuses(&data_dir, &subject, &changes)
 }
@@ -575,13 +631,15 @@ pub fn apply_progress_statuses(
 /// 专业课内置场景下，总专业课进度表再按教材覆盖度自动联动。
 /// 前端调用: `invoke('batch_update_progress', { updates })`
 #[tauri::command]
-pub fn batch_update_progress(
+pub async fn batch_update_progress(
     updates: Vec<crate::core::progress_sync::BatchRoundUpdate>,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<crate::core::progress_sync::BatchRoundResult, String> {
     for u in &updates {
         validate_subject(&u.subject)?;
     }
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
     let data_dir = get_data_dir(state.inner())?;
     crate::core::progress_sync::apply_batch_round(&data_dir, &updates)
 }
@@ -663,7 +721,7 @@ fn builtin_syllabus(subject: &str, version: &str) -> Option<Vec<String>> {
 ///
 /// 每本教材一行：`教材名：第一章 xxx / 第二章 xxx / …`（章节名取自教材 sections 的 phase）。
 /// 仅对 professional/408 生效；find 未命中或该科无教材（如 396/199/农学）时返回空串，
-/// 由提示词兜底要求 AI 依据最新考纲明确考纲规定的教材。
+/// 由提示词兜底要求 AI 依据提供的考纲明确考纲规定的教材。
 fn book_sections_text(subject: &str, exam_type: &str) -> String {
     if subject != "professional" && subject != "408" {
         return String::new();
@@ -732,11 +790,7 @@ pub async fn generate_progress_table(
     );
 
     let request = ChatRequest {
-        messages: vec![ChatMessage {
-            role: MessageRole::User,
-            content: prompt,
-            ..Default::default()
-        }],
+        messages: crate::ai::task_prompts::messages(crate::ai::task_prompts::PROGRESS, prompt),
         agent: Some(AgentType::Assistant),
         temperature: Some(0.4),
         timeout_override: Some(240),
@@ -1173,19 +1227,19 @@ fn build_generate_prompt(
     let is_professional = subject_key == "professional" || subject_key == "408";
     let has_books = !book_sections.trim().is_empty();
 
-    let source_note = "以下为内置的官方考研考纲知识点顺序（如未提供，请按该科目权威最新考纲自行组织，务必覆盖核心考点且符合最新考纲要求）。";
+    let source_note = "资料来自随包内置参考，不代表已经核验最新版本。只依据下方实际提供的考纲与教材组织内容，缺少来源时将建议范围标注为未核实。";
 
     let syllabus_block = if syllabus_text.trim().is_empty() {
         if is_professional {
             if has_books {
-                "（未提供官方考纲知识点顺序，请以下方【内置教材章节参考】为骨架组织知识点，并兼顾最新考纲考查范围，不得遗漏。）"
+                "（未提供官方考纲知识点顺序，请以下方【内置教材章节参考】为骨架组织知识点，并兼顾提供的考纲考查范围，不得遗漏。）"
                     .to_string()
             } else {
-                "（未提供官方考纲知识点顺序，请依据最新考研大纲明确该科【考纲规定的教材】，并按其章节体系组织知识点。）"
+                "（未提供考纲与教材来源，仅能生成未核实的建议范围；不得虚构【考纲规定的教材】。请在 note 标注未核实。）"
                     .to_string()
             }
         } else {
-            "（未提供考纲文本，请你依据该科最新权威考试大纲自行构建，务必遵循最新考纲的考察范围，不得遗漏新大纲新增考点。）"
+            "（未提供考纲文本，仅按通用学习范围提出建议，在 note 标注未核实；不得声称已核验最新考试范围。）"
                 .to_string()
         }
     } else {
@@ -1195,7 +1249,7 @@ fn build_generate_prompt(
     let book_block = if has_books {
         format!("【内置教材章节参考】\n{}", book_sections)
     } else if is_professional {
-        "【教材要求】该科目无内置教材数据。请依据最新考研大纲确定官方或主流参考教材（如复习全书、精点系列等），严格按教材章节体系组织知识点：phase 必须使用教材章节名，章节顺序遵循教材/大纲；如确无统一指定教材，则按考纲板块组织并在 note 中注明。"
+        "【教材要求】该科目无内置教材数据。请依据提供的考研大纲确定官方或主流参考教材（如复习全书、精点系列等），严格按教材章节体系组织知识点：phase 必须使用教材章节名，章节顺序遵循教材/大纲；如确无统一指定教材，则按考纲板块组织并在 note 中注明。"
             .to_string()
     } else {
         String::new()
@@ -1205,12 +1259,12 @@ fn build_generate_prompt(
         concat!(
             "你是考研规划助手，为 StudyAgent 桌面应用生成一份「{}」的完整学习进度表（名称：{}，考试类型：{}）。\n",
             "要求：\n",
-            "1. 覆盖与顺序：必须依据最新考研考试大纲，覆盖该科全部考查范围，严格遵循大纲/教材的章节先后顺序，不得遗漏任何考查板块或章节。\n",
-            "2. 章节对齐：phase 用作章节分组；若提供了【内置教材章节参考】，phase 必须与其中的章节名一字不差，禁止自创章节名；若为专业课且无内置教材，必须依据最新考纲明确【考纲规定的教材】并按其章节组织，phase 用教材章节名；其余情况按考纲章节组织并保持口径一致。\n",
+            "1. 覆盖与顺序：必须依据提供的考研考试大纲，覆盖该科全部考查范围，严格遵循大纲/教材的章节先后顺序，不得遗漏任何考查板块或章节。\n",
+            "2. 章节对齐：phase 用作章节分组；若提供了【内置教材章节参考】，phase 必须与其中的章节名一字不差，禁止自创章节名；若为专业课且无内置教材，未提供官方指定教材的来源时不得声称教材由考纲规定；按参考板块组织并在 note 标注未核实，phase 用教材章节名；其余情况按考纲章节组织并保持口径一致。\n",
             "3. 节点归属严格：每个知识点节点都必须归入某个 phase（所属章节），严禁输出无 phase 的孤立知识点；phase=章名、title=具体知识点，二者内容不同。\n",
-            "4. 覆盖与粒度：每章输出约 3-10 个知识点节点，全书知识点总数约 30-80 个，能用于长期学习打卡；同一章的多个知识点 phase 必须相同。\n",
+            "4. 覆盖与粒度：每章输出约 3-10 个知识点节点，知识点数量以所提供大纲范围为准，不设会遗漏考点的总数上限，能用于长期学习打卡；同一章的多个知识点 phase 必须相同。\n",
             "5. 生成顺序 = 建议学习顺序，从基础到进阶。\n",
-            "6. 状态统一：所有节点的 status 一律填 pending（不带引号的枚举值），planned_date 一律填 null；进度与计划日期由系统后续统一安排，不要自行填写状态或日期。\n",
+            "6. 状态统一：所有节点的 status 一律填 \"pending\"（带双引号的 JSON 字符串），planned_date 一律填 null；进度与计划日期由系统后续统一安排，不要自行填写状态或日期。\n",
             "7. 预估时长（隐藏数据）：每个节点必须给出 estimated_hours，表示学习该知识点/章节所需的预估时长（单位：小时），填 0.5~4 之间的数字（如 1.5、2.0）；该字段仅用于后续计划参考、不会展示给用户，请按知识点实际难度与内容量合理估算（概念/识记类偏短，计算/证明/综合类偏长）。\n",
             "{}\n",
             "{}\n",
@@ -1454,7 +1508,7 @@ mod tests {
         // 无内置教材：不输出独立教材块（仅要求措辞中引用一次该词）
         assert_eq!(p.matches("【内置教材章节参考】").count(), 1);
         // 考纲为空时的专业课兜底提示
-        assert!(p.contains("明确该科【考纲规定的教材】"));
+        assert!(p.contains("不得虚构【考纲规定的教材】"));
     }
 
     #[test]

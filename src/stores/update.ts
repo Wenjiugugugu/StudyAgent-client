@@ -2,8 +2,15 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "@/api";
 import type { UpdateAsset, UpdateCheckResult, DownloadProgress } from "@/types";
+import { useFocusStore } from "@/stores/focus";
+import {
+  prepareViewsForUpdate,
+  taskTimerPauseVersion,
+  updatePreparationActive,
+} from "@/utils/updatePreparation";
 
-export type DownloadState = "idle" | "downloading" | "downloaded" | "installing" | "error";
+export type DownloadState =
+  "idle" | "downloading" | "downloaded" | "preparing" | "installing" | "error";
 
 export const useUpdateStore = defineStore("update", () => {
   // ── 检查更新状态 ──
@@ -22,6 +29,9 @@ export const useUpdateStore = defineStore("update", () => {
   // ── 启动检查标记（避免重复检查）──
   let startupChecked = false;
   let progressUnlisten: (() => void) | null = null;
+  let progressListening: Promise<void> | null = null;
+  let checkInterval: ReturnType<typeof setInterval> | null = null;
+  const downloadedVersion = ref("");
 
   // ── 首页更新弹窗 ──
   const showUpdateModal = ref(false);
@@ -30,6 +40,14 @@ export const useUpdateStore = defineStore("update", () => {
 
   /** 是否强制更新（当前版本被远端策略禁用）——强制更新无视 3 天静默期 */
   const forceUpdate = computed(() => updateResult.value?.force_update ?? false);
+  const preparing = computed(() => downloadState.value === "preparing");
+  const busy = computed(() =>
+    ["downloading", "preparing", "installing"].includes(downloadState.value)
+  );
+  const showIndicator = computed(() => hasUpdate.value || busy.value || !!downloadError.value);
+  const targetVersion = computed(
+    () => downloadedVersion.value || updateResult.value?.latest_version || ""
+  );
 
   // 当前选中的安装包（默认 Inno Setup 生成的 Windows 安装包）
   const preferredAsset = computed(() => {
@@ -70,26 +88,55 @@ export const useUpdateStore = defineStore("update", () => {
 
   async function ensureProgressListener() {
     if (progressUnlisten) return;
-    progressUnlisten = await api.onDownloadProgress((p) => {
-      downloadProgress.value = p;
-    });
+    progressListening ??= api
+      .onDownloadProgress((p) => {
+        if (downloadState.value === "downloading") downloadProgress.value = p;
+      })
+      .then((unlisten) => {
+        progressUnlisten = unlisten;
+      })
+      .finally(() => {
+        progressListening = null;
+      });
+    await progressListening;
   }
 
   async function checkUpdate() {
-    if (checking.value) return;
+    if (checking.value || busy.value) return;
     checking.value = true;
     updateError.value = null;
-    updateResult.value = null;
-    downloadState.value = "idle";
-    downloadProgress.value = null;
-    downloadedFilePath.value = null;
-    downloadError.value = null;
-    selectedAsset.value = null;
-
     try {
       const result = await api.checkForUpdates();
+      checking.value = false;
+      // 检查失败不会撤销已确认的禁用策略或清空已下载的包。
+      if (!result.has_update && !result.latest_version) {
+        updateError.value = result.message;
+        return;
+      }
+      const oldAsset = selectedAsset.value;
       updateResult.value = result;
-      selectedAsset.value = preferredAsset.value;
+      showUpdateModal.value = forceUpdate.value;
+      if (!downloadedFilePath.value) selectedAsset.value = preferredAsset.value;
+      if (downloadedFilePath.value && oldAsset && result.has_update) {
+        const sameAsset = result.assets.some(
+          (asset) => asset.name === oldAsset.name && asset.sha256 === oldAsset.sha256
+        );
+        if (!sameAsset) {
+          downloadedFilePath.value = null;
+          downloadedVersion.value = "";
+          downloadState.value = "idle";
+          downloadProgress.value = null;
+          selectedAsset.value = preferredAsset.value;
+        }
+      }
+      if (hasUpdate.value) {
+        if (downloadedFilePath.value) {
+          // 自动安装失败后不在定时检查中反复退出；留给用户重试。
+          if (forceUpdate.value && downloadState.value === "downloaded") await handleInstall();
+        } else {
+          await handleDownload();
+        }
+      }
     } catch (e) {
       updateError.value = e instanceof Error ? e.message : String(e);
     } finally {
@@ -97,34 +144,35 @@ export const useUpdateStore = defineStore("update", () => {
     }
   }
 
-  /** 启动时检查更新（仅一次），发现新版本时弹出首页弹窗。
-   *  强制更新无视静默期；普通更新若在 3 天静默期内则不弹窗。 */
+  /** 启动及每小时自动检查；普通更新仅通过侧边栏显示，不弹窗打断。 */
   async function checkOnStartup() {
     if (startupChecked) return;
     startupChecked = true;
     try {
-      await ensureProgressListener();
+      checkInterval = setInterval(
+        () => {
+          void checkUpdate();
+        },
+        60 * 60 * 1000
+      );
       await checkUpdate();
-      if (hasUpdate.value) {
-        if (forceUpdate.value) {
-          // 强制更新：无视静默期，必须弹窗
-          showUpdateModal.value = true;
-        } else {
-          // 普通更新：3 天静默期内不再打扰
-          const snoozeUntil = await api.getUiFlag("update_snooze_until");
-          const untilMs = Number(snoozeUntil) || 0;
-          if (untilMs > 0 && Date.now() < untilMs) return;
-          showUpdateModal.value = true;
-        }
-      }
     } catch (e) {
       console.warn("[Update] 启动检查更新失败:", e);
     }
   }
 
   async function handleDownload() {
+    if (busy.value) return;
+    if (downloadedFilePath.value) {
+      await handleInstall();
+      return;
+    }
     const asset = selectedAsset.value;
-    if (!asset) return;
+    if (!asset) {
+      downloadError.value = "暂时没有可下载的更新包，请重新检查更新或稍后重试";
+      downloadState.value = "error";
+      return;
+    }
 
     downloadState.value = "downloading";
     downloadProgress.value = null;
@@ -144,9 +192,9 @@ export const useUpdateStore = defineStore("update", () => {
       await ensureProgressListener();
       const path = await api.downloadUpdate(asset.download_url, asset.name, asset.sha256);
       downloadedFilePath.value = path;
+      downloadedVersion.value = updateResult.value?.latest_version ?? "";
       downloadState.value = "downloaded";
-      // 下载完成自动启动安装程序（安装程序启动后应用随即退出）
-      await handleInstall();
+      if (forceUpdate.value) await handleInstall();
     } catch (e) {
       downloadError.value = e instanceof Error ? e.message : String(e);
       downloadState.value = "error";
@@ -154,24 +202,40 @@ export const useUpdateStore = defineStore("update", () => {
   }
 
   async function handleInstall() {
-    if (!downloadedFilePath.value) return;
+    if (!downloadedFilePath.value || installing.value) return;
     installing.value = true;
-    downloadState.value = "installing";
+    downloadError.value = null;
+    downloadState.value = "preparing";
+    updatePreparationActive.value = true;
     try {
+      await prepareViewsForUpdate();
+      await useFocusStore().prepareForUpdate();
+      await api.prepareUpdateTimers();
+      taskTimerPauseVersion.value++;
+      downloadState.value = "installing";
       await api.installUpdate(downloadedFilePath.value);
     } catch (e) {
       downloadError.value = e instanceof Error ? e.message : String(e);
       downloadState.value = "error";
+      updatePreparationActive.value = false;
       installing.value = false;
+      if (
+        /安装包不存在|安装包未通过本次运行|安装前完整性复核失败/.test(downloadError.value ?? "")
+      ) {
+        downloadedFilePath.value = null;
+        downloadedVersion.value = "";
+      }
     }
   }
 
   function resetUpdate() {
+    if (busy.value || forceUpdate.value) return;
     updateResult.value = null;
     updateError.value = null;
     downloadState.value = "idle";
     downloadProgress.value = null;
     downloadedFilePath.value = null;
+    downloadedVersion.value = "";
     downloadError.value = null;
     selectedAsset.value = null;
   }
@@ -181,8 +245,13 @@ export const useUpdateStore = defineStore("update", () => {
   function dismissUpdate() {
     if (forceUpdate.value) return; // 强制更新不可关闭
     showUpdateModal.value = false;
-    const until = Date.now() + 3 * 24 * 60 * 60 * 1000;
-    api.setUiFlag("update_snooze_until", String(until)).catch(() => {});
+  }
+
+  function stopAutomaticChecks() {
+    if (checkInterval) clearInterval(checkInterval);
+    checkInterval = null;
+    progressUnlisten?.();
+    progressUnlisten = null;
   }
 
   return {
@@ -195,6 +264,10 @@ export const useUpdateStore = defineStore("update", () => {
     downloadError,
     selectedAsset,
     installing,
+    preparing,
+    busy,
+    showIndicator,
+    targetVersion,
     hasUpdate,
     forceUpdate,
     showUpdateModal,
@@ -205,6 +278,7 @@ export const useUpdateStore = defineStore("update", () => {
     handleInstall,
     resetUpdate,
     dismissUpdate,
+    stopAutomaticChecks,
     assetLabel,
     formatSize,
   };

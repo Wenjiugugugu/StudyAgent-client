@@ -89,14 +89,15 @@ function onInput(e: Event) {
 /* 原生 input 保留语义与键盘可达性，仅视觉隐藏 */
 .checkbox-input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
   margin: 0;
   padding: 0;
   border: 0;
-  clip-path: inset(50%);
-  overflow: hidden;
-  white-space: nowrap;
+  opacity: 0;
+  cursor: inherit;
 }
 
 .checkbox-box {

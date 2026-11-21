@@ -17,6 +17,7 @@ export type GoalStatus = "active" | "completed" | "expired";
 
 /** 一条截止日规划区间（绑定单一科目 + 书/板块） */
 export interface Goal {
+  revision?: string;
   /** 当前剩余进度的倒排起算日 */
   planning_start?: string;
   /** 唯一标识，如 "goal-math-线性代数-1" */

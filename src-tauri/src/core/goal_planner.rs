@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::ai::provider::{AgentType, ChatMessage, ChatRequest, MessageRole};
+use crate::ai::provider::{AgentType, ChatRequest};
 use crate::ai::service::AiService;
 use crate::core::chapter_seq;
 use crate::core::date_utils::{add_days, day_diff, deadline_active_on};
@@ -490,14 +490,10 @@ async fn estimate_tasks_hours(
         subject.label(),
         gran,
         points,
-        json_example = r#"{"knowledge":"知识点原文","hours":数字}"#,
+        json_example = r#"{"knowledge":"知识点原文","hours":1.5}"#,
     );
     let request = ChatRequest {
-        messages: vec![ChatMessage {
-            role: MessageRole::User,
-            content: prompt,
-            ..Default::default()
-        }],
+        messages: crate::ai::task_prompts::messages(crate::ai::task_prompts::ESTIMATE, prompt),
         agent: Some(AgentType::Planner),
         temperature: Some(0.2),
         timeout_override: Some(60),

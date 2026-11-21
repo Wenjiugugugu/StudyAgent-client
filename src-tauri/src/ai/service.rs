@@ -357,8 +357,6 @@ impl AiService {
             }
         };
 
-        self.unregister_cancellation(&cancel_key, &cancel_tx);
-
         let result = match result {
             Ok(resp) => Ok(resp),
             Err(e) => {
@@ -378,16 +376,17 @@ impl AiService {
                         log::debug!("[AI-DEBUG] 无备用 provider，跳过 fallback");
                         Err(e)
                     } else {
-                        let fallback = self.fallback_chat(&req, &primary_id).await;
-                        if fallback.is_err() {
-                            return Err(format!("Provider 调用失败: {}", e));
+                        match self.fallback_chat(&req, &mut cancel_rx, &primary_id).await {
+                            Ok(response) => Ok(response),
+                            Err(error) if error.contains(REQUEST_CANCELLED) => Err(error),
+                            Err(_) => Err(format!("Provider 调用失败: {}", e)),
                         }
-                        fallback
                     }
                 }
             }
         };
 
+        self.unregister_cancellation(&cancel_key, &cancel_tx);
         let duration_ms = started.elapsed().as_millis() as u64;
         log_usage(&agent_tag, &result, duration_ms, &req_model);
 
@@ -543,6 +542,7 @@ impl AiService {
     async fn fallback_chat(
         &self,
         req: &ChatRequest,
+        cancel_rx: &mut tokio::sync::watch::Receiver<bool>,
         skip_id: &str,
     ) -> Result<ChatResponse, String> {
         // 克隆出 provider 列表后立即释放读锁，避免在 `.await` 期间持有
@@ -562,8 +562,17 @@ impl AiService {
             }
 
             log::info!("尝试备用 Provider: {}", id);
-            match provider.chat(req).await {
+            let result = if *cancel_rx.borrow() {
+                Err(REQUEST_CANCELLED.to_string())
+            } else {
+                tokio::select! {
+                    result = provider.chat(req) => result,
+                    _ = cancel_rx.changed() => Err(REQUEST_CANCELLED.to_string()),
+                }
+            };
+            match result {
                 Ok(resp) => return Ok(resp),
+                Err(e) if e.contains(REQUEST_CANCELLED) => return Err(e),
                 Err(e) => {
                     log::warn!("备用 Provider {} 调用失败: {}", id, e);
                     continue;

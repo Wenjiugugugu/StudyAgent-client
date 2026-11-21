@@ -200,7 +200,7 @@ pub async fn change_data_directory(
     new_settings.data_dir = new_dir.to_string_lossy().to_string();
 
     // 把新 settings 写到新目录的 config/settings.json
-    crate::save_settings_file(&new_dir, &new_settings)?;
+    crate::save_data_directory_change(&crate::get_default_data_dir(), &new_dir, &new_settings)?;
 
     // 更新 AppState.data_dir，让后续命令立即使用新目录
     {

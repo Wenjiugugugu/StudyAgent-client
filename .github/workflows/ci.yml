@@ -56,7 +56,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - name: Build the real desktop executable
-        run: pnpm tauri build --no-bundle
+        run: pnpm tauri build --no-bundle --features desktop-smoke
+      - name: Run isolated desktop mount and IPC smoke
+        shell: pwsh
+        run: ./scripts/desktop-smoke.ps1
       - name: Verify executable was produced
         shell: pwsh
         run: |

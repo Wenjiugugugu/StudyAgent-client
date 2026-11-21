@@ -1,0 +1,9 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="qa"></div><script type="module">
+import { createApp } from 'vue';
+import { createPinia } from 'pinia';
+import Qa from './ActualStudyQa.vue';
+import '/src/styles/variables.css';
+import '/src/styles/global.css';
+import '/src/styles/liquid-glass.css';
+createApp(Qa).use(createPinia()).mount('#qa');
+</script></body></html>

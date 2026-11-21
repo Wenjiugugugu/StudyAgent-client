@@ -439,13 +439,15 @@ pub(crate) fn today_intensity_label(reviews: &[ReviewFile]) -> String {
             rate_sum += rate;
             rate_n += 1;
         }
-        energy_sum += review.data.energy_level.max(1);
-        energy_n += 1;
+        if (1..=5).contains(&review.data.energy_level) {
+            energy_sum += review.data.energy_level;
+            energy_n += 1;
+        }
     }
     let avg_rate = if rate_n > 0 {
         rate_sum / rate_n as f64
     } else {
-        100.0
+        75.0
     };
     let avg_energy = if energy_n > 0 {
         energy_sum as f64 / energy_n as f64
@@ -453,25 +455,35 @@ pub(crate) fn today_intensity_label(reviews: &[ReviewFile]) -> String {
         3.0
     };
 
+    let rate_label = if rate_n > 0 {
+        format!("{avg_rate:.0}%")
+    } else {
+        "未记录".into()
+    };
+    let energy_label = if energy_n > 0 {
+        format!("{avg_energy:.1}/5")
+    } else {
+        "未记录".into()
+    };
     if avg_rate < 60.0 || avg_energy <= 1.5 {
         format!(
-            "今日强度建议：偏轻（近期完成率偏低 / 精力不足，优先完成而非加量）。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
+            "今日强度建议：偏轻（近期完成率偏低 / 精力不足，优先完成而非加量）。完成率均值 {}，精力均值 {}。",
+            rate_label, energy_label
         )
     } else if avg_rate >= 90.0 && avg_energy >= 4.0 {
         format!(
-            "今日强度建议：可加量（近期完成度高且精力充沛）。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
+            "今日强度建议：可加量（近期完成度高且精力充沛）。完成率均值 {}，精力均值 {}。",
+            rate_label, energy_label
         )
     } else if avg_rate < 75.0 {
         format!(
-            "今日强度建议：适中（近期完成率一般，保持节奏）。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
+            "今日强度建议：适中（近期完成率一般，保持节奏）。完成率均值 {}，精力均值 {}。",
+            rate_label, energy_label
         )
     } else {
         format!(
-            "今日强度建议：正常。完成率均值 {:.0}%，精力均值 {:.1}/5。",
-            avg_rate, avg_energy
+            "今日强度建议：正常。完成率均值 {}，精力均值 {}。",
+            rate_label, energy_label
         )
     }
 }
@@ -600,6 +612,10 @@ pub(crate) struct MemoryReviewItem {
     pub(crate) title: String,
 }
 
+pub(crate) fn is_memory_review(title: &str) -> bool {
+    title.ends_with("天回访）") && title.contains("（+")
+}
+
 pub(crate) fn memory_curve_review_items(
     reviews: &[ReviewFile],
     week_start: &str,
@@ -619,39 +635,48 @@ pub(crate) fn memory_curve_review_items(
             if task.status != "completed" && task.status != "partial" {
                 continue;
             }
-            let raw = task.title.trim();
-            if raw.is_empty() {
-                continue;
-            }
-            let is_revisit = raw.ends_with("天回访）") && raw.contains("（+");
-            let title = if is_revisit {
-                raw.rsplit_once("（+").map(|p| p.0).unwrap_or(raw)
-            } else {
-                raw
+            let titles: Vec<&str> = match &task.completed_knowledge_points {
+                Some(points) if points.is_empty() && task.status == "completed" => {
+                    vec![task.title.as_str()]
+                }
+                Some(points) => points.iter().map(|p| p.title.as_str()).collect(),
+                None => vec![task.title.as_str()],
             };
-            let key = (task.subject.clone(), title.to_string());
-            let content_difficulty = task
-                .blockers
-                .iter()
-                .any(|b| matches!(b.as_str(), "understanding" | "problems" | "memorization"));
-            let daily_difficulty = review.daily_review.as_ref().is_some_and(|d| {
-                d.overall_feeling == "hard"
-                    && matches!(
-                        d.main_difficulty.as_str(),
-                        "understanding" | "problems" | "memorization"
-                    )
-            });
-            if task.mastery == "mastered" {
-                states.remove(&key);
-            } else if task.mastery == "weak" || content_difficulty || daily_difficulty {
-                states.insert(key, (review.meta.date.clone(), 0));
-            } else if is_revisit && task.status == "completed" {
-                let stage = states
-                    .get(&key)
-                    .map(|s| s.1 + 1)
-                    .unwrap_or(1)
-                    .min(INTERVALS.len() - 1);
-                states.insert(key, (review.meta.date.clone(), stage));
+            for raw in titles {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                let is_revisit = is_memory_review(&task.title);
+                let title = if is_revisit {
+                    raw.rsplit_once("（+").map(|p| p.0).unwrap_or(raw)
+                } else {
+                    raw
+                };
+                let key = (task.subject.clone(), title.to_string());
+                let content_difficulty = task
+                    .blockers
+                    .iter()
+                    .any(|b| matches!(b.as_str(), "understanding" | "problems" | "memorization"));
+                let daily_difficulty = review.daily_review.as_ref().is_some_and(|d| {
+                    d.overall_feeling == "hard"
+                        && matches!(
+                            d.main_difficulty.as_str(),
+                            "understanding" | "problems" | "memorization"
+                        )
+                });
+                if task.mastery == "mastered" {
+                    states.remove(&key);
+                } else if task.mastery == "weak" || content_difficulty || daily_difficulty {
+                    states.insert(key, (review.meta.date.clone(), 0));
+                } else if is_revisit && task.status == "completed" {
+                    let stage = states
+                        .get(&key)
+                        .map(|s| s.1 + 1)
+                        .unwrap_or(1)
+                        .min(INTERVALS.len() - 1);
+                    states.insert(key, (review.meta.date.clone(), stage));
+                }
             }
         }
     }
@@ -706,7 +731,11 @@ pub(crate) fn check_review_needs_regeneration(review: &ReviewFile) -> bool {
         .map(|daily| daily.overall_feeling == "hard")
         .unwrap_or(false);
     let has_overcompletion = !review.overcompletion.is_empty();
-    has_uncompleted || has_weak_mastery || feels_hard || has_overcompletion
+    let direction_changed = review
+        .actual_study
+        .iter()
+        .any(|e| e.scope != crate::data::study_direction::StudyScope::Today);
+    has_uncompleted || has_weak_mastery || feels_hard || has_overcompletion || direction_changed
 }
 
 pub(crate) fn matches_completed(title: &str, completed: &str) -> bool {
@@ -1081,5 +1110,25 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].due_date, "2026-10-02");
         assert!(items[0].title.contains("+3天"));
+    }
+
+    #[test]
+    fn completed_task_without_point_association_still_gets_revisited() {
+        let mut review = ReviewFile::default();
+        review.meta.date = "2026-10-06".into();
+        review
+            .task_reviews
+            .push(crate::data::records::TaskReviewEntry {
+                subject: "math".into(),
+                title: "自主练习".into(),
+                status: "completed".into(),
+                knowledge_points: Some(vec![]),
+                completed_knowledge_points: Some(vec![]),
+                blockers: vec!["problems".into()],
+                ..Default::default()
+            });
+        let items = memory_curve_review_items(&[review], "2026-10-07", "2026-10-07");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "自主练习（+1天回访）");
     }
 }

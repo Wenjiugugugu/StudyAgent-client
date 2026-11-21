@@ -14,6 +14,7 @@ export const useTodayStore = defineStore("today", () => {
   const error = ai.error;
   /** 昨日复盘是否缺失（仅今天加载时检查） */
   const missingYesterdayReview = ref(false);
+  let loadId = 0;
 
   const allTasks = computed<PlanTask[]>(() => {
     if (!plan.value?.data?.tasks) return [];
@@ -53,32 +54,37 @@ export const useTodayStore = defineStore("today", () => {
   }
 
   async function loadByDate(date: string) {
+    const id = ++loadId;
     loading.value = true;
     error.value = null;
     missingYesterdayReview.value = false;
     try {
-      plan.value = await api.getPlanByDate(date);
+      const result = await api.getPlanByDate(date);
+      if (id !== loadId) return;
+      plan.value = result;
 
       // 仅今天加载时检查昨日复盘是否存在
       if (date === todayString()) {
         const yesterday = yesterdayString();
         const exempt = await isYesterdayExempt(yesterday);
+        if (id !== loadId) return;
         if (!exempt) {
           try {
             await api.getReview(yesterday);
           } catch {
             // 昨日复盘不存在
-            missingYesterdayReview.value = true;
+            if (id === loadId) missingYesterdayReview.value = true;
           }
         }
       }
     } catch (e) {
+      if (id !== loadId) return;
       error.value = e instanceof Error ? e.message : String(e);
       // 加载失败（如访问无日计划文件的日期）时清空缓存的计划，
       // 避免顶部报错但下方仍显示上一次/其他日期的旧计划。
       plan.value = null;
     } finally {
-      loading.value = false;
+      if (id === loadId) loading.value = false;
     }
   }
 

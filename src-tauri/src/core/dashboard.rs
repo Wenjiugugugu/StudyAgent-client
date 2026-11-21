@@ -805,6 +805,7 @@ mod tests {
                 ended_at: format!("{}T09:25:00Z", date),
                 duration_minutes: 25,
                 task_id: None,
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -818,6 +819,7 @@ mod tests {
                 ended_at: format!("{}T08:15:00Z", date),
                 duration_minutes: 15,
                 task_id: Some(format!("{}-01", date)),
+                task_minutes_recorded: None,
                 status: FocusSessionStatus::Completed,
             },
         )
@@ -853,6 +855,7 @@ mod tests {
             task_reviews: Vec::new(),
             daily_review: None,
             overcompletion: Vec::new(),
+            actual_study: Vec::new(),
         };
         crate::data::records::save_review(dir, &review).unwrap();
     }

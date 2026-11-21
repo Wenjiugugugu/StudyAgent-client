@@ -31,11 +31,20 @@ use crate::{
 
 use super::legacy::*;
 
-/// 自动补记默认复盘的截止日。今日学习开始前仍允许补昨天的复盘；开始后，
-/// 昨天进入默认标记。更早的缺失记录始终可以补记。
+/// 今日有日计划且已到学习开始时间后，昨天才进入默认标记。
+/// 今日尚无日计划时保留昨天的补复盘窗口；更早的缺失记录仍正常补记。
 fn default_review_cutoff(data_dir: &std::path::Path) -> Result<String, String> {
     let today = crate::data::today_string();
-    let yesterday = crate::data::add_days(&today, -1)?;
+    let now_hm = chrono::Local::now().format("%H:%M").to_string();
+    default_review_cutoff_at(data_dir, &today, &now_hm)
+}
+
+fn default_review_cutoff_at(
+    data_dir: &std::path::Path,
+    today: &str,
+    now_hm: &str,
+) -> Result<String, String> {
+    let yesterday = crate::data::add_days(today, -1)?;
     let settings = crate::load_settings(data_dir);
     let start_time = settings
         .study_schedule
@@ -48,8 +57,10 @@ fn default_review_cutoff(data_dir: &std::path::Path) -> Result<String, String> {
                 && parts[1].parse::<u8>().is_ok_and(|minute| minute < 60)
         })
         .unwrap_or("09:00");
-    let now_hm = chrono::Local::now().format("%H:%M").to_string();
-    if now_hm.as_str() < start_time {
+    let today_plan_exists = crate::data::plan::daily_plan_path(data_dir, today)
+        .try_exists()
+        .map_err(|error| format!("检查今日日计划失败: {error}"))?;
+    if now_hm < start_time || !today_plan_exists {
         crate::data::add_days(&yesterday, -1)
     } else {
         Ok(yesterday)
@@ -63,6 +74,69 @@ fn backfill_due_default_reviews(data_dir: &std::path::Path) -> Result<(), String
         log::info!("已生成系统默认复盘: {}", created.join(", "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod backfill_window_tests {
+    use super::*;
+
+    #[test]
+    fn missing_today_plan_preserves_yesterday_until_a_plan_exists_after_start() {
+        let dir = std::env::temp_dir().join(format!(
+            "studyagent-backfill-window-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let today = "2026-10-12"; // 周一：尚未生成新一周计划
+        for date in ["2026-10-10", "2026-10-11"] {
+            let plan = DailyPlanFile {
+                meta: crate::data::plan::DailyPlanMeta {
+                    date: date.to_string(),
+                    ..Default::default()
+                },
+                data: crate::data::plan::DailyPlanData {
+                    tasks: vec![PlanTask {
+                        id: format!("{date}-01"),
+                        title: "学习任务".to_string(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            crate::data::plan::save_daily_plan(&dir, &plan).unwrap();
+        }
+
+        let cutoff = default_review_cutoff_at(&dir, today, "12:00").unwrap();
+        assert_eq!(cutoff, "2026-10-10");
+        let created = crate::data::records::backfill_default_reviews(&dir, &cutoff).unwrap();
+        assert_eq!(created, vec!["2026-10-10"]);
+        assert!(!crate::data::records::review_file_path(&dir, "2026-10-11").exists());
+
+        let mut today_plan = crate::data::plan::read_daily_plan(&dir, "2026-10-11").unwrap();
+        today_plan.meta.date = today.to_string();
+        crate::data::plan::save_daily_plan(&dir, &today_plan).unwrap();
+        // 已有日计划但未到开始时间，仍保留补复盘窗口。
+        assert_eq!(
+            default_review_cutoff_at(&dir, today, "08:59").unwrap(),
+            "2026-10-10"
+        );
+        // 到达开始时间后才恢复原规则，自动补记昨天。
+        let cutoff = default_review_cutoff_at(&dir, today, "09:00").unwrap();
+        assert_eq!(cutoff, "2026-10-11");
+        let created = crate::data::records::backfill_default_reviews(&dir, &cutoff).unwrap();
+        assert_eq!(created, vec!["2026-10-11"]);
+        assert!(
+            crate::data::records::read_review(&dir, "2026-10-11")
+                .unwrap()
+                .meta
+                .default_marked
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 /// 读取今日计划
@@ -704,10 +778,14 @@ pub async fn add_manual_task(
     let io_lock = crate::get_io_lock(state.inner())?;
     let _io_guard = io_lock.lock().await;
 
-    let mut plan = crate::data::plan::read_daily_plan(&data_dir, &date)
-        .unwrap_or_else(|_| empty_daily_plan(&date));
+    crate::data::state::read_state_or_new(&data_dir)?;
+    let mut plan = match std::fs::metadata(crate::data::plan::daily_plan_path(&data_dir, &date)) {
+        Ok(_) => crate::data::plan::read_daily_plan(&data_dir, &date)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => empty_daily_plan(&date),
+        Err(e) => return Err(format!("无法检查日计划: {}", e)),
+    };
 
-    let index = crate::data::progress_tables::load_progress_index(&data_dir);
+    let index = crate::data::progress_tables::read_progress_index(&data_dir)?;
     let knowledge_points = match knowledge_points {
         Some(points) if points.is_empty() => Some(Vec::new()),
         Some(points) => Some(crate::core::task_progress::validate_points(
@@ -738,9 +816,7 @@ pub async fn add_manual_task(
     });
 
     crate::data::plan::recalc_totals(&mut plan.data);
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
-    // 任务需同时存在于 State 中，否则勾选完成 / 计时会「找不到任务」
-    crate::data::plan::resync_plan_to_state(&data_dir, &date, &plan)?;
+    crate::data::plan::save_manual_plan_and_state(&data_dir, &plan)?;
 
     log::info!(
         "已手动添加任务: {} [{}] {}（AI 参考: {}）",
@@ -782,13 +858,13 @@ pub async fn set_task_knowledge_points(
         .iter_mut()
         .find(|t| t.id == task_id)
         .ok_or("未找到任务")?;
-    let index = crate::data::progress_tables::load_progress_index(&data_dir);
+    let index = crate::data::progress_tables::read_progress_index(&data_dir)?;
     task.knowledge_points = Some(if points.is_empty() {
         Vec::new()
     } else {
         crate::core::task_progress::validate_points(&index, task.subject.key(), &points)?
     });
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
+    crate::data::plan::save_manual_plan_and_state(&data_dir, &plan)?;
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)
 }
 
@@ -820,8 +896,7 @@ pub async fn set_task_ai_reference(
         .ok_or_else(|| format!("未找到任务: {}", task_id))?;
     task.ai_reference = allow;
 
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
-    crate::data::plan::resync_plan_to_state(&data_dir, &date, &plan)?;
+    crate::data::plan::save_manual_plan_and_state(&data_dir, &plan)?;
     log::info!("任务 AI 参考已更新: {} -> {}", task_id, allow);
     Ok(())
 }
@@ -856,8 +931,7 @@ pub async fn delete_manual_task(
 
     plan.data.tasks.retain(|t| t.id != task_id);
     crate::data::plan::recalc_totals(&mut plan.data);
-    crate::data::plan::save_daily_plan(&data_dir, &plan)?;
-    crate::data::plan::remove_task_from_state(&data_dir, &task_id)?;
+    crate::data::plan::write_manual_plan_and_state(&data_dir, &plan)?;
 
     log::info!("已删除手动任务: {}", task_id);
     crate::data::plan::read_daily_plan_with_merged_status(&data_dir, &date)

@@ -454,6 +454,10 @@
   background: var(--lg-raised);
   border-radius: 28px;
 }
+:root:not([data-theme="dark"])[data-visual-mode="liquid-glass"] .close-confirm-modal .modal-dialog {
+  /* 保留清晰文字，让背景透过弹窗；选项和复选框保持柔和底色。 */
+  background: color-mix(in srgb, var(--bg-primary) 62%, transparent);
+}
 :root[data-visual-mode="liquid-glass"] .modal-footer {
   background: transparent;
 }

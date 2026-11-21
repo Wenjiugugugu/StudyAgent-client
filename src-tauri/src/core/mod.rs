@@ -34,3 +34,9 @@ pub use planner::*;
 pub use review::*;
 pub use scheduler::*;
 pub use user_model::*;
+
+pub mod review_sync;
+
+pub(crate) mod update_support;
+
+pub(crate) mod textbook_support;

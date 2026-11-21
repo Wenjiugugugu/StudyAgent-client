@@ -17,7 +17,6 @@ import { useBriefing } from "./composables/useBriefing";
 import { useDashboardAnimation } from "./composables/useDashboardAnimation";
 import { weekdayShort, isToday } from "./utils/date-labels";
 import DashboardHero from "./components/DashboardHero.vue";
-import UpdateModal from "./components/UpdateModal.vue";
 import BriefingCard, {
   type BriefingView,
   type SpecialView,
@@ -160,7 +159,6 @@ onBeforeUnmount(() => {
     <!-- Content -->
     <template v-else>
       <!-- 发现新版本弹窗 -->
-      <UpdateModal />
 
       <!-- Hero -->
       <DashboardHero

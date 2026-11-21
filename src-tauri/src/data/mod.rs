@@ -20,7 +20,11 @@ pub mod goal;
 pub mod plan;
 pub mod progress_tables;
 pub mod records;
+pub mod review_draft;
+pub mod revision;
 pub mod state;
+pub mod study_direction;
+pub mod transaction;
 pub mod ui_flags;
 
 pub use ai_usage::*;
@@ -223,6 +227,10 @@ pub fn clean_ai_json(content: &str) -> String {
         let end = trimmed.rfind("```").unwrap_or(trimmed.len());
         let end = if end < start { trimmed.len() } else { end };
         return trimmed[start..end].trim().to_string();
+    }
+
+    if trimmed.starts_with('[') {
+        return trimmed.to_string();
     }
 
     // 尝试找到第一个 '{' 和最后一个 '}'

@@ -17,3 +17,5 @@ pub use gemini::GeminiProvider;
 pub use openai::OpenAIProvider;
 pub use provider::*;
 pub use service::AiService;
+
+pub mod task_prompts;

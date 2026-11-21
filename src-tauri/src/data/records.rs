@@ -31,6 +31,9 @@ pub struct ReviewFile {
     /// 计划外学习记录（用户实际进度领先计划时填写，用于校正下一轮计划）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overcompletion: Vec<OvercompletionEntry>,
+    /// 实际学习内容与后续方向；不参与知识点完成进度同步。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actual_study: Vec<super::study_direction::ActualStudyEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -247,7 +250,6 @@ pub fn review_completion_stats(review: &ReviewFile) -> (i32, i32, i32, i32, f64)
         let mut a_total = 0i32;
         let mut a_done = 0i32;
         let mut b_total = 0i32;
-        let mut b_done = 0i32;
         let mut all_total = 0i32;
         let mut all_done = 0i32;
         for tr in &review.task_reviews {
@@ -265,23 +267,20 @@ pub fn review_completion_stats(review: &ReviewFile) -> (i32, i32, i32, i32, f64)
                 }
                 "B" => {
                     b_total += 1;
-                    if is_done {
-                        b_done += 1;
-                    }
                 }
                 _ => {}
             }
         }
-        let (ca_total, ca_done) = if a_total + b_total == 0 && all_total > 0 {
-            (all_total, all_done)
+        let (ca_total, ca_done, b_total, b_done) = if a_total + b_total == 0 {
+            (all_total, all_done, 0, 0)
         } else {
-            (a_total, a_done)
+            // 历史 A/B 桶仅作兼容存储；无等级任务也必须计入全部任务统计。
+            (a_total, a_done, all_total - a_total, all_done - a_done)
         };
         let total = ca_total + b_total;
         let completed_fraction: f64 = review
             .task_reviews
             .iter()
-            .filter(|tr| a_total + b_total == 0 || tr.priority == "A" || tr.priority == "B")
             .map(|tr| match tr.status.as_str() {
                 "completed" => 1.0,
                 "partial" if tr.completion.is_finite() => tr.completion.clamp(0.0, 1.0),
@@ -304,6 +303,28 @@ pub fn review_completion_stats(review: &ReviewFile) -> (i32, i32, i32, i32, f64)
             c.completion_rate,
         )
     }
+}
+
+/// 完成数量与完成率统一按全部任务计算。
+pub fn review_total_completion(review: &ReviewFile) -> (i32, f64) {
+    let (_, a_done, _, b_done, rate) = review_completion_stats(review);
+    let done = if !review.task_reviews.is_empty() {
+        review
+            .task_reviews
+            .iter()
+            .filter(|t| t.status == "completed")
+            .count() as i32
+    } else if !review.data.completed_tasks.is_empty() {
+        review
+            .data
+            .completed_tasks
+            .iter()
+            .filter(|t| t.completed)
+            .count() as i32
+    } else {
+        a_done + b_done
+    };
+    (done, rate)
 }
 
 /// 列出所有 review 文件的日期 (YYYY-MM-DD)
@@ -485,6 +506,7 @@ pub fn backfill_default_reviews(data_dir: &Path, cutoff_date: &str) -> DataResul
             task_reviews,
             daily_review: None,
             overcompletion: Vec::new(),
+            actual_study: Vec::new(),
         };
         save_review(data_dir, &review)?;
         created.push(date);
@@ -556,6 +578,7 @@ mod tests {
             task_reviews: vec![],
             daily_review: None,
             overcompletion: vec![],
+            actual_study: vec![],
         };
 
         save_review(&tmp, &review).expect("应能保存 Review");

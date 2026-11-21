@@ -41,15 +41,30 @@ impl DailyScheduler {
         date: &str,
         sync_state: bool,
     ) -> DataResult<DailyPlanFile> {
+        super::review_sync::ensure_ready(data_dir)?;
+        crate::data::read_progress_index(data_dir)?;
+        let mut state = crate::data::state::read_state_or_new(data_dir)?;
         let iso_week = iso_week_string(date)?;
         let week_plan = crate::data::plan::read_week_plan(data_dir, &iso_week)?;
+        let directions = crate::data::study_direction::current_directions(data_dir, date)?;
+        if week_plan.meta.study_direction_revision
+            != crate::data::study_direction::revision(data_dir, date)?
+        {
+            return Err("学习方向已更新，当前周计划尚未按新方向确认调整。请先在复盘中生成并应用调整预览，或重新生成周计划。".into());
+        }
 
+        let mut week_plan = week_plan;
+        crate::core::task_progress::normalize_professional_strengthening_week(
+            data_dir,
+            &crate::data::progress_tables::load_progress_index(data_dir),
+            &mut week_plan,
+            Some(&[date.to_string()]),
+        )?;
         let day_plan = find_day_plan(&week_plan, date)?;
         if day_plan.is_rest_day {
             return Err(format!("{} 是休息日，不生成日计划", date));
         }
 
-        let mut state = crate::data::state::read_state_or_default(data_dir);
         // 考试日期非法时不再静默按 0 处理：0 天会严重影响后续提示语气，至少留下可定位的日志
         let remaining_days = match days_between(&state.meta.exam_date, date) {
             Ok(d) => d,
@@ -81,6 +96,21 @@ impl DailyScheduler {
         // 生成过程中的降级提示（目标倒排失败、预算裁剪），随日计划返回给前端展示
         let mut warnings = crate::core::goal_planner::goal_capacity_warnings(data_dir, date);
         let mut goals = crate::data::goal::read_goals(data_dir)?.data.goals;
+        for direction in &directions {
+            if goals
+                .iter()
+                .any(|g| g.active && g.subject.key() == direction.subject)
+            {
+                warnings.push(format!(
+                    "{}按当前学习方向安排，原截止目标保留；若目标与新顺序冲突，请检查目标截止日。",
+                    SubjectKey::ALL
+                        .into_iter()
+                        .find(|s| s.key() == direction.subject)
+                        .map(|s| s.label().to_string())
+                        .unwrap_or_else(|| direction.subject.clone())
+                ));
+            }
+        }
         goals.sort_by(|a, b| a.deadline.cmp(&b.deadline).then(a.book.cmp(&b.book)));
         let mut allocations = day_plan.subject_allocations.clone();
         for goal in goals
@@ -111,7 +141,10 @@ impl DailyScheduler {
             let active_goals: Vec<_> = goals
                 .iter()
                 .filter(|g| {
-                    g.subject == allocation.subject && g.active && g.deadline.as_str() >= date
+                    g.subject == allocation.subject
+                        && g.active
+                        && g.deadline.as_str() >= date
+                        && !directions.iter().any(|d| d.subject == g.subject.key())
                 })
                 .collect();
             let residuals: Vec<_> = allocation
@@ -219,6 +252,10 @@ impl DailyScheduler {
             // 用边界匹配，避免把"矩阵的特征值"这类新子主题误判为已完成"矩阵"
             let completed = completed_chapters(&state, &allocation.subject);
             for template in &allocation.task_templates {
+                if crate::core::planning::pure::is_memory_review(&template.title) {
+                    pending.push((allocation.subject.clone(), template.clone()));
+                    continue;
+                }
                 if template.remaining_from_task_id.is_some() {
                     continue;
                 }
@@ -257,8 +294,10 @@ impl DailyScheduler {
 
         // 保留考纲顺序；到期复习和上个学习日的积压内容优先，禁止按时长重排前置知识。
         let mut carry = carried_tasks(data_dir, date);
+        // 用户选择了新方向时，由已确认的周计划决定继续哪些内容，不机械补回旧积压。
         carry.retain(|t| {
-            !subject_not_started(&t.subject, date, &subject_start_dates)
+            !directions.iter().any(|d| d.subject == t.subject.key())
+                && !subject_not_started(&t.subject, date, &subject_start_dates)
                 && (t.remaining_from_task_id.is_some()
                     || (!completed_chapters(&state, &t.subject)
                         .iter()
@@ -276,6 +315,11 @@ impl DailyScheduler {
                                 })
                         })))
         });
+        let protected_carry: Vec<_> = carry
+            .iter()
+            .filter(|task| task.is_manual() || task.status != TaskStatus::Pending)
+            .map(|task| (task.subject.clone(), task.title.clone()))
+            .collect();
         for task in carry.into_iter().rev() {
             pending.retain(|(s, t)| *s != task.subject || t.title != task.title);
             pending.insert(
@@ -296,6 +340,11 @@ impl DailyScheduler {
             );
         }
         let mut progress_index = crate::data::progress_tables::load_progress_index(data_dir);
+        let strengthening = crate::core::task_progress::professional_strengthening_points(
+            data_dir,
+            &progress_index,
+            date,
+        )?;
         let recent = crate::data::records::list_review_dates(data_dir)
             .unwrap_or_default()
             .into_iter()
@@ -342,9 +391,50 @@ impl DailyScheduler {
         }
 
         let mut tasks = Vec::new();
+        let existing = crate::data::plan::read_daily_plan(data_dir, date).ok();
         for (seq, (subject, template)) in (1i32..).zip(pending) {
             let mut task = template_to_task(&template, &subject, date, seq);
             crate::core::task_progress::bind_task(&progress_index, &mut task);
+            let protected = protected_carry.contains(&(task.subject.clone(), task.title.clone()))
+                || existing.as_ref().is_some_and(|plan| {
+                    plan.data.tasks.iter().any(|old| {
+                        old.subject == task.subject
+                            && old.title == task.title
+                            && (old.is_manual()
+                                || matches!(old.status, TaskStatus::Done | TaskStatus::InProgress))
+                    })
+                })
+                || (state.current_task.date == date
+                    && state.current_task.tasks.iter().any(|live| {
+                        live.subject == task.subject.key()
+                            && live.task == task.title
+                            && (live.started_at.is_some()
+                                || live.accumulated_minutes > 0
+                                || matches!(live.status, TaskStatus::Done | TaskStatus::InProgress))
+                    }));
+            if !protected
+                && crate::core::task_progress::obsolete_foundation_task(&progress_index, &task)
+            {
+                log::info!(
+                    "排程校验：跳过知识点已达基础的首次学习任务「{}」",
+                    task.title
+                );
+                continue;
+            }
+            if !protected
+                && task.subject == SubjectKey::Professional
+                && task.remaining_from_task_id.is_none()
+                && strengthening.as_ref().is_some_and(|(module, _)| {
+                    !crate::core::task_progress::task_in_professional_module(
+                        &progress_index,
+                        &task,
+                        module,
+                    )
+                })
+            {
+                log::info!("排程校验：暂缓不属于当前强化板块的旧任务「{}」", task.title);
+                continue;
+            }
             tasks.push(task);
         }
 
@@ -354,7 +444,10 @@ impl DailyScheduler {
             .flat_map(|r| &r.task_reviews)
             .filter(|e| e.status == "partial")
             .collect();
-        for task in &mut tasks {
+        for task in tasks
+            .iter_mut()
+            .filter(|t| !crate::core::planning::pure::is_memory_review(&t.title))
+        {
             let done: Vec<_> = confirmed
                 .iter()
                 .filter(|e| e.subject == task.subject.key())
@@ -375,10 +468,10 @@ impl DailyScheduler {
             crate::core::task_progress::subtract_task_points(task, seen);
             seen.extend(task.knowledge_points.iter().flatten().cloned());
         }
-        for task in tasks
-            .iter_mut()
-            .filter(|t| t.remaining_from_task_id.is_none())
-        {
+        for task in tasks.iter_mut().filter(|t| {
+            t.remaining_from_task_id.is_none()
+                && !crate::core::planning::pure::is_memory_review(&t.title)
+        }) {
             if let Some(points) = seen_residuals.get(task.subject.key()) {
                 crate::core::task_progress::subtract_task_points(task, points);
             }
@@ -519,6 +612,7 @@ impl DailyScheduler {
                 );
             }
 
+            let previous = state.current_task.tasks.clone();
             state.current_task = CurrentTask {
                 date: date.to_string(),
                 focus: strategy.clone(),
@@ -530,19 +624,39 @@ impl DailyScheduler {
                         subject: format!("{:?}", t.subject).to_lowercase(),
                         task: t.title.clone(),
                         priority: t.priority.clone(),
-                        status: TaskStatus::Pending,
-                        started_at: None,
-                        accumulated_minutes: 0,
+                        status: previous
+                            .iter()
+                            .find(|old| {
+                                old.task_id.as_deref() == Some(&t.id)
+                                    && old.task == t.title
+                                    && old.subject == t.subject.key()
+                            })
+                            .map(|old| old.status.clone())
+                            .unwrap_or_else(|| t.status.clone()),
+                        started_at: previous
+                            .iter()
+                            .find(|old| {
+                                old.task_id.as_deref() == Some(&t.id)
+                                    && old.task == t.title
+                                    && old.subject == t.subject.key()
+                            })
+                            .and_then(|old| old.started_at.clone()),
+                        accumulated_minutes: previous
+                            .iter()
+                            .find(|old| {
+                                old.task_id.as_deref() == Some(&t.id)
+                                    && old.task == t.title
+                                    && old.subject == t.subject.key()
+                            })
+                            .map(|old| old.accumulated_minutes)
+                            .unwrap_or(0),
                         source: t.source.clone(),
                         ai_reference: t.ai_reference,
                     })
                     .collect(),
                 note: String::new(),
             };
-            // 保存 state（失败不阻塞日计划生成）
-            if let Err(e) = crate::data::state::save_state(data_dir, &state) {
-                log::warn!("同步初始化 State 失败（不阻塞日计划生成）: {}", e);
-            }
+            crate::data::state::save_state(data_dir, &state)?;
         }
 
         Ok(plan)
@@ -925,6 +1039,7 @@ current_focus = "计组"
                 week_number: 30,
                 generated_at: "2026-07-20T04:00".to_string(),
                 subject_time_allocation_snapshot: None,
+                study_direction_revision: String::new(),
                 based_on: BasedOn {
                     state: "state/current.state".to_string(),
                     user_model: "assets/user_model/_index.md".to_string(),
@@ -1028,6 +1143,7 @@ current_focus = "计组"
                 week_number: 30,
                 generated_at: "2026-07-20T04:00".to_string(),
                 subject_time_allocation_snapshot: None,
+                study_direction_revision: String::new(),
                 based_on: crate::data::plan::BasedOn {
                     state: "state/current.state".to_string(),
                     user_model: "assets/user_model/_index.md".to_string(),

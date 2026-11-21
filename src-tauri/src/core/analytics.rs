@@ -184,6 +184,7 @@ pub struct AnalyticsSummary {
 
 fn blocker_label(key: &str) -> String {
     match key {
+        "study_changed" => "实际改学了其他内容".to_string(),
         "time" => "时间不足".to_string(),
         "understanding" => "理解困难".to_string(),
         "practice" => "练习不足".to_string(),
@@ -435,56 +436,11 @@ fn build_learning_trend(
     })
 }
 
-/// 计算单日完成率（优先 A 级，回退全部）
+/// 计算单日完成率（全部任务，含用户确认的部分完成比例）
 fn compute_completion(review: Option<&ReviewFile>) -> (i32, f64) {
-    match review {
-        Some(r) => {
-            if !r.task_reviews.is_empty() {
-                let mut a_total = 0i32;
-                let mut a_done = 0i32;
-                let mut all_total = 0i32;
-                let mut all_done = 0i32;
-
-                for tr in &r.task_reviews {
-                    all_total += 1;
-                    let is_done = tr.status == "completed";
-                    if is_done {
-                        all_done += 1;
-                    }
-                    if tr.priority == "A" {
-                        a_total += 1;
-                        if is_done {
-                            a_done += 1;
-                        }
-                    }
-                }
-
-                let completed = all_done;
-                let rate = if a_total > 0 {
-                    (a_done as f64 / a_total as f64) * 100.0
-                } else if all_total > 0 {
-                    (all_done as f64 / all_total as f64) * 100.0
-                } else {
-                    0.0
-                };
-                (completed, rate)
-            } else {
-                let a_total = r.data.completion.priority_a_total;
-                let a_done = r.data.completion.priority_a_done;
-                let rate = if a_total > 0 {
-                    (a_done as f64 / a_total as f64) * 100.0
-                } else if r.data.completion.priority_b_total > 0 {
-                    let b_total = r.data.completion.priority_b_total;
-                    let b_done = r.data.completion.priority_b_done;
-                    (b_done as f64 / b_total as f64) * 100.0
-                } else {
-                    100.0
-                };
-                (a_done, rate)
-            }
-        }
-        None => (0, 0.0),
-    }
+    review
+        .map(crate::data::records::review_total_completion)
+        .unwrap_or((0, 0.0))
 }
 
 // ============================================================================

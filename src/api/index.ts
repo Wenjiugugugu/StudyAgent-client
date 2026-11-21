@@ -1,3 +1,4 @@
+import { assertUserMutationAllowed } from "@/utils/updatePreparation";
 /**
  * StudyAgent — API Service Layer
  * 前端统一 API 入口，所有数据请求通过此层
@@ -15,6 +16,17 @@ export interface EnergyPreview {
 
 export function previewLowEnergy(): Promise<EnergyPreview> {
   return invokeDirect("preview_low_energy");
+}
+
+export function getStudyDirections(): Promise<import("@/types").CurrentStudyDirection[]> {
+  return invokeWithFallback("get_study_directions", {}, async () => []);
+}
+
+export function updateStudyDirection(
+  entry: import("@/types").ActualStudyEntry,
+  expectedUpdatedAt: string
+): Promise<import("@/types").CurrentStudyDirection[]> {
+  return invokeDirect("update_study_direction", { entry, expectedUpdatedAt });
 }
 
 export function applyLowEnergy(
@@ -327,6 +339,7 @@ export async function generateWeekPlan(
   excludedDays: import("@/types").ExcludedDay[] = [],
   workloadAdjustment?: import("@/types").WorkloadAdjustment
 ): Promise<WeekPlan> {
+  assertUserMutationAllowed();
   return aiInvoke<WeekPlan>({
     command: "generate_week_plan",
     label: `生成周计划 ${weekStart}`,
@@ -357,6 +370,7 @@ export async function createGoal(
   startChapter: string | undefined,
   book: string
 ): Promise<import("@/types").Goal> {
+  assertUserMutationAllowed();
   return invokeDirect<import("@/types").Goal>("create_goal", {
     subject,
     title,
@@ -369,15 +383,21 @@ export async function createGoal(
 
 /** 更新一条目标区间（整体替换） */
 export async function updateGoal(goal: import("@/types").Goal): Promise<import("@/types").Goal> {
-  return invokeDirect<import("@/types").Goal>("update_goal", { goal });
+  assertUserMutationAllowed();
+  return invokeDirect<import("@/types").Goal>("update_goal", {
+    goal,
+    expectedRevision: goal.revision,
+  });
 }
 
 /** 删除一条目标区间 */
-export async function deleteGoal(goalId: string): Promise<void> {
-  return invokeDirect<void>("delete_goal", { goalId });
+export async function deleteGoal(goalId: string, expectedRevision?: string): Promise<void> {
+  assertUserMutationAllowed();
+  return invokeDirect<void>("delete_goal", { goalId, expectedRevision });
 }
 
 export async function updateTaskStatus(taskId: string, status: string): Promise<void> {
+  assertUserMutationAllowed();
   return invokeWithFallback("update_task_status", { taskId, status }, async () => {
     console.log(`[Mock] Task ${taskId} status updated to ${status}`);
   });
@@ -398,6 +418,7 @@ export async function addManualTask(
   aiReference?: boolean,
   knowledgePoints?: import("@/types").KnowledgePointRef[]
 ): Promise<DailyPlan> {
+  assertUserMutationAllowed();
   return invokeDirect<DailyPlan>("add_manual_task", {
     date,
     subject,
@@ -476,6 +497,7 @@ export interface FocusSession {
   ended_at: string;
   duration_minutes: number;
   task_id: string | null;
+  task_minutes_recorded?: boolean;
   status: FocusSessionStatus;
 }
 
@@ -556,6 +578,7 @@ export async function generateReview(date: string): Promise<ReviewRecord> {
 export async function submitReview(
   payload: import("@/types").SubmitReviewPayload
 ): Promise<import("@/types").SubmitReviewResult> {
+  assertUserMutationAllowed();
   return invokeDirect("submit_review", { payload });
 }
 
@@ -852,17 +875,24 @@ export async function saveProgressTable(
   table: ProgressTable,
   makeActive: boolean
 ): Promise<ProgressTable> {
+  assertUserMutationAllowed();
   return invokeDirect<ProgressTable>("save_progress_table", {
     subject,
     variant,
     table,
     makeActive,
+    expectedRevision: table.revision,
   });
 }
 
 /** 删除某科的一份进度表 */
-export async function deleteProgressTable(subject: string, id: string): Promise<void> {
-  return invokeDirect<void>("delete_progress_table", { subject, id });
+export async function deleteProgressTable(
+  subject: string,
+  id: string,
+  expectedRevision?: string
+): Promise<void> {
+  assertUserMutationAllowed();
+  return invokeDirect<void>("delete_progress_table", { subject, id, expectedRevision });
 }
 
 /**
@@ -871,18 +901,26 @@ export async function deleteProgressTable(subject: string, id: string): Promise<
  */
 export async function deleteBuiltinProgressTables(
   subject: string,
-  variant: string
+  variant: string,
+  expectedRevisions?: Record<string, string>
 ): Promise<number> {
-  return invokeDirect<number>("delete_builtin_progress_tables", { subject, variant });
+  assertUserMutationAllowed();
+  return invokeDirect<number>("delete_builtin_progress_tables", {
+    subject,
+    variant,
+    expectedRevisions,
+  });
 }
 
 /** 设定某科启用哪份进度表（会同步启用其所属考纲方案） */
 export async function setActiveProgressTable(subject: string, id: string): Promise<void> {
+  assertUserMutationAllowed();
   return invokeDirect<void>("set_active_progress_table", { subject, id });
 }
 
 /** 设定某科启用哪个考纲方案；启用表同步对齐到该方案下当前启用表或其第一张表 */
 export async function setActiveProgressVariant(subject: string, variant: string): Promise<void> {
+  assertUserMutationAllowed();
   return invokeDirect<void>("set_active_progress_variant", { subject, variant });
 }
 
@@ -1185,6 +1223,28 @@ export async function installUpdate(filePath: string): Promise<void> {
   return invokeDirect<void>("install_update", { filePath });
 }
 
+export async function prepareUpdateTimers(): Promise<void> {
+  return invokeDirect<void>("prepare_update_timers");
+}
+
+export interface ReviewDraft<T = Record<string, unknown>> {
+  version: 1;
+  date: string;
+  form: T;
+}
+
+export async function getReviewDraft<T>(date: string): Promise<ReviewDraft<T> | null> {
+  return invokeWithFallback<ReviewDraft<T> | null>("get_review_draft", { date }, async () => null);
+}
+
+export async function saveReviewDraft<T>(draft: ReviewDraft<T>): Promise<void> {
+  return invokeWithFallback<void>("save_review_draft", { draft }, async () => {});
+}
+
+export async function deleteReviewDraft(date: string): Promise<void> {
+  return invokeWithFallback<void>("delete_review_draft", { date }, async () => {});
+}
+
 /**
  * 订阅下载进度事件
  *
@@ -1323,4 +1383,16 @@ export async function setUiFlag(key: string, value: string): Promise<void> {
   }
   if (!isTauri()) return;
   return invokeDirect<void>("set_ui_flag_cmd", { key, value });
+}
+
+export function getReviewSyncStatus(date: string) {
+  return invokeDirect<import("@/types/review").ReviewSyncStatus>("get_review_sync_status", {
+    date,
+  });
+}
+export function retryReviewSync(date: string, reviewRevision: string) {
+  return invokeDirect<import("@/types/review").ReviewSyncStatus>("retry_review_sync", {
+    date,
+    reviewRevision,
+  });
 }

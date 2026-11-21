@@ -1,33 +1,31 @@
-#![allow(unused_imports)]
-use std::sync::Mutex;
-
-use serde::Serialize;
-use serde_json::Value;
-use tauri::{Emitter, State};
-
-use crate::ai::provider::{AIProviderConfig, ChatRequest, ChatResponse};
-use crate::ai::service::AiService;
-use crate::core::analytics::{build_analytics, AnalyticsRange, AnalyticsSummary};
-use crate::core::briefing::{yesterday_of, BriefingAgent};
-use crate::core::dashboard::{DashboardAggregator, DashboardSummary};
-use crate::core::planner::Planner;
-use crate::core::review::ReviewAgent;
-use crate::core::user_model::UserModelService;
-use crate::data::assets::{UserCapability, UserObservation};
-use crate::data::plan::{
-    iso_week_string, DailyPlanFile, ExcludedDay, WeekPlanFile, WorkloadAdjustment,
-};
+use super::legacy::{SubmitReviewPayload, SubmitReviewResult};
+use crate::core::{briefing::BriefingAgent, review::ReviewAgent};
 use crate::data::records::ReviewFile;
-use crate::data::state::{StudyState, TaskStatus};
-use crate::tools::dispatcher::{execute_builtin_tool, is_builtin_tool};
-use crate::tools::mcp::{MCPServerStatus, ToolCallResult};
-use crate::{
-    get_ai_service, get_data_dir, get_data_dir_and_ai, get_data_dir_and_dispatcher,
-    get_tool_dispatcher, load_settings, reinitialize_services, save_settings_file, AppSettings,
-    AppState,
-};
+use crate::{get_ai_service, get_data_dir, get_data_dir_and_ai, AppState};
+use std::sync::Mutex;
+use tauri::State;
 
-use super::legacy::*;
+#[tauri::command]
+pub async fn get_study_directions(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::data::study_direction::CurrentStudyDirection>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    crate::data::study_direction::current_directions(&data_dir, &crate::data::today_string())
+}
+
+#[tauri::command]
+pub async fn update_study_direction(
+    entry: crate::data::study_direction::ActualStudyEntry,
+    expected_updated_at: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<crate::data::study_direction::CurrentStudyDirection>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    crate::data::study_direction::update_direction(&data_dir, entry, &expected_updated_at)
+}
 
 /// 读取复盘记录
 ///
@@ -104,6 +102,7 @@ pub async fn submit_review(
 
     // 以滴答为准：把滴答中已勾选完成的任务合并进 task_reviews
     let mut payload = payload;
+    crate::data::study_direction::validate_entries(&data_dir, &mut payload.actual_study)?;
     if !dida_completed_titles.is_empty() {
         // 1) 已上报但状态非 completed 的 → 升级为完成（滴答勾选优先）
         for tr in payload.task_reviews.iter_mut() {
@@ -183,7 +182,7 @@ pub async fn submit_review(
         });
 
     // 构建 ReviewFile
-    let now = crate::data::now_string();
+    let now = crate::data::study_direction::timestamp();
     let review = crate::data::records::ReviewFile {
         version: "1.0.0".to_string(),
         meta: crate::data::records::ReviewMeta {
@@ -213,177 +212,18 @@ pub async fn submit_review(
         task_reviews: payload.task_reviews.clone(),
         daily_review: Some(payload.daily_review.clone()),
         overcompletion: payload.overcompletion.clone(),
+        actual_study: payload.actual_study.clone(),
     };
 
-    // 1. 保存 Review JSON
+    let review_revision = crate::core::review_sync::prepare(&data_dir, &review)?;
     crate::data::records::save_review(&data_dir, &review)?;
-
-    // 复盘提交后刷新当周分析，但不在日复盘阶段更新长期 EMA；
-    // 长期参数只在生成下一周计划时按周幂等更新一次。
-    if let Ok(week_start) = crate::data::get_week_start(&payload.date) {
-        if let Err(e) =
-            crate::core::adaptive_planner::refresh_week_planning_analysis(&data_dir, &week_start)
-        {
-            log::warn!("刷新周计划分析失败 {}: {}", week_start, e);
-        }
-    }
-
-    // 2. 同步更新 State：标记任务完成/放弃 + 记录掌握程度
-    if let Ok(mut state) = crate::data::state::read_state(&data_dir) {
-        let mut changed = false;
-
-        // 先收集所有需要更新的信息（避免借冲突）
-        let mut updates: Vec<(String, String, String)> = Vec::new(); // (task_id, new_status, mastery)
-
-        for tr in &payload.task_reviews {
-            let new_status = match tr.status.as_str() {
-                "completed" => "done",
-                "abandoned" => "abandoned",
-                _ => "pending",
-            };
-
-            // 更新 current_task 中的任务状态
-            for task in &mut state.current_task.tasks {
-                if task.task_id.as_deref() == Some(&tr.task_id) {
-                    let ns = match new_status {
-                        "done" => crate::data::state::TaskStatus::Done,
-                        "abandoned" => crate::data::state::TaskStatus::Abandoned,
-                        _ => crate::data::state::TaskStatus::Pending,
-                    };
-                    if task.status != ns {
-                        task.status = ns;
-                        changed = true;
-                    }
-                    break;
-                }
-            }
-
-            // 收集 subject key 和任务标题（稍后用于更新科目进度）
-            if tr.status == "completed" || tr.status == "partial" {
-                let subj_key = state
-                    .current_task
-                    .tasks
-                    .iter()
-                    .find(|t| t.task_id.as_deref() == Some(&tr.task_id))
-                    .map(|t| t.subject.clone())
-                    .or_else(|| (!tr.subject.is_empty()).then(|| tr.subject.clone()));
-
-                let task_label = state
-                    .current_task
-                    .tasks
-                    .iter()
-                    .find(|t| t.task_id.as_deref() == Some(&tr.task_id))
-                    .map(|t| t.task.clone())
-                    .unwrap_or_else(|| tr.title.clone());
-
-                if let Some(sk) = subj_key {
-                    let mastery_label = match tr.mastery.as_str() {
-                        "mastered" => "",
-                        "basic" => "",
-                        "weak" => "（需巩固）",
-                        _ => "",
-                    };
-                    if let Some(points) = &tr.completed_knowledge_points {
-                        for point in points {
-                            updates.push((
-                                sk.clone(),
-                                point.title.clone(),
-                                mastery_label.to_string(),
-                            ));
-                        }
-                    } else {
-                        updates.push((sk, task_label, mastery_label.to_string()));
-                    }
-                }
-            }
-        }
-
-        // 第二阶段：更新科目 progress（此时不再借 state.current_task）
-        for (subj_key, task_label, mastery_label) in &updates {
-            if let Some(subj) = crate::data::state::get_subject_state_mut(&mut state, subj_key) {
-                let entry = if mastery_label.is_empty() {
-                    task_label.clone()
-                } else {
-                    format!("{} {}", task_label, mastery_label)
-                };
-                if !subj.completed.contains(&entry) {
-                    subj.completed.push(entry);
-                    changed = true;
-                }
-
-                if !mastery_label.is_empty() && !subj.current_focus.contains(mastery_label) {
-                    subj.current_focus = format!("{} {}", subj.current_focus, mastery_label)
-                        .trim()
-                        .to_string();
-                }
-            }
-        }
-
-        // 第三阶段：处理计划外学习 —— 用用户实际到达的章节覆盖科目 current_focus，
-        // 避免下一轮计划生成时进度落后于实际。
-        if !payload.overcompletion.is_empty() {
-            for oc in &payload.overcompletion {
-                if let Some(subj) =
-                    crate::data::state::get_subject_state_mut(&mut state, &oc.subject)
-                {
-                    if !oc.chapter_reached.is_empty() {
-                        subj.current_focus = oc.chapter_reached.clone();
-                        if !subj.completed.contains(&oc.chapter_reached) {
-                            subj.completed.push(oc.chapter_reached.clone());
-                        }
-                        changed = true;
-                        log::info!(
-                            "计划外进展更新：{} 的 current_focus 更新为 {}",
-                            oc.subject,
-                            oc.chapter_reached
-                        );
-                    }
-                }
-            }
-        }
-
-        if changed {
-            state.progress.last_study_date = payload.date.clone();
-            state.meta.last_updated = crate::data::now_string();
-            crate::data::state::save_state(&data_dir, &state)?;
-        }
-    }
-
-    log::info!("结构化复盘已保存: {}", payload.date);
-
-    // 2.5 复盘 → 进度表联动
-    // 今日完成的任务 → 对应知识点升级为「基础/掌握」；次日计划的任务 → 预置「学习中/强化中」。
-    // 只升不降；失败仅记日志，不影响复盘提交主流程。
-    {
-        let feeling = payload.daily_review.overall_feeling.clone();
-        let tomorrow_plan = crate::data::add_days(&payload.date, 1)
-            .ok()
-            .and_then(|d| crate::data::plan::read_daily_plan(&data_dir, &d).ok());
-        let tasks: Vec<crate::core::progress_sync::ReviewSyncTask> = payload
-            .task_reviews
-            .iter()
-            .map(|tr| crate::core::progress_sync::ReviewSyncTask {
-                subject: crate::core::progress_sync::progress_subject_key(&tr.subject),
-                title: tr.title.clone(),
-                completed: tr.status == "completed" || tr.status == "partial",
-                mastery: tr.mastery.clone(),
-                completed_knowledge_points: tr.completed_knowledge_points.clone(),
-            })
-            .collect();
-        match crate::core::progress_sync::sync_review_to_progress(
-            &data_dir,
-            &tasks,
-            &feeling,
-            tomorrow_plan.as_ref(),
-        ) {
-            Ok(n) => {
-                if n > 0 {
-                    log::info!("复盘进度表联动：更新 {} 个知识点节点", n);
-                }
-            }
-            Err(e) => log::warn!("复盘进度表联动失败: {}", e),
-        }
-    }
+    let sync = crate::core::review_sync::retry(&data_dir, &payload.date, &review_revision)
+        .unwrap_or_else(|e| crate::core::review_sync::SyncStatus {
+            review_revision: review_revision.clone(),
+            sync_status: "pending".into(),
+            pending_steps: vec!["recovery".into()],
+            warnings: vec![e],
+        });
 
     // 3. 判断是否需要重新生成本周剩余天数计划
     let needs_regeneration = crate::core::planner::check_review_needs_regeneration(&review);
@@ -391,11 +231,17 @@ pub async fn submit_review(
     // 即便复盘内容一切正常，也按新占比调整剩余天数（最快于下一次复盘后生效）。
     let allocation_changed =
         crate::core::planner::allocation_changed_since_week_plan(&data_dir, &payload.date);
-    let needs_regeneration = needs_regeneration || allocation_changed;
+    let direction_changed =
+        crate::data::study_direction::plan_direction_changed(&data_dir, &payload.date)
+            .unwrap_or(true);
+    let needs_regeneration = needs_regeneration || allocation_changed || direction_changed;
     let mut regen_reasons = Vec::new();
 
     if allocation_changed {
         regen_reasons.push("学科时间占比已调整".to_string());
+    }
+    if direction_changed {
+        regen_reasons.push("后续计划尚未按当前学习方向调整".to_string());
     }
 
     if needs_regeneration {
@@ -420,6 +266,13 @@ pub async fn submit_review(
         if has_overcompletion {
             regen_reasons.push("存在计划外学习内容需要修正后续计划".to_string());
         }
+        if review
+            .actual_study
+            .iter()
+            .any(|e| e.scope != crate::data::study_direction::StudyScope::Today)
+        {
+            regen_reasons.push("当前学习方向已更新".to_string());
+        }
 
         log::info!(
             "复盘 {} 触发重排: {}",
@@ -433,7 +286,9 @@ pub async fn submit_review(
     // 简报基于本次复盘生成，供次日打开应用时展示。
     // 使用 tauri::async_runtime::spawn 异步执行，不阻塞当前命令返回。
     // 失败仅记录日志，不影响复盘提交结果。
-    let briefing_generating = if let Ok(next_day) = crate::data::add_days(&payload.date, 1) {
+    let briefing_generating = if sync.sync_status != "complete" {
+        false
+    } else if let Ok(next_day) = crate::data::add_days(&payload.date, 1) {
         let ai_service = get_ai_service(app_state.inner()).ok();
         let data_dir_clone = data_dir.clone();
         let review_date = payload.date.clone();
@@ -443,14 +298,18 @@ pub async fn submit_review(
                 payload.date,
                 next_day
             );
-            // H1 并发保护：简报生成也需持 IO 锁（写 records/briefing 文件），
-            // 但需等待当前命令释放锁后再执行，避免嵌套持锁。
+            // 复制输入与最终保存时持锁；等待模型期间允许正常学习操作。
             let io_lock_clone = io_lock.clone();
             tauri::async_runtime::spawn(async move {
-                let _bg_guard = io_lock_clone.lock().await;
                 let agent = BriefingAgent::new(&ai);
                 match agent
-                    .generate_briefing(&data_dir_clone, &next_day, &review_date, "auto")
+                    .generate_guarded(
+                        &data_dir_clone,
+                        &next_day,
+                        &review_date,
+                        "auto",
+                        &io_lock_clone,
+                    )
                     .await
                 {
                     Ok(_) => {
@@ -474,5 +333,31 @@ pub async fn submit_review(
         needs_regeneration,
         regen_reasons,
         briefing_generating,
+        review_revision,
+        sync_status: sync.sync_status,
+        pending_steps: sync.pending_steps,
+        warnings: sync.warnings,
     })
+}
+
+#[tauri::command]
+pub async fn get_review_sync_status(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::core::review_sync::SyncStatus, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    crate::core::review_sync::status(&dir, &date)
+}
+#[tauri::command]
+pub async fn retry_review_sync(
+    date: String,
+    review_revision: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<crate::core::review_sync::SyncStatus, String> {
+    let dir = get_data_dir(state.inner())?;
+    let lock = crate::get_io_lock(state.inner())?;
+    let _guard = lock.lock().await;
+    crate::core::review_sync::retry(&dir, &date, &review_revision)
 }

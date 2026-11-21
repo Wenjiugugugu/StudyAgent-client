@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { registerUpdatePreparation, waitForIdle } from "@/utils/updatePreparation";
 import * as api from "@/api";
 import { Button, Checkbox, Modal } from "@/components/ui";
 import type { AdjustmentPreview, AdjustmentStatus, AdjustmentOutcome } from "@/types";
@@ -149,6 +150,8 @@ function minutes(hours: number | null) {
 }
 defineExpose({ refresh, showPreview });
 onMounted(refresh);
+const unregisterUpdatePreparation = registerUpdatePreparation(() => waitForIdle(() => busy.value));
+onBeforeUnmount(unregisterUpdatePreparation);
 </script>
 
 <template>

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>更新入口隔离预览</title></head>
+<body><div id="app"></div><script type="module">
+import { createApp, ref, h } from 'vue';
+import { createPinia } from 'pinia';
+import { createRouter, createMemoryHistory } from 'vue-router';
+import SideBar from '/src/layouts/SideBar.vue';
+import { useUpdateStore } from '/src/stores/update.ts';
+import { useSettingsStore } from '/src/stores/settings.ts';
+import '/src/styles/variables.css'; import '/src/styles/global.css'; import '/src/styles/liquid-glass.css';
+const pinia = createPinia();
+const update = useUpdateStore(pinia), settings = useSettingsStore(pinia);
+await settings.load();
+settings.settings ??= { theme: 'light', visual_mode: 'standard', sidebar_style: 'full', show_logo: true };
+update.updateResult = { has_update: true, current_version: '0.8.1', latest_version: '0.9.0', assets: [], message: '' };
+update.downloadState = 'downloading';
+update.downloadProgress = { downloaded: 4000000, total: 10000000, percent: 40 };
+const action = ref('隔离预览：不连接后端，不会下载或安装');
+update.handleInstall = async () => { action.value = '圆圈单击已触发安装动作（模拟）'; };
+update.handleDownload = async () => { action.value = '圆圈单击已触发重试动作（模拟）'; };
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] });
+await router.push('/dashboard');
+const app = createApp({ components: { SideBar }, setup() {
+  function ready() { update.downloadState = 'downloaded'; update.downloadedFilePath = 'preview/verified.exe'; }
+  function unknown() { update.downloadState = 'downloading'; update.downloadedFilePath = null; update.downloadProgress = { downloaded: 4000000, total: 0, percent: 0 }; }
+  return () => h('div', { style: 'display:flex;height:100vh' }, [h(SideBar), h('main', { style: 'padding:32px;flex:1' }, [
+    h('h2', '更新入口隔离预览'), h('p', action.value), h('div', { style: 'display:flex;gap:12px;margin-top:20px' }, [
+      h('button', { onClick: ready }, '下载完成'), h('button', { onClick: unknown }, '未知总大小'),
+      h('button', { onClick: () => settings.setTheme(settings.theme === 'light' ? 'dark' : 'light') }, '切换主题'),
+      h('button', { onClick: () => settings.setSidebarStyle(settings.sidebarStyle === 'floating' ? 'full' : 'floating') }, '切换悬浮侧栏'),
+    ])])]);
+} });
+app.use(pinia); app.use(router); app.mount('#app');
+</script></body></html>

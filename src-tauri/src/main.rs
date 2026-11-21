@@ -24,6 +24,8 @@ use tauri::{
     Emitter, Manager, WindowEvent,
 };
 use tauri_plugin_autostart::MacosLauncher;
+#[cfg(feature = "desktop-smoke")]
+mod desktop_smoke;
 
 /// 日志双写 writer：同时写入 stderr（开发控制台可见）与 `logs/app.log`（生产落盘）
 ///
@@ -56,6 +58,11 @@ impl std::io::Write for DualWriter {
 fn main() {
     // 默认数据目录（开发模式自动定位项目根目录，生产模式使用 exe 同级 data/）
     // 需在日志初始化前确定：日志文件要落到该目录下的 logs/ 子目录
+    #[cfg(feature = "desktop-smoke")]
+    let smoke_root = desktop_smoke::directory().expect("桌面隔离测试目录无效");
+    #[cfg(feature = "desktop-smoke")]
+    let default_data_dir = smoke_root.clone().unwrap_or_else(get_default_data_dir);
+    #[cfg(not(feature = "desktop-smoke"))]
     let default_data_dir = get_default_data_dir();
 
     // 初始化日志：stderr + {data_dir}/logs/app.log 双写
@@ -87,8 +94,19 @@ fn main() {
 
     log::info!("AppState 初始化完成");
 
+    let context = tauri::generate_context!();
+    #[cfg(feature = "desktop-smoke")]
+    let context = {
+        let mut context = context;
+        if smoke_root.is_some() {
+            for window in &mut context.config_mut().app.windows {
+                window.create = false;
+            }
+        }
+        context
+    };
     // 构建 Tauri 应用
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
@@ -98,9 +116,20 @@ fn main() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        .manage(app_state)
-        .setup(|app| {
+        .manage(app_state);
+    #[cfg(feature = "desktop-smoke")]
+    let builder = if smoke_root.is_some() {
+        builder.append_invoke_initialization_script("window.__STUDYAGENT_DESKTOP_SMOKE__ = true;")
+    } else {
+        builder
+    };
+    builder
+        .setup(move |app| {
             log::info!("Tauri 应用已启动");
+            #[cfg(feature = "desktop-smoke")]
+            if let Some(root) = smoke_root.clone() {
+                desktop_smoke::install(app, root)?;
+            }
 
             let recovery_dir = studyagent_desktop_lib::get_data_dir(
                 app.state::<std::sync::Mutex<studyagent_desktop_lib::AppState>>()
@@ -109,10 +138,15 @@ fn main() {
             studyagent_desktop_lib::core::plan_adjustment::recover(&recovery_dir)
                 .map_err(std::io::Error::other)?;
 
+            studyagent_desktop_lib::data::transaction::recover(&recovery_dir)
+                .map_err(std::io::Error::other)?;
+            studyagent_desktop_lib::core::review_sync::recover(&recovery_dir)
+                .map_err(std::io::Error::other)?;
+
             // 升级后先合并新版随包考纲，再让计划与进度页面读取数据。
-            if let Err(error) = list_progress_tables(
+            if let Err(error) = tauri::async_runtime::block_on(list_progress_tables(
                 app.state::<std::sync::Mutex<studyagent_desktop_lib::AppState>>(),
-            ) {
+            )) {
                 log::error!("启动时更新内置考纲失败：{}", error);
             }
 
@@ -251,6 +285,10 @@ fn main() {
             list_review_dates,
             generate_review,
             submit_review,
+            get_review_sync_status,
+            retry_review_sync,
+            get_study_directions,
+            update_study_direction,
             regenerate_remaining_days,
             get_plan_adjustment,
             update_plan_adjustment_kept,
@@ -324,6 +362,9 @@ fn main() {
             // UI 状态标记（跨重启持久化）
             get_ui_flag_cmd,
             set_ui_flag_cmd,
+            get_review_draft,
+            save_review_draft,
+            delete_review_draft,
             // Backup（备份导出 / 导入）
             export_backup,
             import_backup,
@@ -335,6 +376,7 @@ fn main() {
             check_for_updates,
             download_update,
             install_update,
+            prepare_update_timers,
             // 通用：关闭动作 / 开机启动 / 应用版本
             get_close_action,
             set_close_action,
@@ -343,6 +385,6 @@ fn main() {
             set_autostart,
             get_app_version,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("运行 Tauri 应用时发生错误");
 }

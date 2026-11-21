@@ -61,7 +61,7 @@ const resetUpdate = () => updateStore.resetUpdate();
         <RefreshCw :size="14" />
         <span>检查更新</span>
       </Button>
-      <p class="field-hint">点击检查是否有新版本，发现新版本后可在应用内下载并安装</p>
+      <p class="field-hint">启动及每小时自动检查并下载更新，下载完成后点击侧边栏圆圈安装。</p>
     </div>
 
     <!-- 检查中 -->
@@ -128,6 +128,7 @@ const resetUpdate = () => updateStore.resetUpdate();
             v-for="asset in updateResult.assets"
             :key="asset.download_url"
             class="asset-option"
+            :disabled="updateStore.busy || !!updateStore.downloadedFilePath"
             :class="{ active: selectedAsset?.download_url === asset.download_url }"
             @click="selectedAsset = asset"
           >
@@ -147,9 +148,11 @@ const resetUpdate = () => updateStore.resetUpdate();
           <span class="progress-label"
             >正在下载{{ selectedAsset ? assetLabel(selectedAsset.kind) : "安装包" }}</span
           >
-          <span class="progress-percent">{{ downloadProgress.percent.toFixed(1) }}%</span>
+          <span v-if="downloadProgress.total > 0" class="progress-percent"
+            >{{ downloadProgress.percent.toFixed(1) }}%</span
+          >
         </div>
-        <div class="progress-bar-track">
+        <div v-if="downloadProgress.total > 0" class="progress-bar-track">
           <div class="progress-bar-fill" :style="{ width: `${downloadProgress.percent}%` }"></div>
         </div>
         <div class="progress-detail">
@@ -161,10 +164,14 @@ const resetUpdate = () => updateStore.resetUpdate();
       <!-- 下载完成 -->
       <div v-if="downloadState === 'downloaded'" class="download-complete">
         <CheckCircle :size="16" class="status-icon-ok" />
-        <span>下载完成，正在启动安装程序…</span>
+        <span>更新已下载并校验，点击「立即安装」或侧边栏圆圈安装。</span>
       </div>
 
       <!-- 安装中 -->
+      <div v-if="downloadState === 'preparing'" class="installing-state">
+        <RefreshCw :size="16" class="spin" />
+        <span>正在等待当前操作完成、保存复盘草稿并暂停计时…</span>
+      </div>
       <div v-if="downloadState === 'installing'" class="installing-state">
         <RefreshCw :size="16" class="spin" />
         <span>正在启动安装程序，应用即将退出...</span>
@@ -186,7 +193,7 @@ const resetUpdate = () => updateStore.resetUpdate();
           @click="handleDownload"
         >
           <Download :size="14" />
-          <span>下载安装包</span>
+          <span>{{ updateStore.downloadedFilePath ? "重试安装" : "重试下载" }}</span>
         </Button>
         <Button
           v-if="downloadState === 'downloaded'"
@@ -201,7 +208,12 @@ const resetUpdate = () => updateStore.resetUpdate();
         <Button v-if="downloadState === 'downloading'" variant="secondary" size="md" disabled>
           <span>下载中...</span>
         </Button>
-        <Button variant="ghost" size="md" @click="resetUpdate">
+        <Button
+          variant="ghost"
+          size="md"
+          :disabled="updateStore.busy || updateStore.forceUpdate"
+          @click="resetUpdate"
+        >
           <span>稍后再说</span>
         </Button>
       </div>

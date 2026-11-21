@@ -304,13 +304,15 @@ const lastActionMsg = ref("");
 // ── 保存当前表 ──
 let saving = false;
 async function persistTable(table: ProgressTable, makeActive: boolean) {
-  if (saving) return;
+  if (saving) return false;
   saving = true;
   try {
     await api.saveProgressTable(props.subject, props.variant, table, makeActive);
     await reload();
+    return true;
   } catch (e) {
     error.value = `保存失败：${errMsg(e)}`;
+    return false;
   } finally {
     saving = false;
   }
@@ -332,7 +334,7 @@ async function confirmNewTable() {
     updated_at: new Date().toISOString(),
     nodes: [],
   };
-  await persistTable(table, true);
+  if (!(await persistTable(table, true))) return;
   newTableName.value = "";
   showNewTableModal.value = false;
   saveMsg("已创建进度表");
@@ -360,7 +362,7 @@ async function confirmDeleteTable() {
   const t = deleteTableTarget.value;
   if (!t) return;
   try {
-    await api.deleteProgressTable(props.subject, t.id);
+    await api.deleteProgressTable(props.subject, t.id, t.revision);
     await reload();
     showDeleteTableModal.value = false;
     deleteTableTarget.value = null;
@@ -373,9 +375,11 @@ async function confirmDeleteTable() {
 // ── 重命名表 ──
 const renamingTable = ref(false);
 const renameTableName = ref("");
+const renameRevision = ref<string>();
 function startRename() {
   const t = activeTable.value;
   if (!t) return;
+  renameRevision.value = t.revision;
   renameTableName.value = t.name;
   renamingTable.value = true;
 }
@@ -387,7 +391,7 @@ async function confirmRename() {
     renamingTable.value = false;
     return;
   }
-  await persistTable({ ...t, name }, false);
+  if (!(await persistTable({ ...t, name, revision: renameRevision.value }, false))) return;
   renamingTable.value = false;
   saveMsg("已重命名");
 }
@@ -395,12 +399,15 @@ async function confirmRename() {
 // ── 节点操作 ──
 
 /** 直接落盘（节点增删/状态切换等即时改动） */
-async function commitTable(mutate: (t: ProgressTable) => void) {
+async function commitTable(
+  mutate: (t: ProgressTable) => void,
+  revision = activeTable.value?.revision
+) {
   const t = activeTable.value;
   if (!t) return;
-  const copy: ProgressTable = { ...t, nodes: [...t.nodes] };
+  const copy: ProgressTable = { ...t, revision, nodes: t.nodes.map((node) => ({ ...node })) };
   mutate(copy);
-  await persistTable(copy, false);
+  return persistTable(copy, false);
 }
 
 async function cycleStatus(node: ProgressNode) {
@@ -412,14 +419,14 @@ async function cycleStatus(node: ProgressNode) {
 
 async function removeNode(node: ProgressNode) {
   // 删除章节时同步删除其下知识点
-  await commitTable((t) => {
+  const saved = await commitTable((t) => {
     if (node.level === "chapter") {
       t.nodes = t.nodes.filter((x) => x.id !== node.id && x.parent_id !== node.id);
     } else {
       t.nodes = t.nodes.filter((x) => x.id !== node.id);
     }
   });
-  if (editNodeId.value === node.id) editNodeId.value = null;
+  if (saved && editNodeId.value === node.id) editNodeId.value = null;
 }
 
 // ── 新建节点（可选择等级/归属章节） ──
@@ -446,7 +453,7 @@ async function confirmAddNode() {
   savingNode.value = true;
   const level = addNodeLevel.value;
   const parentId = level === "knowledge" && addNodeParentId.value ? addNodeParentId.value : null;
-  await commitTable((t) => {
+  const saved = await commitTable((t) => {
     t.nodes.push({
       id: newNodeId(),
       title,
@@ -461,6 +468,7 @@ async function confirmAddNode() {
       note: "",
     });
   });
+  if (!saved) return;
   savingNode.value = false;
   showAddNodeModal.value = false;
   saveMsg(level === "chapter" ? "已添加章节节点" : "已添加知识点");
@@ -557,6 +565,7 @@ function canonicalizeNodes(list: ProgressNode[]): ProgressNode[] {
 
 // ── 内联编辑节点 ──
 const editNodeId = ref<string | null>(null);
+const editRevision = ref<string>();
 const editForm = ref<ProgressNode>(blankNode());
 
 function blankNode(): ProgressNode {
@@ -573,6 +582,7 @@ function blankNode(): ProgressNode {
 }
 
 function beginEdit(node: ProgressNode) {
+  editRevision.value = activeTable.value?.revision;
   editNodeId.value = node.id;
   editForm.value = { ...node, planned_date: node.planned_date ?? "" };
   editFormLevel.value = node.level;
@@ -588,7 +598,7 @@ async function saveEdit() {
   const title = editForm.value.title.trim();
   if (!title) return;
   savingNode.value = true;
-  await commitTable((t) => {
+  const saved = await commitTable((t) => {
     const n = t.nodes.find((x) => x.id === id);
     if (!n) return;
     n.title = title;
@@ -600,9 +610,9 @@ async function saveEdit() {
     n.note = editForm.value.note.trim();
     const pd = editForm.value.planned_date as unknown as string;
     n.planned_date = pd ? pd : null;
-  });
+  }, editRevision.value);
   savingNode.value = false;
-  editNodeId.value = null;
+  if (saved) editNodeId.value = null;
 }
 
 // ── AI 生成 ──
@@ -656,7 +666,7 @@ async function runGenerate() {
 async function confirmSaveGenerated() {
   const draft = genPreview.value;
   if (!draft) return;
-  await persistTable(draft, true);
+  if (!(await persistTable(draft, true))) return;
   showGenModal.value = false;
   genPreview.value = null;
   saveMsg("已保存生成的进度表");

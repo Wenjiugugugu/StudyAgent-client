@@ -1,7 +1,7 @@
 import type { FocusSession } from "@/api";
 import type { StudyState } from "@/types";
 
-/** 不把未记录当成零；已完成番茄已写入任务累计时长，避免再次相加。 */
+/** 只追加尚未累计的会话；旧记录仍按完成/打断状态读取，避免猜测历史计时来源。 */
 export function reviewTaskMinutes(
   date: string,
   sessions: FocusSession[],
@@ -12,7 +12,8 @@ export function reviewTaskMinutes(
   const interrupted: Record<string, number> = {};
   for (const session of sessions) {
     if (!session.task_id || (session.type !== "focus" && session.type !== "stopwatch")) continue;
-    const target = session.status === "completed" ? completed : interrupted;
+    const recorded = session.task_minutes_recorded ?? session.status === "completed";
+    const target = recorded ? completed : interrupted;
     target[session.task_id] =
       (target[session.task_id] ?? 0) + Math.max(0, session.duration_minutes);
   }

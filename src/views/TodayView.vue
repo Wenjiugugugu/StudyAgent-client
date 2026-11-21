@@ -18,6 +18,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useTodayStore } from "@/stores/today";
 import { useSettingsStore } from "@/stores/settings";
+import { taskTimerPauseVersion } from "@/utils/updatePreparation";
 import * as api from "@/api";
 import {
   todayString,
@@ -258,6 +259,7 @@ async function loadTaskTimers() {
     console.warn("加载任务计时状态失败", e);
   }
 }
+watch(taskTimerPauseVersion, loadTaskTimers);
 
 // ── 操作失败提示（计时 / 生成等即时动作，与 todayStore.error 的计划加载错误分开）──
 const actionError = ref("");
@@ -1273,13 +1275,13 @@ onUnmounted(() => {
           <summary>关联知识点（可选）</summary>
           <KnowledgePointPicker v-model="newTaskPoints" :subject="newTask.subject" />
         </details>
-        <div class="ai-toggle">
+        <label class="ai-toggle">
           <Checkbox v-model="newTask.aiReference" />
-          <div class="ai-toggle-text" @click="newTask.aiReference = !newTask.aiReference">
+          <span class="ai-toggle-text">
             <span class="ai-toggle-title">允许 AI 参考此任务</span>
             <small>关闭后，该任务不会出现在任何发送给 AI 的内容中（简报、复盘、周计划等）。</small>
-          </div>
-        </div>
+          </span>
+        </label>
 
         <p v-if="addError" class="form-error">{{ addError }}</p>
       </div>

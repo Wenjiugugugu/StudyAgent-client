@@ -117,3 +117,81 @@ pub(crate) fn enforce_past_days_empty(plan: &mut WeekPlanFile) {
         );
     }
 }
+
+/// 对休息、排除及过去日期取并集，避免重叠扣除。
+pub(crate) fn available_dates(
+    start: &str,
+    end: &str,
+    rest: &[String],
+    excluded: &[ExcludedDay],
+    today: &str,
+) -> DataResult<Vec<String>> {
+    let mut result = Vec::new();
+    let mut date = start.to_string();
+    while date.as_str() <= end {
+        if date.as_str() >= today
+            && !rest.contains(&weekday_name(&date)?)
+            && !excluded.iter().any(|e| e.date == date)
+        {
+            result.push(date.clone());
+        }
+        date = add_days(&date, 1)?;
+    }
+    Ok(result)
+}
+
+/// 剩余预算按同一可学习日期集合缩放一次，不把整周工作量挤到剩余日期。
+pub(crate) fn scale_remaining_budget(
+    parameters: &mut crate::core::adaptive_planner::AdaptivePlanParameters,
+    configured_days: usize,
+    available_days: usize,
+) {
+    let ratio = available_days as f64 / configured_days.max(1) as f64;
+    parameters.nominal_total_hours *= ratio;
+    parameters.capacity_hours *= ratio;
+    for hours in parameters.subject_hours.values_mut() {
+        *hours *= ratio;
+    }
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::*;
+    #[test]
+    fn overlap_and_past_days_are_counted_once() {
+        let excluded = vec![
+            ExcludedDay {
+                date: "2026-10-18".into(),
+                ..Default::default()
+            },
+            ExcludedDay {
+                date: "2026-10-14".into(),
+                ..Default::default()
+            },
+        ];
+        let dates = available_dates(
+            "2026-10-12",
+            "2026-10-18",
+            &["周日".into()],
+            &excluded,
+            "2026-10-14",
+        )
+        .unwrap();
+        assert_eq!(dates, vec!["2026-10-15", "2026-10-16", "2026-10-17"]);
+    }
+    #[test]
+    fn remaining_budget_is_scaled_once_and_no_days_means_no_budget() {
+        let mut parameters = crate::core::adaptive_planner::AdaptivePlanParameters {
+            nominal_total_hours: 30.0,
+            capacity_hours: 24.0,
+            subject_hours: std::collections::HashMap::from([("math".into(), 12.0)]),
+            ..Default::default()
+        };
+        scale_remaining_budget(&mut parameters, 6, 3);
+        assert_eq!(parameters.nominal_total_hours, 15.0);
+        assert_eq!(parameters.capacity_hours, 12.0);
+        assert_eq!(parameters.subject_hours["math"], 6.0);
+        scale_remaining_budget(&mut parameters, 6, 0);
+        assert_eq!(parameters.nominal_total_hours, 0.0);
+    }
+}

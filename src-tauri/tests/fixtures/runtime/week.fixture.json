@@ -1,0 +1,74 @@
+{
+  "version": "1.0.0",
+  "meta": {
+    "week_start": "2026-07-27",
+    "week_end": "2026-08-02",
+    "week_number": 31,
+    "generated_at": "2026-07-27T09:00:00",
+    "based_on": {
+      "state": "state/current.state",
+      "user_model": "",
+      "exam_config": ""
+    }
+  },
+  "data": {
+    "goals": [
+      "虚构测试目标"
+    ],
+    "subjects": [],
+    "days": [
+      {
+        "date": "2026-07-28",
+        "weekday": "周二",
+        "is_rest_day": false,
+        "subject_allocations": [
+          {
+            "subject": "math",
+            "hours": 2,
+            "focus": "虚构测试内容",
+            "task_templates": [
+              {
+                "title": "虚构数学已完成任务",
+                "estimated_hours": 2,
+                "goal": "虚构目标",
+                "completion_criteria": [
+                  "完成测试范围"
+                ]
+              }
+            ]
+          },
+          {
+            "subject": "english",
+            "hours": 2,
+            "focus": "虚构测试内容",
+            "task_templates": [
+              {
+                "title": "虚构英语任务",
+                "estimated_hours": 2,
+                "goal": "虚构目标",
+                "completion_criteria": [
+                  "完成测试范围"
+                ]
+              }
+            ]
+          },
+          {
+            "subject": "professional",
+            "hours": 2,
+            "focus": "虚构测试内容",
+            "task_templates": [
+              {
+                "title": "虚构专业课任务",
+                "estimated_hours": 2,
+                "goal": "虚构目标",
+                "completion_criteria": [
+                  "完成测试范围"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

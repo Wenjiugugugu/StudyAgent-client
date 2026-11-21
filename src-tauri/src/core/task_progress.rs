@@ -46,6 +46,222 @@ pub fn bind_task(index: &ProgressIndex, task: &mut PlanTask) {
     }
 }
 
+/// 基础状态只淘汰首次学习任务，不能代替强化任务或复盘中明确保留的剩余范围。
+pub fn obsolete_foundation_task(index: &ProgressIndex, task: &PlanTask) -> bool {
+    if task.is_manual()
+        || task.remaining_from_task_id.is_some()
+        || task.status != crate::data::state::TaskStatus::Pending
+        || super::planning::pure::is_memory_review(&task.title)
+        || [
+            "复习", "巩固", "强化", "二刷", "重做", "错题", "模考", "周测", "回访", "温习", "复盘",
+            "限时", "练习", "训练", "刷题", "测验", "测试", "默写", "背诵",
+        ]
+        .iter()
+        .any(|word| task.title.contains(word) || task.goal.contains(word))
+    {
+        return false;
+    }
+    let Some(points) = task.knowledge_points.as_ref().filter(|p| !p.is_empty()) else {
+        return false;
+    };
+    let Some(set) = index.subjects.get(task.subject.key()) else {
+        return false;
+    };
+    // 所有关联都必须可验证；缺失的表/节点不能据此删除任务。
+    points.iter().all(|point| {
+        set.tables
+            .iter()
+            .find(|table| table.id == point.table_id)
+            .and_then(|table| table.nodes.iter().find(|node| node.id == point.node_id))
+            .is_some_and(|node| {
+                node.level == NodeLevel::Knowledge && node.status.rank() >= NodeStatus::Basic.rank()
+            })
+    })
+}
+
+/// 408 总表基础完成后，从最早尚未掌握的板块启动强化；显式持续方向优先。
+pub fn professional_strengthening_points(
+    data_dir: &std::path::Path,
+    index: &ProgressIndex,
+    date: &str,
+) -> crate::data::DataResult<Option<(String, Vec<KnowledgePointRef>)>> {
+    if crate::data::study_direction::current_directions(data_dir, date)?
+        .iter()
+        .any(|d| d.subject == "professional")
+    {
+        return Ok(None);
+    }
+    if !crate::data::goal::active_goals_for_subject(
+        data_dir,
+        &crate::data::state::SubjectKey::Professional,
+        date,
+    )
+    .is_empty()
+    {
+        return Ok(None);
+    }
+    let Some(active) = crate::data::progress_tables::active_progress_table(index, "professional")
+    else {
+        return Ok(None);
+    };
+    if !active.variant.contains("408")
+        || !active.name.contains("总专业课进度表")
+        || !crate::data::progress_tables::active_table_basics_done(index, "professional")
+    {
+        return Ok(None);
+    }
+    let Some(module) = ["数据结构", "计算机组成原理", "操作系统", "计算机网络"]
+        .into_iter()
+        .find(|phase| {
+            active.nodes.iter().any(|n| {
+                n.level == NodeLevel::Knowledge
+                    && n.phase == *phase
+                    && n.status != NodeStatus::Mastered
+            })
+        })
+    else {
+        return Ok(None);
+    };
+    let set = &index.subjects["professional"];
+    let book = set.tables.iter().find(|t| {
+        t.variant == active.variant && t.name.contains("教材：") && t.name.contains(module)
+    });
+    let table = book.unwrap_or(active);
+    let points = table
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.level == NodeLevel::Knowledge
+                && n.status != NodeStatus::Mastered
+                && (book.is_some() || n.phase == module)
+        })
+        .map(|n| KnowledgePointRef {
+            table_id: table.id.clone(),
+            node_id: n.id.clone(),
+            title: n.title.clone(),
+        })
+        .collect::<Vec<_>>();
+    Ok((!points.is_empty()).then(|| (module.into(), points)))
+}
+
+pub fn task_in_professional_module(index: &ProgressIndex, task: &PlanTask, module: &str) -> bool {
+    task.knowledge_points.as_ref().is_some_and(|points| {
+        !points.is_empty()
+            && points.iter().all(|point| {
+                index
+                    .subjects
+                    .get("professional")
+                    .and_then(|s| s.tables.iter().find(|t| t.id == point.table_id))
+                    .is_some_and(|t| {
+                        (t.name.contains("教材：") && t.name.contains(module))
+                            || t.nodes
+                                .iter()
+                                .any(|n| n.id == point.node_id && n.phase == module)
+                    })
+            })
+    })
+}
+
+pub fn strengthening_template(module: &str, point: &KnowledgePointRef, hours: f64) -> TaskTemplate {
+    TaskTemplate {
+        title: format!("{module}·{}：真题二刷与错题重做", point.title),
+        goal: format!(
+            "通过真题与错题巩固「{}」，记录错因并复核解题方法",
+            point.title
+        ),
+        estimated_hours: hours,
+        completion_criteria: vec!["完成本知识点的真题练习并订正，记录错因".into()],
+        knowledge_points: Some(vec![point.clone()]),
+        ..Default::default()
+    }
+}
+
+/// 校正未来候选任务与展示，保留已开始、手动和复盘中明确剩余的任务。
+pub fn normalize_professional_strengthening_week(
+    data_dir: &std::path::Path,
+    index: &ProgressIndex,
+    week: &mut WeekPlanFile,
+    dates: Option<&[String]>,
+) -> crate::data::DataResult<()> {
+    let today = crate::data::today_string();
+    let Some((module, points)) = professional_strengthening_points(data_dir, index, &today)? else {
+        return Ok(());
+    };
+    let state = crate::data::read_state_or_default(data_dir);
+    let mut cursor = 0;
+    let mut changed = false;
+    for day in &mut week.data.days {
+        if day.date < today || day.is_rest_day || dates.is_some_and(|ds| !ds.contains(&day.date)) {
+            continue;
+        }
+        let existing = crate::data::read_daily_plan(data_dir, &day.date).ok();
+        for allocation in day
+            .subject_allocations
+            .iter_mut()
+            .filter(|a| a.subject.key() == "professional")
+        {
+            for task in &mut allocation.task_templates {
+                let protected = task.remaining_from_task_id.is_some()
+                    || existing.as_ref().is_some_and(|p| {
+                        p.data.tasks.iter().any(|old| {
+                            old.subject.key() == "professional"
+                                && old.title == task.title
+                                && (old.is_manual()
+                                    || old.status != crate::data::state::TaskStatus::Pending)
+                        })
+                    })
+                    || (state.current_task.date == day.date
+                        && state.current_task.tasks.iter().any(|live| {
+                            live.subject == "professional"
+                                && live.task == task.title
+                                && (live.started_at.is_some()
+                                    || live.accumulated_minutes > 0
+                                    || live.status != crate::data::state::TaskStatus::Pending)
+                        }));
+                if protected {
+                    continue;
+                }
+                let mut candidate = PlanTask {
+                    subject: crate::data::state::SubjectKey::Professional,
+                    title: task.title.clone(),
+                    goal: task.goal.clone(),
+                    knowledge_points: task.knowledge_points.clone(),
+                    ..Default::default()
+                };
+                bind_task(index, &mut candidate);
+                if !task_in_professional_module(index, &candidate, &module)
+                    || obsolete_foundation_task(index, &candidate)
+                {
+                    let point = &points[cursor % points.len()];
+                    *task = strengthening_template(&module, point, task.estimated_hours);
+                    changed = true;
+                } else {
+                    task.knowledge_points = candidate.knowledge_points;
+                }
+                cursor += 1;
+            }
+            allocation.focus = format!("{module}强化：按教材顺序真题二刷与错题重做");
+        }
+    }
+    if changed {
+        for subject in week
+            .data
+            .subjects
+            .iter_mut()
+            .filter(|s| s.subject.key() == "professional")
+        {
+            subject.focus = format!("{module}强化（数据结构→计组→操作系统→计网）");
+            subject.milestones = vec![format!("按教材顺序巩固{module}，完成真题二刷与错题订正")];
+        }
+        week.data.goals.retain(|g| !g.starts_with("专业课"));
+        week.data.goals.push(format!(
+            "专业课强化从{module}开始，按数据结构→计组→操作系统→计网推进；基础完成不等于强化完成"
+        ));
+        week.view = None;
+    }
+    Ok(())
+}
+
 /// 安排日期与学习状态分开保存；生成计划不会将待学节点标为学习中。
 pub fn record_planned_dates(
     index: &mut ProgressIndex,
@@ -471,6 +687,9 @@ pub fn remove_completed_ranges(
         }
         for allocation in &mut day.subject_allocations {
             for task in &mut allocation.task_templates {
+                if super::planning::pure::is_memory_review(&task.title) {
+                    continue;
+                }
                 let Some(points) = &mut task.knowledge_points else {
                     continue;
                 };
@@ -587,6 +806,147 @@ mod tests {
             ]),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn foundation_guard_requires_every_linked_point_to_be_completed() {
+        let (mut index, task) = fixture();
+        assert!(!obsolete_foundation_task(&index, &task));
+        for node in &mut index.subjects.get_mut("math").unwrap().tables[0].nodes {
+            node.status = NodeStatus::Basic;
+        }
+        assert!(obsolete_foundation_task(&index, &task));
+        index.subjects.get_mut("math").unwrap().tables[0].nodes[1].status = NodeStatus::Learning;
+        assert!(!obsolete_foundation_task(&index, &task));
+    }
+
+    #[test]
+    fn foundation_guard_preserves_practice_manual_and_explicit_residuals() {
+        let (mut index, task) = fixture();
+        for node in &mut index.subjects.get_mut("math").unwrap().tables[0].nodes {
+            node.status = NodeStatus::Basic;
+        }
+        for title in [
+            "真题二刷",
+            "错题重做",
+            "限时模考",
+            "复习已学内容",
+            "CRC 计算练习",
+            "函数（+1天回访）",
+        ] {
+            let mut practice = task.clone();
+            practice.title = title.into();
+            assert!(!obsolete_foundation_task(&index, &practice), "{title}");
+        }
+        let mut protected = task.clone();
+        protected.goal = "通过真题二刷巩固知识".into();
+        assert!(!obsolete_foundation_task(&index, &protected));
+        protected = task.clone();
+        protected.source = crate::data::state::TaskSource::Manual;
+        assert!(!obsolete_foundation_task(&index, &protected));
+        protected = task.clone();
+        protected.remaining_from_task_id = Some("original".into());
+        assert!(!obsolete_foundation_task(&index, &protected));
+        protected = task.clone();
+        protected.status = crate::data::state::TaskStatus::InProgress;
+        assert!(!obsolete_foundation_task(&index, &protected));
+    }
+
+    #[test]
+    fn foundation_guard_keeps_unverified_or_missing_links() {
+        let (mut index, mut task) = fixture();
+        for node in &mut index.subjects.get_mut("math").unwrap().tables[0].nodes {
+            node.status = NodeStatus::Mastered;
+        }
+        task.knowledge_points.as_mut().unwrap()[0].node_id = "missing".into();
+        assert!(!obsolete_foundation_task(&index, &task));
+        task.knowledge_points = Some(vec![]);
+        assert!(!obsolete_foundation_task(&index, &task));
+        task.knowledge_points = None;
+        assert!(!obsolete_foundation_task(&index, &task));
+    }
+
+    #[test]
+    fn foundation_guard_filters_old_carry_and_new_templates_before_budgeting() {
+        let (mut index, mut old) = fixture();
+        for node in &mut index.subjects.get_mut("math").unwrap().tables[0].nodes {
+            node.status = NodeStatus::Basic;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "sa_foundation_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        crate::data::progress_tables::save_progress_index(&dir, &index).unwrap();
+        old.title = "旧基础任务".into();
+        let mut previous = DailyPlanFile::default();
+        previous.meta.date = "2026-10-11".into();
+        previous.data.deferred_tasks.push(old.clone());
+        crate::data::plan::save_daily_plan(&dir, &previous).unwrap();
+        let mut week = WeekPlanFile::default();
+        week.meta.week_start = "2026-10-12".into();
+        week.meta.week_end = "2026-10-18".into();
+        week.data.days.push(WeekDayPlan {
+            date: "2026-10-12".into(),
+            subject_allocations: vec![DaySubjectAllocation {
+                subject: SubjectKey::Math,
+                task_templates: ["新基础补做", "真题二刷"]
+                    .iter()
+                    .map(|title| TaskTemplate {
+                        title: (*title).into(),
+                        estimated_hours: 1.0,
+                        knowledge_points: old.knowledge_points.clone(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        crate::data::plan::save_week_plan(&dir, &week).unwrap();
+        let generated =
+            super::super::scheduler::DailyScheduler::generate_daily_plan(&dir, "2026-10-12", false)
+                .unwrap();
+        assert_eq!(generated.data.tasks.len(), 1);
+        assert_eq!(generated.data.tasks[0].title, "真题二刷");
+        assert!(generated.data.deferred_tasks.is_empty());
+        assert_eq!(generated.data.total_hours, 1.0);
+
+        // 同日已经开始的学习不能因为基础状态而被过滤。
+        let mut existing = DailyPlanFile::default();
+        existing.meta.date = "2026-10-12".into();
+        old.title = "新基础补做".into();
+        old.status = crate::data::state::TaskStatus::InProgress;
+        existing.data.tasks.push(old.clone());
+        crate::data::plan::save_daily_plan(&dir, &existing).unwrap();
+        let regenerated =
+            super::super::scheduler::DailyScheduler::generate_daily_plan(&dir, "2026-10-12", false)
+                .unwrap();
+        assert!(regenerated
+            .data
+            .tasks
+            .iter()
+            .any(|t| t.title == "新基础补做"));
+
+        // 暂停计时后状态仍为待学，也必须保留已投入时间的任务。
+        existing.data.tasks[0].status = crate::data::state::TaskStatus::Pending;
+        crate::data::plan::save_daily_plan(&dir, &existing).unwrap();
+        let mut state = crate::data::state::read_state_or_default(&dir);
+        state.current_task.date = "2026-10-12".into();
+        state.current_task.tasks = vec![crate::data::state::StateTask {
+            subject: "math".into(),
+            task: "新基础补做".into(),
+            accumulated_minutes: 5,
+            ..Default::default()
+        }];
+        crate::data::state::save_state(&dir, &state).unwrap();
+        let timed =
+            super::super::scheduler::DailyScheduler::generate_daily_plan(&dir, "2026-10-12", false)
+                .unwrap();
+        assert!(timed.data.tasks.iter().any(|t| t.title == "新基础补做"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -796,6 +1156,52 @@ mod tests {
                 .map(|t| t.estimated_hours)
                 .sum::<f64>(),
             2.0
+        );
+        // 困难反馈生成的回访只包含已经确认学完的范围，且不能再被剩余范围扣除。
+        review.task_reviews[0].blockers = vec!["understanding".into()];
+        crate::data::records::save_review(&dir, &review).unwrap();
+        let with_review =
+            super::super::scheduler::DailyScheduler::generate_daily_plan(&dir, "2026-10-07", false)
+                .unwrap();
+        let revisits: Vec<_> = with_review
+            .data
+            .tasks
+            .iter()
+            .chain(&with_review.data.deferred_tasks)
+            .filter(|t| super::super::planning::pure::is_memory_review(&t.title))
+            .collect();
+        assert_eq!(revisits.len(), 1);
+        assert_eq!(revisits[0].knowledge_points.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            revisits[0].knowledge_points.as_ref().unwrap()[0].node_id,
+            "n1"
+        );
+        let mut revisit_week = week.clone();
+        revisit_week.data.days[0].subject_allocations[0].task_templates = vec![TaskTemplate {
+            title: revisits[0].title.clone(),
+            knowledge_points: revisits[0].knowledge_points.clone(),
+            estimated_hours: 0.5,
+            ..Default::default()
+        }];
+        remove_completed_ranges(
+            &index,
+            &mut revisit_week,
+            &review.task_reviews,
+            &["2026-10-07".into()],
+        );
+        assert_eq!(
+            revisit_week.data.days[0].subject_allocations[0]
+                .task_templates
+                .len(),
+            1
+        );
+        assert_eq!(
+            revisit_week.data.days[0].subject_allocations[0].task_templates[0]
+                .knowledge_points
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

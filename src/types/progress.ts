@@ -40,6 +40,7 @@ export interface ProgressNode {
 export type ProgressTableOrigin = "builtin" | "custom";
 
 export interface ProgressTable {
+  revision?: string;
   id: string;
   subject: string;
   /** 考纲方案：数一/数二/数三/英一/英二/408/307/政治 */

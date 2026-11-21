@@ -140,6 +140,11 @@ fn save<T: Serialize>(dir: &Path, path: &str, value: &T) -> DataResult<()> {
 
 /// 只复制规划所需的数据，不跟随符号链接，也不复制调整记录、诊断输出或同步缓存。
 fn visit(dir: &Path, relative: &Path, files: &mut BTreeMap<String, Vec<u8>>) -> DataResult<()> {
+    // AI 调用会通过全局日志目录更新真实目录中的用量统计，即使规划在副本中执行。
+    // 统计不是规划输入；纳入指纹会使每次成功的 AI 生成都把自己的预览判为过期。
+    if relative == Path::new("state/ai_usage_log.json") {
+        return Ok(());
+    }
     let path = dir.join(relative);
     if !path.exists() {
         return Ok(());
@@ -186,7 +191,7 @@ fn fingerprint(files: &BTreeMap<String, Vec<u8>>) -> String {
     }
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
-struct Workspace(PathBuf);
+pub(crate) struct Workspace(pub(crate) PathBuf);
 impl Workspace {
     fn new(files: &BTreeMap<String, Vec<u8>>) -> DataResult<Self> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -224,6 +229,19 @@ impl Drop for Workspace {
     }
 }
 
+/// 后台派生内容复用隔离输入与版本检查，AI 等待期间不占用写锁。
+pub(crate) fn snapshot(dir: &Path) -> DataResult<(Workspace, String)> {
+    let files = inputs(dir)?;
+    let revision = fingerprint(&files);
+    Ok((Workspace::new(&files)?, revision))
+}
+pub(crate) fn verify_snapshot(dir: &Path, revision: &str) -> DataResult<()> {
+    if fingerprint(&inputs(dir)?) != revision {
+        return Err("生成期间学习数据发生变化，已保留原内容，请重新生成。".into());
+    }
+    Ok(())
+}
+
 fn same_task(a: &PlanTask, b: &PlanTask) -> bool {
     a.subject == b.subject
         && a.title == b.title
@@ -251,13 +269,25 @@ fn live_plan(dir: &Path, date: &str) -> DataResult<Option<DailyPlanFile>> {
     }
     Ok(Some(plan))
 }
+fn has_learning_record(task: &PlanTask, date: &str, state: &data::StudyState) -> bool {
+    matches!(task.status, TaskStatus::Done | TaskStatus::InProgress)
+        || (state.current_task.date == date
+            && state.current_task.tasks.iter().any(|live| {
+                (live.task_id.as_deref() == Some(task.id.as_str())
+                    || (live.task_id.is_none()
+                        && live.task == task.title
+                        && live.subject == task.subject.key()))
+                    && (live.started_at.is_some() || live.accumulated_minutes > 0)
+            }))
+}
+
 fn task_choices(dir: &Path, dates: &[String]) -> DataResult<Vec<TaskChoice>> {
+    let state = data::read_state_or_default(dir);
     let mut tasks = Vec::new();
     for date in dates {
         if let Some(plan) = live_plan(dir, date)? {
             for task in plan.data.tasks {
-                let required = matches!(task.status, TaskStatus::Done | TaskStatus::InProgress)
-                    || task.is_manual();
+                let required = has_learning_record(&task, date, &state) || task.is_manual();
                 tasks.push(TaskChoice {
                     key: format!("{date}/{}", task.id),
                     date: date.clone(),
@@ -283,6 +313,7 @@ pub async fn generate(
         Some(lock) => Some(lock.lock().await),
         None => None,
     };
+    super::review_sync::ensure_ready(dir)?;
     recover(dir)?;
     let input = inputs(dir)?;
     let baseline = fingerprint(&input);
@@ -292,7 +323,7 @@ pub async fn generate(
     let allocation_changed =
         crate::core::planner::allocation_changed_since_week_plan(&workspace.0, date);
     let (mut dates, fallback, warnings, reason) = if kind == "review" {
-        let (_, dates, fallback, warnings, _) = planner
+        let result = planner
             .regenerate_remaining_days_after_review(&workspace.0, date)
             .await?;
         let review = data::read_review(&workspace.0, date)?;
@@ -307,13 +338,25 @@ pub async fn generate(
         if !review.overcompletion.is_empty() {
             reasons.push("计划外学习改变了后续起点");
         }
+        if review
+            .actual_study
+            .iter()
+            .any(|e| e.scope != data::study_direction::StudyScope::Today)
+        {
+            reasons.push("按你确认的当前学习方向调整内容与顺序");
+        }
         if allocation_changed {
             reasons.push("学科时间占比发生变化");
         }
         if reasons.is_empty() {
             reasons.push("依据本次复盘反馈调整后续学习量");
         }
-        (dates, fallback, warnings, reasons.join("；"))
+        (
+            result.dates,
+            result.used_fallback,
+            result.warnings,
+            reasons.join("；"),
+        )
     } else {
         let excluded = excluded.ok_or("缺少排除日期")?;
         let reason = format!(
@@ -331,7 +374,7 @@ pub async fn generate(
         (dates, fallback, Vec::new(), reason)
     };
     dates.retain(|d| d >= &data::today_string());
-    let _publish_guard = match io_lock {
+    let publish_guard = match io_lock {
         Some(lock) => Some(lock.lock().await),
         None => None,
     };
@@ -458,6 +501,39 @@ pub async fn generate(
         daily_budget,
     };
     project(&mut draft)?;
+    let candidate: Vec<data::DailyPlanFile> = draft
+        .files
+        .iter()
+        .filter(|f| f.path.ends_with("_day.json"))
+        .filter_map(|f| f.after.as_ref())
+        .map(|raw| serde_json::from_str(raw).map_err(|e| e.to_string()))
+        .collect::<DataResult<_>>()?;
+    let protected: HashSet<_> = draft
+        .preview
+        .tasks
+        .iter()
+        .filter(|t| t.required)
+        .map(|t| t.task.id.clone())
+        .collect();
+    let candidate: Vec<_> = candidate.iter().flat_map(|p| p.data.tasks.iter()
+        .filter(|t| t.ai_visible() && !t.is_manual() && !protected.contains(&t.id)
+            && t.status != TaskStatus::Done && t.status != TaskStatus::InProgress)
+        .map(|t| serde_json::json!({ "date": p.meta.date, "subject": t.subject.key(), "title": t.title, "goal": t.goal })))
+        .collect();
+    // 校验只使用副本；等待网络期间不阻塞正式数据的计时与保存。
+    drop(publish_guard);
+    if !draft.preview.affected_dates.is_empty() {
+        planner
+            .verify_study_directions(
+                &workspace.0,
+                &serde_json::to_string(&candidate).map_err(|e| e.to_string())?,
+            )
+            .await?;
+    }
+    let _publish_guard = match io_lock {
+        Some(lock) => Some(lock.lock().await),
+        None => None,
+    };
     if fingerprint(&inputs(dir)?) != draft.fingerprint {
         return Err("生成预览期间学习数据发生变化，请重新生成".into());
     }
@@ -948,7 +1024,7 @@ fn sync_today(dir: &Path) -> DataResult<()> {
     if let Some(plan) = live_plan(dir, &date)? {
         data::resync_plan_to_state(dir, &date, &plan)?;
     } else {
-        let mut state = data::read_state_or_default(dir);
+        let mut state = data::read_state_or_new(dir)?;
         if state.current_task.date == date
             && !state
                 .current_task
@@ -1004,6 +1080,7 @@ pub fn record_sync_result(dir: &Path, warnings: Vec<String>, pending: bool) -> D
     Ok(())
 }
 pub fn apply(dir: &Path, id: &str) -> DataResult<Vec<String>> {
+    super::review_sync::ensure_ready(dir)?;
     recover(dir)?;
     let draft = get_draft(dir, id)?;
     if draft.today != data::today_string() || fingerprint(&inputs(dir)?) != draft.fingerprint {
@@ -1082,6 +1159,7 @@ pub fn undo(dir: &Path, id: &str) -> DataResult<(Vec<String>, Vec<String>)> {
     }
     let mut restore = Vec::new();
     let mut warnings = Vec::new();
+    let state = data::read_state_or_default(dir);
     for file in &journal.files {
         let current = read_optional(&dir.join(&file.path))?;
         if current
@@ -1127,7 +1205,7 @@ pub fn undo(dir: &Path, id: &str) -> DataResult<(Vec<String>, Vec<String>)> {
                     }
                 }
                 for now in &live.data.tasks {
-                    if matches!(now.status, TaskStatus::Done | TaskStatus::InProgress)
+                    if has_learning_record(now, date, &state)
                         && !old.data.tasks.iter().any(|t| same_task(t, now))
                     {
                         old.data.tasks.push(now.clone());

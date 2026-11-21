@@ -154,3 +154,34 @@ pub async fn set_ui_flag_cmd(
     let _io_guard = io_lock.lock().await;
     set_ui_flag(&data_dir, &key, &value)
 }
+
+#[tauri::command]
+pub async fn get_review_draft(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Option<crate::data::review_draft::ReviewDraft>, String> {
+    let data_dir = get_data_dir(state.inner())?;
+    crate::data::review_draft::read_review_draft(&data_dir, &date)
+}
+
+#[tauri::command]
+pub async fn save_review_draft(
+    draft: crate::data::review_draft::ReviewDraft,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    crate::data::review_draft::save_review_draft(&data_dir, &draft)
+}
+
+#[tauri::command]
+pub async fn delete_review_draft(
+    date: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let data_dir = get_data_dir(state.inner())?;
+    let io_lock = crate::get_io_lock(state.inner())?;
+    let _io_guard = io_lock.lock().await;
+    crate::data::review_draft::delete_review_draft(&data_dir, &date)
+}

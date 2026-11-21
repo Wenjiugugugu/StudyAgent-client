@@ -111,6 +111,7 @@ export interface DailyPlanFile {
 
 /** 周计划元信息 */
 export interface WeekPlanMeta {
+  study_direction_revision?: string;
   week_start: string;
   week_end: string;
   week_number: number;

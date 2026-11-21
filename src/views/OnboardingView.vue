@@ -707,7 +707,11 @@ async function persistProgressTables() {
     const variant = variantForSubjectKey(subj.key);
     if (!variant) continue;
     try {
-      await api.deleteBuiltinProgressTables(subj.key, variant);
+      const index = await api.listProgressTables();
+      const revisions = Object.fromEntries(
+        (index.subjects[subj.key]?.tables ?? []).map((table) => [table.id, table.revision ?? ""])
+      );
+      await api.deleteBuiltinProgressTables(subj.key, variant, revisions);
       const saved: ProgressTable[] = [];
       let first = true;
       for (const d of drafts) {
